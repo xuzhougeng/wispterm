@@ -51,6 +51,7 @@ fn hexByte(comptime pair: *const [2]u8) u8 {
 
 // Interface IDs the presenter queries.
 pub const IID_IDXGIDevice = guid("54ec77fa-1377-44e6-8c32-88fd5f44c84c");
+pub const IID_IDXGIAdapter1 = guid("29038f61-3839-4626-91fd-086879011a05");
 pub const IID_IDXGIFactory1 = guid("770aae78-f26f-4dba-a829-253c83d1b387");
 pub const IID_IDXGIFactory2 = guid("50c83a1c-e072-4c48-87b0-3630fa36a6d0");
 pub const IID_IDXGIResource = guid("035f3ab4-482e-4e50-b41f-8a7f8bd8960b");
@@ -200,6 +201,21 @@ pub const D3D11_RASTERIZER_DESC = extern struct {
 
 pub const HRESULT = i32;
 
+pub fn hresult(comptime value: u32) HRESULT {
+    return @bitCast(@as(u32, value));
+}
+
+pub fn hresultBits(value: HRESULT) u32 {
+    return @bitCast(value);
+}
+
+pub const S_OK: HRESULT = 0;
+pub const DXGI_ERROR_INVALID_CALL: HRESULT = hresult(0x887A0001);
+pub const DXGI_ERROR_DEVICE_REMOVED: HRESULT = hresult(0x887A0005);
+pub const DXGI_ERROR_DEVICE_HUNG: HRESULT = hresult(0x887A0006);
+pub const DXGI_ERROR_DEVICE_RESET: HRESULT = hresult(0x887A0007);
+pub const DXGI_ERROR_DRIVER_INTERNAL_ERROR: HRESULT = hresult(0x887A0020);
+
 pub const DXGI_FORMAT_B8G8R8A8_UNORM: u32 = 87;
 pub const DXGI_FORMAT_R32G32B32A32_FLOAT: u32 = 2;
 pub const DXGI_FORMAT_R32G32B32_FLOAT: u32 = 6;
@@ -228,6 +244,62 @@ pub const D3D11_BIND_SHADER_RESOURCE: u32 = 0x8;
 pub const D3D11_BIND_RENDER_TARGET: u32 = 0x20;
 pub const D3D11_CPU_ACCESS_WRITE: u32 = 0x10000;
 pub const D3D11_CPU_ACCESS_READ: u32 = 0x20000;
+
+pub const DxgiFailureKind = enum {
+    ok,
+    invalid_call,
+    device_removed,
+    device_hung,
+    device_reset,
+    driver_internal_error,
+    other,
+
+    pub fn name(self: DxgiFailureKind) []const u8 {
+        return switch (self) {
+            .ok => "ok",
+            .invalid_call => "invalid_call",
+            .device_removed => "device_removed",
+            .device_hung => "device_hung",
+            .device_reset => "device_reset",
+            .driver_internal_error => "driver_internal_error",
+            .other => "other",
+        };
+    }
+
+    pub fn requiresDeviceRecreate(self: DxgiFailureKind) bool {
+        return switch (self) {
+            .device_removed, .device_hung, .device_reset, .driver_internal_error => true,
+            else => false,
+        };
+    }
+};
+
+pub fn dxgiFailureKind(hr: HRESULT) DxgiFailureKind {
+    if (hr >= 0) return .ok;
+    return switch (hr) {
+        DXGI_ERROR_INVALID_CALL => .invalid_call,
+        DXGI_ERROR_DEVICE_REMOVED => .device_removed,
+        DXGI_ERROR_DEVICE_HUNG => .device_hung,
+        DXGI_ERROR_DEVICE_RESET => .device_reset,
+        DXGI_ERROR_DRIVER_INTERNAL_ERROR => .driver_internal_error,
+        else => .other,
+    };
+}
+
+pub fn dxgiFailureName(hr: HRESULT) []const u8 {
+    return dxgiFailureKind(hr).name();
+}
+
+pub fn dxgiFailureRequiresDeviceRecreate(hr: HRESULT) bool {
+    return dxgiFailureKind(hr).requiresDeviceRecreate();
+}
+
+pub fn dxgiSwapEffectName(value: u32) []const u8 {
+    return switch (value) {
+        DXGI_SWAP_EFFECT_FLIP_DISCARD => "flip_discard",
+        else => "unknown",
+    };
+}
 pub const D3D11_RESOURCE_MISC_SHARED: u32 = 0x2;
 pub const D3D11_MAP_READ: u32 = 1;
 pub const D3D11_MAP_WRITE_DISCARD: u32 = 4;
@@ -337,6 +409,7 @@ pub const slot = struct {
     pub const D3D11Device_CreateBlendState: usize = 20;
     pub const D3D11Device_CreateRasterizerState: usize = 22;
     pub const D3D11Device_CreateSamplerState: usize = 23;
+    pub const D3D11Device_GetDeviceRemovedReason: usize = 39;
 
     // ID3D11DeviceContext (IUnknown + ID3D11DeviceChild(4) → first own slot 7:
     // VSSetConstantBuffers(7) … Draw(13) Map(14) Unmap(15) … CopyResource(47))
@@ -614,6 +687,8 @@ test "well-known interface IIDs round-trip their documented strings" {
     // transposed hex pair in the declarations can't reach the COM boundary.
     try std.testing.expectEqual(@as(u32, 0x54ec77fa), IID_IDXGIDevice.data1);
     try std.testing.expectEqual(@as(u8, 0x4c), IID_IDXGIDevice.data4[7]);
+    try std.testing.expectEqual(@as(u32, 0x29038f61), IID_IDXGIAdapter1.data1);
+    try std.testing.expectEqual(@as(u8, 0x05), IID_IDXGIAdapter1.data4[7]);
     try std.testing.expectEqual(@as(u32, 0x50c83a1c), IID_IDXGIFactory2.data1);
     try std.testing.expectEqual(@as(u8, 0xd0), IID_IDXGIFactory2.data4[7]);
     try std.testing.expectEqual(@as(u32, 0x035f3ab4), IID_IDXGIResource.data1);
@@ -632,6 +707,20 @@ test "DXGI_SWAP_CHAIN_DESC1 matches the documented 48-byte layout" {
     try std.testing.expectEqual(@as(usize, 36), @offsetOf(DXGI_SWAP_CHAIN_DESC1, "swap_effect"));
     try std.testing.expectEqual(@as(usize, 40), @offsetOf(DXGI_SWAP_CHAIN_DESC1, "alpha_mode"));
     try std.testing.expectEqual(@as(usize, 44), @offsetOf(DXGI_SWAP_CHAIN_DESC1, "flags"));
+}
+
+test "DXGI HRESULT failure classification names device loss signals" {
+    try std.testing.expectEqual(@as(u32, 0x887A0005), hresultBits(DXGI_ERROR_DEVICE_REMOVED));
+    try std.testing.expectEqual(DxgiFailureKind.ok, dxgiFailureKind(S_OK));
+    try std.testing.expectEqual(DxgiFailureKind.invalid_call, dxgiFailureKind(DXGI_ERROR_INVALID_CALL));
+    try std.testing.expectEqual(DxgiFailureKind.device_removed, dxgiFailureKind(DXGI_ERROR_DEVICE_REMOVED));
+    try std.testing.expectEqual(DxgiFailureKind.device_hung, dxgiFailureKind(DXGI_ERROR_DEVICE_HUNG));
+    try std.testing.expectEqual(DxgiFailureKind.device_reset, dxgiFailureKind(DXGI_ERROR_DEVICE_RESET));
+    try std.testing.expectEqual(DxgiFailureKind.driver_internal_error, dxgiFailureKind(DXGI_ERROR_DRIVER_INTERNAL_ERROR));
+    try std.testing.expectEqualStrings("device_removed", dxgiFailureName(DXGI_ERROR_DEVICE_REMOVED));
+    try std.testing.expect(dxgiFailureRequiresDeviceRecreate(DXGI_ERROR_DEVICE_RESET));
+    try std.testing.expect(!dxgiFailureRequiresDeviceRecreate(DXGI_ERROR_INVALID_CALL));
+    try std.testing.expectEqualStrings("flip_discard", dxgiSwapEffectName(DXGI_SWAP_EFFECT_FLIP_DISCARD));
 }
 
 test "D3D11_TEXTURE2D_DESC matches the documented 44-byte layout" {

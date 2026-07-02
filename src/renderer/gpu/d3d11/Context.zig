@@ -60,6 +60,10 @@ pub const InitError = error{
 };
 
 pub const PresentError = error{
+    DeviceHung,
+    DeviceRemoved,
+    DeviceReset,
+    DriverInternalError,
     PresentFailed,
 };
 
@@ -79,6 +83,7 @@ const State = struct {
     current_height: i32 = 0,
     vertex_shader: ?*anyopaque = null,
     pixel_shader: ?*anyopaque = null,
+    adapter: AdapterInfo = .{},
     width: i32,
     height: i32,
     feature_draws_this_frame: bool = false,
@@ -122,6 +127,20 @@ pub threadlocal var gl: GlTable = .{};
 
 const GlTable = @import("GlTable.zig").GlTable;
 
+const AdapterInfo = struct {
+    available: bool = false,
+    vendor_id: u32 = 0,
+    device_id: u32 = 0,
+    luid_low: u32 = 0,
+    luid_high: i32 = 0,
+    flags: u32 = 0,
+};
+
+const SwapchainCreateResult = struct {
+    swapchain: *anyopaque,
+    adapter: AdapterInfo,
+};
+
 pub fn init(_: anytype) !void {
     return error.D3D11RequiresWindow;
 }
@@ -157,13 +176,14 @@ pub fn initForWindow(hwnd: HWND, width: i32, height: i32) InitError!void {
         core.comRelease(device.?);
     }
 
-    const swapchain = try createSwapchain(device.?, hwnd, width, height);
-    errdefer core.comRelease(swapchain);
+    const swapchain_result = try createSwapchain(device.?, hwnd, width, height);
+    errdefer core.comRelease(swapchain_result.swapchain);
 
     var next = State{
         .device = device.?,
         .context = context.?,
-        .swapchain = swapchain,
+        .swapchain = swapchain_result.swapchain,
+        .adapter = swapchain_result.adapter,
         .width = width,
         .height = height,
     };
@@ -173,11 +193,11 @@ pub fn initForWindow(hwnd: HWND, width: i32, height: i32) InitError!void {
     try createPhase2Pipeline(&next);
 
     state = next;
-    render_diagnostics.log("gpu-backend=d3d11 present=dxgi swapchain={}x{}", .{ width, height });
+    logBackendInit(&state.?);
     std.debug.print("D3D11: native backend initialized {}x{}\n", .{ width, height });
 }
 
-fn createSwapchain(device: *anyopaque, hwnd: HWND, width: i32, height: i32) InitError!*anyopaque {
+fn createSwapchain(device: *anyopaque, hwnd: HWND, width: i32, height: i32) InitError!SwapchainCreateResult {
     const dxgi_device = core.comQueryInterface(device, &core.IID_IDXGIDevice) orelse
         return error.FactoryUnavailable;
     defer core.comRelease(dxgi_device);
@@ -186,6 +206,7 @@ fn createSwapchain(device: *anyopaque, hwnd: HWND, width: i32, height: i32) Init
     var adapter: ?*anyopaque = null;
     if (get_adapter(dxgi_device, &adapter) < 0 or adapter == null) return error.FactoryUnavailable;
     defer core.comRelease(adapter.?);
+    const adapter_info = queryAdapterInfo(adapter.?);
 
     const get_parent = core.comCall(adapter.?, core.slot.DXGIObject_GetParent, *const fn (*anyopaque, *const core.Guid, *?*anyopaque) callconv(.winapi) HRESULT);
     var factory: ?*anyopaque = null;
@@ -222,7 +243,48 @@ fn createSwapchain(device: *anyopaque, hwnd: HWND, width: i32, height: i32) Init
     const make_assoc = core.comCall(factory.?, core.slot.DXGIFactory_MakeWindowAssociation, *const fn (*anyopaque, HWND, u32) callconv(.winapi) HRESULT);
     _ = make_assoc(factory.?, hwnd, DXGI_MWA_NO_ALT_ENTER);
 
-    return swapchain.?;
+    return .{ .swapchain = swapchain.?, .adapter = adapter_info };
+}
+
+fn queryAdapterInfo(adapter: *anyopaque) AdapterInfo {
+    const adapter1 = core.comQueryInterface(adapter, &core.IID_IDXGIAdapter1) orelse return .{};
+    defer core.comRelease(adapter1);
+
+    const get_desc = core.comCall(adapter1, core.slot.DXGIAdapter1_GetDesc1, *const fn (*anyopaque, *core.DXGI_ADAPTER_DESC1) callconv(.winapi) HRESULT);
+    var desc: core.DXGI_ADAPTER_DESC1 = undefined;
+    if (get_desc(adapter1, &desc) < 0) return .{};
+
+    return .{
+        .available = true,
+        .vendor_id = desc.vendor_id,
+        .device_id = desc.device_id,
+        .luid_low = desc.adapter_luid.low_part,
+        .luid_high = desc.adapter_luid.high_part,
+        .flags = desc.flags,
+    };
+}
+
+fn logBackendInit(self: *const State) void {
+    if (self.adapter.available) {
+        render_diagnostics.log(
+            "gpu-backend=d3d11 present=dxgi swapchain={}x{} swap_effect={s} adapter_vendor=0x{x} adapter_device=0x{x} adapter_luid={x}:{x} adapter_flags=0x{x} fallback_reason=none",
+            .{
+                self.width,
+                self.height,
+                core.dxgiSwapEffectName(core.DXGI_SWAP_EFFECT_FLIP_DISCARD),
+                self.adapter.vendor_id,
+                self.adapter.device_id,
+                @as(u32, @bitCast(self.adapter.luid_high)),
+                self.adapter.luid_low,
+                self.adapter.flags,
+            },
+        );
+    } else {
+        render_diagnostics.log(
+            "gpu-backend=d3d11 present=dxgi swapchain={}x{} swap_effect={s} adapter=unknown fallback_reason=none",
+            .{ self.width, self.height, core.dxgiSwapEffectName(core.DXGI_SWAP_EFFECT_FLIP_DISCARD) },
+        );
+    }
 }
 
 fn createRenderTarget(self: *State, width: i32, height: i32) InitError!void {
@@ -394,8 +456,9 @@ pub fn resize(width: i32, height: i32) bool {
 
     self.releaseSized();
     const resize_buffers = core.comCall(self.swapchain, core.slot.DXGISwapChain_ResizeBuffers, *const fn (*anyopaque, u32, u32, u32, u32, u32) callconv(.winapi) HRESULT);
-    if (resize_buffers(self.swapchain, 0, @intCast(width), @intCast(height), 0, 0) < 0) {
-        render_diagnostics.log("gpu-backend=d3d11 resize failed at {}x{}", .{ width, height });
+    const hr = resize_buffers(self.swapchain, 0, @intCast(width), @intCast(height), 0, 0);
+    if (hr < 0) {
+        logDxgiFailure(self, "resize", hr);
         return false;
     }
     createRenderTarget(self, width, height) catch |err| {
@@ -441,7 +504,43 @@ pub fn present() PresentError!void {
     if (state == null) return;
     const self = &state.?;
     const present_fn = core.comCall(self.swapchain, core.slot.DXGISwapChain_Present, *const fn (*anyopaque, u32, u32) callconv(.winapi) HRESULT);
-    if (present_fn(self.swapchain, 1, 0) < 0) return error.PresentFailed;
+    const hr = present_fn(self.swapchain, 1, 0);
+    if (hr < 0) {
+        logDxgiFailure(self, "present", hr);
+        return presentErrorFromHRESULT(hr);
+    }
+}
+
+fn presentErrorFromHRESULT(hr: HRESULT) PresentError {
+    return switch (core.dxgiFailureKind(hr)) {
+        .device_removed => error.DeviceRemoved,
+        .device_hung => error.DeviceHung,
+        .device_reset => error.DeviceReset,
+        .driver_internal_error => error.DriverInternalError,
+        else => error.PresentFailed,
+    };
+}
+
+fn deviceRemovedReason(self: *const State) HRESULT {
+    const get_reason = core.comCall(self.device, core.slot.D3D11Device_GetDeviceRemovedReason, *const fn (*anyopaque) callconv(.winapi) HRESULT);
+    return get_reason(self.device);
+}
+
+fn logDxgiFailure(self: *const State, operation: []const u8, hr: HRESULT) void {
+    const kind = core.dxgiFailureKind(hr);
+    if (kind.requiresDeviceRecreate()) {
+        const reason = deviceRemovedReason(self);
+        render_diagnostics.log(
+            "gpu-backend=d3d11 {s} failed hr=0x{x:0>8} kind={s} device_removed_reason=0x{x:0>8} device_removed_kind={s} requires_device_recreate=true fallback_reason=device_lost",
+            .{ operation, core.hresultBits(hr), kind.name(), core.hresultBits(reason), core.dxgiFailureName(reason) },
+        );
+        return;
+    }
+
+    render_diagnostics.log(
+        "gpu-backend=d3d11 {s} failed hr=0x{x:0>8} kind={s} requires_device_recreate=false fallback_reason={s}",
+        .{ operation, core.hresultBits(hr), kind.name(), if (kind == .invalid_call) "invalid_call" else "present_failed" },
+    );
 }
 
 pub fn deinit() void {
@@ -454,4 +553,12 @@ test "D3D11 context module exposes the backend lifecycle surface" {
     try std.testing.expectEqual(@as(usize, 3), init_info.params.len);
     try std.testing.expect(@typeInfo(@TypeOf(resize)).@"fn".return_type.? == bool);
     try std.testing.expect(@typeInfo(@TypeOf(present)).@"fn".return_type.? == PresentError!void);
+}
+
+test "D3D11 present errors distinguish device-loss HRESULTs" {
+    try std.testing.expectEqual(error.DeviceRemoved, presentErrorFromHRESULT(core.DXGI_ERROR_DEVICE_REMOVED));
+    try std.testing.expectEqual(error.DeviceHung, presentErrorFromHRESULT(core.DXGI_ERROR_DEVICE_HUNG));
+    try std.testing.expectEqual(error.DeviceReset, presentErrorFromHRESULT(core.DXGI_ERROR_DEVICE_RESET));
+    try std.testing.expectEqual(error.DriverInternalError, presentErrorFromHRESULT(core.DXGI_ERROR_DRIVER_INTERNAL_ERROR));
+    try std.testing.expectEqual(error.PresentFailed, presentErrorFromHRESULT(core.DXGI_ERROR_INVALID_CALL));
 }

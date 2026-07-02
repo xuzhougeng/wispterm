@@ -47,9 +47,10 @@ chrome, sidebar, file explorer, background image, Markdown/image previews,
 Copilot assistant sidebar, command palette, startup shortcuts overlay, Settings
 page, Skill Center, D3D11 present diagnostics, UI probe, and offscreen
 round-trip marker. This does not make D3D11 product-default-ready yet: Phase V
-hardening is not started, Phase VI default migration remains blocked until
-fallback coverage is proven, and Windows `auto` still must not default to D3D11
-on this branch.
+hardening has started with backend-owned present/device-loss diagnostics, but
+device recreation, automatic fallback policy, environment validation, and Phase
+VI default migration remain blocked until fallback coverage is proven. Windows
+`auto` still must not default to D3D11 on this branch.
 
 The Phase IV normal-session evidence gate is the checked-in Windows GUI smoke:
 
