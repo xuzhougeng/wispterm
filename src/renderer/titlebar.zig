@@ -1077,19 +1077,26 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
     ui_pipeline.fillQuad(0, 0, sidebar_w, side_h, sidebar_bg);
     ui_pipeline.fillQuad(sidebar_w - 1, 0, if (resize_hovered) 2 else 1, side_h, edge_color);
 
-    const header_top_px = titlebar_h;
     const header_h = sidebarHeaderHeight();
     const row_h_full = sidebarRowHeight();
-    const header_y = window_height - header_top_px - header_h;
     const plus_btn_w: f32 = 42;
-    const plus_x = sidebar_w - plus_btn_w - 6;
-    const plus_hovered = mouseInRect(plus_x, header_top_px, plus_btn_w, header_h);
+    const header = titlebar_layout.sidebarHeaderLayout(
+        window_height,
+        titlebar_h,
+        sidebar_w,
+        header_h,
+        14,
+        plus_btn_w,
+        6,
+        font.g_titlebar_cell_height,
+    );
+    const plus_hovered = mouseInRect(header.plus_x, header.top_px, header.plus_w, header.plus_h);
     if (plus_hovered) {
-        ui_pipeline.fillQuad(plus_x, header_y + 4, plus_btn_w, header_h - 8, hover_bg);
+        ui_pipeline.fillQuad(header.plus_x, header.plus_y + 4, header.plus_w, header.plus_h - 8, hover_bg);
     }
-    _ = renderTextLimited("Tabs", 14, header_y + (header_h - font.g_titlebar_cell_height) / 2, header_text, sidebar_w - plus_btn_w - 26);
-    renderPlusIcon(plus_x, header_y, plus_btn_w, header_h, text_active);
-    ui_pipeline.fillQuad(0, header_y, sidebar_w, 1, border_color);
+    _ = renderTextLimited("Tabs", header.title_x, header.title_y, header_text, header.title_max_w);
+    renderPlusIcon(header.plus_x, header.plus_y, header.plus_w, header.plus_h, text_active);
+    ui_pipeline.fillQuad(0, header.rule_y, sidebar_w, 1, border_color);
 
     const now_ms = std.time.milliTimestamp();
     const dt: f32 = if (tab.g_last_frame_time_ms > 0)
@@ -1098,7 +1105,6 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
         0.016;
     tab.g_last_frame_time_ms = now_ms;
 
-    const list_top_px = titlebar_h + header_h + 6;
     for (0..tab.MAX_TABS) |tab_idx| {
         tab.g_tab_text_x_start[tab_idx] = 0;
         tab.g_tab_text_x_end[tab_idx] = 0;
@@ -1108,33 +1114,24 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
 
     const number_x: f32 = 14;
     const number_w = sidebarTabNumberWidth();
-    const title_x = number_x + number_w + 8;
 
     for (0..tab.g_tab_count) |tab_idx| {
-        const row_top_px = list_top_px + @as(f32, @floatFromInt(tab_idx)) * row_h_full;
-        if (row_top_px >= window_height) break;
-        const row_h = @min(row_h_full, window_height - row_top_px);
-        const row_y = window_height - row_top_px - row_h;
+        const base_row = titlebar_layout.sidebarTabRowLayout(
+            window_height,
+            titlebar_h,
+            header_h,
+            row_h_full,
+            sidebar_w,
+            tab_idx,
+            number_x,
+            number_w,
+            tab.TAB_CLOSE_BTN_W,
+            font.g_titlebar_cell_height,
+            false,
+            0,
+            false,
+        ) orelse break;
         const is_active = tab_idx == active_tab_state.g_active_tab;
-
-        const row_hovered = mouseInRect(0, row_top_px, sidebar_w, row_h);
-
-        if (is_active) {
-            ui_pipeline.fillQuad(0, row_y, sidebar_w, row_h, active_bg);
-            ui_pipeline.fillQuad(0, row_y + 6, 3, row_h - 12, AppWindow.g_theme.cursor_color);
-        } else if (row_hovered) {
-            ui_pipeline.fillQuad(0, row_y, sidebar_w, row_h, hover_bg);
-        }
-
-        if (tab.g_tab_count > 1) {
-            if (row_hovered) {
-                tab.g_tab_close_opacity[tab_idx] = @min(1.0, tab.g_tab_close_opacity[tab_idx] + tab.TAB_CLOSE_FADE_SPEED * dt);
-            } else {
-                tab.g_tab_close_opacity[tab_idx] = @max(0.0, tab.g_tab_close_opacity[tab_idx] - tab.TAB_CLOSE_FADE_SPEED * dt);
-            }
-        } else {
-            tab.g_tab_close_opacity[tab_idx] = 0;
-        }
 
         if (tab.g_tabs[tab_idx]) |tb| {
             if (tb.focusedSurface()) |surface| {
@@ -1149,21 +1146,6 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
             }
         }
 
-        var prefix_buf: [8]u8 = undefined;
-        const prefix = std.fmt.bufPrint(&prefix_buf, "{d}", .{tab_idx + 1}) catch "";
-        const text_y = row_y + (row_h - font.g_titlebar_cell_height) / 2;
-        _ = renderTextLimited(prefix, number_x, text_y, if (is_active) text_active else muted, number_w);
-
-        const title = if (tab.g_tab_rename_active and tab_idx == tab.g_tab_rename_idx)
-            tab.g_tab_rename_buf[0..tab.g_tab_rename_len]
-        else if (tab.g_tabs[tab_idx]) |t|
-            t.getTitle()
-        else
-            "New Tab";
-
-        const close_opacity = tab.g_tab_close_opacity[tab_idx];
-        const close_btn_x = sidebar_w - tab.TAB_CLOSE_BTN_W - 4;
-        var right_content_x = close_btn_x - titlebar_layout.SIDEBAR_STATUS_CLOSE_GAP;
         // Use aggregate of all panes' visible states so the sidebar badge
         // reflects the most attention-worthy agent across all split panes,
         // not just the focused one.
@@ -1201,40 +1183,79 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
             break :blk agent_detector.Detection{};
         } else agent_detector.Detection{};
         const show_agent_badge = detection.visible();
-        var agent_badge_x: f32 = 0;
         var agent_badge_w: f32 = 0;
         if (show_agent_badge) {
             const badge_text_w = titlebarTextWidth(detection.badge());
             agent_badge_w = @max(@as(f32, 18), badge_text_w + 10);
-            const badge_layout = titlebar_layout.sidebarStatusBadgeLayout(close_btn_x, agent_badge_w);
-            agent_badge_x = badge_layout.x;
-            right_content_x = badge_layout.next_right_content_x;
         }
 
         const bell_opacity: f32 = if (tab.g_tabs[tab_idx]) |t| (if (t.focusedSurface()) |s| s.bell_opacity else 0) else 0;
         const show_bell = bell_opacity > 0.01;
-        const bell_x = right_content_x - 20;
-        if (show_bell) right_content_x = bell_x - 4;
+        const row = titlebar_layout.sidebarTabRowLayout(
+            window_height,
+            titlebar_h,
+            header_h,
+            row_h_full,
+            sidebar_w,
+            tab_idx,
+            number_x,
+            number_w,
+            tab.TAB_CLOSE_BTN_W,
+            font.g_titlebar_cell_height,
+            show_agent_badge,
+            agent_badge_w,
+            show_bell,
+        ) orelse base_row;
 
-        const title_max_w = right_content_x - title_x - 8;
+        const row_hovered = mouseInRect(0, row.row_top_px, sidebar_w, row.row_h);
+
+        if (is_active) {
+            ui_pipeline.fillQuad(0, row.row_y, sidebar_w, row.row_h, active_bg);
+            ui_pipeline.fillQuad(row.active_marker_x, row.active_marker_y, row.active_marker_w, row.active_marker_h, AppWindow.g_theme.cursor_color);
+        } else if (row_hovered) {
+            ui_pipeline.fillQuad(0, row.row_y, sidebar_w, row.row_h, hover_bg);
+        }
+
+        if (tab.g_tab_count > 1) {
+            if (row_hovered) {
+                tab.g_tab_close_opacity[tab_idx] = @min(1.0, tab.g_tab_close_opacity[tab_idx] + tab.TAB_CLOSE_FADE_SPEED * dt);
+            } else {
+                tab.g_tab_close_opacity[tab_idx] = @max(0.0, tab.g_tab_close_opacity[tab_idx] - tab.TAB_CLOSE_FADE_SPEED * dt);
+            }
+        } else {
+            tab.g_tab_close_opacity[tab_idx] = 0;
+        }
+
+        var prefix_buf: [8]u8 = undefined;
+        const prefix = std.fmt.bufPrint(&prefix_buf, "{d}", .{tab_idx + 1}) catch "";
+        _ = renderTextLimited(prefix, row.number_x, row.text_y, if (is_active) text_active else muted, row.number_w);
+
+        const title = if (tab.g_tab_rename_active and tab_idx == tab.g_tab_rename_idx)
+            tab.g_tab_rename_buf[0..tab.g_tab_rename_len]
+        else if (tab.g_tabs[tab_idx]) |t|
+            t.getTitle()
+        else
+            "New Tab";
+
+        const close_opacity = tab.g_tab_close_opacity[tab_idx];
         const title_color = if (is_active) text_active else text_inactive;
-        const text_end = renderTextLimited(title, title_x, text_y, title_color, title_max_w);
+        const text_end = renderTextLimited(title, row.title_x, row.text_y, title_color, row.title_max_w);
 
         if (tab.g_tab_rename_active and tab_idx == tab.g_tab_rename_idx and AppWindow.g_cursor_blink_visible) {
-            ui_pipeline.fillQuad(@min(text_end + 1, title_x + title_max_w), text_y, 1, font.g_titlebar_cell_height, text_active);
+            ui_pipeline.fillQuad(@min(text_end + 1, row.title_x + row.title_max_w), row.text_y, 1, font.g_titlebar_cell_height, text_active);
         }
 
         if (show_bell) {
-            renderBellEmoji(bell_x, text_y, bell_opacity);
+            renderBellEmoji(row.bell_x, row.text_y, bell_opacity);
         }
         if (show_agent_badge) {
-            _ = renderAgentBadge(detection, agent_badge_x, text_y, is_active);
+            _ = renderAgentBadge(detection, row.badge_x, row.text_y, is_active);
         }
 
         if (close_opacity > 0.01 and tab.g_tab_count > 1) {
             const close_hovered = row_hovered and blk: {
                 const mx = mouseX() orelse break :blk false;
-                break :blk mx >= close_btn_x and mx < close_btn_x + tab.TAB_CLOSE_BTN_W;
+                break :blk mx >= row.close_x and mx < row.close_x + tab.TAB_CLOSE_BTN_W;
             };
             const raw_color = if (close_hovered) text_active else muted;
             const close_color = [3]f32{
@@ -1243,15 +1264,15 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
                 raw_color[2] * close_opacity + sidebar_bg[2] * (1 - close_opacity),
             };
             if (close_hovered) {
-                ui_pipeline.fillQuad(close_btn_x + 6, row_y + 10, 20, 20, blend(bg, fg, 0.14));
+                ui_pipeline.fillQuad(row.close_hover_x, row.close_hover_y, row.close_hover_w, row.close_hover_h, blend(bg, fg, 0.14));
             }
-            renderCloseIcon(close_btn_x, row_y, tab.TAB_CLOSE_BTN_W, row_h, close_color);
+            renderCloseIcon(row.close_x, row.row_y, tab.TAB_CLOSE_BTN_W, row.row_h, close_color);
         }
 
-        tab.g_tab_text_x_start[tab_idx] = title_x;
+        tab.g_tab_text_x_start[tab_idx] = row.title_x;
         tab.g_tab_text_x_end[tab_idx] = text_end;
-        tab.g_tab_text_y_start[tab_idx] = row_top_px;
-        tab.g_tab_text_y_end[tab_idx] = row_top_px + row_h;
+        tab.g_tab_text_y_start[tab_idx] = row.row_top_px;
+        tab.g_tab_text_y_end[tab_idx] = row.row_top_px + row.row_h;
     }
 }
 
