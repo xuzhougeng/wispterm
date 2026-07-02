@@ -184,6 +184,7 @@ test {
     _ = @import("source_guards/agent_tools_guard.zig");
     _ = @import("source_guards/assistant_agent_boundary_guard.zig");
     _ = @import("source_guards/layered_dependency_guard.zig");
+    _ = @import("source_guards/d3d11_phase4_guard.zig");
     _ = @import("source_guards/overlay_boundary_guard.zig");
     _ = @import("source_guards/input_feature_boundary_guard.zig");
     _ = @import("renderer/overlays/transfer_toast_model.zig");
