@@ -122,6 +122,59 @@ pub const SidebarTabRowLayout = struct {
     close_hover_h: f32,
 };
 
+pub const SidebarTabTone = enum {
+    active,
+    inactive,
+    muted,
+};
+
+pub const SidebarTabVisual = struct {
+    active: bool,
+    hovered: bool,
+    draw_active_background: bool,
+    draw_hover_background: bool,
+    draw_active_marker: bool,
+    number_tone: SidebarTabTone,
+    title_tone: SidebarTabTone,
+    close_opacity: f32,
+    draw_close: bool,
+    close_hovered: bool,
+    draw_close_hover_background: bool,
+};
+
+pub const SidebarTabVisualInput = struct {
+    row: SidebarTabRowLayout,
+    active: bool,
+    hovered: bool,
+    tab_count: usize,
+    close_opacity: f32,
+    mouse_x: ?f32 = null,
+    close_btn_w: f32,
+};
+
+pub fn sidebarTabVisual(input: SidebarTabVisualInput) SidebarTabVisual {
+    const close_opacity = @max(0.0, @min(1.0, input.close_opacity));
+    const can_close = input.tab_count > 1 and close_opacity > 0.01;
+    const close_hovered = can_close and input.hovered and blk: {
+        const mx = input.mouse_x orelse break :blk false;
+        break :blk mx >= input.row.close_x and mx < input.row.close_x + input.close_btn_w;
+    };
+
+    return .{
+        .active = input.active,
+        .hovered = input.hovered,
+        .draw_active_background = input.active,
+        .draw_hover_background = !input.active and input.hovered,
+        .draw_active_marker = input.active,
+        .number_tone = if (input.active) .active else .muted,
+        .title_tone = if (input.active) .active else .inactive,
+        .close_opacity = close_opacity,
+        .draw_close = can_close,
+        .close_hovered = close_hovered,
+        .draw_close_hover_background = close_hovered,
+    };
+}
+
 pub fn sidebarTabRowLayout(
     window_height: f32,
     titlebar_h: f32,
@@ -427,6 +480,78 @@ test "sidebarTabRowLayout clamps title width in narrow sidebars" {
     try std.testing.expectEqual(@as(f32, 14), l.badge_x);
     try std.testing.expectEqual(@as(f32, -12), l.bell_x);
     try std.testing.expectEqual(@as(f32, 0), l.title_max_w);
+}
+
+test "sidebarTabVisual maps active hover and text tones" {
+    const row = sidebarTabRowLayout(820, 57, 46, 45, 220, 0, 14, 28, 36, 23, false, 0, false).?;
+
+    const visual = sidebarTabVisual(.{
+        .row = row,
+        .active = true,
+        .hovered = true,
+        .tab_count = 3,
+        .close_opacity = 0.5,
+        .mouse_x = row.close_x + 4,
+        .close_btn_w = 36,
+    });
+
+    try std.testing.expect(visual.draw_active_background);
+    try std.testing.expect(!visual.draw_hover_background);
+    try std.testing.expect(visual.draw_active_marker);
+    try std.testing.expectEqual(SidebarTabTone.active, visual.number_tone);
+    try std.testing.expectEqual(SidebarTabTone.active, visual.title_tone);
+    try std.testing.expect(visual.draw_close);
+    try std.testing.expect(visual.close_hovered);
+}
+
+test "sidebarTabVisual suppresses close affordance for single tabs" {
+    const row = sidebarTabRowLayout(820, 57, 46, 45, 220, 0, 14, 28, 36, 23, false, 0, false).?;
+
+    const visual = sidebarTabVisual(.{
+        .row = row,
+        .active = false,
+        .hovered = true,
+        .tab_count = 1,
+        .close_opacity = 1.0,
+        .mouse_x = row.close_x + 4,
+        .close_btn_w = 36,
+    });
+
+    try std.testing.expect(!visual.draw_active_background);
+    try std.testing.expect(visual.draw_hover_background);
+    try std.testing.expectEqual(SidebarTabTone.muted, visual.number_tone);
+    try std.testing.expectEqual(SidebarTabTone.inactive, visual.title_tone);
+    try std.testing.expect(!visual.draw_close);
+    try std.testing.expect(!visual.close_hovered);
+}
+
+test "sidebarTabVisual clamps opacity and requires row hover for close hover" {
+    const row = sidebarTabRowLayout(820, 57, 46, 45, 220, 0, 14, 28, 36, 23, false, 0, false).?;
+
+    const outside = sidebarTabVisual(.{
+        .row = row,
+        .active = false,
+        .hovered = false,
+        .tab_count = 3,
+        .close_opacity = 2.0,
+        .mouse_x = row.close_x + 4,
+        .close_btn_w = 36,
+    });
+    try std.testing.expectEqual(@as(f32, 1.0), outside.close_opacity);
+    try std.testing.expect(outside.draw_close);
+    try std.testing.expect(!outside.close_hovered);
+
+    const faded = sidebarTabVisual(.{
+        .row = row,
+        .active = false,
+        .hovered = true,
+        .tab_count = 3,
+        .close_opacity = 0.01,
+        .mouse_x = row.close_x + 4,
+        .close_btn_w = 36,
+    });
+    try std.testing.expect(!faded.draw_close);
+    try std.testing.expect(!faded.close_hovered);
 }
 
 test "fallbackCodepoint maps printable ASCII, else '?'" {
