@@ -7,6 +7,7 @@ const Allocator = std.mem.Allocator;
 const markdown_preview = @import("markdown.zig");
 const preview_source = @import("../input/preview_source.zig");
 const preview_diagnostics = @import("diagnostics.zig");
+const image_layout = @import("image_layout.zig");
 const pdf_preview = @import("pdf.zig");
 const pdf_render = @import("../platform/pdf_render.zig");
 const gpu = @import("../renderer/gpu/gpu.zig");
@@ -220,10 +221,13 @@ pub fn panImageBy(self: *PreviewPane, dx: f32, dy: f32) bool {
 }
 
 pub fn clampImagePan(self: *PreviewPane, view_w: f32, view_h: f32, draw_w: f32, draw_h: f32) void {
-    const max_x = if (draw_w > view_w) (draw_w - view_w) / 2 else 0;
-    const max_y = if (draw_h > view_h) (draw_h - view_h) / 2 else 0;
-    self.image_pan_x = @max(-max_x, @min(max_x, self.image_pan_x));
-    self.image_pan_y = @max(-max_y, @min(max_y, self.image_pan_y));
+    const pan = image_layout.clampPan(
+        .{ .width = view_w, .height = view_h },
+        .{ .width = draw_w, .height = draw_h },
+        .{ .x = self.image_pan_x, .y = self.image_pan_y },
+    );
+    self.image_pan_x = pan.x;
+    self.image_pan_y = pan.y;
 }
 
 pub fn beginAsyncLoad(self: *PreviewPane, kind: markdown_preview.Kind, t: []const u8, p: []const u8, source_kind: PreviewSourceKind) bool {
