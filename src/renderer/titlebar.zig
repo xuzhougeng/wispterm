@@ -1232,13 +1232,6 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
 
         const row_hovered = mouseInRect(0, row.row_top_px, sidebar_w, row.row_h);
 
-        if (is_active) {
-            ui_pipeline.fillQuad(0, row.row_y, sidebar_w, row.row_h, active_bg);
-            ui_pipeline.fillQuad(row.active_marker_x, row.active_marker_y, row.active_marker_w, row.active_marker_h, AppWindow.g_theme.cursor_color);
-        } else if (row_hovered) {
-            ui_pipeline.fillQuad(0, row.row_y, sidebar_w, row.row_h, hover_bg);
-        }
-
         if (tab.g_tab_count > 1) {
             if (row_hovered) {
                 tab.g_tab_close_opacity[tab_idx] = @min(1.0, tab.g_tab_close_opacity[tab_idx] + tab.TAB_CLOSE_FADE_SPEED * dt);
@@ -1249,9 +1242,31 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
             tab.g_tab_close_opacity[tab_idx] = 0;
         }
 
+        const visual = titlebar_layout.sidebarTabVisual(.{
+            .row = row,
+            .active = is_active,
+            .hovered = row_hovered,
+            .tab_count = tab.g_tab_count,
+            .close_opacity = tab.g_tab_close_opacity[tab_idx],
+            .mouse_x = mouseX(),
+            .close_btn_w = tab.TAB_CLOSE_BTN_W,
+        });
+
+        if (visual.draw_active_background) {
+            ui_pipeline.fillQuad(0, row.row_y, sidebar_w, row.row_h, active_bg);
+            ui_pipeline.fillQuad(row.active_marker_x, row.active_marker_y, row.active_marker_w, row.active_marker_h, AppWindow.g_theme.cursor_color);
+        } else if (visual.draw_hover_background) {
+            ui_pipeline.fillQuad(0, row.row_y, sidebar_w, row.row_h, hover_bg);
+        }
+
         var prefix_buf: [8]u8 = undefined;
         const prefix = std.fmt.bufPrint(&prefix_buf, "{d}", .{tab_idx + 1}) catch "";
-        _ = renderTextLimited(prefix, row.number_x, row.text_y, if (is_active) text_active else muted, row.number_w);
+        const number_color = switch (visual.number_tone) {
+            .active => text_active,
+            .inactive => text_inactive,
+            .muted => muted,
+        };
+        _ = renderTextLimited(prefix, row.number_x, row.text_y, number_color, row.number_w);
 
         const title = if (tab.g_tab_rename_active and tab_idx == tab.g_tab_rename_idx)
             tab.g_tab_rename_buf[0..tab.g_tab_rename_len]
@@ -1260,8 +1275,12 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
         else
             "New Tab";
 
-        const close_opacity = tab.g_tab_close_opacity[tab_idx];
-        const title_color = if (is_active) text_active else text_inactive;
+        const close_opacity = visual.close_opacity;
+        const title_color = switch (visual.title_tone) {
+            .active => text_active,
+            .inactive => text_inactive,
+            .muted => muted,
+        };
         const text_end = renderTextLimited(title, row.title_x, row.text_y, title_color, row.title_max_w);
 
         if (tab.g_tab_rename_active and tab_idx == tab.g_tab_rename_idx and AppWindow.g_cursor_blink_visible) {
@@ -1275,18 +1294,14 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
             _ = renderAgentBadge(detection, row.badge_x, row.text_y, is_active);
         }
 
-        if (close_opacity > 0.01 and tab.g_tab_count > 1) {
-            const close_hovered = row_hovered and blk: {
-                const mx = mouseX() orelse break :blk false;
-                break :blk mx >= row.close_x and mx < row.close_x + tab.TAB_CLOSE_BTN_W;
-            };
-            const raw_color = if (close_hovered) text_active else muted;
+        if (visual.draw_close) {
+            const raw_color = if (visual.close_hovered) text_active else muted;
             const close_color = [3]f32{
                 raw_color[0] * close_opacity + sidebar_bg[0] * (1 - close_opacity),
                 raw_color[1] * close_opacity + sidebar_bg[1] * (1 - close_opacity),
                 raw_color[2] * close_opacity + sidebar_bg[2] * (1 - close_opacity),
             };
-            if (close_hovered) {
+            if (visual.draw_close_hover_background) {
                 ui_pipeline.fillQuad(row.close_hover_x, row.close_hover_y, row.close_hover_w, row.close_hover_h, blend(bg, fg, 0.14));
             }
             renderCloseIcon(row.close_x, row.row_y, tab.TAB_CLOSE_BTN_W, row.row_h, close_color);
