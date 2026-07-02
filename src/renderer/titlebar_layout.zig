@@ -200,12 +200,99 @@ pub const TopBarLayout = struct {
     toggle_x: f32,
     caption_button_w: f32,
     caption_start_x: f32,
+    caption_buttons: CaptionButtonRects,
     config_x: f32,
     help_x: f32,
     copilot_x: f32,
     title_text_x: f32,
     title_text_max_w: f32,
 };
+
+pub const Rect = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+};
+
+pub const CaptionButtonKind = enum {
+    minimize,
+    maximize,
+    close,
+};
+
+pub const CaptionButtonIcon = enum {
+    minimize,
+    maximize,
+    restore,
+    close,
+};
+
+pub const CaptionButtonRects = struct {
+    minimize: Rect,
+    maximize: Rect,
+    close: Rect,
+
+    pub fn rectForKind(self: CaptionButtonRects, kind: CaptionButtonKind) Rect {
+        return switch (kind) {
+            .minimize => self.minimize,
+            .maximize => self.maximize,
+            .close => self.close,
+        };
+    }
+};
+
+pub const CaptionButtonState = struct {
+    hovered: bool = false,
+    focused: bool = false,
+    maximized: bool = false,
+    fullscreen: bool = false,
+};
+
+pub const CaptionButtonVisual = struct {
+    kind: CaptionButtonKind,
+    rect: Rect,
+    hover_rect: Rect,
+    hovered: bool,
+    icon: CaptionButtonIcon,
+};
+
+pub fn captionButtonRects(window_width: f32, top_y: f32, button_h: f32, button_w: f32) CaptionButtonRects {
+    const start_x = window_width - button_w * 3.0;
+    return .{
+        .minimize = .{ .x = start_x, .y = top_y, .w = button_w, .h = button_h },
+        .maximize = .{ .x = start_x + button_w, .y = top_y, .w = button_w, .h = button_h },
+        .close = .{ .x = start_x + button_w * 2.0, .y = top_y, .w = button_w, .h = button_h },
+    };
+}
+
+pub fn captionButtonIcon(kind: CaptionButtonKind, maximized: bool, fullscreen: bool) CaptionButtonIcon {
+    return switch (kind) {
+        .minimize => .minimize,
+        .maximize => if (maximized or fullscreen) .restore else .maximize,
+        .close => .close,
+    };
+}
+
+pub fn captionButtonHoverRect(kind: CaptionButtonKind, rect: Rect, focused: bool, maximized: bool) Rect {
+    if (kind != .close or !focused or maximized) return rect;
+    return .{
+        .x = rect.x,
+        .y = rect.y + 1.0,
+        .w = @max(0.0, rect.w - 1.0),
+        .h = @max(0.0, rect.h - 1.0),
+    };
+}
+
+pub fn captionButtonVisual(kind: CaptionButtonKind, rect: Rect, state: CaptionButtonState) CaptionButtonVisual {
+    return .{
+        .kind = kind,
+        .rect = rect,
+        .hover_rect = captionButtonHoverRect(kind, rect, state.focused, state.maximized),
+        .hovered = state.hovered,
+        .icon = captionButtonIcon(kind, state.maximized, state.fullscreen),
+    };
+}
 
 /// Window-top chrome geometry for the app-drawn titlebar.
 ///
@@ -225,6 +312,7 @@ pub fn topBarLayout(
 ) TopBarLayout {
     const caption_area_w = caption_button_w * 3.0;
     const caption_start_x = window_width - caption_area_w;
+    const caption_buttons = captionButtonRects(window_width, window_height - titlebar_h, titlebar_h, caption_button_w);
     const config_x = caption_start_x - config_w;
     const help_x = config_x - help_w;
     const copilot_x = help_x - copilot_w;
@@ -234,6 +322,7 @@ pub fn topBarLayout(
         .toggle_x = left_reserved,
         .caption_button_w = caption_button_w,
         .caption_start_x = caption_start_x,
+        .caption_buttons = caption_buttons,
         .config_x = config_x,
         .help_x = help_x,
         .copilot_x = copilot_x,
@@ -357,6 +446,9 @@ test "topBarLayout computes titlebar chrome rectangles" {
     try std.testing.expectEqual(@as(f32, 0), l.toggle_x);
     try std.testing.expectEqual(@as(f32, 46), l.caption_button_w);
     try std.testing.expectEqual(@as(f32, 1062), l.caption_start_x);
+    try std.testing.expectEqual(Rect{ .x = 1062, .y = 766, .w = 46, .h = 34 }, l.caption_buttons.minimize);
+    try std.testing.expectEqual(Rect{ .x = 1108, .y = 766, .w = 46, .h = 34 }, l.caption_buttons.maximize);
+    try std.testing.expectEqual(Rect{ .x = 1154, .y = 766, .w = 46, .h = 34 }, l.caption_buttons.close);
     try std.testing.expectEqual(@as(f32, 1016), l.config_x);
     try std.testing.expectEqual(@as(f32, 970), l.help_x);
     try std.testing.expectEqual(@as(f32, 924), l.copilot_x);
@@ -370,9 +462,46 @@ test "topBarLayout collapses optional titlebar controls cleanly" {
     try std.testing.expectEqual(@as(f32, 200), l.top_y);
     try std.testing.expectEqual(@as(f32, 160), l.toggle_x);
     try std.testing.expectEqual(@as(f32, 222), l.caption_start_x);
+    try std.testing.expectEqual(Rect{ .x = 222, .y = 200, .w = 46, .h = 40 }, l.caption_buttons.minimize);
+    try std.testing.expectEqual(Rect{ .x = 314, .y = 200, .w = 46, .h = 40 }, l.caption_buttons.close);
     try std.testing.expectEqual(@as(f32, 222), l.config_x);
     try std.testing.expectEqual(@as(f32, 222), l.help_x);
     try std.testing.expectEqual(@as(f32, 222), l.copilot_x);
     try std.testing.expectEqual(@as(f32, 216), l.title_text_x);
     try std.testing.expectEqual(@as(f32, 0), l.title_text_max_w);
+}
+
+test "captionButtonRects keeps minimize maximize close ordered at window edge" {
+    const rects = captionButtonRects(1280, 774, 46, 46);
+
+    try std.testing.expectEqual(Rect{ .x = 1142, .y = 774, .w = 46, .h = 46 }, rects.minimize);
+    try std.testing.expectEqual(Rect{ .x = 1188, .y = 774, .w = 46, .h = 46 }, rects.maximize);
+    try std.testing.expectEqual(Rect{ .x = 1234, .y = 774, .w = 46, .h = 46 }, rects.close);
+    try std.testing.expectEqual(rects.maximize, rects.rectForKind(.maximize));
+}
+
+test "captionButtonRects collapses on platforms with native caption controls" {
+    const rects = captionButtonRects(640, 600, 40, 0);
+
+    try std.testing.expectEqual(Rect{ .x = 640, .y = 600, .w = 0, .h = 40 }, rects.minimize);
+    try std.testing.expectEqual(Rect{ .x = 640, .y = 600, .w = 0, .h = 40 }, rects.maximize);
+    try std.testing.expectEqual(Rect{ .x = 640, .y = 600, .w = 0, .h = 40 }, rects.close);
+}
+
+test "captionButtonHoverRect preserves the focused window border for close hover" {
+    const rect = Rect{ .x = 1234, .y = 774, .w = 46, .h = 46 };
+
+    try std.testing.expectEqual(Rect{ .x = 1234, .y = 775, .w = 45, .h = 45 }, captionButtonHoverRect(.close, rect, true, false));
+    try std.testing.expectEqual(rect, captionButtonHoverRect(.close, rect, false, false));
+    try std.testing.expectEqual(rect, captionButtonHoverRect(.close, rect, true, true));
+    try std.testing.expectEqual(rect, captionButtonHoverRect(.maximize, rect, true, false));
+}
+
+test "captionButtonVisual chooses restore glyph for maximized or fullscreen windows" {
+    const rect = Rect{ .x = 1188, .y = 774, .w = 46, .h = 46 };
+
+    try std.testing.expectEqual(CaptionButtonIcon.maximize, captionButtonVisual(.maximize, rect, .{}).icon);
+    try std.testing.expectEqual(CaptionButtonIcon.restore, captionButtonVisual(.maximize, rect, .{ .maximized = true }).icon);
+    try std.testing.expectEqual(CaptionButtonIcon.restore, captionButtonVisual(.maximize, rect, .{ .fullscreen = true }).icon);
+    try std.testing.expectEqual(CaptionButtonIcon.close, captionButtonVisual(.close, rect, .{ .hovered = true }).icon);
 }
