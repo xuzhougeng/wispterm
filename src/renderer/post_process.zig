@@ -17,6 +17,8 @@ const ui_pipeline = @import("ui_pipeline.zig");
 const cell_renderer = AppWindow.cell_renderer;
 const background_image = AppWindow.background_image;
 const Renderer = @import("Renderer.zig");
+const policy = @import("post_process_policy.zig");
+const render_diagnostics = @import("../render_diagnostics.zig");
 
 // Post-processing state (gpu-primitive-backed)
 threadlocal var g_post_fb: gpu.Framebuffer = .{};
@@ -201,6 +203,21 @@ pub fn renderFrameWithPostFromCells(rend: *const Renderer, width: c_int, height:
 /// Initialize post-processing from a shader path. Returns true if enabled.
 pub fn init(allocator: std.mem.Allocator, shader_path: ?[]const u8) void {
     const sp = shader_path orelse return;
+    switch (policy.decide(gpu.active)) {
+        .load => {},
+        .disabled => |reason| {
+            const msg = reason.message();
+            std.debug.print(
+                "Custom post-processing shader disabled for gpu-backend={s}: {s}. Ignoring shader path: {s}\n",
+                .{ @tagName(gpu.active), msg, sp },
+            );
+            render_diagnostics.log(
+                "post-process custom shader disabled gpu-backend={s} reason=\"{s}\" path=\"{s}\"",
+                .{ @tagName(gpu.active), msg, sp },
+            );
+            return;
+        },
+    }
     if (initPostShader(allocator, sp)) {
         g_post_enabled = true;
         g_start_time = std.time.milliTimestamp();

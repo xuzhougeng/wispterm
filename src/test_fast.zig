@@ -193,6 +193,7 @@ test {
     _ = @import("renderer/background_image_layout.zig");
     _ = @import("renderer/qr_panel_layout.zig");
     _ = @import("renderer/file_explorer_layout.zig");
+    _ = @import("renderer/post_process_policy.zig");
     _ = @import("renderer/gpu/gl_backend_guard.zig");
     _ = @import("renderer/gpu/types.zig");
     _ = @import("close_confirm.zig");

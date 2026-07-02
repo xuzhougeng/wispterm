@@ -61,8 +61,8 @@ console release unless the release explicitly includes `remote/`.
 
 ## Cross-Platform
 
-- Custom post-processing shaders are OpenGL/GLSL-oriented. Metal needs a
-  GLSL-to-MSL translation layer before macOS can support the same custom shader
-  path.
+- Custom post-processing shaders are OpenGL/GLSL-oriented. D3D11 and Metal
+  explicitly ignore custom shader paths and render without post-processing until
+  they have native shader support or a translation layer.
 - Some renderer coordination still uses documented OpenGL-shaped compatibility
   plumbing. It is guarded and shrinking, but not fully backend-neutral yet.
