@@ -74,6 +74,9 @@ const State = struct {
     swapchain: *anyopaque,
     backbuffer: ?*anyopaque = null,
     rtv: ?*anyopaque = null,
+    current_rtv: ?*anyopaque = null,
+    current_width: i32 = 0,
+    current_height: i32 = 0,
     vertex_shader: ?*anyopaque = null,
     pixel_shader: ?*anyopaque = null,
     width: i32,
@@ -85,6 +88,9 @@ const State = struct {
             core.comRelease(rtv);
             self.rtv = null;
         }
+        self.current_rtv = null;
+        self.current_width = 0;
+        self.current_height = 0;
         if (self.backbuffer) |backbuffer| {
             core.comRelease(backbuffer);
             self.backbuffer = null;
@@ -239,20 +245,32 @@ fn createRenderTarget(self: *State, width: i32, height: i32) InitError!void {
 }
 
 fn bindRenderTargetAndViewport(self: *State) void {
+    bindRenderTargetViewForState(self, self.rtv, self.width, self.height);
+}
+
+fn bindRenderTargetViewForState(self: *State, rtv: ?*anyopaque, width: i32, height: i32) void {
+    if (rtv == null) return;
     const om_set = core.comCall(self.context, core.slot.D3D11DeviceContext_OMSetRenderTargets, *const fn (*anyopaque, u32, [*]const ?*anyopaque, ?*anyopaque) callconv(.winapi) void);
-    var rtvs = [_]?*anyopaque{self.rtv.?};
+    var rtvs = [_]?*anyopaque{rtv};
     om_set(self.context, 1, &rtvs, null);
+    self.current_rtv = rtv;
+    self.current_width = width;
+    self.current_height = height;
 
     const viewport = core.D3D11_VIEWPORT{
         .top_left_x = 0,
         .top_left_y = 0,
-        .width = @floatFromInt(@max(self.width, 1)),
-        .height = @floatFromInt(@max(self.height, 1)),
+        .width = @floatFromInt(@max(width, 1)),
+        .height = @floatFromInt(@max(height, 1)),
         .min_depth = 0,
         .max_depth = 1,
     };
     const rs_viewports = core.comCall(self.context, core.slot.D3D11DeviceContext_RSSetViewports, *const fn (*anyopaque, u32, *const core.D3D11_VIEWPORT) callconv(.winapi) void);
     rs_viewports(self.context, 1, &viewport);
+}
+
+pub fn bindRenderTargetView(rtv: ?*anyopaque, width: i32, height: i32) void {
+    if (state) |*self| bindRenderTargetViewForState(self, rtv, width, height);
 }
 
 fn createPhase2Pipeline(self: *State) InitError!void {
@@ -345,8 +363,15 @@ pub fn swapchainSize() ?struct { width: i32, height: i32 } {
     return if (state) |*self| .{ .width = self.width, .height = self.height } else null;
 }
 
+pub fn currentRenderTargetSize() ?struct { width: i32, height: i32 } {
+    return if (state) |*self| .{ .width = self.current_width, .height = self.current_height } else null;
+}
+
 pub fn beginFrame() void {
-    if (state) |*self| self.feature_draws_this_frame = false;
+    if (state) |*self| {
+        self.feature_draws_this_frame = false;
+        bindRenderTargetAndViewport(self);
+    }
 }
 
 pub fn noteFeatureDraw() void {
@@ -384,10 +409,14 @@ pub fn resize(width: i32, height: i32) bool {
 pub fn clear(r: f32, g: f32, b: f32, a: f32) void {
     if (state == null) return;
     const self = &state.?;
-    bindRenderTargetAndViewport(self);
+    const rtv = self.current_rtv orelse self.rtv orelse return;
+    if (self.rtv) |backbuffer_rtv| {
+        if (rtv == backbuffer_rtv) bindRenderTargetAndViewport(self);
+    }
+    const bound_rtv = self.current_rtv orelse rtv;
     const color = [_]f32{ r, g, b, a };
     const clear_rtv = core.comCall(self.context, core.slot.D3D11DeviceContext_ClearRenderTargetView, *const fn (*anyopaque, *anyopaque, *const [4]f32) callconv(.winapi) void);
-    clear_rtv(self.context, self.rtv.?, &color);
+    clear_rtv(self.context, bound_rtv, &color);
 }
 
 pub fn drawPhase2Quad() void {

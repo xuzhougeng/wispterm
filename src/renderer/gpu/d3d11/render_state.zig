@@ -20,6 +20,7 @@ pub threadlocal var pre_change_hook: ?*const fn () void = null;
 threadlocal var blend_enabled = false;
 threadlocal var blend_mode: BlendMode = .alpha;
 threadlocal var viewport: Viewport = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+threadlocal var render_target_size: Size = .{ .w = 0, .h = 0 };
 threadlocal var scissor: ScissorState = .{
     .enabled = false,
     .box = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
@@ -35,6 +36,9 @@ inline fn notifyPreChange() void {
 
 pub fn beginFrame() void {
     Context.beginFrame();
+    if (Context.currentRenderTargetSize()) |size| {
+        render_target_size = .{ .w = size.width, .h = size.height };
+    }
 }
 
 pub fn endFrame() void {
@@ -79,6 +83,10 @@ pub fn setViewport(x: i32, y: i32, w: i32, h: i32) void {
 
 pub fn viewportSize() Size {
     return .{ .w = viewport.w, .h = viewport.h };
+}
+
+pub fn setRenderTargetSize(width: i32, height: i32) void {
+    render_target_size = .{ .w = width, .h = height };
 }
 
 pub fn driverInfo() DriverInfo {
@@ -136,8 +144,17 @@ pub fn restoreScissor(s: ScissorState) void {
     applyScissor();
 }
 
+fn activeRenderTargetSize() Size {
+    if (Context.currentRenderTargetSize()) |size| {
+        if (size.width > 0 and size.height > 0) return .{ .w = size.width, .h = size.height };
+    }
+    if (render_target_size.w > 0 and render_target_size.h > 0) return render_target_size;
+    if (Context.swapchainSize()) |size| return .{ .w = size.width, .h = size.height };
+    return .{ .w = @max(viewport.w, 1), .h = @max(viewport.h, 1) };
+}
+
 fn framebufferHeight() i32 {
-    return if (Context.swapchainSize()) |size| size.height else viewport.h;
+    return activeRenderTargetSize().h;
 }
 
 fn topLeftY(y: i32, h: i32) i32 {
@@ -164,14 +181,12 @@ fn applyScissor() void {
     applyRasterizerState();
     const rs_scissor = core.comCall(context, core.slot.D3D11DeviceContext_RSSetScissorRects, *const fn (*anyopaque, u32, ?*const core.D3D11_RECT) callconv(.winapi) void);
     if (!scissor.enabled or scissor.box.w <= 0 or scissor.box.h <= 0) {
-        const maybe_size = Context.swapchainSize();
-        const width = if (maybe_size) |s| s.width else @max(viewport.w, 1);
-        const height = if (maybe_size) |s| s.height else @max(viewport.h, 1);
+        const size = activeRenderTargetSize();
         const rect = core.D3D11_RECT{
             .left = 0,
             .top = 0,
-            .right = @max(width, 1),
-            .bottom = @max(height, 1),
+            .right = @max(size.w, 1),
+            .bottom = @max(size.h, 1),
         };
         rs_scissor(context, 1, &rect);
         return;

@@ -148,7 +148,15 @@ fn samplerDesc(mode: types.SamplerMode) core.D3D11_SAMPLER_DESC {
 }
 
 fn createSampler(e: *Entry, mode: types.SamplerMode) bool {
-    const device = Context.deviceHandle() orelse return false;
+    const sampler = createSamplerNative(mode) orelse return false;
+    if (e.sampler) |old| core.comRelease(old);
+    e.sampler = sampler;
+    e.sampler_mode = mode;
+    return true;
+}
+
+fn createSamplerNative(mode: types.SamplerMode) ?*anyopaque {
+    const device = Context.deviceHandle() orelse return null;
     const create_sampler = core.comCall(device, core.slot.D3D11Device_CreateSamplerState, *const fn (
         *anyopaque,
         *const core.D3D11_SAMPLER_DESC,
@@ -156,11 +164,8 @@ fn createSampler(e: *Entry, mode: types.SamplerMode) bool {
     ) callconv(.winapi) core.HRESULT);
     const desc = samplerDesc(mode);
     var sampler: ?*anyopaque = null;
-    if (create_sampler(device, &desc, &sampler) < 0 or sampler == null) return false;
-    if (e.sampler) |old| core.comRelease(old);
-    e.sampler = sampler;
-    e.sampler_mode = mode;
-    return true;
+    if (create_sampler(device, &desc, &sampler) < 0 or sampler == null) return null;
+    return sampler;
 }
 
 pub fn upload2D(self: Texture, width: c_int, height: c_int, data: ?*const anyopaque, o: Upload) void {
@@ -224,6 +229,77 @@ pub fn upload2D(self: Texture, width: c_int, height: c_int, data: ?*const anyopa
     }
 }
 
+pub fn createRenderTarget(width: c_int, height: c_int, format: types.TextureFormat, sampler: types.SamplerMode) ?Texture {
+    if (width <= 0 or height <= 0) return null;
+    var texture = create();
+    if (texture.handle == 0) return null;
+    if (!texture.allocateRenderTarget(width, height, format, sampler)) {
+        texture.destroy();
+        return null;
+    }
+    return texture;
+}
+
+fn allocateRenderTarget(self: Texture, width: c_int, height: c_int, format: types.TextureFormat, sampler: types.SamplerMode) bool {
+    const e = entry(self.handle) orelse return false;
+    const device = Context.deviceHandle() orelse return false;
+    const w: u32 = @intCast(width);
+    const h: u32 = @intCast(height);
+    const desc = core.D3D11_TEXTURE2D_DESC{
+        .width = w,
+        .height = h,
+        .mip_levels = 1,
+        .array_size = 1,
+        .format = dxgiFormat(format),
+        .sample_desc = .{ .count = 1, .quality = 0 },
+        .usage = core.D3D11_USAGE_DEFAULT,
+        .bind_flags = core.D3D11_BIND_SHADER_RESOURCE | core.D3D11_BIND_RENDER_TARGET,
+        .cpu_access_flags = 0,
+        .misc_flags = 0,
+    };
+    const create_texture = core.comCall(device, core.slot.D3D11Device_CreateTexture2D, *const fn (
+        *anyopaque,
+        *const core.D3D11_TEXTURE2D_DESC,
+        ?*const core.D3D11_SUBRESOURCE_DATA,
+        *?*anyopaque,
+    ) callconv(.winapi) core.HRESULT);
+    var native_texture: ?*anyopaque = null;
+    if (create_texture(device, &desc, null, &native_texture) < 0 or native_texture == null) {
+        std.debug.print("D3D11 render-target texture creation failed ({}x{})\n", .{ width, height });
+        return false;
+    }
+
+    const create_srv = core.comCall(device, core.slot.D3D11Device_CreateShaderResourceView, *const fn (
+        *anyopaque,
+        *anyopaque,
+        ?*const anyopaque,
+        *?*anyopaque,
+    ) callconv(.winapi) core.HRESULT);
+    var srv: ?*anyopaque = null;
+    if (create_srv(device, native_texture.?, null, &srv) < 0 or srv == null) {
+        std.debug.print("D3D11 render-target SRV creation failed ({}x{})\n", .{ width, height });
+        core.comRelease(native_texture.?);
+        return false;
+    }
+
+    const native_sampler = createSamplerNative(sampler) orelse {
+        std.debug.print("D3D11 render-target sampler creation failed\n", .{});
+        core.comRelease(srv.?);
+        core.comRelease(native_texture.?);
+        return false;
+    };
+
+    e.releaseNative();
+    e.texture = native_texture;
+    e.srv = srv;
+    e.sampler = native_sampler;
+    e.width = width;
+    e.height = height;
+    e.format = format;
+    e.sampler_mode = sampler;
+    return true;
+}
+
 pub fn setSamplerMode(self: Texture, sampler: types.SamplerMode) void {
     const e = entry(self.handle) orelse return;
     if (!createSampler(e, sampler)) {
@@ -270,6 +346,20 @@ pub fn nativeTexture(handle: c.GLuint) ?*anyopaque {
 
 pub fn nativeSrv(handle: c.GLuint) ?*anyopaque {
     return if (entry(handle)) |e| e.srv else null;
+}
+
+pub fn unbindShaderResourceSlots(first_slot: u32, count: u32) void {
+    if (count == 0) return;
+    const context = Context.contextHandle() orelse return;
+    var null_srvs: [16]?*anyopaque = @splat(null);
+    const capped = @min(count, null_srvs.len);
+    const ps_set_srv = core.comCall(context, core.slot.D3D11DeviceContext_PSSetShaderResources, *const fn (
+        *anyopaque,
+        u32,
+        u32,
+        [*]const ?*anyopaque,
+    ) callconv(.winapi) void);
+    ps_set_srv(context, first_slot, @intCast(capped), &null_srvs);
 }
 
 pub fn destroy(self: *Texture) void {
