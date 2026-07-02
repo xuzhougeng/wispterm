@@ -166,9 +166,10 @@ The script launches a real visible WispTerm window with an isolated `%APPDATA%`,
 enables render diagnostics plus the D3D11 UI/offscreen probes, switches between
 two visible tabs, checks tab text, the `+` icon, active/inactive row states, and
 the close-hover affordance, then toggles the tab sidebar, file explorer, and
-command palette. It also opens the Settings page from the titlebar gear and the
-Skill Center from the Command Center, capturing both as additional user-visible
-Phase IV pages. It captures screenshots, writes JSON metrics under
+command palette. It also generates a high-contrast background image, verifies it
+through the initial D3D11 screenshot, opens the Settings page from the titlebar
+gear, and opens the Skill Center from the Command Center. It captures
+screenshots, writes JSON metrics under
 `zig-out\d3d11-normal-session-smoke\`, and verifies that
 `render-diagnostic.log` contains `gpu-backend=d3d11 present=dxgi`, a successful
 `d3d11-ui-smoke` probe, and an offscreen round-trip marker. It is a Phase IV

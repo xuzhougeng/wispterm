@@ -63,6 +63,28 @@ public static class WispTermD3D11SmokeAutomation {
 
 [WispTermD3D11SmokeAutomation]::SetProcessDPIAware() | Out-Null
 
+function New-SmokeBackgroundImage([string]$Path) {
+    $bitmap = New-Object System.Drawing.Bitmap 320, 200
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    try {
+        $graphics.Clear([System.Drawing.Color]::FromArgb(245, 54, 181))
+        $graphics.FillRectangle([System.Drawing.Brushes]::DeepSkyBlue, 160, 0, 160, 100)
+        $graphics.FillRectangle([System.Drawing.Brushes]::Gold, 0, 100, 160, 100)
+        $graphics.FillRectangle([System.Drawing.Brushes]::LimeGreen, 160, 100, 160, 100)
+        $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::White), 18
+        try {
+            $graphics.DrawLine($pen, 0, 0, 320, 200)
+            $graphics.DrawLine($pen, 320, 0, 0, 200)
+        } finally {
+            $pen.Dispose()
+        }
+        $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+    } finally {
+        $graphics.Dispose()
+        $bitmap.Dispose()
+    }
+}
+
 function Get-WindowRectValue([IntPtr]$Hwnd) {
     [WispTermD3D11SmokeAutomation+RECT]$rect = New-Object WispTermD3D11SmokeAutomation+RECT
     [WispTermD3D11SmokeAutomation]::GetWindowRect($Hwnd, [ref]$rect) | Out-Null
@@ -351,6 +373,25 @@ function Analyze-PageSurface(
     }
 }
 
+function Analyze-BackgroundImageSurface([string]$Path) {
+    # Sample the empty terminal field, away from titlebar chrome, prompt text,
+    # and the bottom-left D3D11 UI probe. With the generated bright wallpaper
+    # and low theme tint, this region should be visibly colored.
+    $region = Analyze-Region $Path 300 130 820 440 4
+    $pass = ($region.Saturated -gt 900 -and $region.Luma -gt 55.0)
+
+    return @{
+        Pass = [bool]$pass
+        Samples = $region.Samples
+        Bright = $region.Bright
+        Saturated = $region.Saturated
+        Luma = $region.Luma
+        AvgR = $region.AvgR
+        AvgG = $region.AvgG
+        AvgB = $region.AvgB
+    }
+}
+
 function Click-WindowCenter([IntPtr]$Hwnd) {
     $rect = Get-WindowRectValue $Hwnd
     $x = [int](($rect.Left + $rect.Right) / 2)
@@ -427,6 +468,7 @@ function Wait-ForDiagnosticText([string]$Path, [string]$Pattern, [int]$TimeoutSe
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $configPath = Join-Path $OutDir "d3d11-smoke-$timestamp.conf"
+$backgroundImagePath = Join-Path $OutDir "d3d11-background-image-$timestamp.png"
 $initialShot = Join-Path $OutDir "d3d11-initial-$timestamp.png"
 $tabsActive2Shot = Join-Path $OutDir "d3d11-tabs-active2-$timestamp.png"
 $tabsCloseHoverShot = Join-Path $OutDir "d3d11-tabs-close-hover-$timestamp.png"
@@ -440,10 +482,14 @@ $appDataDir = Join-Path $OutDir "appdata"
 $diagnosticPath = Join-Path $appDataDir "wispterm\render-diagnostic.log"
 
 New-Item -ItemType Directory -Force -Path $appDataDir | Out-Null
+New-SmokeBackgroundImage $backgroundImagePath
 @"
 shell = $Shell
 wispterm-debug-render = true
 restore-tabs-on-startup = false
+background-image = $backgroundImagePath
+background-opacity = 0.18
+background-image-mode = fill
 "@ | Set-Content -LiteralPath $configPath -Encoding UTF8
 
 $oldAppData = $env:APPDATA
@@ -488,6 +534,7 @@ try {
     Start-Sleep -Milliseconds 450
     $initialSize = Capture-Window $wisptermWindow $initialShot
     $initialMetrics = Analyze-Image $initialShot
+    $backgroundImageMetrics = Analyze-BackgroundImageSurface $initialShot
 
     Send-AltDigit 0x32
     Start-Sleep -Milliseconds 700
@@ -539,6 +586,7 @@ try {
 
     $pass = [bool](
         $initialMetrics.Pass -and
+        $backgroundImageMetrics.Pass -and
         $tabChromeMetrics.Pass -and
         $sidebarDelta.Pass -and
         $explorerDelta.Pass -and
@@ -557,9 +605,11 @@ try {
         window = "$($initialSize.Width)x$($initialSize.Height)"
         exe = $ExePath
         config = $configPath
+        background_image = $backgroundImagePath
         diagnostic_log = $diagnosticPath
         screenshots = [ordered]@{
             initial = $initialShot
+            background_image = $initialShot
             tabs_active_2 = $tabsActive2Shot
             tabs_close_hover = $tabsCloseHoverShot
             sidebar = $sidebarShot
@@ -574,6 +624,16 @@ try {
             bright = $initialMetrics.Bright
             saturated = $initialMetrics.Saturated
             pass = [bool]$initialMetrics.Pass
+        }
+        background_image_surface = [ordered]@{
+            samples = $backgroundImageMetrics.Samples
+            bright = $backgroundImageMetrics.Bright
+            saturated = $backgroundImageMetrics.Saturated
+            avg_r = [Math]::Round($backgroundImageMetrics.AvgR, 3)
+            avg_g = [Math]::Round($backgroundImageMetrics.AvgG, 3)
+            avg_b = [Math]::Round($backgroundImageMetrics.AvgB, 3)
+            luma = [Math]::Round($backgroundImageMetrics.Luma, 3)
+            pass = [bool]$backgroundImageMetrics.Pass
         }
         tab_chrome = [ordered]@{
             active_state_swap = [bool]$tabChromeMetrics.ActiveStateSwap
