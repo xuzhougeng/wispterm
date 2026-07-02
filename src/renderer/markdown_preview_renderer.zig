@@ -763,9 +763,8 @@ fn ensureImageTexture(pane: *PreviewPane) bool {
 
     const t = gpu.Texture.create();
     pane.image_texture = t;
-    if (!pane.image_texture.isValid()) return false;
-
     pane.image_texture.upload2D(w, h, @ptrCast(data), .{ .unpack_alignment = 1 });
+    if (!pane.image_texture.isValid()) return false;
 
     pane.image_width = w;
     pane.image_height = h;

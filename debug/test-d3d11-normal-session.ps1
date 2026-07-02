@@ -13,6 +13,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$workingDirectoryProvided = $WorkingDirectory.Length -ne 0
 if ($ExePath.Length -eq 0) {
     $ExePath = Join-Path $repoRoot "zig-out\bin\wispterm.exe"
 }
@@ -82,6 +83,55 @@ function New-SmokeBackgroundImage([string]$Path) {
     } finally {
         $graphics.Dispose()
         $bitmap.Dispose()
+    }
+}
+
+function New-SmokePreviewImage([string]$Path) {
+    $bitmap = New-Object System.Drawing.Bitmap 420, 260
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    try {
+        $graphics.Clear([System.Drawing.Color]::FromArgb(30, 40, 80))
+        $graphics.FillRectangle([System.Drawing.Brushes]::OrangeRed, 28, 28, 150, 90)
+        $graphics.FillRectangle([System.Drawing.Brushes]::MediumSpringGreen, 210, 34, 170, 110)
+        $graphics.FillEllipse([System.Drawing.Brushes]::DeepSkyBlue, 60, 130, 150, 90)
+        $graphics.FillEllipse([System.Drawing.Brushes]::Magenta, 235, 145, 110, 80)
+        $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::White), 12
+        try {
+            $graphics.DrawRectangle($pen, 14, 14, 392, 232)
+        } finally {
+            $pen.Dispose()
+        }
+    } finally {
+        $graphics.Dispose()
+        $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+        $bitmap.Dispose()
+    }
+}
+
+function New-SmokePreviewFixtures([string]$Dir) {
+    New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+    $markdownPath = Join-Path $Dir "a-preview.md"
+    $imagePath = Join-Path $Dir "b-image.png"
+    @'
+# D3D11 Preview Smoke
+
+This markdown preview is rendered inside a normal WispTerm D3D11 session.
+
+## Evidence
+
+- Markdown heading
+- List item
+- `inline code`
+
+````zig
+const backend = "d3d11";
+````
+'@ | Set-Content -LiteralPath $markdownPath -Encoding UTF8
+    New-SmokePreviewImage $imagePath
+    return @{
+        Dir = $Dir
+        Markdown = $markdownPath
+        Image = $imagePath
     }
 }
 
@@ -392,6 +442,39 @@ function Analyze-BackgroundImageSurface([string]$Path) {
     }
 }
 
+function Analyze-MarkdownPreviewSurface([string]$BeforePath, [string]$AfterPath) {
+    $delta = Compare-ImageRegion $BeforePath $AfterPath 245 54 970 690 4
+    $header = Analyze-Region $AfterPath 250 54 960 80 2
+    $body = Analyze-Region $AfterPath 270 120 910 560 3
+    $pass = ($delta.Changed -gt 1200 -and $delta.ChangedRatio -gt 0.02 -and ($header.Bright + $body.Bright) -gt 280)
+
+    return @{
+        Pass = [bool]$pass
+        Changed = $delta.Changed
+        ChangedRatio = $delta.ChangedRatio
+        HeaderBright = $header.Bright
+        BodyBright = $body.Bright
+        BodyLuma = $body.Luma
+        Samples = $body.Samples
+    }
+}
+
+function Analyze-ImagePreviewSurface([string]$BeforePath, [string]$AfterPath) {
+    $delta = Compare-ImageRegion $BeforePath $AfterPath 245 385 970 360 3
+    $region = Analyze-Region $AfterPath 285 420 860 280 3
+    $pass = ($delta.Changed -gt 1800 -and $delta.ChangedRatio -gt 0.035 -and $region.Saturated -gt 900)
+
+    return @{
+        Pass = [bool]$pass
+        Changed = $delta.Changed
+        ChangedRatio = $delta.ChangedRatio
+        Bright = $region.Bright
+        Saturated = $region.Saturated
+        Luma = $region.Luma
+        Samples = $region.Samples
+    }
+}
+
 function Click-WindowCenter([IntPtr]$Hwnd) {
     $rect = Get-WindowRectValue $Hwnd
     $x = [int](($rect.Left + $rect.Right) / 2)
@@ -408,6 +491,12 @@ function Click-WindowPoint([IntPtr]$Hwnd, [int]$X, [int]$Y) {
     [WispTermD3D11SmokeAutomation]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 80
     [WispTermD3D11SmokeAutomation]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+}
+
+function DoubleClick-WindowPoint([IntPtr]$Hwnd, [int]$X, [int]$Y) {
+    Click-WindowPoint $Hwnd $X $Y
+    Start-Sleep -Milliseconds 130
+    Click-WindowPoint $Hwnd $X $Y
 }
 
 function Move-MouseWindow([IntPtr]$Hwnd, [int]$X, [int]$Y) {
@@ -469,11 +558,14 @@ function Wait-ForDiagnosticText([string]$Path, [string]$Pattern, [int]$TimeoutSe
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $configPath = Join-Path $OutDir "d3d11-smoke-$timestamp.conf"
 $backgroundImagePath = Join-Path $OutDir "d3d11-background-image-$timestamp.png"
+$previewFixtureDir = Join-Path $OutDir "preview-fixture-$timestamp"
 $initialShot = Join-Path $OutDir "d3d11-initial-$timestamp.png"
 $tabsActive2Shot = Join-Path $OutDir "d3d11-tabs-active2-$timestamp.png"
 $tabsCloseHoverShot = Join-Path $OutDir "d3d11-tabs-close-hover-$timestamp.png"
 $sidebarShot = Join-Path $OutDir "d3d11-sidebar-$timestamp.png"
 $explorerShot = Join-Path $OutDir "d3d11-file-explorer-$timestamp.png"
+$markdownPreviewShot = Join-Path $OutDir "d3d11-markdown-preview-$timestamp.png"
+$imagePreviewShot = Join-Path $OutDir "d3d11-image-preview-$timestamp.png"
 $paletteShot = Join-Path $OutDir "d3d11-command-palette-$timestamp.png"
 $settingsShot = Join-Path $OutDir "d3d11-settings-page-$timestamp.png"
 $skillCenterShot = Join-Path $OutDir "d3d11-skill-center-$timestamp.png"
@@ -483,6 +575,10 @@ $diagnosticPath = Join-Path $appDataDir "wispterm\render-diagnostic.log"
 
 New-Item -ItemType Directory -Force -Path $appDataDir | Out-Null
 New-SmokeBackgroundImage $backgroundImagePath
+$previewFixtures = New-SmokePreviewFixtures $previewFixtureDir
+if (!$workingDirectoryProvided) {
+    $WorkingDirectory = $previewFixtureDir
+}
 @"
 shell = $Shell
 wispterm-debug-render = true
@@ -557,17 +653,27 @@ try {
     Capture-Window $wisptermWindow $explorerShot | Out-Null
     $explorerDelta = Compare-Images $sidebarShot $explorerShot
 
+    DoubleClick-WindowPoint $wisptermWindow 92 116
+    Start-Sleep -Milliseconds 2200
+    Capture-Window $wisptermWindow $markdownPreviewShot | Out-Null
+    $markdownPreviewMetrics = Analyze-MarkdownPreviewSurface $explorerShot $markdownPreviewShot
+
+    DoubleClick-WindowPoint $wisptermWindow 92 158
+    Start-Sleep -Milliseconds 2200
+    Capture-Window $wisptermWindow $imagePreviewShot | Out-Null
+    $imagePreviewMetrics = Analyze-ImagePreviewSurface $markdownPreviewShot $imagePreviewShot
+
     Send-CtrlShiftP
     Start-Sleep -Milliseconds 1000
     Capture-Window $wisptermWindow $paletteShot | Out-Null
-    $paletteDelta = Compare-Images $explorerShot $paletteShot
+    $paletteDelta = Compare-Images $imagePreviewShot $paletteShot
 
     Send-Escape
     Start-Sleep -Milliseconds 650
     Click-WindowPoint $wisptermWindow 1078 24
     Start-Sleep -Milliseconds 1100
     Capture-Window $wisptermWindow $settingsShot | Out-Null
-    $settingsPageMetrics = Analyze-PageSurface $explorerShot $settingsShot 230 54 780 662 900 0.018 120
+    $settingsPageMetrics = Analyze-PageSurface $imagePreviewShot $settingsShot 230 54 780 662 900 0.018 120
 
     Send-Escape
     Start-Sleep -Milliseconds 650
@@ -576,7 +682,7 @@ try {
     Click-WindowPoint $wisptermWindow 620 496
     Start-Sleep -Milliseconds 1600
     Capture-Window $wisptermWindow $skillCenterShot | Out-Null
-    $skillCenterMetrics = Analyze-PageSurface $explorerShot $skillCenterShot 220 46 1010 725 1100 0.014 140
+    $skillCenterMetrics = Analyze-PageSurface $imagePreviewShot $skillCenterShot 220 46 1010 725 1100 0.014 140
 
     $diagText = Wait-ForDiagnosticText $diagnosticPath "d3d11-ui-smoke probe .* ok=true" 12
     $hasD3D11Present = $diagText -match "gpu-backend=d3d11 present=dxgi"
@@ -590,6 +696,8 @@ try {
         $tabChromeMetrics.Pass -and
         $sidebarDelta.Pass -and
         $explorerDelta.Pass -and
+        $markdownPreviewMetrics.Pass -and
+        $imagePreviewMetrics.Pass -and
         $paletteDelta.Pass -and
         $settingsPageMetrics.Pass -and
         $skillCenterMetrics.Pass -and
@@ -606,6 +714,9 @@ try {
         exe = $ExePath
         config = $configPath
         background_image = $backgroundImagePath
+        preview_fixture_dir = $previewFixtureDir
+        preview_markdown = $previewFixtures.Markdown
+        preview_image = $previewFixtures.Image
         diagnostic_log = $diagnosticPath
         screenshots = [ordered]@{
             initial = $initialShot
@@ -614,6 +725,8 @@ try {
             tabs_close_hover = $tabsCloseHoverShot
             sidebar = $sidebarShot
             file_explorer = $explorerShot
+            markdown_preview = $markdownPreviewShot
+            image_preview = $imagePreviewShot
             command_palette = $paletteShot
             settings_page = $settingsShot
             skill_center = $skillCenterShot
@@ -670,6 +783,24 @@ try {
             samples = $explorerDelta.Samples
             changed_ratio = [Math]::Round($explorerDelta.ChangedRatio, 5)
             pass = [bool]$explorerDelta.Pass
+        }
+        markdown_preview = [ordered]@{
+            changed = $markdownPreviewMetrics.Changed
+            changed_ratio = [Math]::Round($markdownPreviewMetrics.ChangedRatio, 5)
+            header_bright = $markdownPreviewMetrics.HeaderBright
+            body_bright = $markdownPreviewMetrics.BodyBright
+            body_luma = [Math]::Round($markdownPreviewMetrics.BodyLuma, 3)
+            samples = $markdownPreviewMetrics.Samples
+            pass = [bool]$markdownPreviewMetrics.Pass
+        }
+        image_preview = [ordered]@{
+            changed = $imagePreviewMetrics.Changed
+            changed_ratio = [Math]::Round($imagePreviewMetrics.ChangedRatio, 5)
+            bright = $imagePreviewMetrics.Bright
+            saturated = $imagePreviewMetrics.Saturated
+            luma = [Math]::Round($imagePreviewMetrics.Luma, 3)
+            samples = $imagePreviewMetrics.Samples
+            pass = [bool]$imagePreviewMetrics.Pass
         }
         command_palette_delta = [ordered]@{
             changed = $paletteDelta.Changed
