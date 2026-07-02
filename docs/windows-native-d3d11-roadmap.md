@@ -47,10 +47,12 @@ chrome, sidebar, file explorer, background image, Markdown/image previews,
 Copilot assistant sidebar, command palette, startup shortcuts overlay, Settings
 page, Skill Center, D3D11 present diagnostics, UI probe, and offscreen
 round-trip marker. This does not make D3D11 product-default-ready yet: Phase V
-hardening has started with backend-owned present/device-loss diagnostics, but
-device recreation, automatic fallback policy, environment validation, and Phase
-VI default migration remain blocked until fallback coverage is proven. Windows
-`auto` still must not default to D3D11 on this branch.
+hardening has started with backend-owned present/device-loss diagnostics and a
+pure D3D11 present policy that latches `needs_recreate` / `fallback_candidate`
+state from classified DXGI failures, but device recreation, automatic fallback
+policy, environment validation, and Phase VI default migration remain blocked
+until fallback coverage is proven. Windows `auto` still must not default to
+D3D11 on this branch.
 
 The Phase IV normal-session evidence gate is the checked-in Windows GUI smoke:
 
@@ -69,10 +71,11 @@ the Copilot assistant sidebar with a temporary AI profile, opens the startup
 shortcuts overlay from the Command Center, opens the Settings page from the
 titlebar gear and the Skill Center from the Command Center, then verifies the
 render-diagnostics log for D3D11 present, init details (swap effect, adapter or
-unknown-adapter fallback, and fallback reason), UI probe, and offscreen
-round-trip markers. This is runtime evidence for the Phase IV exit criteria and
-the first Phase V diagnostics slice; it is not a device-recreation or automatic
-fallback substitute and does not change the Windows default backend.
+unknown-adapter fallback, fallback reason, and healthy D3D11 policy state), UI
+probe, and offscreen round-trip markers. This is runtime evidence for the Phase
+IV exit criteria and the first Phase V diagnostics/policy slice; it is not a
+device-recreation or automatic fallback substitute and does not change the
+Windows default backend.
 
 ## Ghostty Comparison
 

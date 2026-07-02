@@ -794,12 +794,13 @@ try {
     $diagText = Wait-ForDiagnosticText $diagnosticPath "d3d11-ui-smoke probe .* ok=true" 12
     $hasD3D11Present = $diagText -match "gpu-backend=d3d11 present=dxgi"
     $hasD3D11InitDetails = (
-        $diagText -match "gpu-backend=d3d11 present=dxgi .*swap_effect=flip_discard.*fallback_reason=none" -and
+        $diagText -match "gpu-backend=d3d11 present=dxgi .*swap_effect=flip_discard.*fallback_reason=none.*policy_state=healthy.*fallback_candidate=false" -and
         (
             $diagText -match "adapter_vendor=0x[0-9a-fA-F]+.*adapter_device=0x[0-9a-fA-F]+.*adapter_luid=" -or
             $diagText -match "adapter=unknown"
         )
     )
+    $hasD3D11PolicyHealthy = $diagText -match "gpu-backend=d3d11 present=dxgi .*policy_state=healthy.*fallback_candidate=false"
     $hasUiProbe = $diagText -match "d3d11-ui-smoke probe .* ok=true"
     $hasOffscreen = $diagText -match "d3d11-offscreen-smoke round-trip active"
     $hasFailures = $diagText -match "present failed|shader compile failed|backbuffer probe failed|resize sync failed"
@@ -819,6 +820,7 @@ try {
         $skillCenterMetrics.Pass -and
         $hasD3D11Present -and
         $hasD3D11InitDetails -and
+        $hasD3D11PolicyHealthy -and
         $hasUiProbe -and
         $hasOffscreen -and
         !$hasFailures
@@ -967,6 +969,7 @@ try {
         diagnostics = [ordered]@{
             d3d11_present = [bool]$hasD3D11Present
             d3d11_init_details = [bool]$hasD3D11InitDetails
+            d3d11_policy_healthy = [bool]$hasD3D11PolicyHealthy
             ui_probe_ok = [bool]$hasUiProbe
             offscreen_round_trip = [bool]$hasOffscreen
             failure_lines = [bool]$hasFailures
