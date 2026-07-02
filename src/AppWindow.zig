@@ -89,6 +89,7 @@ pub const input = @import("input.zig");
 pub const overlays = @import("renderer/overlays.zig");
 const post_process = @import("renderer/post_process.zig");
 const d3d11_offscreen_smoke = @import("renderer/d3d11_offscreen_smoke.zig");
+const d3d11_ui_smoke = @import("renderer/d3d11_ui_smoke.zig");
 pub const gpu = @import("renderer/gpu/gpu.zig");
 pub const split_layout = @import("appwindow/split_layout.zig");
 const render_gate = @import("appwindow/render_gate.zig");
@@ -4427,6 +4428,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
     overlays.renderWhatsNew(@floatFromInt(fb_width), @floatFromInt(fb_height));
 
     d3d11_offscreen_smoke.render(fb_width, fb_height);
+    d3d11_ui_smoke.render(fb_width, fb_height);
     render_diagnostics.log(
         "platform-resize swap fb={}x{} term={}x{} draw_calls={}",
         .{ fb_width, fb_height, term_cols, term_rows, gpu.draw_call_count },
@@ -6455,6 +6457,7 @@ fn runMainLoop(self: *AppWindow) !void {
     defer {
         background_image.deinit();
         d3d11_offscreen_smoke.deinit();
+        d3d11_ui_smoke.deinit();
         post_process.deinit();
         // macOS/Metal: cell_pipeline/ui_pipeline.deinit() release the
         // MTLRenderPipelineState/MTLBuffer objects held in the render thread's
@@ -7150,6 +7153,7 @@ fn runMainLoop(self: *AppWindow) !void {
         renderImePreedit(win, fb_width, fb_height);
 
         d3d11_offscreen_smoke.render(fb_width, fb_height);
+        d3d11_ui_smoke.render(fb_width, fb_height);
         logSwapDiagnosticsIfChanged(win, fb_width, fb_height);
         forceOpaqueBackbufferForPresent();
         gpu.state.endFrame();
