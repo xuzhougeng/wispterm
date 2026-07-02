@@ -4,6 +4,7 @@
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const panel = @import("../feishu/registration_panel.zig");
+const qr_layout = @import("qr_panel_layout.zig");
 const ui_pipeline = @import("ui_pipeline.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
@@ -30,11 +31,11 @@ fn textWidth(text: []const u8) f32 {
 }
 
 fn textYFromTop(window_height: f32, top_px: f32) f32 {
-    return @round(window_height - top_px - font.g_titlebar_cell_height);
+    return qr_layout.textYFromTop(window_height, top_px, font.g_titlebar_cell_height);
 }
 
 fn rectY(window_height: f32, rect: panel.Rect) f32 {
-    return @round(window_height - rect.top_px - rect.h);
+    return qr_layout.rectY(window_height, rect);
 }
 
 pub fn render(window_width: f32, window_height: f32, top_offset: f32) void {
@@ -43,8 +44,7 @@ pub fn render(window_width: f32, window_height: f32, top_offset: f32) void {
     const allocator = AppWindow.g_allocator orelse std.heap.page_allocator;
     const r = panel.refresh(allocator);
     if (r.redraw) {
-        AppWindow.g_force_rebuild = true; // ponytail: direct write mirrors weixin_qr_renderer.zig exactly
-        AppWindow.g_cells_valid = false;
+        AppWindow.applyUiEffect(.repaint);
     }
     if (r.succeeded) {
         AppWindow.overlays.applyFeishuRegistrationSuccess(); // 回填表单 + 关面板 + toast
@@ -110,21 +110,13 @@ pub fn render(window_width: f32, window_height: f32, top_offset: f32) void {
 }
 
 fn renderQrMatrix(matrix: panel.QrMatrixView, rect: panel.Rect, window_height: f32) void {
-    const quiet_modules: usize = 4;
-    const total_modules = matrix.size + quiet_modules * 2;
-    const module_px = @max(1.0, @floor(rect.w / @as(f32, @floatFromInt(total_modules))));
-    const draw_size = module_px * @as(f32, @floatFromInt(total_modules));
-    const start_x = @round(rect.x + (rect.w - draw_size) / 2.0 + module_px * @as(f32, @floatFromInt(quiet_modules)));
-    const start_top = @round(rect.top_px + (rect.h - draw_size) / 2.0 + module_px * @as(f32, @floatFromInt(quiet_modules)));
-
+    const layout = qr_layout.qrModules(rect, matrix.size);
     const black = .{ 0.03, 0.04, 0.05 };
     for (0..matrix.size) |y| {
-        const y_top = start_top + module_px * @as(f32, @floatFromInt(y));
-        const gl_y = @round(window_height - y_top - module_px);
         for (0..matrix.size) |x| {
             if (!matrix.isBlack(x, y)) continue;
-            const gl_x = start_x + module_px * @as(f32, @floatFromInt(x));
-            ui_pipeline.fillQuadAlpha(gl_x, gl_y, module_px, module_px, black, 1.0);
+            const module = layout.moduleRect(window_height, x, y);
+            ui_pipeline.fillQuadAlpha(module.x, module.y, module.size, module.size, black, 1.0);
         }
     }
 }
@@ -144,8 +136,8 @@ fn renderButton(rect: panel.Rect, window_height: f32, label: []const u8, base: [
     AppWindow.overlays.renderRoundedQuadAlpha(rect.x - 1, y - 1, rect.w + 2, rect.h + 2, 6, border, if (primary) 0.74 else 0.42);
     AppWindow.overlays.renderRoundedQuadAlpha(rect.x, y, rect.w, rect.h, 5, bg, if (primary) 0.92 else 0.58);
     const label_w = textWidth(label);
-    const text_y = @round(y + (rect.h - font.g_titlebar_cell_height) / 2.0);
-    _ = titlebar.renderTextLimited(label, rect.x + @max(8.0, (rect.w - label_w) / 2.0), text_y, text_color, rect.w - 16);
+    const label_layout = qr_layout.buttonLabel(rect, window_height, font.g_titlebar_cell_height, label_w);
+    _ = titlebar.renderTextLimited(label, label_layout.x, label_layout.y, text_color, label_layout.max_w);
 }
 
 pub fn deinit() void {}
