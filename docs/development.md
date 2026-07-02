@@ -154,6 +154,22 @@ When adding more UI automation, follow the same pattern:
 - Always clean up test windows with `CloseMainWindow()`, then `Stop-Process
   -Force` if the process remains.
 
+For Windows-native D3D11 Phase IV parity, use the normal-session smoke script
+against an explicitly built D3D11 executable:
+
+```powershell
+zig build -Dgpu-backend=d3d11
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1
+```
+
+The script launches a real visible WispTerm window with an isolated `%APPDATA%`,
+enables render diagnostics plus the D3D11 UI/offscreen probes, toggles the tab
+sidebar, file explorer, and command palette, captures screenshots, writes JSON
+metrics under `zig-out\d3d11-normal-session-smoke\`, and verifies that
+`render-diagnostic.log` contains `gpu-backend=d3d11 present=dxgi`, a successful
+`d3d11-ui-smoke` probe, and an offscreen round-trip marker. It is a Phase IV
+evidence tool only; it does not change the Windows default renderer.
+
 ## macOS UI Smoke Tests
 
 macOS UI debugging is native-target first. Unless a task explicitly asks for

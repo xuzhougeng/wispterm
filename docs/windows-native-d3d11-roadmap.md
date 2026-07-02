@@ -46,6 +46,19 @@ without major missing UI, Phase V hardening is not started, and Phase VI default
 migration must remain blocked until feature parity and fallback coverage are
 proven. Windows `auto` still must not default to D3D11 on this branch.
 
+The next Phase IV evidence step is the checked-in Windows GUI smoke:
+
+```powershell
+zig build -Dgpu-backend=d3d11
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1
+```
+
+It launches a real visible D3D11 WispTerm session, captures screenshots while
+toggling the tab sidebar, file explorer, and command palette, and verifies the
+render-diagnostics log for D3D11 present, UI probe, and offscreen round-trip
+markers. This is runtime evidence for the Phase IV exit criteria; it is not a
+Phase V hardening substitute and does not change the Windows default backend.
+
 ## Ghostty Comparison
 
 Ghostty is still the architectural reference for the renderer boundary. Its
