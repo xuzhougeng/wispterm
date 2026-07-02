@@ -570,6 +570,14 @@ pub fn pasteClipboardIntoSessionLauncher() bool {
     return overlays.sessionLauncherPasteText(text);
 }
 
+pub fn pasteClipboardIntoMcpForm() bool {
+    const allocator = AppWindow.g_allocator orelse return false;
+    const text = readClipboardText(allocator) orelse return false;
+    defer allocator.free(text);
+
+    return overlays.mcpServersPasteText(text);
+}
+
 pub fn pasteFromClipboardIntoAiChat(chat: *AppWindow.ai_chat.Session) void {
     const allocator = AppWindow.g_allocator orelse return;
     const text = readClipboardText(allocator) orelse return;

@@ -871,6 +871,7 @@ fn toolContextFromRequest(request: *ChatRequest) ai_chat_types.ToolContext {
     var settings = ai_chat.currentAgentSettings();
     settings.dynamic_tools = request.dynamic_tools;
     settings.dynamic_binary_tools = request.dynamic_binary_tools;
+    settings.mcp_tools = request.mcp_tools;
     settings.disabled_first_party_tools = request.disabled_first_party_tools;
     // Per-conversation override beats the global default.
     if (request.session.workingDirOverride()) |override| settings.working_dir = override;

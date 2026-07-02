@@ -253,6 +253,93 @@ without submitting a normal AI turn:
 The agent can also call the `websearch`, `webread`, and `pubmed` tools on its
 own when those first-party tools are enabled in Skill Center.
 
+## MCP Servers (external tools)
+
+WispTerm acts as an MCP (Model Context Protocol) **host**: the Copilot can call
+tools exposed by external MCP servers (GitHub, Context7, Playwright, a
+filesystem server, your own, …).
+
+Create `mcp.json` in your WispTerm config directory — the same directory as
+`agent-access.local`:
+
+- macOS: `~/Library/Application Support/<WispTerm>/mcp.json`
+- Linux: `$XDG_CONFIG_HOME/<WispTerm>/mcp.json` (usually `~/.config/...`)
+- Windows: `%APPDATA%\<WispTerm>\mcp.json`
+
+It uses the standard `mcpServers` format (see [`mcp.json.example`](mcp.json.example)):
+
+```json
+{
+  "mcpServers": {
+    "context7": { "command": "npx", "args": ["-y", "@upstash/context7-mcp"] }
+  }
+}
+```
+
+Each server is a local program launched over stdio. At startup WispTerm runs
+`tools/list` against every enabled server and advertises its tools to the
+model; a tool call is routed back to its server. Set `"enabled": false` to keep
+a server configured but off. Tool calls honor the same approval prompt
+(`ai-agent-permission`) as other agent tools.
+
+### Three ways to configure
+
+- **In-app panel** — command palette → **MCP Servers**. List keys: **a** add,
+  **e**/**Enter** edit, **d** delete, **space** enable/disable, **t** *Test* (runs
+  the discovery handshake and shows the server's tool names or failure reason),
+  **Ctrl-S** save, **Esc** close. In the add/edit form, **Tab** or **↑/↓** move
+  between fields (name, command, space-separated args) and **⌘V** pastes.
+- **Edit `mcp.json` directly** — for anything the form doesn't cover (remote
+  servers, request headers), press **o** in the panel to open `mcp.json` in your
+  default editor (or edit the file at the path above). After saving the file,
+  press **r** in the panel to reload — no restart needed.
+- **Let the Copilot do it** — ask the Copilot to add a server; it edits
+  `mcp.json` with its file tools. Then press **r** in the panel to apply it.
+
+### Remote servers (via `mcp-remote`)
+
+A hosted/HTTP MCP server is reached through the `mcp-remote` bridge, launched
+over stdio like any other command:
+
+```json
+{
+  "mcpServers": {
+    "jina": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://mcp.jina.ai/v1",
+        "--header",
+        "Authorization: Bearer <YOUR_JINA_API_KEY>"
+      ]
+    }
+  }
+}
+```
+
+Put the API key **directly in the args** (the file is local, like `~/.ssh`).
+WispTerm spawns servers without a shell, so a `${ENV_VAR}` placeholder in args is
+**not** expanded — use the literal key. After editing, press **r** in the MCP
+Servers panel to reload.
+
+**Troubleshooting.** MCP discovery and tool calls are logged under the `mcp`
+scope. Build a diagnostic app and read the log:
+
+```
+zig build -Dtarget=aarch64-macos -Ddebug-console macos-app
+# run it, then:
+grep '(mcp)' "$HOME/Library/Application Support/wispterm/wispterm-debug.log"
+```
+
+You'll see one line per server (`discovered N tool(s)` or the failure reason)
+and one per tool call. A server that fails to start/handshake is skipped, not
+fatal — the log line tells you why.
+
+Scope note: stdio only (local programs, or remote via `mcp-remote`); no native
+HTTP/OAuth transport and no marketplace. The in-app panel edits simple
+name/command/args servers; use direct `mcp.json` editing (by hand or via the
+Copilot) for `env`, request headers, or other complex configs.
+
 ## Skill Distillation
 
 Use `/distill`, `/distill <topic>`, `/沉淀`, or `/沉淀 <主题>` after a useful AI

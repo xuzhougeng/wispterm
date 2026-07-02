@@ -15,6 +15,7 @@ const agent_history = @import("../../agent/history.zig");
 const skill_registry = @import("../../skill/registry.zig");
 const command_registry = @import("../../command/registry.zig");
 const tool_registry = @import("../../tools/registry.zig");
+const mcp_registry = @import("../../tools/mcp_registry.zig");
 const markdown_text = @import("../../markdown_text.zig");
 const ai_chat_protocol = @import("protocol.zig");
 const ai_chat_composer = @import("composer.zig");
@@ -175,6 +176,8 @@ pub const ChatRequest = struct {
     memory_enabled: bool = false,
     dynamic_tools: []const ai_chat_protocol.DynamicToolSpec = &.{},
     dynamic_binary_tools: []const ai_chat_types.DynamicBinaryTool = &.{},
+    mcp_tool_specs: []const ai_chat_protocol.McpToolSpec = &.{},
+    mcp_tools: []const ai_chat_types.McpTool = &.{},
     disabled_first_party_tools: []const []const u8 = &.{},
     copilot: bool = false,
     tool_host: ?ToolHost,
@@ -200,6 +203,8 @@ pub const ChatRequest = struct {
         self.allocator.free(self.messages);
         freeOwnedDynamicToolSpecs(self.allocator, self.dynamic_tools);
         freeOwnedDynamicBinaryTools(self.allocator, self.dynamic_binary_tools);
+        freeOwnedMcpToolSpecs(self.allocator, self.mcp_tool_specs);
+        freeOwnedMcpTools(self.allocator, self.mcp_tools);
         freeOwnedStringList(self.allocator, self.disabled_first_party_tools);
         if (self.tool_snapshot) |snapshot| snapshot.deinit(self.allocator);
         if (self.reply_context) |*ctx| ctx.deinit(self.allocator);
@@ -218,6 +223,7 @@ pub const ChatRequest = struct {
             .max_tokens = self.max_tokens,
             .memory_enabled = self.memory_enabled,
             .dynamic_tools = self.dynamic_tools,
+            .mcp_tools = self.mcp_tool_specs,
             .disabled_first_party_tools = self.disabled_first_party_tools,
             .toolset = self.toolset,
         };
@@ -554,6 +560,83 @@ fn cloneDynamicBinaryTools(allocator: std.mem.Allocator, tools: []const ai_chat_
     return out;
 }
 
+fn freeOwnedMcpToolSpecs(allocator: std.mem.Allocator, specs: []const ai_chat_protocol.McpToolSpec) void {
+    if (specs.len == 0) return;
+    for (specs) |spec| {
+        allocator.free(spec.name);
+        allocator.free(spec.description);
+        allocator.free(spec.properties_json);
+    }
+    allocator.free(specs);
+}
+
+fn freeOwnedMcpTools(allocator: std.mem.Allocator, tools: []const ai_chat_types.McpTool) void {
+    if (tools.len == 0) return;
+    for (tools) |tool| {
+        allocator.free(tool.function_name);
+        allocator.free(tool.description);
+        allocator.free(tool.server_command);
+        freeOwnedStringList(allocator, tool.server_args);
+    }
+    allocator.free(tools);
+}
+
+fn cloneMcpToolSpecs(allocator: std.mem.Allocator, specs: []const ai_chat_protocol.McpToolSpec) ![]ai_chat_protocol.McpToolSpec {
+    if (specs.len == 0) return &.{};
+    const out = try allocator.alloc(ai_chat_protocol.McpToolSpec, specs.len);
+    var written: usize = 0;
+    errdefer {
+        for (out[0..written]) |spec| {
+            allocator.free(spec.name);
+            allocator.free(spec.description);
+            allocator.free(spec.properties_json);
+        }
+        allocator.free(out);
+    }
+    for (specs) |spec| {
+        const name = try allocator.dupe(u8, spec.name);
+        errdefer allocator.free(name);
+        const description = try allocator.dupe(u8, spec.description);
+        errdefer allocator.free(description);
+        const properties_json = try allocator.dupe(u8, spec.properties_json);
+        out[written] = .{ .name = name, .description = description, .properties_json = properties_json };
+        written += 1;
+    }
+    return out;
+}
+
+fn cloneMcpTools(allocator: std.mem.Allocator, tools: []const ai_chat_types.McpTool) ![]ai_chat_types.McpTool {
+    if (tools.len == 0) return &.{};
+    const out = try allocator.alloc(ai_chat_types.McpTool, tools.len);
+    var written: usize = 0;
+    errdefer {
+        for (out[0..written]) |tool| {
+            allocator.free(tool.function_name);
+            allocator.free(tool.description);
+            allocator.free(tool.server_command);
+            freeOwnedStringList(allocator, tool.server_args);
+        }
+        allocator.free(out);
+    }
+    for (tools) |tool| {
+        const function_name = try allocator.dupe(u8, tool.function_name);
+        errdefer allocator.free(function_name);
+        const description = try allocator.dupe(u8, tool.description);
+        errdefer allocator.free(description);
+        const server_command = try allocator.dupe(u8, tool.server_command);
+        errdefer allocator.free(server_command);
+        const server_args = try cloneStringList(allocator, tool.server_args);
+        out[written] = .{
+            .function_name = function_name,
+            .description = description,
+            .server_command = server_command,
+            .server_args = server_args,
+        };
+        written += 1;
+    }
+    return out;
+}
+
 fn freeDynamicToolSpecs(allocator: std.mem.Allocator) void {
     if (!g_dynamic_tool_specs_owned) return;
     freeDynamicToolSpecsSlice(allocator, g_dynamic_tool_specs);
@@ -607,6 +690,13 @@ pub fn reloadDynamicToolSpecs(allocator: std.mem.Allocator) void {
     g_dynamic_tool_specs_owned = g_dynamic_tool_specs.len != 0;
     g_dynamic_binary_tools = snapshots.runtime;
     g_dynamic_binary_tools_owned = g_dynamic_binary_tools.len != 0;
+}
+
+/// Re-read <configDir>/mcp.json, run discovery, and refresh the advertised +
+/// dispatchable MCP tool snapshots (cache owned by mcp_registry). Never fails
+/// the app: on any error the snapshots are simply left empty.
+pub fn reloadMcpTools(allocator: std.mem.Allocator) void {
+    mcp_registry.reloadCache(allocator);
 }
 
 pub fn reloadFirstPartyToolState(allocator: std.mem.Allocator) void {
@@ -709,6 +799,7 @@ pub fn currentAgentSettings() AgentSettings {
     if (g_default_working_dir_len > 0) s.working_dir = g_default_working_dir_buf[0..g_default_working_dir_len];
     s.dynamic_tools = g_dynamic_tool_specs;
     s.dynamic_binary_tools = g_dynamic_binary_tools;
+    s.mcp_tools = mcp_registry.cachedTools();
     s.disabled_first_party_tools = g_first_party_disabled_tools;
     return s;
 }
@@ -4071,6 +4162,12 @@ pub const Session = struct {
         const dynamic_binary_tools = try cloneDynamicBinaryTools(self.allocator, settings.dynamic_binary_tools);
         var dynamic_binary_tools_owned = true;
         errdefer if (dynamic_binary_tools_owned) freeOwnedDynamicBinaryTools(self.allocator, dynamic_binary_tools);
+        const mcp_tool_specs = try cloneMcpToolSpecs(self.allocator, mcp_registry.cachedSpecs());
+        var mcp_tool_specs_owned = true;
+        errdefer if (mcp_tool_specs_owned) freeOwnedMcpToolSpecs(self.allocator, mcp_tool_specs);
+        const mcp_tools = try cloneMcpTools(self.allocator, settings.mcp_tools);
+        var mcp_tools_owned = true;
+        errdefer if (mcp_tools_owned) freeOwnedMcpTools(self.allocator, mcp_tools);
         const disabled_first_party_tools = try cloneStringList(self.allocator, settings.disabled_first_party_tools);
         var disabled_first_party_tools_owned = true;
         errdefer if (disabled_first_party_tools_owned) freeOwnedStringList(self.allocator, disabled_first_party_tools);
@@ -4092,6 +4189,8 @@ pub const Session = struct {
             .memory_enabled = settings.memory_enabled,
             .dynamic_tools = dynamic_tools,
             .dynamic_binary_tools = dynamic_binary_tools,
+            .mcp_tool_specs = mcp_tool_specs,
+            .mcp_tools = mcp_tools,
             .disabled_first_party_tools = disabled_first_party_tools,
             .copilot = self.presentation().isSidebar(),
             .tool_host = tool_host,
@@ -4109,6 +4208,8 @@ pub const Session = struct {
         subagent_profile = null;
         dynamic_tools_owned = false;
         dynamic_binary_tools_owned = false;
+        mcp_tool_specs_owned = false;
+        mcp_tools_owned = false;
         disabled_first_party_tools_owned = false;
         if (self.presentation().isSidebar() and self.bound_surface_id_len > 0) {
             // Inline the write-context seed directly on ChatRequest (the field

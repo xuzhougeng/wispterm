@@ -27,6 +27,14 @@ pub fn clearTestConfigDirForCurrentThread() void {
     test_config_dir_override = null;
 }
 
+/// Thin setter/clearer for `test_config_dir_override`, used by feature tests
+/// (e.g. mcp_registry) that want a one-call override/reset pair instead of
+/// the two named functions above. No-op outside `builtin.is_test`.
+pub fn setTestConfigDirOverride(path: ?[]const u8) void {
+    if (!builtin.is_test) return;
+    test_config_dir_override = path;
+}
+
 pub fn configDirFromEnvForOs(
     allocator: std.mem.Allocator,
     os_tag: std.Target.Os.Tag,

@@ -27,6 +27,7 @@ const tool_access = @import("access.zig");
 const agent_files = @import("files.zig");
 const agent_exec = @import("exec.zig");
 const agent_dynamic = @import("dynamic.zig");
+const agent_mcp = @import("mcp.zig");
 const agent_weixin = @import("weixin.zig");
 const agent_ui_screenshot = @import("ui_screenshot.zig");
 
@@ -280,6 +281,10 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         const cwd = tool_args.string(args.value, "cwd") orelse ctx.settings.working_dir;
         const timeout_ms = tool_args.int(args.value, "timeout_ms") orelse ctx.settings.command_timeout_ms;
         return agent_dynamic.run(ctx, tool, argv_args, cwd, timeout_ms);
+    }
+    if (agent_mcp.find(ctx.settings.mcp_tools, call.name)) |tool| {
+        // MCP tool arguments are server-defined; forward the raw JSON as-is.
+        return agent_mcp.run(ctx, tool, call.arguments);
     }
     return std.fmt.allocPrint(ctx.allocator, "Unknown tool: {s}", .{call.name});
 }
@@ -640,6 +645,39 @@ test "executeToolCall dispatches enabled binary tool by argv" {
     try std.testing.expect(std.mem.indexOf(u8, out, "Unknown tool") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "hello") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "world") != null);
+}
+
+test "executeToolCall dispatches an MCP tool through its server" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest; // uses /bin/sh
+    const a = std.testing.allocator;
+    var dummy: u8 = 0;
+    const init_line = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"serverInfo\":{\"name\":\"fake\",\"version\":\"1\"}}}";
+    const call_line = "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi via dispatch\"}],\"isError\":false}}";
+    const script = "printf '%s\\n' '" ++ init_line ++ "' '" ++ call_line ++ "'; exec cat >/dev/null";
+    const args = [_][]const u8{ "-c", script };
+    const tools = [_]types.McpTool{.{
+        .function_name = "echo",
+        .description = "Echo",
+        .server_command = "/bin/sh",
+        .server_args = args[0..],
+    }};
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .permission = .full, .mcp_tools = tools[0..] },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const out = try executeToolCall(&ctx, .{
+        .id = @constCast("1"),
+        .name = @constCast("echo"),
+        .arguments = @constCast("{}"),
+    });
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Unknown tool") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "hi via dispatch") != null);
 }
 
 test "executeToolCall asks before binary tool in auto mode" {

@@ -3,6 +3,7 @@ const settings_page = @import("settings_page.zig");
 const toasts = @import("toasts.zig");
 const confirm_modals = @import("confirm_modals.zig");
 const ssh_profiles = @import("ssh_profiles.zig");
+const mcp_servers = @import("mcp_servers.zig");
 const assistant_profiles = @import("assistant_profiles.zig");
 const feishu_config = @import("feishu_config.zig");
 const quick_ai_config = @import("quick_ai_config.zig");
@@ -38,6 +39,7 @@ pub const OverlayState = struct {
     toasts: toasts.State = .{},
     confirms: confirm_modals.State = .{},
     ssh: ssh_profiles.State = .{},
+    mcp: mcp_servers.State = .{},
     assistant_profiles: assistant_profiles.State = .{},
     feishu: FeishuFormState = .{},
     quick_ai: QuickAiFormState = .{},
@@ -65,6 +67,8 @@ test "overlay state aggregates migrated overlay groups" {
     state.assistant_profiles.setFormField(.name, "claude");
     state.session.ai_history_source_selected = 2;
     state.command_palette.openWithMode(.commands);
+    state.mcp.beginAdd();
+    state.mcp.setFormField(.name, "srv");
 
     try std.testing.expect(state.settings.visible);
     try std.testing.expectEqualStrings("Copied", state.toasts.copy.text().?);
@@ -73,6 +77,7 @@ test "overlay state aggregates migrated overlay groups" {
     try std.testing.expectEqualStrings("claude", state.assistant_profiles.formField(.name));
     try std.testing.expectEqual(@as(usize, 2), state.session.ai_history_source_selected);
     try std.testing.expect(state.command_palette.visible);
+    try std.testing.expectEqualStrings("srv", state.mcp.formField(.name));
 }
 
 test "overlay state deinit releases settings cache" {

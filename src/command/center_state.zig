@@ -9,6 +9,7 @@ pub const CommandAction = enum {
     new_agent,
     toggle_ai_copilot,
     manage_ai_profiles,
+    manage_mcp_servers,
     select_agent_history,
     split_right,
     split_down,
@@ -63,14 +64,15 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "New Copilot", .detail = "Open a new Copilot tab with the default AI config", .shortcut = "", .action = .new_agent },
     .{ .title = "Toggle Copilot", .detail = "Open or close the Copilot sidebar on the current terminal", .shortcut = "", .action = .toggle_ai_copilot },
     .{ .title = "Manage AI Profiles", .detail = "Create, edit, or delete saved AI profiles", .shortcut = "", .action = .manage_ai_profiles },
+    .{ .title = "MCP Servers", .detail = "Add, edit, test, or remove MCP tool servers", .shortcut = "", .action = .manage_mcp_servers },
     .{ .title = "Copilot History", .detail = "Open the command-center Copilot history picker", .shortcut = "", .action = .select_agent_history },
     .{ .title = "Skill Center", .detail = "Manage Claude Code / Codex skills and local executable tools", .shortcut = "", .action = .open_skill_center },
     .{ .title = "Split Right", .detail = "Create a panel to the right", .shortcut = "", .action = .split_right },
     .{ .title = "Split Down", .detail = "Create a panel below", .shortcut = "", .action = .split_down },
     .{ .title = "Split Left", .detail = "Create a panel to the left", .shortcut = "", .action = .split_left },
     .{ .title = "Split Up", .detail = "Create a panel above", .shortcut = "", .action = .split_up },
-    .{ .title = "Previous Panel", .detail = "Move focus to the previous panel", .shortcut = "", .action = .focus_previous },
-    .{ .title = "Next Panel", .detail = "Move focus to the next panel", .shortcut = "", .action = .focus_next },
+    // Previous/Next Panel removed from the palette (declutter); the Shift+Cmd+[ / ]
+    // keybinds in keybind.zig still work — focus_previous/focus_next stay in the enum.
     .{ .title = "Equalize Panels", .detail = "Reset split sizes in the current tab", .shortcut = "", .action = .equalize_splits },
     .{ .title = "Close Panel / Tab", .detail = "Close focused panel or tab; press again for the last panel", .shortcut = "", .action = .close_split_or_tab },
     .{ .title = "Toggle Sidebar", .detail = "Show or hide the tab sidebar", .shortcut = "", .action = .toggle_sidebar },
@@ -337,6 +339,10 @@ test "command center exposes Toggle Copilot" {
 
 test "command center includes Manage AI Profiles action" {
     try expectCommandEntry("Manage AI Profiles", .manage_ai_profiles);
+}
+
+test "command center includes MCP Servers action" {
+    try expectCommandEntry("MCP Servers", .manage_mcp_servers);
 }
 
 test "command center includes Copilot History action" {

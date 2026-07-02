@@ -165,7 +165,9 @@ test {
     _ = @import("renderer/overlays/assistant_profiles.zig");
     _ = @import("renderer/overlays/feishu_config.zig");
     _ = @import("renderer/overlays/quick_ai_config.zig");
+    _ = @import("renderer/overlays/mcp_servers.zig");
     _ = @import("assistant/quick_verify.zig");
+    _ = @import("assistant/mcp_probe.zig");
     _ = @import("renderer/overlays/session_launcher.zig");
     _ = @import("renderer/overlays/state.zig");
     _ = @import("renderer/overlays/state_guard.zig");
@@ -259,6 +261,8 @@ test {
     _ = @import("agent_tools/files.zig");
     _ = @import("agent_tools/exec.zig");
     _ = @import("agent_tools/dynamic.zig");
+    _ = @import("agent_tools/mcp_client.zig");
+    _ = @import("agent_tools/mcp.zig");
     _ = @import("agent_tools/weixin.zig");
     _ = @import("research/commands.zig");
     _ = @import("research/web_search.zig");
@@ -340,6 +344,7 @@ test {
     _ = @import("assistant/conversation/model_switch.zig");
     _ = @import("command/registry.zig");
     _ = @import("tools/registry.zig");
+    _ = @import("tools/mcp_registry.zig");
     _ = @import("tools/import.zig");
     // Unified subprocess lifecycle: spawn → concurrent drain → timeout/cancel →
     // reap-exactly-once. Spawn-based tests gate on non-Windows; type guards run

@@ -31,6 +31,7 @@ pub const AgentSettings = struct {
     distill_suggest_enabled: bool = false,
     dynamic_tools: []const ai_chat_protocol.DynamicToolSpec = &.{},
     dynamic_binary_tools: []const DynamicBinaryTool = &.{},
+    mcp_tools: []const McpTool = &.{},
     disabled_first_party_tools: []const []const u8 = &.{},
 };
 
@@ -38,6 +39,17 @@ pub const DynamicBinaryTool = struct {
     function_name: []const u8,
     executable_abs: []const u8,
     description: []const u8,
+};
+
+/// One tool exposed by an external MCP (Model Context Protocol) server the
+/// Copilot may call. `function_name` is both the model-facing name and the
+/// server-side tool name (v0 assumes no cross-server collisions; prefix
+/// per-server if that changes). The server is spawned per call via stdio.
+pub const McpTool = struct {
+    function_name: []const u8,
+    description: []const u8,
+    server_command: []const u8,
+    server_args: []const []const u8 = &.{},
 };
 
 // AgentPermission lives in agent/config.zig (extracted so config.zig
