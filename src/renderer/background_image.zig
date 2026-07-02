@@ -8,6 +8,7 @@ const std = @import("std");
 const Config = @import("../config.zig");
 const AppWindow = @import("../AppWindow.zig");
 const gpu = AppWindow.gpu;
+const layout = @import("background_image_layout.zig");
 const ui_pipeline = @import("ui_pipeline.zig");
 
 const c = @cImport({
@@ -44,7 +45,7 @@ fn freeLoadedPath() void {
     g_loaded_path = null;
 }
 
-/// Load an image from `path` and upload it as a GL texture. Replaces any
+/// Load an image from `path` and upload it as a GPU texture. Replaces any
 /// previously loaded image. Call with `null` (or empty) to disable. Safe to
 /// call repeatedly for hot-reload — duplicate loads of the same path are a
 /// no-op.
@@ -116,71 +117,6 @@ pub fn deinit() void {
     freeLoadedPath();
 }
 
-/// Compute UVs for a fullscreen quad given the chosen mode.
-/// For fill/fit/center we keep the quad covering the whole framebuffer and
-/// adjust UVs so the image aspect is preserved. For tile we set UVs > 1 and
-/// rely on the repeat sampler mode.
-const Uv = struct { u_min: f32, v_min: f32, u_max: f32, v_max: f32 };
-
-fn computeUv(fb_w: f32, fb_h: f32, mode: Mode) Uv {
-    if (g_width <= 0 or g_height <= 0) return .{ .u_min = 0, .v_min = 0, .u_max = 1, .v_max = 1 };
-    const iw: f32 = @floatFromInt(g_width);
-    const ih: f32 = @floatFromInt(g_height);
-
-    switch (mode) {
-        .fill => {
-            // Cover: the image is scaled so the smaller axis fills the
-            // framebuffer; the larger axis is cropped via UVs (< 1 range).
-            const win_aspect = fb_w / fb_h;
-            const img_aspect = iw / ih;
-            if (img_aspect > win_aspect) {
-                // image is wider than the window — crop sides
-                const visible = win_aspect / img_aspect;
-                const offset = (1.0 - visible) * 0.5;
-                return .{ .u_min = offset, .v_min = 0, .u_max = 1.0 - offset, .v_max = 1 };
-            } else {
-                // image is taller — crop top/bottom
-                const visible = img_aspect / win_aspect;
-                const offset = (1.0 - visible) * 0.5;
-                return .{ .u_min = 0, .v_min = offset, .u_max = 1, .v_max = 1.0 - offset };
-            }
-        },
-        .fit => {
-            // Letterbox: scale so the larger axis fills, the smaller is
-            // padded with extra UV space (sampled outside [0,1]). With
-            // CLAMP_TO_EDGE the padding shows the edge pixels — usually fine
-            // for landscape wallpapers but acceptable as a v1.
-            const win_aspect = fb_w / fb_h;
-            const img_aspect = iw / ih;
-            if (img_aspect > win_aspect) {
-                const extra = img_aspect / win_aspect;
-                const offset = (1.0 - extra) * 0.5;
-                return .{ .u_min = 0, .v_min = offset, .u_max = 1, .v_max = 1.0 - offset };
-            } else {
-                const extra = win_aspect / img_aspect;
-                const offset = (1.0 - extra) * 0.5;
-                return .{ .u_min = offset, .v_min = 0, .u_max = 1.0 - offset, .v_max = 1 };
-            }
-        },
-        .center => {
-            // 1:1 pixel scale, centered. UV range is window/image so a
-            // center crop or surround happens naturally. Outside [0,1] the
-            // CLAMP_TO_EDGE wrap shows the edge row — close enough.
-            const u_range = fb_w / iw;
-            const v_range = fb_h / ih;
-            const u_off = (1.0 - u_range) * 0.5;
-            const v_off = (1.0 - v_range) * 0.5;
-            return .{ .u_min = u_off, .v_min = v_off, .u_max = u_off + u_range, .v_max = v_off + v_range };
-        },
-        .tile => {
-            // Repeat the image at native size. UVs equal window / image.
-            const u_range = fb_w / iw;
-            const v_range = fb_h / ih;
-            return .{ .u_min = 0, .v_min = 0, .u_max = u_range, .v_max = v_range };
-        },
-    }
-}
-
 /// Draw the loaded image filling the current viewport. The caller must have
 /// already set the viewport and projection. No-op when no image is loaded.
 /// Note: `viewport_height` is the height in pixels of the current viewport
@@ -189,22 +125,13 @@ pub fn drawFullscreen(viewport_width: f32, viewport_height: f32) void {
     if (!g_enabled or !g_texture.isValid()) return;
     if (ui_pipeline.emoji.program == 0) return;
 
-    const uv = computeUv(viewport_width, viewport_height, g_mode);
-
-    // Two triangles covering the whole viewport in pixel coords.
-    // drawTextureQuad's setProjection maps [0..w] x [0..h] to NDC.
-    const x_lo: f32 = 0;
-    const y_lo: f32 = 0;
-    const x_hi: f32 = viewport_width;
-    const y_hi: f32 = viewport_height;
-    const vertices = [6][4]f32{
-        .{ x_lo, y_hi, uv.u_min, uv.v_min }, // top-left
-        .{ x_lo, y_lo, uv.u_min, uv.v_max }, // bottom-left
-        .{ x_hi, y_lo, uv.u_max, uv.v_max }, // bottom-right
-        .{ x_lo, y_hi, uv.u_min, uv.v_min },
-        .{ x_hi, y_lo, uv.u_max, uv.v_max },
-        .{ x_hi, y_hi, uv.u_max, uv.v_min }, // top-right
+    const image_size = layout.Size{
+        .width = @floatFromInt(g_width),
+        .height = @floatFromInt(g_height),
     };
+    const viewport_size = layout.Size{ .width = viewport_width, .height = viewport_height };
+    const uv = layout.uvForMode(image_size, viewport_size, g_mode);
+    const vertices = layout.fullscreenVertices(viewport_size, uv);
 
     // The image is opaque RGBA; we want to write it directly without blending
     // against whatever ClearColor wrote. Disable blending for this single draw.
