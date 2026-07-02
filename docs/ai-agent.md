@@ -284,37 +284,53 @@ a server configured but off. Tool calls honor the same approval prompt
 
 ### Three ways to configure
 
-- **In-app panel** — command palette → **MCP Servers**. List keys: **a** add,
-  **e**/**Enter** edit, **d** delete, **space** enable/disable, **t** *Test* (runs
-  the discovery handshake and shows the server's tool names or failure reason),
-  **Ctrl-S** save, **Esc** close. In the add/edit form, **Tab** or **↑/↓** move
-  between fields (name, command, space-separated args) and **⌘V** pastes.
+- **In-app panel** — command palette → **MCP Servers**. The list is a filterable
+  picker: **type** to filter, **↑/↓** to move, **Enter** to edit the highlighted
+  server, **Space** to enable/disable it, **Esc** to clear the filter or close.
+  The trailing rows run **New MCP Server**, **Edit mcp.json**, and **Close**. The
+  add/edit form walks its rows with **Tab**/**↑↓** and activates with **Enter**;
+  its action rows are **Save**, **Test connection** (runs the discovery handshake
+  and shows the tool names or the failure reason), **Delete**, and **Cancel**, and
+  **⌘V** pastes into the focused field. There is no separate save or reload step —
+  every change (save, delete, enable/disable) is written to `mcp.json` and the
+  tool cache is reloaded immediately.
 - **Edit `mcp.json` directly** — for anything the form doesn't cover (remote
-  servers, request headers), press **o** in the panel to open `mcp.json` in your
-  default editor (or edit the file at the path above). After saving the file,
-  press **r** in the panel to reload — no restart needed.
-- **Let the Copilot do it** — ask the Copilot to add a server; it edits
-  `mcp.json` with its file tools. Then press **r** in the panel to apply it.
+  servers, request headers), choose **Edit mcp.json** in the panel (or edit the
+  file at the path above). The panel closes so it can't clobber your edits; reopen
+  it to pick the changes back up.
+- **Let the Copilot do it** — ask the Copilot "what MCP servers do I have?" or
+  "add the jina MCP server". It uses the built-in `mcp_config` tool to list and
+  configure servers (`list` / `add` / `remove` / `enable` / `disable`), writing
+  `mcp.json` and reloading immediately. Mutations ask for approval unless the
+  agent permission is `full`.
 
 ### Remote servers (via `mcp-remote`)
 
 A hosted/HTTP MCP server is reached through the `mcp-remote` bridge, launched
-over stdio like any other command:
+over stdio like any other command. Jina's server works **without an API key**
+(free tools like `search_jina_blog`, `primer`, `guess_datetime_url`,
+`search_bibtex`, rate-limited), so this config is ready to use and can be typed
+straight into the add form — Name `jina`, Command `npx`, Args
+`-y mcp-remote https://mcp.jina.ai/v1`:
 
 ```json
 {
   "mcpServers": {
     "jina": {
       "command": "npx",
-      "args": [
-        "mcp-remote",
-        "https://mcp.jina.ai/v1",
-        "--header",
-        "Authorization: Bearer <YOUR_JINA_API_KEY>"
-      ]
+      "args": ["-y", "mcp-remote", "https://mcp.jina.ai/v1"]
     }
   }
 }
+```
+
+For higher rate limits and key-only tools (web/arXiv search, embeddings, PDF
+extraction), add an auth header. Its value contains a space, which the form's
+space-split Args field can't express, so add it by editing `mcp.json` (press
+**o**):
+
+```json
+"args": ["-y", "mcp-remote", "https://mcp.jina.ai/v1", "--header", "Authorization: Bearer <YOUR_JINA_API_KEY>"]
 ```
 
 Put the API key **directly in the args** (the file is local, like `~/.ssh`).
