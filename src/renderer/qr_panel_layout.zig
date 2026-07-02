@@ -44,6 +44,24 @@ pub const ButtonLabel = struct {
     max_w: f32,
 };
 
+pub const DrawRect = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+};
+
+pub const PanelChrome = struct {
+    scrim: DrawRect,
+    border: DrawRect,
+    panel: DrawRect,
+};
+
+pub const QrFrame = struct {
+    border: DrawRect,
+    fill: DrawRect,
+};
+
 pub fn rectY(window_height: f32, rect: anytype) f32 {
     return @round(window_height - rect.top_px - rect.h);
 }
@@ -64,6 +82,41 @@ pub fn qrModules(rect: anytype, matrix_size: usize) QrModules {
         .draw_size = draw_size,
         .start_x = @round(rect.x + (rect.w - draw_size) / 2.0 + module_px * @as(f32, @floatFromInt(quiet_modules))),
         .start_top_px = @round(rect.top_px + (rect.h - draw_size) / 2.0 + module_px * @as(f32, @floatFromInt(quiet_modules))),
+    };
+}
+
+pub fn panelChrome(rect: anytype, window_width: f32, window_height: f32) PanelChrome {
+    const y = rectY(window_height, rect);
+    return .{
+        .scrim = .{ .x = 0, .y = 0, .w = window_width, .h = window_height },
+        .border = .{ .x = rect.x - 1, .y = y - 1, .w = rect.w + 2, .h = rect.h + 2 },
+        .panel = .{ .x = rect.x, .y = y, .w = rect.w, .h = rect.h },
+    };
+}
+
+pub fn qrFrame(rect: anytype, window_height: f32) QrFrame {
+    const y = rectY(window_height, rect);
+    return .{
+        .border = .{ .x = rect.x - 10, .y = y - 10, .w = rect.w + 20, .h = rect.h + 20 },
+        .fill = .{ .x = rect.x - 8, .y = y - 8, .w = rect.w + 16, .h = rect.h + 16 },
+    };
+}
+
+pub fn fallbackMessage(rect: anytype, window_height: f32, label_w: f32) ButtonLabel {
+    const y = rectY(window_height, rect) + rect.h * 0.52;
+    return .{
+        .x = rect.x + @max(8.0, (rect.w - label_w) / 2.0),
+        .y = y,
+        .max_w = @max(1.0, rect.w - 16.0),
+    };
+}
+
+pub fn fallbackDetail(rect: anytype, window_height: f32, cell_h: f32) ButtonLabel {
+    const message = fallbackMessage(rect, window_height, 0);
+    return .{
+        .x = rect.x + 12.0,
+        .y = message.y - cell_h - 10.0,
+        .max_w = @max(1.0, rect.w - 24.0),
     };
 }
 
@@ -103,6 +156,36 @@ test "small QR rect still keeps at least one pixel per module" {
     const layout = qrModules(rect, 177);
     try std.testing.expectEqual(@as(f32, 1), layout.module_px);
     try std.testing.expect(layout.draw_size > rect.w);
+}
+
+test "panel chrome converts shared QR panel surfaces to draw rectangles" {
+    const rect = Rect{ .x = 90, .top_px = 80, .w = 320, .h = 440 };
+    const chrome = panelChrome(rect, 900, 700);
+
+    try std.testing.expectEqual(DrawRect{ .x = 0, .y = 0, .w = 900, .h = 700 }, chrome.scrim);
+    try std.testing.expectEqual(DrawRect{ .x = 89, .y = 179, .w = 322, .h = 442 }, chrome.border);
+    try std.testing.expectEqual(DrawRect{ .x = 90, .y = 180, .w = 320, .h = 440 }, chrome.panel);
+}
+
+test "QR frame expands the matrix area consistently" {
+    const rect = Rect{ .x = 140, .top_px = 150, .w = 260, .h = 260 };
+    const frame = qrFrame(rect, 640);
+
+    try std.testing.expectEqual(DrawRect{ .x = 130, .y = 220, .w = 280, .h = 280 }, frame.border);
+    try std.testing.expectEqual(DrawRect{ .x = 132, .y = 222, .w = 276, .h = 276 }, frame.fill);
+}
+
+test "fallback labels share centered message and detail geometry" {
+    const rect = Rect{ .x = 120, .top_px = 200, .w = 240, .h = 250 };
+    const message = fallbackMessage(rect, 700, 96);
+    const detail = fallbackDetail(rect, 700, 22);
+
+    try std.testing.expectEqual(@as(f32, 192), message.x);
+    try std.testing.expectEqual(@as(f32, 380), message.y);
+    try std.testing.expectEqual(@as(f32, 224), message.max_w);
+    try std.testing.expectEqual(@as(f32, 132), detail.x);
+    try std.testing.expectEqual(@as(f32, 348), detail.y);
+    try std.testing.expectEqual(@as(f32, 216), detail.max_w);
 }
 
 test "button label centers text and reserves horizontal padding" {

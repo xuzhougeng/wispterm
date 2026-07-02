@@ -56,8 +56,8 @@ pub fn render(window_width: f32, window_height: f32, top_offset: f32) void {
     AppWindow.gpu.state.setBlendMode(.alpha);
 
     const l = panel.layout(window_width, window_height, top_offset);
-    const panel_y = rectY(window_height, l.panel);
-    const qr_y = rectY(window_height, l.qr);
+    const chrome = qr_layout.panelChrome(l.panel, window_width, window_height);
+    const frame = qr_layout.qrFrame(l.qr, window_height);
 
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
@@ -70,9 +70,9 @@ pub fn render(window_width: f32, window_height: f32, top_offset: f32) void {
     const muted = mix(bg, fg, 0.62);
     const danger = .{ 0.88, 0.28, 0.24 };
 
-    AppWindow.overlays.renderRoundedQuadAlpha(0, 0, window_width, window_height, 1, .{ 0.0, 0.0, 0.0 }, 0.28);
-    AppWindow.overlays.renderRoundedQuadAlpha(l.panel.x - 1, panel_y - 1, l.panel.w + 2, l.panel.h + 2, 10, panel_border, 0.50);
-    AppWindow.overlays.renderRoundedQuadAlpha(l.panel.x, panel_y, l.panel.w, l.panel.h, 9, panel_bg, 0.98);
+    AppWindow.overlays.renderRoundedQuadAlpha(chrome.scrim.x, chrome.scrim.y, chrome.scrim.w, chrome.scrim.h, 1, .{ 0.0, 0.0, 0.0 }, 0.28);
+    AppWindow.overlays.renderRoundedQuadAlpha(chrome.border.x, chrome.border.y, chrome.border.w, chrome.border.h, 10, panel_border, 0.50);
+    AppWindow.overlays.renderRoundedQuadAlpha(chrome.panel.x, chrome.panel.y, chrome.panel.w, chrome.panel.h, 9, panel_bg, 0.98);
 
     const pad_x: f32 = 28;
     const title_y = textYFromTop(window_height, l.panel.top_px + 24);
@@ -90,8 +90,8 @@ pub fn render(window_width: f32, window_height: f32, top_offset: f32) void {
     const detail_y = textYFromTop(window_height, l.panel.top_px + 94);
     _ = titlebar.renderTextLimited(panel.statusDetail(s), l.panel.x + pad_x, detail_y, muted, l.panel.w - pad_x * 2);
 
-    ui_pipeline.fillQuadAlpha(l.qr.x - 10, qr_y - 10, l.qr.w + 20, l.qr.h + 20, qr_border, 0.42);
-    ui_pipeline.fillQuadAlpha(l.qr.x - 8, qr_y - 8, l.qr.w + 16, l.qr.h + 16, qr_bg, 1.0);
+    ui_pipeline.fillQuadAlpha(frame.border.x, frame.border.y, frame.border.w, frame.border.h, qr_border, 0.42);
+    ui_pipeline.fillQuadAlpha(frame.fill.x, frame.fill.y, frame.fill.w, frame.fill.h, qr_bg, 1.0);
 
     if (panel.qrMatrix()) |matrix| {
         renderQrMatrix(matrix, l.qr, window_height);
@@ -122,11 +122,10 @@ fn renderQrMatrix(matrix: panel.QrMatrixView, rect: panel.Rect, window_height: f
 }
 
 fn renderQrFallback(l: panel.Layout, window_height: f32, normal: [3]f32) void {
-    const qr_y = rectY(window_height, l.qr);
     const message = if (panel.qrGenerationFailed()) "二维码生成失败" else "正在获取二维码…";
     const msg_w = textWidth(message);
-    const msg_y = qr_y + l.qr.h * 0.52;
-    _ = titlebar.renderTextLimited(message, l.qr.x + @max(8.0, (l.qr.w - msg_w) / 2.0), msg_y, normal, l.qr.w - 16);
+    const message_layout = qr_layout.fallbackMessage(l.qr, window_height, msg_w);
+    _ = titlebar.renderTextLimited(message, message_layout.x, message_layout.y, normal, message_layout.max_w);
 }
 
 fn renderButton(rect: panel.Rect, window_height: f32, label: []const u8, base: [3]f32, text_color: [3]f32, primary: bool) void {
