@@ -801,6 +801,7 @@ try {
         )
     )
     $hasD3D11PolicyHealthy = $diagText -match "gpu-backend=d3d11 present=dxgi .*policy_state=healthy.*fallback_candidate=false"
+    $hasD3D11RecoveryRequested = $diagText -match "gpu-backend=d3d11 recovery requested"
     $hasUiProbe = $diagText -match "d3d11-ui-smoke probe .* ok=true"
     $hasOffscreen = $diagText -match "d3d11-offscreen-smoke round-trip active"
     $hasFailures = $diagText -match "present failed|shader compile failed|backbuffer probe failed|resize sync failed"
@@ -821,6 +822,7 @@ try {
         $hasD3D11Present -and
         $hasD3D11InitDetails -and
         $hasD3D11PolicyHealthy -and
+        !$hasD3D11RecoveryRequested -and
         $hasUiProbe -and
         $hasOffscreen -and
         !$hasFailures
@@ -970,6 +972,7 @@ try {
             d3d11_present = [bool]$hasD3D11Present
             d3d11_init_details = [bool]$hasD3D11InitDetails
             d3d11_policy_healthy = [bool]$hasD3D11PolicyHealthy
+            d3d11_recovery_requested = [bool]$hasD3D11RecoveryRequested
             ui_probe_ok = [bool]$hasUiProbe
             offscreen_round_trip = [bool]$hasOffscreen
             failure_lines = [bool]$hasFailures

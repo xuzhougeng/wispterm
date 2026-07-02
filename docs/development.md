@@ -176,8 +176,9 @@ screenshots, writes JSON metrics under
 `zig-out\d3d11-normal-session-smoke\`, and verifies that
 `render-diagnostic.log` contains `gpu-backend=d3d11 present=dxgi`, D3D11 init
 details for swap effect / adapter / fallback reason / healthy policy state, a
-successful `d3d11-ui-smoke` probe, and an offscreen round-trip marker. It is a
-Phase IV and Phase V diagnostics/policy evidence tool only; it does not change
+successful `d3d11-ui-smoke` probe, an offscreen round-trip marker, and no D3D11
+recovery request in the healthy path. It is a Phase IV and Phase V
+diagnostics/policy/recovery-coordination evidence tool only; it does not change
 the Windows default renderer.
 
 ## macOS UI Smoke Tests
