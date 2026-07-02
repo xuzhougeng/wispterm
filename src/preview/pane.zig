@@ -88,9 +88,9 @@ pdf_page: u32 = 0,
 pdf_page_count: u32 = 0,
 pdf_pending_page: ?u32 = null, // optimistic flip target while a job runs
 pdf_render_fn: PdfRenderFn = pdf_render.renderPage,
-// GL image-texture cache (migrated from markdown_preview_renderer.zig). Touched
+// Image texture cache (migrated from markdown_preview_renderer.zig). Touched
 // only on the render thread.
-image_texture: gpu.c.GLuint = 0,
+image_texture: gpu.Texture = gpu.Texture.invalid(),
 image_width: c_int = 0,
 image_height: c_int = 0,
 image_generation: u64 = std.math.maxInt(u64),
@@ -493,10 +493,9 @@ fn destroyJob(job: *PreviewJob) void {
 }
 
 pub fn unloadImageTexture(self: *PreviewPane) void {
-    if (self.image_texture != 0) {
-        var t = gpu.Texture.fromHandle(self.image_texture);
-        t.destroy();
-        self.image_texture = 0;
+    if (self.image_texture.isValid()) {
+        self.image_texture.destroy();
+        self.image_texture = gpu.Texture.invalid();
     }
     self.image_width = 0;
     self.image_height = 0;

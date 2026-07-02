@@ -40,19 +40,25 @@ pub fn wisptermDocs(allocator: std.mem.Allocator, topic: ?[]const u8) ![]u8 {
 
 test "skill_info loads from explicit root paths" {
     const allocator = std.testing.allocator;
-    const root = ".zig-cache/skill-root-load-test";
-    std.fs.cwd().deleteTree(root) catch {};
-    defer std.fs.cwd().deleteTree(root) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    try std.fs.cwd().makePath(root ++ "/bin/skills/web");
-    try std.fs.cwd().writeFile(.{
-        .sub_path = root ++ "/bin/skills/web/SKILL.md",
+    try tmp.dir.makePath("bin/skills/web");
+    try tmp.dir.writeFile(.{
+        .sub_path = "bin/skills/web/SKILL.md",
         .data = "---\nname: web\ndescription: Browse pages.\n---\n# Web Skill\n",
     });
 
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const cwd_skills_root = try std.fs.path.join(allocator, &.{ root, "cwd", "skills" });
+    defer allocator.free(cwd_skills_root);
+    const bin_skills_root = try std.fs.path.join(allocator, &.{ root, "bin", "skills" });
+    defer allocator.free(bin_skills_root);
+
     const roots = [_][]const u8{
-        root ++ "/cwd/skills",
-        root ++ "/bin/skills",
+        cwd_skills_root,
+        bin_skills_root,
     };
     const output = try skillInfoFromRoots(allocator, "web", roots[0..]);
     defer allocator.free(output);

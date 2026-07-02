@@ -3,7 +3,7 @@
 //! Owns the snapshot→rebuild→draw pipeline: reads terminal state under lock,
 //! builds GPU cell buffers, and draws them. Also provides renderChar for
 //! immediate-mode text rendering (UI overlays, placeholder text).
-//! Uses AppWindow's GL context and shared rendering primitives.
+//! Uses shared rendering primitives owned by the active GPU backend.
 
 const std = @import("std");
 const ghostty_vt = @import("ghostty-vt");
@@ -13,14 +13,11 @@ const AppWindow = @import("../AppWindow.zig");
 const font = AppWindow.font;
 const tab = AppWindow.tab;
 const gpu = AppWindow.gpu;
-const gl_init = gpu.gl_init;
 const ui_pipeline = @import("ui_pipeline.zig");
 const cell_pipeline = @import("cell_pipeline.zig");
 const underline_span = @import("../input/underline_span.zig");
 const image_renderer = @import("image_renderer.zig");
 const cell_geometry = @import("cell_geometry.zig");
-
-const c = AppWindow.gpu.c;
 
 const Character = font.Character;
 const Selection = Surface.Selection;
@@ -253,7 +250,7 @@ pub fn rebuildCells(rend: *Renderer) void {
     rend.fg_cell_count = 0;
     rend.color_fg_cell_count = 0;
     image_renderer.uploadPending(rend);
-    const normal_bg_alpha: f32 = if (AppWindow.background_image.g_enabled) gl_init.g_bg_opacity else 1.0;
+    const normal_bg_alpha: f32 = if (AppWindow.background_image.g_enabled) gpu.background_opacity else 1.0;
 
     for (0..render_rows) |row_idx| {
         const row_f: f32 = @floatFromInt(row_idx);
@@ -431,8 +428,8 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
         p.setProjection();
         p.bindVao();
         if (need_upload) cell_pipeline.bg_instances.upload(std.mem.sliceAsBytes(rend.bg_cells.items[0..rend.bg_cell_count]));
-        p.drawArraysInstanced(c.GL_TRIANGLE_STRIP, 0, 4, @intCast(rend.bg_cell_count));
-        gl_init.g_draw_call_count += 1;
+        p.drawArraysInstanced(.triangle_strip, 0, 4, @intCast(rend.bg_cell_count));
+        gpu.draw_call_count += 1;
     }
 
     image_renderer.draw(rend, window_height, offset_x, offset_y, .below_text);
@@ -445,12 +442,12 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
         p.setVec2("gridOffset", offset_x, offset_y);
         p.setFloat("windowHeight", window_height);
         p.setProjection();
-        gpu.Texture.fromHandle(font.g_atlas_texture).bind(0);
+        font.g_atlas_texture.bind(0);
         p.setInt("atlas", 0);
         p.bindVao();
         if (need_upload) cell_pipeline.fg_instances.upload(std.mem.sliceAsBytes(rend.fg_cells.items[0..rend.fg_cell_count]));
-        p.drawArraysInstanced(c.GL_TRIANGLE_STRIP, 0, 4, @intCast(rend.fg_cell_count));
-        gl_init.g_draw_call_count += 1;
+        p.drawArraysInstanced(.triangle_strip, 0, 4, @intCast(rend.fg_cell_count));
+        gpu.draw_call_count += 1;
     }
 
     // --- Draw color emoji cells (premultiplied alpha blend) ---
@@ -463,12 +460,12 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
         p.setVec2("gridOffset", offset_x, offset_y);
         p.setFloat("windowHeight", window_height);
         p.setProjection();
-        gpu.Texture.fromHandle(font.g_color_atlas_texture).bind(0);
+        font.g_color_atlas_texture.bind(0);
         p.setInt("atlas", 0);
         p.bindVao();
         if (need_upload) cell_pipeline.color_fg_instances.upload(std.mem.sliceAsBytes(rend.color_fg_cells.items[0..rend.color_fg_cell_count]));
-        p.drawArraysInstanced(c.GL_TRIANGLE_STRIP, 0, 4, @intCast(rend.color_fg_cell_count));
-        gl_init.g_draw_call_count += 1;
+        p.drawArraysInstanced(.triangle_strip, 0, 4, @intCast(rend.color_fg_cell_count));
+        gpu.draw_call_count += 1;
         // Restore standard blend for the cursor/titlebar draws that follow.
         gpu.state.setBlendMode(.alpha);
     }
@@ -491,11 +488,11 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
             const cursor_thickness: f32 = @max(2.0, @as(f32, @floatFromInt(font.box_thickness)));
 
             switch (style) {
-                .bar => gl_init.renderQuad(px, py, cursor_thickness, font.cell_height, cursor_color),
-                .underline => gl_init.renderQuad(px, py, font.cell_width, cursor_thickness, cursor_color),
+                .bar => ui_pipeline.fillQuad(px, py, cursor_thickness, font.cell_height, cursor_color),
+                .underline => ui_pipeline.fillQuad(px, py, font.cell_width, cursor_thickness, cursor_color),
                 .block_hollow => {
-                    gl_init.renderQuad(px, py, font.cell_width, font.cell_height, cursor_color);
-                    gl_init.renderQuad(
+                    ui_pipeline.fillQuad(px, py, font.cell_width, font.cell_height, cursor_color);
+                    ui_pipeline.fillQuad(
                         px + cursor_thickness,
                         py + cursor_thickness,
                         font.cell_width - cursor_thickness * 2,
@@ -503,7 +500,7 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
                         g_theme.background,
                     );
                 },
-                .block => gl_init.renderQuad(px, py, font.cell_width, font.cell_height, cursor_color),
+                .block => ui_pipeline.fillQuad(px, py, font.cell_width, font.cell_height, cursor_color),
             }
         }
     }
@@ -522,7 +519,7 @@ fn drawUrlUnderline(rend: *const Renderer, window_height: f32, offset_x: f32, of
         const x = offset_x + @as(f32, @floatFromInt(span.start_col)) * font.cell_width;
         const y = window_height - offset_y - ((@as(f32, @floatFromInt(row)) + 1) * font.cell_height) + underline_y_offset;
         const width = @as(f32, @floatFromInt(span.end_col - span.start_col + 1)) * font.cell_width;
-        gl_init.renderQuad(x, y, width, thickness, color);
+        ui_pipeline.fillQuad(x, y, width, thickness, color);
     }
 }
 

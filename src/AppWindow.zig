@@ -259,7 +259,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     g_quake_mode = app.quake_mode;
     g_keybinds = app.keybinds;
     background_image.g_mode = app.background_image_mode;
-    gpu.gl_init.g_bg_opacity = app.background_opacity;
+    gpu.background_opacity = app.background_opacity;
     tab.g_forced_title = app.title;
 
     // Get initial CWD for this window (if any) - copy into thread-local buffer
@@ -1584,6 +1584,25 @@ fn forceOpaqueBackbufferForPresent() void {
     }
 }
 
+fn syncBackendSurfaceSize(fb_width: c_int, fb_height: c_int) void {
+    if (comptime gpu.active == .d3d11) {
+        if (!gpu.Context.resize(fb_width, fb_height)) {
+            render_diagnostics.log("gpu-backend=d3d11 resize sync failed for {}x{}", .{ fb_width, fb_height });
+        }
+    }
+}
+
+fn presentBackendFrame(win: *window_backend.Window) void {
+    if (comptime gpu.active == .d3d11) {
+        gpu.Context.present() catch |err| {
+            render_diagnostics.log("gpu-backend=d3d11 present failed: {s}", .{@errorName(err)});
+            std.debug.print("D3D11 present failed: {s}\n", .{@errorName(err)});
+        };
+    } else {
+        window_backend.swapBuffers(win);
+    }
+}
+
 threadlocal var g_diag_last_fb_w: c_int = -1;
 threadlocal var g_diag_last_fb_h: c_int = -1;
 threadlocal var g_diag_last_client_w: i32 = -1;
@@ -1639,94 +1658,79 @@ fn logFrameGeometryIfChanged(win: *window_backend.Window, fb_width: c_int, fb_he
     );
 }
 
-fn glDiagString(name: gpu.c.GLenum) []const u8 {
-    // The Metal backend hands back a stub GlTable whose fn pointers are null
-    // (see renderer/gpu/metal/GlTable.zig). Guard the fn pointer itself, not
-    // just its return value, so render diagnostics don't panic on macOS.
-    const get_string = gpu.glTable().GetString orelse return "(unavailable)";
-    const ptr = get_string(name);
-    if (ptr == null) return "(null)";
-    return std.mem.span(@as([*:0]const u8, @ptrCast(ptr)));
-}
-
 /// Log GPU vendor/renderer/version and the backbuffer clear-alpha fact once,
-/// after the GL context + glad table are ready. Lets the analyst correlate
+/// after the GPU backend is ready. Lets the analyst correlate
 /// glitches with a specific driver (AMD/Intel/NVIDIA) and confirm the alpha=1
 /// clear that feeds DWM composition.
 fn logGpuDiagnosticsOnce() void {
     if (!render_diagnostics.enabled()) return;
     if (g_gpu_diag_logged) return;
     g_gpu_diag_logged = true;
+    const info = gpu.state.driverInfo();
     render_diagnostics.log(
-        "gpu vendor=\"{s}\" renderer=\"{s}\" version=\"{s}\" glsl=\"{s}\" clear_alpha=1.0 dwm_frame_extend_top=-1",
+        "gpu vendor=\"{s}\" renderer=\"{s}\" version=\"{s}\" shading_language=\"{s}\" clear_alpha=1.0 dwm_frame_extend_top=-1",
         .{
-            glDiagString(gpu.c.GL_VENDOR),
-            glDiagString(gpu.c.GL_RENDERER),
-            glDiagString(gpu.c.GL_VERSION),
-            glDiagString(gpu.c.GL_SHADING_LANGUAGE_VERSION),
+            info.vendor,
+            info.renderer,
+            info.version,
+            info.shading_language,
         },
     );
 }
 
 threadlocal var g_gpu_diag_logged: bool = false;
-threadlocal var g_diag_last_vp: [4]gpu.c.GLint = .{ -1, -1, -1, -1 };
-threadlocal var g_diag_last_blend: [5]gpu.c.GLint = .{ -1, -1, -1, -1, -1 };
+threadlocal var g_diag_last_swap_diag: ?gpu.SwapDiagnostics = null;
 threadlocal var g_diag_last_swap_client_w: i32 = -1;
 threadlocal var g_diag_last_swap_client_h: i32 = -1;
 
-/// Just before SwapBuffers, snapshot the *actual* GL viewport, re-read the
-/// client rect, and read the active blend state. Logged only when one of these
-/// changes (or when viewport diverges from the client size) so it stays
-/// analyzable. Targets the viewport/client-size desync (hypothesis ②) and the
-/// backbuffer-alpha blend mode (hypothesis ①).
+/// Just before swap/present, snapshot the backend viewport, re-read the client
+/// rect, and read the active blend state. Logged only when one of these changes
+/// (or when viewport diverges from the client size) so it stays analyzable.
 fn logSwapDiagnosticsIfChanged(win: *window_backend.Window, fb_width: c_int, fb_height: c_int) void {
     if (!render_diagnostics.enabled()) return;
-    const gl = gpu.glTable();
-    // Metal backend's GlTable is a stub with null fn pointers (see GlTable.zig);
-    // skip the GL-specific swap diagnostics there instead of panicking on `.?`.
-    // Geometry/DPI diagnostics are emitted by logFrameGeometryIfChanged, which
-    // doesn't touch GL, so the DPI log we care about for #90 still works.
-    const get_integerv = gl.GetIntegerv orelse return;
-    const is_enabled = gl.IsEnabled orelse return;
-
-    var vp: [4]gpu.c.GLint = undefined;
-    get_integerv(gpu.c.GL_VIEWPORT, &vp);
-
-    var blend: [5]gpu.c.GLint = undefined;
-    blend[0] = @intFromBool(is_enabled(gpu.c.GL_BLEND) != 0);
-    get_integerv(gpu.c.GL_BLEND_SRC_RGB, &blend[1]);
-    get_integerv(gpu.c.GL_BLEND_DST_RGB, &blend[2]);
-    get_integerv(gpu.c.GL_BLEND_SRC_ALPHA, &blend[3]);
-    get_integerv(gpu.c.GL_BLEND_DST_ALPHA, &blend[4]);
+    const diag = gpu.state.swapDiagnostics() orelse return;
+    const vp = diag.viewport;
+    const blend = diag.blend;
 
     const client = window_backend.clientSize(win);
-    const vp_matches_client = (vp[2] == client.width and vp[3] == client.height);
+    const vp_matches_client = (vp.w == client.width and vp.h == client.height);
 
-    const unchanged = std.mem.eql(gpu.c.GLint, &vp, &g_diag_last_vp) and
-        std.mem.eql(gpu.c.GLint, &blend, &g_diag_last_blend) and
-        client.width == g_diag_last_swap_client_w and
-        client.height == g_diag_last_swap_client_h;
+    const unchanged = if (g_diag_last_swap_diag) |last|
+        std.meta.eql(last, diag) and
+            client.width == g_diag_last_swap_client_w and
+            client.height == g_diag_last_swap_client_h
+    else
+        false;
     if (unchanged) return;
 
-    g_diag_last_vp = vp;
-    g_diag_last_blend = blend;
+    g_diag_last_swap_diag = diag;
     g_diag_last_swap_client_w = client.width;
     g_diag_last_swap_client_h = client.height;
 
     render_diagnostics.log(
-        "swap viewport=({},{} {}x{}) client={}x{} fb={}x{} vp_matches_client={} blend_enabled={} blend_rgb=({},{}) blend_alpha=({},{})",
+        "swap viewport=({},{} {}x{}) client={}x{} fb={}x{} vp_matches_client={} blend_enabled={} blend_rgb=({s},{s}) blend_alpha=({s},{s})",
         .{
-            vp[0],             vp[1],         vp[2],    vp[3],
-            client.width,      client.height, fb_width, fb_height,
-            vp_matches_client, blend[0] != 0, blend[1], blend[2],
-            blend[3],          blend[4],
+            vp.x,
+            vp.y,
+            vp.w,
+            vp.h,
+            client.width,
+            client.height,
+            fb_width,
+            fb_height,
+            vp_matches_client,
+            blend.enabled,
+            @tagName(blend.src_rgb),
+            @tagName(blend.dst_rgb),
+            @tagName(blend.src_alpha),
+            @tagName(blend.dst_alpha),
         },
     );
 }
 
 fn renderAiChatFrame(fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
     gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-    gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
     clearWithBackground(fb_width, fb_height);
     titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -1752,7 +1756,7 @@ fn aiHistoryContentWidth(fb_width: c_int, left_panels_w: f32, right_panels_w: f3
 
 fn renderAiHistoryFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
     gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-    gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
     clearWithBackground(fb_width, fb_height);
     titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -1784,7 +1788,7 @@ fn renderAiHistoryFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int
 
 fn renderSkillCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
     gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-    gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
     clearWithBackground(fb_width, fb_height);
     titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -1917,7 +1921,7 @@ fn copyPortForwardingReason(dest: []u8, reason: []const u8) usize {
 
 fn renderPortForwardingFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
     gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-    gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
     clearWithBackground(fb_width, fb_height);
     titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -4114,8 +4118,7 @@ const CURSOR_BLINK_INTERVAL_MS: i64 = 600; // Blink interval in ms (same as Ghos
 
 const ConfigWatcher = @import("config_watcher.zig");
 
-// GL init, render helpers — see renderer/gpu/opengl/gl_init.zig (GLSL sources
-// in renderer/gpu/opengl/shaders.zig); exposed via AppWindow.gpu.gl_init.
+// Shared GPU pipeline init lives behind renderer/gpu plus ui/cell pipelines.
 
 /// Focus follows mouse - when true, moving mouse into a split pane focuses it
 pub threadlocal var g_focus_follows_mouse: bool = false;
@@ -4305,7 +4308,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
                 if (needs_rebuild) cell_renderer.rebuildCells(rend);
 
                 gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-                gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
                 clearWithBackground(fb_width, fb_height);
 
                 const pad = surface.getPadding();
@@ -4320,7 +4323,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
         } else {
             // Multiple splits: render each surface in its own viewport
             gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-            gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+            ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
             clearWithBackground(fb_width, fb_height);
 
             titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -4337,7 +4340,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
 
                         const viewport_y = fb_height - rect.y - rect.height;
                         gpu.state.setViewport(rect.x, viewport_y, rect.width, rect.height);
-                        gpu.gl_init.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                        ui_pipeline.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
 
                         {
                             surface.render_state.mutex.lock();
@@ -4366,7 +4369,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
                         // restore the full-window viewport/projection first (the
                         // terminal arm leaves a per-rect viewport set).
                         gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-                        gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                        ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
                         const close_hovered = if (input.g_preview_close_hover) |h| h == rect.handle else false;
                         markdown_preview_renderer.renderInto(
                             p,
@@ -4384,13 +4387,13 @@ fn renderResizeFrame(width: i32, height: i32) void {
 
             // Restore full viewport for dividers
             gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-            gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+            ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
             overlays.renderSplitDividers(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
             overlays.renderPaneAgentDots(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
         }
     } else {
         gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-        gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+        ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
         clearWithBackground(fb_width, fb_height);
         titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -4424,10 +4427,10 @@ fn renderResizeFrame(width: i32, height: i32) void {
 
     render_diagnostics.log(
         "platform-resize swap fb={}x{} term={}x{} draw_calls={}",
-        .{ fb_width, fb_height, term_cols, term_rows, gpu.gl_init.g_draw_call_count },
+        .{ fb_width, fb_height, term_cols, term_rows, gpu.draw_call_count },
     );
     forceOpaqueBackbufferForPresent();
-    if (g_window) |w| window_backend.swapBuffers(w);
+    if (g_window) |w| presentBackendFrame(w);
 }
 
 fn resizeWindowToGrid() void {
@@ -4621,7 +4624,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     {
         const mode_changed = background_image.g_mode != cfg.@"background-image-mode";
         background_image.g_mode = cfg.@"background-image-mode";
-        gpu.gl_init.g_bg_opacity = cfg.@"background-opacity";
+        gpu.background_opacity = cfg.@"background-opacity";
         if (!background_image.isLoaded(cfg.@"background-image")) {
             background_image.load(allocator, cfg.@"background-image");
         } else if (mode_changed) {
@@ -5641,10 +5644,9 @@ fn clearIconFont(allocator: std.mem.Allocator) void {
         a.deinit(allocator);
         font.g_icon_atlas = null;
     }
-    if (font.g_icon_atlas_texture != 0) {
-        var t = gpu.Texture.fromHandle(font.g_icon_atlas_texture);
-        t.destroy();
-        font.g_icon_atlas_texture = 0;
+    if (font.g_icon_atlas_texture.isValid()) {
+        font.g_icon_atlas_texture.destroy();
+        font.g_icon_atlas_texture = gpu.Texture.invalid();
         font.g_icon_atlas_modified = 0;
     }
 }
@@ -5672,10 +5674,9 @@ fn clearTitlebarFont(allocator: std.mem.Allocator) void {
         a.deinit(allocator);
         font.g_titlebar_atlas = null;
     }
-    if (font.g_titlebar_atlas_texture != 0) {
-        var t = gpu.Texture.fromHandle(font.g_titlebar_atlas_texture);
-        t.destroy();
-        font.g_titlebar_atlas_texture = 0;
+    if (font.g_titlebar_atlas_texture.isValid()) {
+        font.g_titlebar_atlas_texture.destroy();
+        font.g_titlebar_atlas_texture = gpu.Texture.invalid();
         font.g_titlebar_atlas_modified = 0;
     }
 }
@@ -6099,8 +6100,8 @@ fn renderImePreedit(win: *window_backend.Window, fb_width: i32, fb_height: i32) 
     const bg = g_theme.selection_background;
     const fg = g_theme.selection_foreground orelse g_theme.foreground;
 
-    gpu.gl_init.renderQuad(x, y, width, height, bg);
-    gpu.gl_init.renderQuad(x, y, width, @max(1.0, @as(f32, @floatFromInt(font.box_thickness))), g_theme.cursor_color);
+    ui_pipeline.fillQuad(x, y, width, height, bg);
+    ui_pipeline.fillQuad(x, y, width, @max(1.0, @as(f32, @floatFromInt(font.box_thickness))), g_theme.cursor_color);
 
     view = std.unicode.Utf8View.init(text) catch return;
     var it = view.iterator();
@@ -6304,6 +6305,10 @@ fn runMainLoop(self: *AppWindow) !void {
     switch (gpu.active) {
         .metal => try gpu.Context.initWithLayer(window_backend.metalLayer(&backend_window)),
         .opengl => try gpu.Context.init(@ptrCast(&window_backend.glGetProcAddress)),
+        .d3d11 => {
+            const fb = window_backend.framebufferSize(&backend_window);
+            try gpu.Context.initForWindow(window_backend.nativeHandle(&backend_window), fb.width, fb.height);
+        },
     }
 
     // Initialize FreeType
@@ -6380,12 +6385,7 @@ fn runMainLoop(self: *AppWindow) !void {
     // Store font size globally for fallback fonts
     font.g_font_size = font_size;
 
-    if (!gpu.gl_init.initShaders()) {
-        std.debug.print("Failed to initialize shaders\n", .{});
-        return error.ShaderInitFailed;
-    }
     ui_pipeline.init();
-    gpu.gl_init.syncSharedHandles();
     cell_pipeline.init();
     font.preloadCharacters(face);
 
@@ -6417,10 +6417,9 @@ fn runMainLoop(self: *AppWindow) !void {
             a.deinit(allocator);
             font.g_icon_atlas = null;
         }
-        if (font.g_icon_atlas_texture != 0) {
-            var t = gpu.Texture.fromHandle(font.g_icon_atlas_texture);
-            t.destroy();
-            font.g_icon_atlas_texture = 0;
+        if (font.g_icon_atlas_texture.isValid()) {
+            font.g_icon_atlas_texture.destroy();
+            font.g_icon_atlas_texture = gpu.Texture.invalid();
         }
 
         // Clean up titlebar font. Reset cache to .empty for the same reason
@@ -6433,10 +6432,9 @@ fn runMainLoop(self: *AppWindow) !void {
             a.deinit(allocator);
             font.g_titlebar_atlas = null;
         }
-        if (font.g_titlebar_atlas_texture != 0) {
-            var t = gpu.Texture.fromHandle(font.g_titlebar_atlas_texture);
-            t.destroy();
-            font.g_titlebar_atlas_texture = 0;
+        if (font.g_titlebar_atlas_texture.isValid()) {
+            font.g_titlebar_atlas_texture.destroy();
+            font.g_titlebar_atlas_texture = gpu.Texture.invalid();
         }
     }
     // Initialize custom post-processing shader if requested
@@ -6812,6 +6810,7 @@ fn runMainLoop(self: *AppWindow) !void {
             window_backend.pumpAppEvents(@as(f64, @floatFromInt(timeout_ms)) / 1000.0);
             continue;
         }
+        syncBackendSurfaceSize(fb_width, fb_height);
 
         const gate_now = std.time.milliTimestamp();
         const visible = window_backend.isVisible(win);
@@ -6857,7 +6856,7 @@ fn runMainLoop(self: *AppWindow) !void {
         // on OpenGL (it reads the live back buffer post-endFrame).
         if (agent_requests.hasPendingUiScreenshot()) gpu.state.armUiScreenshotCapture();
 
-        gpu.gl_init.g_draw_call_count = 0;
+        gpu.draw_call_count = 0;
         overlays.updateFps();
 
         // Sync atlas textures to GPU if modified
@@ -6945,7 +6944,7 @@ fn runMainLoop(self: *AppWindow) !void {
                     if (needs_rebuild) cell_renderer.rebuildCells(rend);
 
                     gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-                    gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
                     clearWithBackground(fb_width, fb_height);
 
                     // Use surface's computed padding (includes titlebar offset from content_y)
@@ -6963,7 +6962,7 @@ fn runMainLoop(self: *AppWindow) !void {
             } else {
                 // Multiple splits: render with scissor/viewport per surface
                 gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-                gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
                 clearWithBackground(fb_width, fb_height);
 
                 titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -6986,7 +6985,7 @@ fn runMainLoop(self: *AppWindow) !void {
                                 gpu.state.setViewport(rect.x, viewport_y, rect.width, rect.height);
 
                                 // Set projection for this viewport size
-                                gpu.gl_init.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                                ui_pipeline.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
 
                                 // Update cells for this surface
                                 var needs_rebuild: bool = false;
@@ -7043,7 +7042,7 @@ fn runMainLoop(self: *AppWindow) !void {
                                 // The preview renderer paints in window-absolute coords,
                                 // so restore the full-window viewport/projection first.
                                 gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-                                gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                                ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
                                 const close_hovered = if (input.g_preview_close_hover) |h| h == rect.handle else false;
                                 markdown_preview_renderer.renderInto(
                                     p,
@@ -7070,14 +7069,14 @@ fn runMainLoop(self: *AppWindow) !void {
                                 if (is_swap_target or is_swap_source) {
                                     const vp_y = fb_height - rect.y - rect.height;
                                     gpu.state.setViewport(rect.x, vp_y, rect.width, rect.height);
-                                    gpu.gl_init.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                                    ui_pipeline.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
                                     if (is_swap_target) {
                                         overlays.renderSwapTargetHighlight(@floatFromInt(rect.width), @floatFromInt(rect.height));
                                     } else {
                                         overlays.renderUnfocusedOverlaySimple(@floatFromInt(rect.width), @floatFromInt(rect.height));
                                     }
                                     gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-                                    gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                                    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
                                 }
                             },
                         }
@@ -7085,7 +7084,7 @@ fn runMainLoop(self: *AppWindow) !void {
 
                     // Restore full viewport for dividers
                     gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-                    gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
 
                     // Draw split dividers and per-pane agent dots
                     overlays.renderSplitDividers(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
@@ -7094,7 +7093,7 @@ fn runMainLoop(self: *AppWindow) !void {
             }
         } else if (!post_process.g_post_enabled) {
             gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-            gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+            ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
             clearWithBackground(fb_width, fb_height);
             titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
             titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -7102,7 +7101,7 @@ fn runMainLoop(self: *AppWindow) !void {
         }
 
         gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-        gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+        ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
         // Copilot panel draws on top of the reserved right region (terminal tabs
         // only; renderAiCopilotPanel gates on aiCopilotVisible). Placed after the
         // full-window viewport/projection are restored — so it is unaffected by the
@@ -7151,7 +7150,7 @@ fn runMainLoop(self: *AppWindow) !void {
         forceOpaqueBackbufferForPresent();
         gpu.state.endFrame();
         agent_requests.capturePendingUiScreenshots(agentRequestHost());
-        window_backend.swapBuffers(win);
+        presentBackendFrame(win);
         if (windowState().takePresentBringupSettlement()) {
             platform_window_state.settleD3dBringup(allocator);
         }

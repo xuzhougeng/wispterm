@@ -11,7 +11,7 @@ const assistant_profile_store = @import("../assistant/profile/store.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
 const tab = AppWindow.tab;
-const gl_init = AppWindow.gpu.gl_init;
+const gpu = AppWindow.gpu;
 const split_layout = AppWindow.split_layout;
 const browser_panel = AppWindow.browser_panel;
 const Surface = @import("../Surface.zig");
@@ -6816,7 +6816,7 @@ pub fn renderDebugOverlay(window_width: f32) void {
     if (g_debug_draw_calls) {
         _ = renderDebugLine(window_width, &overlay_y, margin, pad_h, pad_v, line_h, blk: {
             var buf: [32]u8 = undefined;
-            break :blk std.fmt.bufPrint(&buf, "{d} draws", .{gl_init.g_draw_call_count}) catch break :blk "";
+            break :blk std.fmt.bufPrint(&buf, "{d} draws", .{gpu.draw_call_count}) catch break :blk "";
         }, .{ 1.0, 1.0, 0.0 });
     }
 }

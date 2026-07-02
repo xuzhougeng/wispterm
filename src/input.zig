@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 const AppWindow = @import("AppWindow.zig");
 const tab = AppWindow.tab;
 const active_tab_state = @import("appwindow/active_tab.zig");
@@ -128,7 +129,17 @@ const terminalPathClickAction = terminal_link_action.terminalPathClickAction;
 const interactiveUnderlineTokenKind = terminal_link_action.interactiveUnderlineTokenKind;
 const looksLikeDownloadPath = terminal_link_action.looksLikeDownloadPath;
 
+fn appTestShardIs(comptime name: []const u8) bool {
+    return std.mem.eql(u8, build_options.app_test_shard, "all") or
+        std.mem.eql(u8, build_options.app_test_shard, name);
+}
+
+fn skipUnlessInputRendererShard() !void {
+    if (!appTestShardIs("input_renderer")) return error.SkipZigTest;
+}
+
 test "input: WeChat QR panel consumes text input while visible" {
+    try skipUnlessInputRendererShard();
     AppWindow.weixin_qr_panel.g_visible = true;
     defer AppWindow.weixin_qr_panel.g_visible = false;
 
@@ -136,6 +147,7 @@ test "input: WeChat QR panel consumes text input while visible" {
 }
 
 test "input: command palette shortcut toggles command center" {
+    try skipUnlessInputRendererShard();
     const previous_keybinds = AppWindow.g_keybinds;
     defer AppWindow.g_keybinds = previous_keybinds;
     defer overlays.commandPaletteClose();
@@ -162,11 +174,13 @@ test "input: command palette shortcut toggles command center" {
 }
 
 test "input: browser toolbar has a refresh action entrypoint" {
+    try skipUnlessInputRendererShard();
     const info = @typeInfo(@TypeOf(refreshBrowserPanel)).@"fn";
     try std.testing.expectEqual(@as(usize, 0), info.params.len);
 }
 
 test "input: preview gallery neighbor opens next raster sibling" {
+    try skipUnlessInputRendererShard();
     const gpa = std.testing.allocator;
     const prev_allocator = AppWindow.g_allocator;
     defer AppWindow.g_allocator = prev_allocator;
@@ -199,6 +213,7 @@ test "input: preview gallery neighbor opens next raster sibling" {
 }
 
 test "input: focused preview ignores shift-modified navigation keys" {
+    try skipUnlessInputRendererShard();
     const gpa = std.testing.allocator;
     const prev_allocator = AppWindow.g_allocator;
     const previous_tabs = tab.g_tabs;
@@ -290,6 +305,7 @@ const escape_event = platform_input.KeyEvent{
 };
 
 test "input: command palette arrow navigation requests a repaint" {
+    try skipUnlessInputRendererShard();
     const previous_keybinds = AppWindow.g_keybinds;
     defer AppWindow.g_keybinds = previous_keybinds;
     defer overlays.commandPaletteClose();
@@ -307,6 +323,7 @@ test "input: command palette arrow navigation requests a repaint" {
 }
 
 test "input: command palette dispatchKey returns repaint effect" {
+    try skipUnlessInputRendererShard();
     const previous_keybinds = AppWindow.g_keybinds;
     defer AppWindow.g_keybinds = previous_keybinds;
     defer overlays.commandPaletteClose();
@@ -322,6 +339,7 @@ test "input: command palette dispatchKey returns repaint effect" {
 }
 
 test "input: command palette dispatchKey preserves repaint for unmapped palette keys" {
+    try skipUnlessInputRendererShard();
     const previous_keybinds = AppWindow.g_keybinds;
     defer AppWindow.g_keybinds = previous_keybinds;
     defer overlays.commandPaletteClose();
@@ -343,6 +361,7 @@ test "input: command palette dispatchKey preserves repaint for unmapped palette 
 }
 
 test "input: window close confirm dispatchKey returns repaint effect" {
+    try skipUnlessInputRendererShard();
     defer overlays.windowCloseConfirmClose();
     overlays.closeConfirmOpen(.window, .window_generic);
 
@@ -360,6 +379,7 @@ test "input: window close confirm dispatchKey returns repaint effect" {
 }
 
 test "input: command palette text filtering requests a repaint" {
+    try skipUnlessInputRendererShard();
     defer overlays.commandPaletteClose();
     overlays.commandPaletteOpen();
     try std.testing.expect(overlays.commandPaletteVisible());
@@ -373,6 +393,7 @@ test "input: command palette text filtering requests a repaint" {
 }
 
 test "input: command palette dispatchChar returns repaint effect for text filtering" {
+    try skipUnlessInputRendererShard();
     defer overlays.commandPaletteClose();
     overlays.commandPaletteOpen();
 
@@ -384,6 +405,7 @@ test "input: command palette dispatchChar returns repaint effect for text filter
 }
 
 test "input: command palette dispatchChar consumes ctrl text without repaint" {
+    try skipUnlessInputRendererShard();
     defer overlays.commandPaletteClose();
     overlays.commandPaletteOpen();
 
@@ -395,6 +417,7 @@ test "input: command palette dispatchChar consumes ctrl text without repaint" {
 }
 
 test "input: session launcher arrow navigation requests a repaint" {
+    try skipUnlessInputRendererShard();
     const previous_keybinds = AppWindow.g_keybinds;
     defer AppWindow.g_keybinds = previous_keybinds;
     defer overlays.sessionLauncherClose();
@@ -412,6 +435,7 @@ test "input: session launcher arrow navigation requests a repaint" {
 }
 
 test "input: session launcher dispatchKey returns repaint effect" {
+    try skipUnlessInputRendererShard();
     const previous_keybinds = AppWindow.g_keybinds;
     defer AppWindow.g_keybinds = previous_keybinds;
     defer overlays.sessionLauncherClose();
@@ -427,6 +451,7 @@ test "input: session launcher dispatchKey returns repaint effect" {
 }
 
 test "input: command center child escape returns to command center" {
+    try skipUnlessInputRendererShard();
     const previous_keybinds = AppWindow.g_keybinds;
     defer AppWindow.g_keybinds = previous_keybinds;
     defer overlays.commandPaletteClose();
@@ -449,6 +474,7 @@ test "input: command center child escape returns to command center" {
 }
 
 test "input: settings page arrow navigation requests a repaint" {
+    try skipUnlessInputRendererShard();
     const previous_keybinds = AppWindow.g_keybinds;
     defer AppWindow.g_keybinds = previous_keybinds;
     defer overlays.settingsPageClose();
@@ -466,6 +492,7 @@ test "input: settings page arrow navigation requests a repaint" {
 }
 
 test "input: settings page dispatchKey returns repaint effect" {
+    try skipUnlessInputRendererShard();
     const previous_keybinds = AppWindow.g_keybinds;
     defer AppWindow.g_keybinds = previous_keybinds;
     defer overlays.settingsPageClose();
@@ -481,6 +508,7 @@ test "input: settings page dispatchKey returns repaint effect" {
 }
 
 test "input: port forwarding arrow navigation requests a repaint" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     const previous_count = tab.g_tab_count;
     const previous_active = active_tab_state.g_active_tab;
@@ -507,6 +535,7 @@ test "input: port forwarding arrow navigation requests a repaint" {
 }
 
 test "input: skill center tool toggle requests a repaint" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     const previous_allocator = AppWindow.g_allocator;
     const previous_tabs = tab.g_tabs;
@@ -606,6 +635,7 @@ test "input: skill center tool toggle requests a repaint" {
 }
 
 test "input: skill center first-party tool toggle writes state and requests a repaint" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     const previous_allocator = AppWindow.g_allocator;
     const previous_tabs = tab.g_tabs;
@@ -698,6 +728,7 @@ test "input: skill center first-party tool toggle writes state and requests a re
 }
 
 test "input: skill center tool toggle is blocked while selection overlay is active" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     const previous_allocator = AppWindow.g_allocator;
     const previous_tabs = tab.g_tabs;
@@ -829,6 +860,7 @@ test "input: skill center tool toggle is blocked while selection overlay is acti
 }
 
 test "input: empty skill center library import shortcut opens picker" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     const previous_allocator = AppWindow.g_allocator;
     const previous_tabs = tab.g_tabs;
@@ -882,6 +914,7 @@ test "input: empty skill center library import shortcut opens picker" {
 }
 
 test "input: skill center deploy and import keys ignore selected tool rows" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     const previous_allocator = AppWindow.g_allocator;
     const previous_tabs = tab.g_tabs;
@@ -966,6 +999,7 @@ test "input: skill center deploy and import keys ignore selected tool rows" {
 }
 
 test "input: skill center tool import shortcut is a no-op when no file is selected" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     const previous_allocator = AppWindow.g_allocator;
     const previous_open_file = AppWindow.g_skill_center_open_file_override;
@@ -1020,6 +1054,7 @@ test "input: skill center tool import shortcut is a no-op when no file is select
 }
 
 test "input: skill center tool import preview keys import-scroll-cancel while text preview still closes on Enter" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     const previous_allocator = AppWindow.g_allocator;
     const previous_tabs = tab.g_tabs;
@@ -1128,6 +1163,7 @@ test "input: skill center tool import preview keys import-scroll-cancel while te
 }
 
 test "input: skill center deploy and import keys are blocked while picker overlay is active" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     const previous_allocator = AppWindow.g_allocator;
     const previous_tabs = tab.g_tabs;
@@ -1242,6 +1278,7 @@ test "input: skill center deploy and import keys are blocked while picker overla
 }
 
 test "input: skill center main actions are blocked while import list overlay is active" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     const previous_allocator = AppWindow.g_allocator;
     const previous_tabs = tab.g_tabs;
@@ -1430,6 +1467,7 @@ test "input: skill center main actions are blocked while import list overlay is 
 }
 
 test "input: terminal viewport mouse wheel scroll requests a repaint" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     const ghostty_vt = @import("ghostty-vt");
     const renderer = @import("renderer.zig");
@@ -1507,6 +1545,7 @@ test "input: terminal viewport mouse wheel scroll requests a repaint" {
 }
 
 test "input: file explorer mouse wheel scroll requests a repaint" {
+    try skipUnlessInputRendererShard();
     // Regression: scrolling the file explorer sidebar (Ctrl+Shift+Alt+E) only
     // mutated the scroll offset without requesting a frame, so the panel did not
     // redraw until the next cursor-blink tick (~600ms) — visibly stuttery scroll.
@@ -1568,6 +1607,7 @@ test "input: file explorer mouse wheel scroll requests a repaint" {
 }
 
 test "input: file explorer keyboard navigation requests a repaint" {
+    try skipUnlessInputRendererShard();
     // Same regression as the wheel path: arrow-key navigation in the focused
     // explorer moved the selection without requesting a frame, so the highlight
     // did not update until the next cursor-blink tick (~600ms).
@@ -1611,6 +1651,7 @@ test "input: file explorer keyboard navigation requests a repaint" {
 }
 
 test "input: port forwarding form left/right arrows toggle Direction and request a repaint" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     AppWindow.setSshHostsContentForTest("");
     defer AppWindow.setSshHostsContentForTest(null);
@@ -1662,6 +1703,7 @@ test "input: port forwarding form left/right arrows toggle Direction and request
 }
 
 test "input: port forwarding form letter keys remain text input" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     AppWindow.setSshHostsContentForTest("");
     defer AppWindow.setSshHostsContentForTest(null);
@@ -1694,6 +1736,7 @@ test "input: port forwarding form letter keys remain text input" {
 }
 
 test "input: port forwarding new command suppresses its follow-up char event" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     AppWindow.setSshHostsContentForTest("");
     defer AppWindow.setSshHostsContentForTest(null);
@@ -1727,6 +1770,7 @@ test "input: port forwarding new command suppresses its follow-up char event" {
 // evaluation decide to render (the exact signal the main loop builds), instead of
 // blocking until an incidental wake — that decision IS the anti-lag invariant.
 test "input: overlay navigation drives the render gate to repaint" {
+    try skipUnlessInputRendererShard();
     const render_gate = @import("appwindow/render_gate.zig");
     defer overlays.commandPaletteClose();
     overlays.commandPaletteOpen();
@@ -1747,6 +1791,7 @@ test "input: overlay navigation drives the render gate to repaint" {
 }
 
 test "input: right-clicking a sidebar tab starts tab rename" {
+    try skipUnlessInputRendererShard();
     const previous_tabs = tab.g_tabs;
     const previous_count = tab.g_tab_count;
     const previous_active = active_tab_state.g_active_tab;
@@ -1781,6 +1826,7 @@ test "input: right-clicking a sidebar tab starts tab rename" {
 }
 
 test "macOS UI smoke: Cmd+Shift+B toggles the tab sidebar" {
+    try skipUnlessInputRendererShard();
     if (builtin.os.tag != .macos) return error.SkipZigTest;
 
     const previous_keybinds = AppWindow.g_keybinds;
@@ -2879,10 +2925,12 @@ fn aiTranscriptPanelGeometry(panel: AiTranscriptPanel) ?AiTranscriptPanelGeometr
 }
 
 test "input: logical key mapping includes session launcher H mnemonic" {
+    try skipUnlessInputRendererShard();
     try std.testing.expectEqual(input_key.Key.key_h, logicalKeyFromCode(0x48));
 }
 
 test "input: copilot transcript panel geometry uses sidebar bounds" {
+    try skipUnlessInputRendererShard();
     const bounds = ai_sidebar.Bounds{
         .left = 1120,
         .top = 30,
@@ -5101,6 +5149,7 @@ fn remotePathIsDirectoryForDownload(allocator: std.mem.Allocator, conn: *const @
 }
 
 test "input: remote download path kind command shell-quotes paths" {
+    try skipUnlessInputRendererShard();
     var buf: [2300]u8 = undefined;
     const cmd = buildRemotePathKindCommand(buf[0..], "/tmp/it's here") orelse return error.CommandTooLong;
     try std.testing.expectEqualStrings(

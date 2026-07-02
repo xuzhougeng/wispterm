@@ -743,7 +743,7 @@ fn renderStatusMessage(
 
 fn ensureImageTexture(pane: *PreviewPane) bool {
     const generation = pane.contentGeneration();
-    if (pane.image_generation == generation) return pane.image_texture != 0 and !pane.image_failed;
+    if (pane.image_generation == generation) return pane.image_texture.isValid() and !pane.image_failed;
 
     pane.unloadImageTexture();
     pane.image_generation = generation;
@@ -780,10 +780,10 @@ fn ensureImageTexture(pane: *PreviewPane) bool {
     defer c.stbi_image_free(data);
 
     const t = gpu.Texture.create();
-    pane.image_texture = t.handle;
-    if (pane.image_texture == 0) return false;
+    pane.image_texture = t;
+    if (!pane.image_texture.isValid()) return false;
 
-    gpu.Texture.fromHandle(pane.image_texture).upload2D(w, h, @ptrCast(data), .{ .unpack_alignment = 1 });
+    pane.image_texture.upload2D(w, h, @ptrCast(data), .{ .unpack_alignment = 1 });
 
     pane.image_width = w;
     pane.image_height = h;
@@ -807,7 +807,7 @@ fn ensureImageTexture(pane: *PreviewPane) bool {
 
 fn drawImageTexture(pane: *PreviewPane, x: f32, y: f32, w: f32, h: f32, window_height: f32) void {
     _ = window_height;
-    if (pane.image_texture == 0 or ui_pipeline.emoji.program == 0) return;
+    if (!pane.image_texture.isValid() or ui_pipeline.emoji.program == 0) return;
 
     const vertices = [6][4]f32{
         .{ x, y + h, 0, 0 },

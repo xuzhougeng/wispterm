@@ -5,14 +5,12 @@ const builtin = @import("builtin");
 const AppWindow = @import("../../AppWindow.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
-const gl_init = AppWindow.gpu.gl_init;
+const ui_pipeline = @import("../ui_pipeline.zig");
 const keybind = @import("../../keybind.zig");
 const i18n = @import("../../i18n.zig");
 const primitives = @import("primitives.zig");
 const mixColor = primitives.mixColor;
 const renderRoundedQuadAlpha = primitives.renderRoundedQuadAlpha;
-
-const c = AppWindow.gpu.c;
 
 pub const STARTUP_SHORTCUTS_DURATION_MS: i64 = 12000;
 pub const STARTUP_SHORTCUTS_FADE_MS: i64 = 800;
@@ -266,7 +264,7 @@ pub fn renderStartupShortcutsOverlay(window_width: f32, window_height: f32, top_
     const heading_w = measureTitlebarText(heading);
     const heading_y = @round(box_y + box_height - pad_y - overlayTextHeight());
     renderTitlebarText(heading, box_x + (box_width - heading_w) / 2, heading_y, heading_color);
-    gl_init.renderQuadAlpha(box_x + pad_x, heading_y - heading_gap / 2 - 1, box_width - pad_x * 2, 1, border_color, alpha * 0.36);
+    ui_pipeline.fillQuadAlpha(box_x + pad_x, heading_y - heading_gap / 2 - 1, box_width - pad_x * 2, 1, border_color, alpha * 0.36);
 
     const inner_w = @max(1.0, box_width - pad_x * 2);
     const total_column_gap = column_gap * @as(f32, @floatFromInt(columns - 1));

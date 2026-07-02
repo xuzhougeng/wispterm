@@ -27,16 +27,16 @@ test "Buffer allocates and updates Metal buffer storage" {
     try Context.init(null);
     defer Context.deinit();
 
-    var buffer = Buffer.init(c.GL_ARRAY_BUFFER);
+    var buffer = Buffer.initVertex();
     defer buffer.deinit();
 
     try std.testing.expect(buffer.handle != 0);
 
-    buffer.allocate(16, c.GL_DYNAMIC_DRAW);
+    buffer.allocate(16, .dynamic);
     try std.testing.expectEqual(@as(usize, 16), buffer.byteLength());
 
     const initial = [_]u8{ 1, 2, 3, 4 };
-    buffer.uploadData(&initial, c.GL_STATIC_DRAW);
+    buffer.uploadData(&initial, .static);
     try std.testing.expectEqual(@as(usize, initial.len), buffer.byteLength());
 
     const update = [_]u8{ 9, 8, 7, 6 };
@@ -60,19 +60,17 @@ test "Texture uploads full and partial 2D image data" {
         255, 255, 255, 255,
     };
     texture.upload2D(2, 2, &rgba, .{
-        .internal_format = c.GL_RGBA8,
-        .format = c.GL_RGBA,
+        .format = .rgba8,
         .unpack_alignment = 1,
     });
     try std.testing.expectEqual(@as(c_int, 2), texture.levelWidth());
 
     const pixel = [_]u8{ 12, 34, 56, 78 };
     texture.subImage2D(1, 1, 1, 1, &pixel, .{
-        .internal_format = c.GL_RGBA8,
-        .format = c.GL_RGBA,
+        .format = .rgba8,
         .unpack_alignment = 1,
     });
-    texture.setWrap(.repeat);
+    texture.setSamplerMode(.linear_repeat);
     try std.testing.expectEqual(@as(c_int, 2), texture.levelWidth());
 }
 
@@ -126,7 +124,7 @@ test "Pipeline compiles simple MSL vertex and fragment functions" {
     pipeline.setVec2("cellSize", 8, 16);
     pipeline.setVec3("iResolution", 640, 480, 1);
     pipeline.setVec4("overlayColor", 1, 0, 0, 1);
-    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    pipeline.drawArrays(.triangles, 0, 3);
     try std.testing.expect(Pipeline.lastDrawSucceeded());
 }
 
@@ -159,9 +157,9 @@ test "render_state batches multiple Metal draws into one presented frame" {
 
     render_state.clear(0, 0, 0, 1);
     try std.testing.expect(render_state.isFrameActive());
-    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    pipeline.drawArrays(.triangles, 0, 3);
     try std.testing.expect(Pipeline.lastDrawSucceeded());
-    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    pipeline.drawArrays(.triangles, 0, 3);
     try std.testing.expect(Pipeline.lastDrawSucceeded());
     render_state.endFrame();
     try std.testing.expect(!render_state.isFrameActive());
@@ -200,7 +198,7 @@ test "armed ui screenshot capture reads back the rendered frame" {
 
     render_state.clear(0, 0, 0, 1);
     render_state.armUiScreenshotCapture();
-    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    pipeline.drawArrays(.triangles, 0, 3);
     try std.testing.expect(Pipeline.lastDrawSucceeded());
     render_state.endFrame();
 
@@ -247,18 +245,18 @@ test "viewport and scissor apply to the encoder without breaking draws" {
     // pane case. The standalone test layer is 64x64, so these stay in bounds.
     render_state.setViewport(10, 10, 40, 30);
     render_state.setScissor(.{ .x = 12, .y = 12, .w = 20, .h = 16 });
-    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    pipeline.drawArrays(.triangles, 0, 3);
     try std.testing.expect(Pipeline.lastDrawSucceeded());
 
     // Disabling scissor must reset to the full drawable and still draw.
     render_state.disableScissor();
-    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    pipeline.drawArrays(.triangles, 0, 3);
     try std.testing.expect(Pipeline.lastDrawSucceeded());
 
     // An intentionally out-of-bounds scissor must be clamped, not crash the
     // command buffer (MTLScissorRect outside the render target raises).
     render_state.setScissor(.{ .x = -100, .y = -100, .w = 100000, .h = 100000 });
-    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    pipeline.drawArrays(.triangles, 0, 3);
     try std.testing.expect(Pipeline.lastDrawSucceeded());
 
     render_state.endFrame();
@@ -297,15 +295,15 @@ test "blend modes select pipeline variants without breaking draws" {
     // Each blend mode must pick a valid pre-built PSO and draw successfully.
     render_state.setBlendEnabled(true);
     render_state.setBlendMode(.alpha);
-    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    pipeline.drawArrays(.triangles, 0, 3);
     try std.testing.expect(Pipeline.lastDrawSucceeded());
 
     render_state.setBlendMode(.premultiplied);
-    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    pipeline.drawArrays(.triangles, 0, 3);
     try std.testing.expect(Pipeline.lastDrawSucceeded());
 
     render_state.setBlendEnabled(false);
-    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    pipeline.drawArrays(.triangles, 0, 3);
     try std.testing.expect(Pipeline.lastDrawSucceeded());
 
     render_state.setBlendEnabled(true);
@@ -317,10 +315,10 @@ test "vertex builder returns stable nonzero layout handles" {
     try Context.init(null);
     defer Context.deinit();
 
-    var buffer = Buffer.init(c.GL_ARRAY_BUFFER);
+    var buffer = Buffer.initVertex();
     defer buffer.deinit();
     const verts = [_]f32{ 0, 0, 1, 0, 1, 1 };
-    buffer.uploadData(std.mem.sliceAsBytes(&verts), c.GL_STATIC_DRAW);
+    buffer.uploadData(std.mem.sliceAsBytes(&verts), .static);
 
     const attrs = [_]vertex.VertexAttr{
         .{ .loc = 0, .count = 2, .stride = 2 * @sizeOf(f32), .offset = 0 },

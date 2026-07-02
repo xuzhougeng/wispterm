@@ -5,8 +5,9 @@
 const Context = @import("Context.zig");
 const c = @import("c.zig").c;
 const Buffer = @import("Buffer.zig");
+const types = @import("../types.zig");
 
-pub const VaoHandle = c.GLuint;
+pub const VaoHandle = types.VertexArrayHandle;
 
 /// One float vertex attribute. `count` = number of floats (1..4). `divisor` > 0
 /// makes it instanced (advances per `divisor` instances).
@@ -39,10 +40,10 @@ pub fn buildVertexArray(layouts: []const BufferLayout) VaoHandle {
         }
     }
     gl.BindVertexArray.?(0);
-    return vao;
+    return @intCast(vao);
 }
 
 pub fn deleteVertexArray(vao: VaoHandle) void {
-    var v = vao;
+    var v: c.GLuint = @intCast(vao);
     Context.gl.DeleteVertexArrays.?(1, &v);
 }

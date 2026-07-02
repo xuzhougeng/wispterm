@@ -1,13 +1,12 @@
 //! Background image rendering.
 //!
-//! Loads an image (PNG/JPG/BMP/GIF/...) via stb_image and uploads it as a GL
+//! Loads an image (PNG/JPG/BMP/GIF/...) via stb_image and uploads it as a GPU
 //! texture. Drawn fullscreen between the framebuffer clear and the cell pass,
 //! so per-cell backgrounds drawn with `background-opacity < 1.0` reveal it.
 
 const std = @import("std");
 const Config = @import("../config.zig");
 const AppWindow = @import("../AppWindow.zig");
-const gl_init = AppWindow.gpu.gl_init;
 const gpu = AppWindow.gpu;
 const ui_pipeline = @import("ui_pipeline.zig");
 
@@ -20,7 +19,7 @@ pub const Mode = Config.BackgroundImageMode;
 pub threadlocal var g_enabled: bool = false;
 pub threadlocal var g_mode: Mode = .fill;
 
-threadlocal var g_texture: gpu.c.GLuint = 0;
+threadlocal var g_texture: gpu.Texture = gpu.Texture.invalid();
 threadlocal var g_width: c_int = 0;
 threadlocal var g_height: c_int = 0;
 /// Owned copy of the currently-loaded image path. The module owns this slice
@@ -53,10 +52,9 @@ pub fn load(allocator: std.mem.Allocator, path: ?[]const u8) void {
     if (isLoaded(path)) return;
 
     // Reset existing state
-    if (g_texture != 0) {
-        var tex = gpu.Texture.fromHandle(g_texture);
-        tex.destroy();
-        g_texture = 0;
+    if (g_texture.isValid()) {
+        g_texture.destroy();
+        g_texture = gpu.Texture.invalid();
     }
     g_enabled = false;
     g_width = 0;
@@ -84,10 +82,9 @@ pub fn load(allocator: std.mem.Allocator, path: ?[]const u8) void {
     }
     defer c.stbi_image_free(data);
 
-    const tex = gpu.Texture.create();
-    g_texture = tex.handle;
-    tex.upload2D(w, h, data, .{
-        .wrap = if (g_mode == .tile) .repeat else .clamp_to_edge,
+    g_texture = gpu.Texture.create();
+    g_texture.upload2D(w, h, data, .{
+        .sampler = if (g_mode == .tile) .linear_repeat else .linear_clamp,
         .unpack_alignment = 1,
     });
 
@@ -106,15 +103,14 @@ pub fn load(allocator: std.mem.Allocator, path: ?[]const u8) void {
 
 /// Update the wrap mode after `g_mode` changes (without reloading the image).
 pub fn refreshWrapMode() void {
-    if (g_texture == 0) return;
-    gpu.Texture.fromHandle(g_texture).setWrap(if (g_mode == .tile) .repeat else .clamp_to_edge);
+    if (!g_texture.isValid()) return;
+    g_texture.setSamplerMode(if (g_mode == .tile) .linear_repeat else .linear_clamp);
 }
 
 pub fn deinit() void {
-    if (g_texture != 0) {
-        var tex = gpu.Texture.fromHandle(g_texture);
-        tex.destroy();
-        g_texture = 0;
+    if (g_texture.isValid()) {
+        g_texture.destroy();
+        g_texture = gpu.Texture.invalid();
     }
     g_enabled = false;
     freeLoadedPath();
@@ -123,7 +119,7 @@ pub fn deinit() void {
 /// Compute UVs for a fullscreen quad given the chosen mode.
 /// For fill/fit/center we keep the quad covering the whole framebuffer and
 /// adjust UVs so the image aspect is preserved. For tile we set UVs > 1 and
-/// rely on GL_REPEAT wrap.
+/// rely on the repeat sampler mode.
 const Uv = struct { u_min: f32, v_min: f32, u_max: f32, v_max: f32 };
 
 fn computeUv(fb_w: f32, fb_h: f32, mode: Mode) Uv {
@@ -190,7 +186,7 @@ fn computeUv(fb_w: f32, fb_h: f32, mode: Mode) Uv {
 /// Note: `viewport_height` is the height in pixels of the current viewport
 /// (used to flip Y in the projection matrix used by the simple shader).
 pub fn drawFullscreen(viewport_width: f32, viewport_height: f32) void {
-    if (!g_enabled or g_texture == 0) return;
+    if (!g_enabled or !g_texture.isValid()) return;
     if (ui_pipeline.emoji.program == 0) return;
 
     const uv = computeUv(viewport_width, viewport_height, g_mode);
@@ -217,12 +213,12 @@ pub fn drawFullscreen(viewport_width: f32, viewport_height: f32) void {
     ui_pipeline.setBlendEnabled(true);
 
     // Tint pass: blend the theme background color over the image at
-    // `g_bg_opacity`. Without this, default-bg cells (which emit no per-cell
+    // `gpu.background_opacity`. Without this, default-bg cells (which emit no per-cell
     // bg quad) would show the image at 100% regardless of opacity. With it,
     // default cells end up as `(1-opacity)*image + opacity*theme_bg`, which
     // matches the documented intent. Skip only at opacity == 0 (no-op).
-    if (gl_init.g_bg_opacity > 0.0 and ui_pipeline.overlay.program != 0) {
+    if (gpu.background_opacity > 0.0 and ui_pipeline.overlay.program != 0) {
         const theme = AppWindow.g_theme.background;
-        ui_pipeline.fillOverlay(vertices, .{ theme[0], theme[1], theme[2], gl_init.g_bg_opacity });
+        ui_pipeline.fillOverlay(vertices, .{ theme[0], theme[1], theme[2], gpu.background_opacity });
     }
 }

@@ -14,6 +14,7 @@ const platform_console = @import("platform/console.zig");
 const font_backend = @import("platform/font_backend.zig");
 const render_diagnostics = @import("render_diagnostics.zig");
 const window_backend = @import("platform/window_backend.zig");
+const gpu = @import("renderer/gpu/gpu.zig");
 const i18n = @import("i18n.zig");
 const ai_chat = @import("assistant/conversation/session.zig");
 const build_options = @import("build_options");
@@ -194,7 +195,8 @@ pub fn main() !void {
 
     // Present-path selection must be decided before the first window is
     // created (the presenter is built right after the GL context).
-    window_backend.setFlipPresentEnabled(cfg.@"wispterm-d3d-present");
+    const use_legacy_gl_dx_present = cfg.@"wispterm-d3d-present" and gpu.active != .d3d11;
+    window_backend.setFlipPresentEnabled(use_legacy_gl_dx_present);
 
     // Bring-up crash fuse: presenter init runs driver code (wglDX*NV, D3D11)
     // that broken ICDs crash in instead of failing — which previously meant
@@ -203,7 +205,7 @@ pub fn main() !void {
     // present. Finding our own marker at startup = last bring-up died →
     // stop trying the D3D path for this app version (an upgrade retries).
     if (comptime builtin.os.tag == .windows) {
-        if (cfg.@"wispterm-d3d-present") {
+        if (use_legacy_gl_dx_present) {
             const window_state = @import("platform/window_state.zig");
             const dxgi_core = @import("platform/dxgi_core.zig");
             var stored_buf: [dxgi_core.bringup_marker_max_len]u8 = undefined;
