@@ -22,6 +22,30 @@ OpenGL renderer and then copied into the DXGI swapchain. This roadmap changes
 that into a real `d3d11` backend that draws cells, glyphs, emoji, UI, images,
 and render targets directly with Direct3D 11.
 
+## Current Branch Status
+
+On the `windows-native-render` integration branch, the opt-in D3D11 backend is a
+real native renderer path, not merely OpenGL frames presented through DXGI. The
+branch has backend/present/shader diagnostics for `gpu-backend=d3d11`, a D3D11
+swapchain, HLSL shader plumbing, terminal grid rendering, D3D11 off-screen
+framebuffers, off-screen render-target round-trip smoke coverage, backend-neutral
+UI pipeline smoke coverage, and a growing set of Phase IV layout/policy slices.
+
+The explicit Phase IV slices currently covered by fast-suite layout/policy tests
+and source guards are: titlebar/tabs/sidebar/caption-button layout, startup
+overlay, file explorer, settings page, background image layout, image preview
+layout, QR panel layout, assistant conversation panel layout, command palette
+layout, skill center layout, markdown preview layout, and backend-specific
+post-process/custom shader policy. Supplemental user-visible panels such as the
+port-forwarding renderer are also guarded as backend-neutral when they already
+fit the same shared draw-context shape.
+
+This does not make D3D11 product-default-ready yet. Phase IV exit criteria still
+need stronger normal-session evidence that the D3D11 backend can run day-to-day
+without major missing UI, Phase V hardening is not started, and Phase VI default
+migration must remain blocked until feature parity and fallback coverage are
+proven. Windows `auto` still must not default to D3D11 on this branch.
+
 ## Ghostty Comparison
 
 Ghostty is still the architectural reference for the renderer boundary. Its
