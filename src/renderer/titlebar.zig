@@ -427,6 +427,17 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
     if (AppWindow.g_window != null) {
+        const layout = titlebar_layout.topBarLayout(
+            window_width,
+            window_height,
+            titlebar_h,
+            titlebarLeftReserved(),
+            TITLEBAR_TOGGLE_W,
+            TITLEBAR_CONFIG_W,
+            TITLEBAR_HELP_W,
+            TITLEBAR_COPILOT_W,
+            window_backend.caption_button_visual_style.width,
+        );
         const top_bg = blend(bg, fg, 0.04);
         const hover_bg = blend(bg, fg, 0.11);
         const border_color_simple = blend(bg, .{ 0.0, 0.0, 0.0 }, 0.20);
@@ -436,71 +447,68 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
         // Ghostty's apprt action/tab-view split. The top bar now only hosts the
         // sidebar toggle and native caption buttons; tab navigation is rendered by
         // renderSidebar below.
-        ui_pipeline.fillQuad(0, tb_top, window_width, titlebar_h, top_bg);
-        ui_pipeline.fillQuad(0, tb_top, window_width, 1, border_color_simple);
+        ui_pipeline.fillQuad(0, layout.top_y, window_width, titlebar_h, top_bg);
+        ui_pipeline.fillQuad(0, layout.top_y, window_width, 1, border_color_simple);
 
-        const toggle_x = titlebarLeftReserved();
+        const toggle_x = layout.toggle_x;
         const toggle_hovered = mouseInTitlebarRange(titlebar_h, toggle_x, toggle_x + TITLEBAR_TOGGLE_W);
         if (toggle_hovered) {
-            ui_pipeline.fillQuad(toggle_x, tb_top, TITLEBAR_TOGGLE_W, titlebar_h, hover_bg);
+            ui_pipeline.fillQuad(toggle_x, layout.top_y, TITLEBAR_TOGGLE_W, titlebar_h, hover_bg);
         }
         if (font.icon_face != null) {
             if (font.loadIconGlyph(0xE700)) |ch| {
-                renderIconGlyph(ch, toggle_x, tb_top, TITLEBAR_TOGGLE_W, titlebar_h, icon_color, 1.0);
+                renderIconGlyph(ch, toggle_x, layout.top_y, TITLEBAR_TOGGLE_W, titlebar_h, icon_color, 1.0);
             } else {
-                renderFallbackMenuIcon(toggle_x, tb_top, TITLEBAR_TOGGLE_W, titlebar_h, icon_color);
+                renderFallbackMenuIcon(toggle_x, layout.top_y, TITLEBAR_TOGGLE_W, titlebar_h, icon_color);
             }
         } else {
-            renderFallbackMenuIcon(toggle_x, tb_top, TITLEBAR_TOGGLE_W, titlebar_h, icon_color);
+            renderFallbackMenuIcon(toggle_x, layout.top_y, TITLEBAR_TOGGLE_W, titlebar_h, icon_color);
         }
 
-        const top_caption_btn_w = window_backend.caption_button_visual_style.width;
-        const top_caption_area_w: f32 = top_caption_btn_w * 3;
         const top_btn_h: f32 = titlebar_h;
         const top_hovered: window_backend.CaptionButton = if (AppWindow.g_window) |w| window_backend.hoveredCaptionButton(w) else .none;
 
-        const top_caption_start = window_width - top_caption_area_w;
-        const config_x = top_caption_start - TITLEBAR_CONFIG_W;
+        const config_x = layout.config_x;
         if (TITLEBAR_CONFIG_W > 0) {
             const config_hovered = mouseInTitlebarRange(titlebar_h, config_x, config_x + TITLEBAR_CONFIG_W);
             if (config_hovered) {
-                ui_pipeline.fillQuad(config_x, tb_top, TITLEBAR_CONFIG_W, titlebar_h, hover_bg);
+                ui_pipeline.fillQuad(config_x, layout.top_y, TITLEBAR_CONFIG_W, titlebar_h, hover_bg);
             }
             if (font.icon_face != null) {
                 if (font.loadIconGlyph(0xE713)) |ch| {
-                    renderIconGlyph(ch, config_x, tb_top, TITLEBAR_CONFIG_W, titlebar_h, icon_color, 1.0);
+                    renderIconGlyph(ch, config_x, layout.top_y, TITLEBAR_CONFIG_W, titlebar_h, icon_color, 1.0);
                 } else {
-                    renderFallbackGearIcon(config_x, tb_top, TITLEBAR_CONFIG_W, titlebar_h, icon_color);
+                    renderFallbackGearIcon(config_x, layout.top_y, TITLEBAR_CONFIG_W, titlebar_h, icon_color);
                 }
             } else {
-                renderFallbackGearIcon(config_x, tb_top, TITLEBAR_CONFIG_W, titlebar_h, icon_color);
+                renderFallbackGearIcon(config_x, layout.top_y, TITLEBAR_CONFIG_W, titlebar_h, icon_color);
             }
         }
 
-        const help_x = config_x - TITLEBAR_HELP_W;
+        const help_x = layout.help_x;
         if (TITLEBAR_HELP_W > 0) {
             const help_hovered = mouseInTitlebarRange(titlebar_h, help_x, help_x + TITLEBAR_HELP_W);
             if (help_hovered) {
-                ui_pipeline.fillQuad(help_x, tb_top, TITLEBAR_HELP_W, titlebar_h, hover_bg);
+                ui_pipeline.fillQuad(help_x, layout.top_y, TITLEBAR_HELP_W, titlebar_h, hover_bg);
             }
             if (font.icon_face != null) {
                 if (font.loadIconGlyph(0xEDA7)) |ch| {
-                    renderIconGlyph(ch, help_x, tb_top, TITLEBAR_HELP_W, titlebar_h, icon_color, 1.0);
+                    renderIconGlyph(ch, help_x, layout.top_y, TITLEBAR_HELP_W, titlebar_h, icon_color, 1.0);
                 } else {
-                    renderFallbackHelpIcon(help_x, tb_top, TITLEBAR_HELP_W, titlebar_h, icon_color);
+                    renderFallbackHelpIcon(help_x, layout.top_y, TITLEBAR_HELP_W, titlebar_h, icon_color);
                 }
             } else {
-                renderFallbackHelpIcon(help_x, tb_top, TITLEBAR_HELP_W, titlebar_h, icon_color);
+                renderFallbackHelpIcon(help_x, layout.top_y, TITLEBAR_HELP_W, titlebar_h, icon_color);
             }
         }
 
-        const copilot_x = help_x - TITLEBAR_COPILOT_W;
+        const copilot_x = layout.copilot_x;
         if (TITLEBAR_COPILOT_W > 0) {
             const copilot_open = AppWindow.aiCopilotVisible();
             const copilot_usable = AppWindow.isActiveTabTerminal();
             const copilot_hovered = mouseInTitlebarRange(titlebar_h, copilot_x, copilot_x + TITLEBAR_COPILOT_W);
             if (copilot_hovered and copilot_usable) {
-                ui_pipeline.fillQuad(copilot_x, tb_top, TITLEBAR_COPILOT_W, titlebar_h, hover_bg);
+                ui_pipeline.fillQuad(copilot_x, layout.top_y, TITLEBAR_COPILOT_W, titlebar_h, hover_bg);
             }
             const copilot_tint = if (!copilot_usable)
                 blend(bg, fg, 0.30) // dimmed: no terminal target
@@ -508,19 +516,18 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
                 blend(bg, AppWindow.g_theme.cursor_color, 0.85) // active
             else
                 icon_color;
-            renderFallbackCopilotIcon(copilot_x, tb_top, TITLEBAR_COPILOT_W, titlebar_h, copilot_tint);
+            renderFallbackCopilotIcon(copilot_x, layout.top_y, TITLEBAR_COPILOT_W, titlebar_h, copilot_tint);
         }
 
         if (tab.activeTab()) |active_tab| {
             const title = active_tab.getTitle();
-            const text_y = tb_top + (titlebar_h - font.g_titlebar_cell_height) / 2;
-            const text_x = titlebarLeftReserved() + TITLEBAR_TOGGLE_W + 10;
-            _ = renderTextLimited(title, text_x, text_y, blend(bg, fg, 0.90), copilot_x - text_x - 12);
+            const text_y = layout.top_y + (titlebar_h - font.g_titlebar_cell_height) / 2;
+            _ = renderTextLimited(title, layout.title_text_x, text_y, blend(bg, fg, 0.90), layout.title_text_max_w);
         }
 
-        renderCaptionButton(top_caption_start, tb_top, top_caption_btn_w, top_btn_h, .minimize, top_hovered == .minimize);
-        renderCaptionButton(top_caption_start + top_caption_btn_w, tb_top, top_caption_btn_w, top_btn_h, .maximize, top_hovered == .maximize);
-        renderCaptionButton(top_caption_start + top_caption_btn_w * 2, tb_top, top_caption_btn_w, top_btn_h, .close, top_hovered == .close);
+        renderCaptionButton(layout.caption_start_x, layout.top_y, layout.caption_button_w, top_btn_h, .minimize, top_hovered == .minimize);
+        renderCaptionButton(layout.caption_start_x + layout.caption_button_w, layout.top_y, layout.caption_button_w, top_btn_h, .maximize, top_hovered == .maximize);
+        renderCaptionButton(layout.caption_start_x + layout.caption_button_w * 2, layout.top_y, layout.caption_button_w, top_btn_h, .close, top_hovered == .close);
 
         {
             const is_focused = if (AppWindow.g_window) |w| window_backend.isFocused(w) else false;

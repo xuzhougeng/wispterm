@@ -50,6 +50,53 @@ pub fn fallbackCodepoint(byte: u8) u32 {
     return if (byte >= 0x20 and byte <= 0x7e) byte else '?';
 }
 
+pub const TopBarLayout = struct {
+    top_y: f32,
+    toggle_x: f32,
+    caption_button_w: f32,
+    caption_start_x: f32,
+    config_x: f32,
+    help_x: f32,
+    copilot_x: f32,
+    title_text_x: f32,
+    title_text_max_w: f32,
+};
+
+/// Window-top chrome geometry for the app-drawn titlebar.
+///
+/// The renderer consumes this in framebuffer coordinates, with Y=0 at the
+/// bottom. Width arguments may be zero on platforms where those controls are
+/// hosted outside WispTerm's titlebar.
+pub fn topBarLayout(
+    window_width: f32,
+    window_height: f32,
+    titlebar_h: f32,
+    left_reserved: f32,
+    toggle_w: f32,
+    config_w: f32,
+    help_w: f32,
+    copilot_w: f32,
+    caption_button_w: f32,
+) TopBarLayout {
+    const caption_area_w = caption_button_w * 3.0;
+    const caption_start_x = window_width - caption_area_w;
+    const config_x = caption_start_x - config_w;
+    const help_x = config_x - help_w;
+    const copilot_x = help_x - copilot_w;
+    const title_text_x = left_reserved + toggle_w + 10.0;
+    return .{
+        .top_y = window_height - titlebar_h,
+        .toggle_x = left_reserved,
+        .caption_button_w = caption_button_w,
+        .caption_start_x = caption_start_x,
+        .config_x = config_x,
+        .help_x = help_x,
+        .copilot_x = copilot_x,
+        .title_text_x = title_text_x,
+        .title_text_max_w = @max(0.0, copilot_x - title_text_x - 12.0),
+    };
+}
+
 test "pointInRect inside / edges / outside" {
     try std.testing.expect(pointInRect(5, 5, 0, 0, 10, 10));
     try std.testing.expect(pointInRect(0, 0, 0, 0, 10, 10)); // top-left inclusive
@@ -97,4 +144,31 @@ test "fallbackCodepoint maps printable ASCII, else '?'" {
     try std.testing.expectEqual(@as(u32, '?'), fallbackCodepoint(0x7f)); // just above
     try std.testing.expectEqual(@as(u32, '?'), fallbackCodepoint(0x07));
     try std.testing.expectEqual(@as(u32, '?'), fallbackCodepoint(0xC3));
+}
+
+test "topBarLayout computes titlebar chrome rectangles" {
+    const l = topBarLayout(1200, 800, 34, 0, 46, 46, 46, 46, 46);
+
+    try std.testing.expectEqual(@as(f32, 766), l.top_y);
+    try std.testing.expectEqual(@as(f32, 0), l.toggle_x);
+    try std.testing.expectEqual(@as(f32, 46), l.caption_button_w);
+    try std.testing.expectEqual(@as(f32, 1062), l.caption_start_x);
+    try std.testing.expectEqual(@as(f32, 1016), l.config_x);
+    try std.testing.expectEqual(@as(f32, 970), l.help_x);
+    try std.testing.expectEqual(@as(f32, 924), l.copilot_x);
+    try std.testing.expectEqual(@as(f32, 56), l.title_text_x);
+    try std.testing.expectEqual(@as(f32, 856), l.title_text_max_w);
+}
+
+test "topBarLayout collapses optional titlebar controls cleanly" {
+    const l = topBarLayout(360, 240, 40, 160, 46, 0, 0, 0, 46);
+
+    try std.testing.expectEqual(@as(f32, 200), l.top_y);
+    try std.testing.expectEqual(@as(f32, 160), l.toggle_x);
+    try std.testing.expectEqual(@as(f32, 222), l.caption_start_x);
+    try std.testing.expectEqual(@as(f32, 222), l.config_x);
+    try std.testing.expectEqual(@as(f32, 222), l.help_x);
+    try std.testing.expectEqual(@as(f32, 222), l.copilot_x);
+    try std.testing.expectEqual(@as(f32, 216), l.title_text_x);
+    try std.testing.expectEqual(@as(f32, 0), l.title_text_max_w);
 }
