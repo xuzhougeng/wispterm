@@ -247,6 +247,7 @@ test {
     _ = @import("preview/pdf.zig");
     _ = @import("preview/gallery.zig");
     _ = @import("preview/diagnostics.zig");
+    _ = @import("preview/markdown_layout.zig");
     _ = @import("preview/image_layout.zig");
     _ = @import("file_backend.zig");
     _ = @import("file_explorer.zig");

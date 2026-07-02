@@ -8,6 +8,7 @@ const text_wrap = @import("../text_wrap.zig");
 const ui_perf = @import("../ui_perf.zig");
 const PreviewPane = @import("../preview/pane.zig");
 const preview_diagnostics = @import("../preview/diagnostics.zig");
+const markdown_layout = @import("../preview/markdown_layout.zig");
 const preview_image_layout = @import("../preview/image_layout.zig");
 const preview_close_button = @import("../input/preview_close_button.zig");
 const titlebar = AppWindow.titlebar;
@@ -57,11 +58,17 @@ pub fn renderInto(
     window_height: f32,
     close_hovered: bool,
 ) void {
-    if (panel_h <= 0) return;
-
-    // GL origin is bottom-left, so the pane's bottom edge in GL space is:
-    //   window_height - panel_top - panel_h
-    const pane_gl_bottom = window_height - panel_top - panel_h;
+    const layout = markdown_layout.compute(.{
+        .panel_x = panel_x,
+        .panel_top = panel_top,
+        .panel_w = panel_w,
+        .panel_h = panel_h,
+        .window_height = window_height,
+        .header_h = HEADER_HEIGHT,
+        .footer_h = FOOTER_HEIGHT,
+        .pad_x = PAD_X,
+        .pad_y = PAD_Y,
+    }) orelse return;
 
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
@@ -74,13 +81,12 @@ pub fn renderInto(
     const normal = blend(bg, fg, 0.88);
     const strong = blend(bg, fg, 0.96);
 
-    // Side background: fillQuad(x, gl_y, w, h) — gl_y = pane_gl_bottom
-    ui_pipeline.fillQuad(panel_x, pane_gl_bottom, panel_w, panel_h, panel_bg);
+    ui_pipeline.fillQuad(layout.background.x, layout.background.y, layout.background.w, layout.background.h, panel_bg);
 
-    renderHeader(pane, panel_x, panel_w, window_height, panel_top, card_bg, border, muted, normal, accent, close_hovered);
-    renderFooter(pane, panel_x, panel_w, pane_gl_bottom, card_bg, border, muted, normal, accent);
+    renderHeader(pane, layout, card_bg, border, muted, normal, accent, close_hovered);
+    renderFooter(pane, layout, card_bg, border, muted, normal, accent);
 
-    renderDocument(pane, panel_x, panel_w, window_height, panel_top, panel_h, pane_gl_bottom, normal, muted, strong, accent, code_bg, border);
+    renderDocument(pane, layout, normal, muted, strong, accent, code_bg, border);
 }
 
 pub fn deinit() void {
@@ -89,10 +95,7 @@ pub fn deinit() void {
 
 fn renderHeader(
     pane: *const PreviewPane,
-    panel_x: f32,
-    panel_w: f32,
-    window_height: f32,
-    panel_top: f32,
+    layout: markdown_layout.Panel,
     card_bg: [3]f32,
     border: [3]f32,
     muted: [3]f32,
@@ -104,16 +107,14 @@ fn renderHeader(
     // so its top-right corner is free for a close (×) button. The button lets
     // users dismiss the preview with the mouse without knowing the close-split
     // keybind; Ctrl+Shift+W still works too.
-    // header_y (GL): window_height - panel_top - HEADER_HEIGHT.
-    const header_y = window_height - panel_top - HEADER_HEIGHT;
-    ui_pipeline.fillQuad(panel_x, header_y, panel_w, HEADER_HEIGHT, card_bg);
-    ui_pipeline.fillQuad(panel_x, header_y, panel_w, 1, border);
+    ui_pipeline.fillQuad(layout.header.x, layout.header.y, layout.header.w, layout.header.h, card_bg);
+    ui_pipeline.fillQuad(layout.header_rule.x, layout.header_rule.y, layout.header_rule.w, layout.header_rule.h, border);
 
     // Close (×) button, top-right. Geometry comes from the shared pure module
     // (top-down px); flip to GL for drawing. Symmetric box, so the X centers the
     // same in either y-convention.
-    const b = preview_close_button.rect(panel_x, panel_top, panel_w);
-    const btn_gl_y = window_height - b.y - b.h;
+    const b = preview_close_button.rect(layout.panel_x, layout.panel_top, layout.panel_w);
+    const btn_gl_y = layout.window_height - b.y - b.h;
     if (close_hovered) {
         ui_pipeline.fillQuad(b.x, btn_gl_y, b.w, b.h, blend(card_bg, normal, 0.18));
     }
@@ -123,11 +124,11 @@ fn renderHeader(
     // Large text/log files are shown as a scrollable head; tell the user the rest
     // is clipped so they don't mistake the end of the window for the end of file.
     // The banner stops before the × button (b.x) so the two never overlap.
-    if (pane.content_truncated and panel_w > PAD_X * 2) {
+    if (pane.content_truncated and layout.panel_w > PAD_X * 2) {
         var buf: [96]u8 = undefined;
         const label = truncatedBannerText(&buf, pane.sourceText().len);
-        const text_y = header_y + (HEADER_HEIGHT - font.g_titlebar_cell_height) / 2;
-        const banner_x = panel_x + PAD_X;
+        const text_y = layout.headerTextY(font.g_titlebar_cell_height);
+        const banner_x = layout.content_x;
         const banner_max_w = @max(@as(f32, 0), b.x - 8 - banner_x);
         _ = titlebar.renderTextLimited(label, banner_x, text_y, accent, banner_max_w);
     }
@@ -149,19 +150,15 @@ fn truncatedBannerText(buf: []u8, head_bytes: usize) []const u8 {
 
 fn renderFooter(
     pane: *PreviewPane,
-    panel_x: f32,
-    panel_w: f32,
-    pane_gl_bottom: f32,
+    layout: markdown_layout.Panel,
     card_bg: [3]f32,
     border: [3]f32,
     muted: [3]f32,
     normal: [3]f32,
     accent: [3]f32,
 ) void {
-    // Footer sits at the pane's bottom edge in GL space.
-    // Dock check: pane_gl_bottom = window_height - titlebar_h - (window_height - titlebar_h) = 0 ✓
-    ui_pipeline.fillQuad(panel_x, pane_gl_bottom, panel_w, FOOTER_HEIGHT, card_bg);
-    ui_pipeline.fillQuad(panel_x, pane_gl_bottom + FOOTER_HEIGHT - 1, panel_w, 1, border);
+    ui_pipeline.fillQuad(layout.footer.x, layout.footer.y, layout.footer.w, layout.footer.h, card_bg);
+    ui_pipeline.fillQuad(layout.footer_rule.x, layout.footer_rule.y, layout.footer_rule.w, layout.footer_rule.h, border);
 
     const badge = switch (pane.kind) {
         .markdown => "MD",
@@ -171,16 +168,16 @@ fn renderFooter(
         .image => "IMG",
         .pdf => "PDF",
     };
-    const text_y = pane_gl_bottom + (FOOTER_HEIGHT - font.g_titlebar_cell_height) / 2;
-    var badge_end = titlebar.renderTextLimited(badge, panel_x + PAD_X, text_y, accent, 40);
+    const text_y = layout.footerTextY(font.g_titlebar_cell_height);
+    var badge_end = titlebar.renderTextLimited(badge, layout.content_x, text_y, accent, 40);
     if (pane.kind == .pdf and pane.pdf_page_count > 0) {
         var page_buf: [24]u8 = undefined;
         const label = pdf_preview.formatPageIndicator(&page_buf, pane.pdf_page, pane.pdf_page_count);
         badge_end = titlebar.renderTextLimited(label, badge_end + 8, text_y, muted, 64);
     }
-    const content_right = panel_x + panel_w - PAD_X;
+    const content_right = layout.contentRight();
     const title_x = badge_end + 10;
-    const title_max_w = @max(40, @min(panel_w * 0.34, content_right - title_x));
+    const title_max_w = @max(40, @min(layout.panel_w * 0.34, content_right - title_x));
     const title_end = titlebar.renderTextLimited(pane.title(), title_x, text_y, normal, title_max_w);
 
     var sep_x = title_end + 10;
@@ -192,12 +189,7 @@ fn renderFooter(
 
 fn renderDocument(
     pane: *PreviewPane,
-    panel_x: f32,
-    panel_w: f32,
-    window_height: f32,
-    panel_top: f32,
-    panel_h: f32,
-    pane_gl_bottom: f32,
+    layout: markdown_layout.Panel,
     normal: [3]f32,
     muted: [3]f32,
     strong: [3]f32,
@@ -205,30 +197,21 @@ fn renderDocument(
     code_bg: [3]f32,
     border: [3]f32,
 ) void {
-    // body_top (from window top): panel_top + HEADER_HEIGHT + PAD_Y
-    // Dock check: titlebar_h + HEADER_HEIGHT + PAD_Y ✓
-    const body_top = panel_top + HEADER_HEIGHT + PAD_Y;
-    // body_bottom margin (from window BOTTOM): pane_gl_bottom + FOOTER_HEIGHT + PAD_Y
-    // Dock check: 0 + FOOTER_HEIGHT + PAD_Y = FOOTER_HEIGHT + PAD_Y ✓
-    const body_bottom_margin = pane_gl_bottom + FOOTER_HEIGHT + PAD_Y;
-    // body_h = window_height - body_top - body_bottom_margin
-    // Dock check: window_height - (titlebar_h+HEADER_HEIGHT+PAD_Y) - (FOOTER_HEIGHT+PAD_Y) ✓
-    const body_h = window_height - body_top - body_bottom_margin;
-    if (body_h <= 0) return;
+    if (!layout.bodyAvailable()) return;
 
     if (pane.kind.isRaster()) {
-        renderImageDocument(pane, panel_x, panel_w, window_height, body_top, body_h, normal, muted, border);
+        renderImageDocument(pane, layout.panel_x, layout.panel_w, layout.window_height, layout.body_top, layout.body_h, normal, muted, border);
         return;
     }
     if (markdown_preview.delimiterForKind(pane.kind)) |delimiter| {
-        renderDelimitedDocument(pane, panel_x, panel_w, window_height, body_top, body_h, delimiter, normal, muted, strong, accent, code_bg, border);
+        renderDelimitedDocument(pane, layout.panel_x, layout.panel_w, layout.window_height, layout.body_top, layout.body_h, delimiter, normal, muted, strong, accent, code_bg, border);
         return;
     }
 
     const row_h = @max(22, font.g_titlebar_cell_height + LINE_GAP);
-    const body_origin = body_top - pane.scroll_offset;
+    const body_origin = layout.body_top - pane.scroll_offset;
     var y_from_top: f32 = body_origin;
-    const max_w = panel_w - PAD_X * 2;
+    const max_w = layout.content_w;
 
     var in_code = false;
     var rendered: usize = 0;
@@ -241,11 +224,11 @@ fn renderDocument(
         // full content height (needed to clamp scroll) without extra draw cost.
         const consumed = renderMarkdownLine(
             pane,
-            panel_x + PAD_X,
+            layout.content_x,
             max_w,
-            window_height,
-            body_top,
-            body_h,
+            layout.window_height,
+            layout.body_top,
+            layout.body_h,
             y_from_top,
             row_h,
             line,
@@ -262,8 +245,7 @@ fn renderDocument(
     }
     // Clamp scroll to the laid-out height so the pane can't scroll past its last
     // rendered line into blank space (large heads now stop cleanly at the end).
-    pane.max_scroll = @max(0, (y_from_top - body_origin) - body_h);
-    _ = panel_h;
+    pane.max_scroll = @max(0, (y_from_top - body_origin) - layout.body_h);
 }
 
 /// Number of non-blank lines — the count of rows the delimited renderer actually
