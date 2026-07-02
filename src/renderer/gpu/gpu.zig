@@ -2,6 +2,7 @@
 //! style, no runtime vtable) and re-exports its types. See
 //! docs/decoupling-guide.md §2 and the spec for the abstraction hierarchy.
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 
 pub const Backend = @import("backend.zig").Backend;
 pub const types = @import("types.zig");
@@ -20,7 +21,7 @@ pub const ClearColor = types.ClearColor;
 pub const DriverInfo = types.DriverInfo;
 pub const BlendSnapshot = types.BlendSnapshot;
 pub const SwapDiagnostics = types.SwapDiagnostics;
-pub const active: Backend = Backend.default(builtin.os.tag);
+pub const active: Backend = Backend.resolve(builtin.os.tag, build_options.gpu_backend);
 
 /// Backend-neutral per-frame renderer diagnostics/state.
 /// Transition note: `gpu.gl_init` still mirrors old names for compatibility,
@@ -34,6 +35,7 @@ pub threadlocal var background_opacity: f32 = 1.0;
 const impl = switch (active) {
     .opengl => @import("opengl/api.zig"),
     .metal => @import("metal/api.zig"),
+    .d3d11 => @import("d3d11/api.zig"),
 };
 
 // The active backend's surface. The GL table lives in the backend (moved out

@@ -20,7 +20,7 @@ pub fn writeFileReplaceSafe(path: []const u8, data: []const u8) !void {
 /// Same as `writeFileReplaceSafe`, with opt-in sync knobs for state that needs
 /// stronger power-loss durability than the default crash-safe replace.
 pub fn writeFileReplaceSafeWithOptions(path: []const u8, data: []const u8, options: WriteOptions) !void {
-    var write_buffer: [0]u8 = .{};
+    var write_buffer: [4096]u8 = undefined;
     var atomic = try std.fs.cwd().atomicFile(path, .{
         .mode = options.mode,
         .make_path = true,
@@ -61,6 +61,23 @@ test "platform atomic file replaces existing contents" {
     const got = try tmp.dir.readFileAlloc(std.testing.allocator, "state.json", 16);
     defer std.testing.allocator.free(got);
     try std.testing.expectEqualStrings("new", got);
+}
+
+test "platform atomic file can replace existing contents with an empty file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const path = try std.fs.path.join(std.testing.allocator, &.{ root, "state.json" });
+    defer std.testing.allocator.free(path);
+
+    try writeFileReplaceSafe(path, "old");
+    try writeFileReplaceSafe(path, "");
+
+    const got = try tmp.dir.readFileAlloc(std.testing.allocator, "state.json", 16);
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqualStrings("", got);
 }
 
 test "platform atomic file creates parent directories" {

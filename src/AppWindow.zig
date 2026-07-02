@@ -1584,6 +1584,25 @@ fn forceOpaqueBackbufferForPresent() void {
     }
 }
 
+fn syncBackendSurfaceSize(fb_width: c_int, fb_height: c_int) void {
+    if (comptime gpu.active == .d3d11) {
+        if (!gpu.Context.resize(fb_width, fb_height)) {
+            render_diagnostics.log("gpu-backend=d3d11 resize sync failed for {}x{}", .{ fb_width, fb_height });
+        }
+    }
+}
+
+fn presentBackendFrame(win: *window_backend.Window) void {
+    if (comptime gpu.active == .d3d11) {
+        gpu.Context.present() catch |err| {
+            render_diagnostics.log("gpu-backend=d3d11 present failed: {s}", .{@errorName(err)});
+            std.debug.print("D3D11 present failed: {s}\n", .{@errorName(err)});
+        };
+    } else {
+        window_backend.swapBuffers(win);
+    }
+}
+
 threadlocal var g_diag_last_fb_w: c_int = -1;
 threadlocal var g_diag_last_fb_h: c_int = -1;
 threadlocal var g_diag_last_client_w: i32 = -1;
@@ -4410,7 +4429,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
         .{ fb_width, fb_height, term_cols, term_rows, gpu.draw_call_count },
     );
     forceOpaqueBackbufferForPresent();
-    if (g_window) |w| window_backend.swapBuffers(w);
+    if (g_window) |w| presentBackendFrame(w);
 }
 
 fn resizeWindowToGrid() void {
@@ -6285,6 +6304,10 @@ fn runMainLoop(self: *AppWindow) !void {
     switch (gpu.active) {
         .metal => try gpu.Context.initWithLayer(window_backend.metalLayer(&backend_window)),
         .opengl => try gpu.Context.init(@ptrCast(&window_backend.glGetProcAddress)),
+        .d3d11 => {
+            const fb = window_backend.framebufferSize(&backend_window);
+            try gpu.Context.initForWindow(window_backend.nativeHandle(&backend_window), fb.width, fb.height);
+        },
     }
 
     // Initialize FreeType
@@ -6786,6 +6809,7 @@ fn runMainLoop(self: *AppWindow) !void {
             window_backend.pumpAppEvents(@as(f64, @floatFromInt(timeout_ms)) / 1000.0);
             continue;
         }
+        syncBackendSurfaceSize(fb_width, fb_height);
 
         const gate_now = std.time.milliTimestamp();
         const visible = window_backend.isVisible(win);
@@ -7124,7 +7148,7 @@ fn runMainLoop(self: *AppWindow) !void {
         forceOpaqueBackbufferForPresent();
         gpu.state.endFrame();
         agent_requests.capturePendingUiScreenshots(agentRequestHost());
-        window_backend.swapBuffers(win);
+        presentBackendFrame(win);
         if (windowState().takePresentBringupSettlement()) {
             platform_window_state.settleD3dBringup(allocator);
         }

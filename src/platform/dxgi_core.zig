@@ -122,7 +122,10 @@ pub const D3D11_MAPPED_SUBRESOURCE = extern struct {
     depth_pitch: u32,
 };
 
+pub const HRESULT = i32;
+
 pub const DXGI_FORMAT_B8G8R8A8_UNORM: u32 = 87;
+pub const DXGI_FORMAT_R8_UNORM: u32 = 61;
 pub const DXGI_USAGE_RENDER_TARGET_OUTPUT: u32 = 0x20;
 pub const DXGI_SCALING_NONE: u32 = 1;
 pub const DXGI_SCALING_STRETCH: u32 = 0;
@@ -136,10 +139,40 @@ pub const D3D11_SDK_VERSION: u32 = 7;
 pub const D3D11_CREATE_DEVICE_BGRA_SUPPORT: u32 = 0x20;
 pub const D3D11_USAGE_DEFAULT: u32 = 0;
 pub const D3D11_USAGE_STAGING: u32 = 3;
+pub const D3D11_USAGE_DYNAMIC: u32 = 2;
+pub const D3D11_BIND_VERTEX_BUFFER: u32 = 0x1;
+pub const D3D11_BIND_SHADER_RESOURCE: u32 = 0x8;
 pub const D3D11_BIND_RENDER_TARGET: u32 = 0x20;
+pub const D3D11_CPU_ACCESS_WRITE: u32 = 0x10000;
 pub const D3D11_CPU_ACCESS_READ: u32 = 0x20000;
 pub const D3D11_RESOURCE_MISC_SHARED: u32 = 0x2;
 pub const D3D11_MAP_READ: u32 = 1;
+pub const D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST: u32 = 4;
+pub const D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP: u32 = 5;
+
+pub const D3D11_BUFFER_DESC = extern struct {
+    byte_width: u32,
+    usage: u32,
+    bind_flags: u32,
+    cpu_access_flags: u32,
+    misc_flags: u32,
+    structure_byte_stride: u32,
+};
+
+pub const D3D11_SUBRESOURCE_DATA = extern struct {
+    sys_mem: ?*const anyopaque,
+    sys_mem_pitch: u32,
+    sys_mem_slice_pitch: u32,
+};
+
+pub const D3D11_VIEWPORT = extern struct {
+    top_left_x: f32,
+    top_left_y: f32,
+    width: f32,
+    height: f32,
+    min_depth: f32,
+    max_depth: f32,
+};
 
 // PCI vendor IDs, for matching the GL context's GPU to a DXGI adapter.
 pub const PCI_VENDOR_NVIDIA: u32 = 0x10DE;
@@ -194,13 +227,29 @@ pub const slot = struct {
     pub const Release: usize = 2;
 
     // ID3D11Device (derives IUnknown directly)
+    pub const D3D11Device_CreateBuffer: usize = 3;
     pub const D3D11Device_CreateTexture2D: usize = 5;
+    pub const D3D11Device_CreateRenderTargetView: usize = 9;
+    pub const D3D11Device_CreateVertexShader: usize = 12;
+    pub const D3D11Device_CreatePixelShader: usize = 15;
 
     // ID3D11DeviceContext (IUnknown + ID3D11DeviceChild(4) → first own slot 7:
     // VSSetConstantBuffers(7) … Draw(13) Map(14) Unmap(15) … CopyResource(47))
+    pub const D3D11DeviceContext_PSSetShader: usize = 9;
+    pub const D3D11DeviceContext_VSSetShader: usize = 11;
+    pub const D3D11DeviceContext_Draw: usize = 13;
     pub const D3D11DeviceContext_Map: usize = 14;
     pub const D3D11DeviceContext_Unmap: usize = 15;
+    pub const D3D11DeviceContext_IASetVertexBuffers: usize = 18;
+    pub const D3D11DeviceContext_IASetPrimitiveTopology: usize = 24;
+    pub const D3D11DeviceContext_OMSetRenderTargets: usize = 33;
+    pub const D3D11DeviceContext_RSSetViewports: usize = 44;
     pub const D3D11DeviceContext_CopyResource: usize = 47;
+    pub const D3D11DeviceContext_ClearRenderTargetView: usize = 50;
+
+    // ID3DBlob (IUnknown + GetBufferPointer/GetBufferSize).
+    pub const Blob_GetBufferPointer: usize = 3;
+    pub const Blob_GetBufferSize: usize = 4;
 
     // IDXGIObject: SetPrivateData(3) SetPrivateDataInterface(4)
     // GetPrivateData(5) GetParent(6)
@@ -233,6 +282,31 @@ pub const slot = struct {
     // IDXGIResource (IDXGIDeviceSubObject + GetSharedHandle first)
     pub const DXGIResource_GetSharedHandle: usize = 8;
 };
+
+// ============================================================================
+// COM dispatch helpers
+// ============================================================================
+
+pub fn vtable(obj: *anyopaque) [*]const *const anyopaque {
+    const pp: *const [*]const *const anyopaque = @ptrCast(@alignCast(obj));
+    return pp.*;
+}
+
+pub fn comCall(obj: *anyopaque, comptime slot_index: usize, comptime Fn: type) Fn {
+    return @ptrCast(vtable(obj)[slot_index]);
+}
+
+pub fn comRelease(obj: *anyopaque) void {
+    const f = comCall(obj, slot.Release, *const fn (*anyopaque) callconv(.winapi) u32);
+    _ = f(obj);
+}
+
+pub fn comQueryInterface(obj: *anyopaque, iid: *const Guid) ?*anyopaque {
+    const f = comCall(obj, slot.QueryInterface, *const fn (*anyopaque, *const Guid, *?*anyopaque) callconv(.winapi) HRESULT);
+    var out: ?*anyopaque = null;
+    if (f(obj, iid, &out) < 0) return null;
+    return out;
+}
 
 // ============================================================================
 // PresentPolicy
@@ -497,6 +571,29 @@ test "D3D11_MAPPED_SUBRESOURCE matches the documented 64-bit layout" {
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(D3D11_MAPPED_SUBRESOURCE));
     try std.testing.expectEqual(@as(usize, 8), @offsetOf(D3D11_MAPPED_SUBRESOURCE, "row_pitch"));
     try std.testing.expectEqual(@as(usize, 12), @offsetOf(D3D11_MAPPED_SUBRESOURCE, "depth_pitch"));
+}
+
+test "D3D11_BUFFER_DESC matches the documented 24-byte layout" {
+    try std.testing.expectEqual(@as(usize, 24), @sizeOf(D3D11_BUFFER_DESC));
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(D3D11_BUFFER_DESC, "byte_width"));
+    try std.testing.expectEqual(@as(usize, 4), @offsetOf(D3D11_BUFFER_DESC, "usage"));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(D3D11_BUFFER_DESC, "bind_flags"));
+    try std.testing.expectEqual(@as(usize, 12), @offsetOf(D3D11_BUFFER_DESC, "cpu_access_flags"));
+    try std.testing.expectEqual(@as(usize, 20), @offsetOf(D3D11_BUFFER_DESC, "structure_byte_stride"));
+}
+
+test "D3D11_SUBRESOURCE_DATA matches the documented 64-bit layout" {
+    try std.testing.expectEqual(@as(usize, 16), @sizeOf(D3D11_SUBRESOURCE_DATA));
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(D3D11_SUBRESOURCE_DATA, "sys_mem"));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(D3D11_SUBRESOURCE_DATA, "sys_mem_pitch"));
+    try std.testing.expectEqual(@as(usize, 12), @offsetOf(D3D11_SUBRESOURCE_DATA, "sys_mem_slice_pitch"));
+}
+
+test "D3D11_VIEWPORT matches the documented 24-byte layout" {
+    try std.testing.expectEqual(@as(usize, 24), @sizeOf(D3D11_VIEWPORT));
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(D3D11_VIEWPORT, "top_left_x"));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(D3D11_VIEWPORT, "width"));
+    try std.testing.expectEqual(@as(usize, 16), @offsetOf(D3D11_VIEWPORT, "min_depth"));
 }
 
 test "pciVendorForGlVendor maps the real GL vendor strings" {

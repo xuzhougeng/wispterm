@@ -278,6 +278,21 @@ fn defaultEmitSharedCompileChecks(features: PlatformFeatures) bool {
     return !features.supports_desktop_exe;
 }
 
+fn resolveGpuBackendBuildOption(raw: ?[]const u8, os_tag: std.Target.Os.Tag) []const u8 {
+    const value = raw orelse "auto";
+    if (std.mem.eql(u8, value, "auto") or
+        std.mem.eql(u8, value, "opengl") or
+        std.mem.eql(u8, value, "metal"))
+    {
+        return value;
+    }
+    if (std.mem.eql(u8, value, "d3d11")) {
+        if (os_tag != .windows) @panic("-Dgpu-backend=d3d11 requires a Windows target");
+        return value;
+    }
+    @panic("-Dgpu-backend must be one of: auto, opengl, metal, d3d11");
+}
+
 test "default development target remains x86_64 windows gnu" {
     const query = defaultDevelopmentTarget();
 
@@ -549,6 +564,10 @@ pub fn build(b: *std.Build) void {
         "debug-console",
         "Force a console subsystem and enable on-disk debug logging + crash capture (diagnostic builds).",
     ) orelse false;
+    const gpu_backend = resolveGpuBackendBuildOption(
+        b.option([]const u8, "gpu-backend", "Select the renderer GPU backend: auto, opengl, metal, or d3d11."),
+        target.result.os.tag,
+    );
     const run_foreign_tests = b.option(
         bool,
         "run-foreign-tests",
@@ -570,7 +589,7 @@ pub fn build(b: *std.Build) void {
     const app_version = packageVersion(b);
 
     if (emit_desktop_exe) {
-        const exe_mod = createAppModule(b, target, optimize, app_version, platform, webview, debug_console);
+        const exe_mod = createAppModule(b, target, optimize, app_version, platform, webview, debug_console, gpu_backend);
 
         const exe = b.addExecutable(.{
             .name = "wispterm",
@@ -672,7 +691,7 @@ pub fn build(b: *std.Build) void {
             macos_app_step.dependOn(&b.addFail("macos-app supports only aarch64-macos and x86_64-macos targets").step);
             macos_dist_step.dependOn(&b.addFail("macos-dist supports only aarch64-macos and x86_64-macos targets").step);
         } else {
-            const macos_app_install = addMacosAppBundle(b, target, optimize, app_version, platform);
+            const macos_app_install = addMacosAppBundle(b, target, optimize, app_version, platform, gpu_backend);
             macos_app_step.dependOn(&macos_app_install.step);
             const macos_package = b.addSystemCommand(&.{ "bash", macosPackageScriptPath() });
             macos_package.step.dependOn(&macos_app_install.step);
@@ -693,6 +712,7 @@ pub fn build(b: *std.Build) void {
     const fast_test_options = b.addOptions();
     fast_test_options.addOption([]const u8, "app_version", app_version);
     fast_test_options.addOption([]const u8, "release_notes", "");
+    fast_test_options.addOption([]const u8, "gpu_backend", "auto");
     fast_test_mod.addOptions("build_options", fast_test_options);
     // Mirror the app's doc embeds: a fast-test module (ai_chat_protocol) pulls in
     // wispterm_docs, whose @embedFile names must resolve here too.
@@ -772,6 +792,7 @@ pub fn build(b: *std.Build) void {
         const posix_test_options = b.addOptions();
         posix_test_options.addOption([]const u8, "app_version", app_version);
         posix_test_options.addOption([]const u8, "release_notes", "");
+        posix_test_options.addOption([]const u8, "gpu_backend", "auto");
         posix_test_mod.addOptions("build_options", posix_test_options);
         const posix_tests = b.addTest(.{
             .name = "wispterm-posix-test",
@@ -808,6 +829,7 @@ pub fn build(b: *std.Build) void {
     const shared_test_options = b.addOptions();
     shared_test_options.addOption([]const u8, "app_version", app_version);
     shared_test_options.addOption([]const u8, "release_notes", "");
+    shared_test_options.addOption([]const u8, "gpu_backend", gpu_backend);
     shared_test_mod.addOptions("build_options", shared_test_options);
 
     const shared_tests = b.addTest(.{
@@ -933,6 +955,7 @@ pub fn build(b: *std.Build) void {
             PlatformFeatures.forOs(.macos),
             false,
             false,
+            "auto",
         );
         const macos_ui_tests = b.addTest(.{
             .name = "wispterm-macos-ui-test",
@@ -950,6 +973,7 @@ pub fn build(b: *std.Build) void {
             PlatformFeatures.forOs(.macos),
             false,
             false,
+            "auto",
         );
         const macos_menu_tests = b.addTest(.{
             .name = "wispterm-macos-menu-test",
@@ -967,32 +991,66 @@ pub fn build(b: *std.Build) void {
     }
 
     if (platform.supports_desktop_exe) {
-        const test_mod = createAppModuleWithRoot(
-            b,
-            "src/test_main.zig",
-            target,
-            optimize,
-            app_version,
-            platform,
-            webview,
-            false,
-        );
+        const app_test_shards = [_][]const u8{
+            "guards",
+            "assistant",
+            "app",
+            "platform",
+            "input_renderer",
+            "integrations",
+            "behavior",
+        };
+        for (app_test_shards) |app_test_shard| {
+            const test_mod = if (std.mem.eql(u8, app_test_shard, "guards"))
+                createAppGuardTestModule(b, target, optimize)
+            else
+                createAppModuleWithRootAndTestShard(
+                    b,
+                    "src/test_main.zig",
+                    target,
+                    optimize,
+                    app_version,
+                    platform,
+                    webview,
+                    false,
+                    gpu_backend,
+                    app_test_shard,
+                );
 
-        const tests = b.addTest(.{
-            .root_module = test_mod,
-        });
-        if (platform.supports_app_bundle) {
-            apple_sdk.addPaths(b, tests) catch @panic("failed to locate native Apple SDK for app tests");
+            const tests = b.addTest(.{
+                .name = b.fmt("wispterm-app-test-{s}", .{app_test_shard}),
+                .root_module = test_mod,
+            });
+            if (platform.supports_app_bundle) {
+                apple_sdk.addPaths(b, tests) catch @panic("failed to locate native Apple SDK for app tests");
+            }
+
+            const run_tests = b.addRunArtifact(tests);
+            run_tests.skip_foreign_checks = shouldSkipForeignTestRun(
+                b.graph.host.result.os.tag,
+                target.result.os.tag,
+                run_foreign_tests,
+            );
+            test_full_step.dependOn(&run_tests.step);
         }
-
-        const run_tests = b.addRunArtifact(tests);
-        run_tests.skip_foreign_checks = shouldSkipForeignTestRun(
-            b.graph.host.result.os.tag,
-            target.result.os.tag,
-            run_foreign_tests,
-        );
-        test_full_step.dependOn(&run_tests.step);
     }
+}
+
+fn createAppGuardTestModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    const app_mod = b.createModule(.{
+        .root_source_file = b.path("src/test_main_guards.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const app_options = b.addOptions();
+    app_options.addOption([]const u8, "app_test_shard", "guards");
+    app_mod.addOptions("build_options", app_options);
+    return app_mod;
 }
 
 fn createAppModule(
@@ -1003,8 +1061,9 @@ fn createAppModule(
     platform: PlatformFeatures,
     webview: bool,
     debug_console: bool,
+    gpu_backend: []const u8,
 ) *std.Build.Module {
-    return createAppModuleWithRoot(b, "src/main.zig", target, optimize, app_version, platform, webview, debug_console);
+    return createAppModuleWithRoot(b, "src/main.zig", target, optimize, app_version, platform, webview, debug_console, gpu_backend);
 }
 
 fn createAppModuleWithRoot(
@@ -1016,6 +1075,33 @@ fn createAppModuleWithRoot(
     platform: PlatformFeatures,
     webview: bool,
     debug_console: bool,
+    gpu_backend: []const u8,
+) *std.Build.Module {
+    return createAppModuleWithRootAndTestShard(
+        b,
+        root_source_path,
+        target,
+        optimize,
+        app_version,
+        platform,
+        webview,
+        debug_console,
+        gpu_backend,
+        "all",
+    );
+}
+
+fn createAppModuleWithRootAndTestShard(
+    b: *std.Build,
+    root_source_path: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    app_version: []const u8,
+    platform: PlatformFeatures,
+    webview: bool,
+    debug_console: bool,
+    gpu_backend: []const u8,
+    app_test_shard: []const u8,
 ) *std.Build.Module {
     const app_mod = b.createModule(.{
         .root_source_file = b.path(root_source_path),
@@ -1027,6 +1113,8 @@ fn createAppModuleWithRoot(
     const app_options = b.addOptions();
     app_options.addOption(bool, "webview", webview);
     app_options.addOption(bool, "debug_console", debug_console);
+    app_options.addOption([]const u8, "gpu_backend", gpu_backend);
+    app_options.addOption([]const u8, "app_test_shard", app_test_shard);
     app_options.addOption([]const u8, "app_version", app_version);
     app_options.addOption([]const u8, "release_notes", readReleaseNotes(b, app_version));
     app_mod.addOptions("build_options", app_options);
@@ -1200,9 +1288,10 @@ fn addMacosAppBundle(
     optimize: std.builtin.OptimizeMode,
     app_version: []const u8,
     platform: PlatformFeatures,
+    gpu_backend: []const u8,
 ) *std.Build.Step.InstallDir {
     const metadata = macosBundleMetadata();
-    const macos_mod = createAppModule(b, target, optimize, app_version, platform, platform.supports_embedded_browser, false);
+    const macos_mod = createAppModule(b, target, optimize, app_version, platform, platform.supports_embedded_browser, false, gpu_backend);
 
     const exe = b.addExecutable(.{
         .name = metadata.executable_name,

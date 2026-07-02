@@ -56,7 +56,10 @@ const HWND = windows.HWND;
 const HANDLE = windows.HANDLE;
 const HMODULE = windows.HMODULE;
 const BOOL = windows.BOOL;
-const HRESULT = windows.HRESULT;
+const HRESULT = core.HRESULT;
+const comCall = core.comCall;
+const comRelease = core.comRelease;
+const comQueryInterface = core.comQueryInterface;
 
 extern "opengl32" fn wglGetProcAddress(name: [*:0]const u8) callconv(.winapi) ?*const anyopaque;
 extern "kernel32" fn LoadLibraryW(name: [*:0]const u16) callconv(.winapi) ?HMODULE;
@@ -138,31 +141,6 @@ const InteropFns = struct {
         };
     }
 };
-
-// ============================================================================
-// COM dispatch helpers (slot indices from dxgi_core)
-// ============================================================================
-
-fn vtable(obj: *anyopaque) [*]const *const anyopaque {
-    const pp: *const [*]const *const anyopaque = @ptrCast(@alignCast(obj));
-    return pp.*;
-}
-
-fn comCall(obj: *anyopaque, comptime slot_index: usize, comptime Fn: type) Fn {
-    return @ptrCast(vtable(obj)[slot_index]);
-}
-
-fn comRelease(obj: *anyopaque) void {
-    const f = comCall(obj, core.slot.Release, *const fn (*anyopaque) callconv(.winapi) u32);
-    _ = f(obj);
-}
-
-fn comQueryInterface(obj: *anyopaque, iid: *const core.Guid) ?*anyopaque {
-    const f = comCall(obj, core.slot.QueryInterface, *const fn (*anyopaque, *const core.Guid, *?*anyopaque) callconv(.winapi) HRESULT);
-    var out: ?*anyopaque = null;
-    if (f(obj, iid, &out) < 0) return null;
-    return out;
-}
 
 const D3D11CreateDeviceFn = *const fn (
     adapter: ?*anyopaque,
