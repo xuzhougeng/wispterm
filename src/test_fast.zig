@@ -189,6 +189,7 @@ test {
     _ = @import("renderer/overlays/update_prompt_model.zig");
     _ = @import("renderer/overlays/whats_new_model.zig");
     _ = @import("renderer/ui_batch.zig");
+    _ = @import("renderer/file_explorer_layout.zig");
     _ = @import("renderer/gpu/gl_backend_guard.zig");
     _ = @import("renderer/gpu/types.zig");
     _ = @import("close_confirm.zig");

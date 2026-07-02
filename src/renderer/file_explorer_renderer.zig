@@ -1,13 +1,13 @@
 //! File explorer sidebar renderer.
 //!
-//! Renders the left-side file explorer panel using the same OpenGL primitives
-//! as the left tab sidebar (titlebar.zig). Uses ui_pipeline.fillQuad for backgrounds
-//! and titlebar.renderTextLimited / renderTitlebarChar for text.
+//! Renders the left-side file explorer panel through the backend-neutral UI
+//! pipeline and the shared titlebar glyph atlas.
 
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const titlebar = AppWindow.titlebar;
 const ui_pipeline = @import("ui_pipeline.zig");
+const layout_math = @import("file_explorer_layout.zig");
 const font = AppWindow.font;
 const file_explorer = @import("../file_explorer.zig");
 const hit_test = @import("../input/hit_test.zig");
@@ -154,15 +154,20 @@ pub fn render(window_width: f32, window_height: f32, titlebar_h: f32) void {
         .accent = accent,
     };
 
-    const side_h = window_height - titlebar_h;
-    if (side_h <= 0) return;
-
     _ = window_width;
-    const panel_x = titlebar.sidebarWidth();
-    const panel_right = panel_x + explorer_w;
+    const layout = layout_math.compute(.{
+        .window_height = window_height,
+        .titlebar_height = titlebar_h,
+        .sidebar_width = titlebar.sidebarWidth(),
+        .explorer_width = explorer_w,
+        .header_height = header_h,
+        .row_height = row_h,
+        .text_height = font.g_titlebar_cell_height,
+    });
+    if (layout.side_height <= 0) return;
 
     // Background
-    ui_pipeline.fillQuad(panel_x, 0, explorer_w, side_h, sidebar_bg);
+    ui_pipeline.fillQuad(layout.panel_x, 0, layout.explorer_width, layout.side_height, sidebar_bg);
 
     // Right border (resize edge between explorer and terminal content)
     const resize_hovered = blk: {
@@ -171,24 +176,19 @@ pub fn render(window_width: f32, window_height: f32, titlebar_h: f32) void {
         const mx: f32 = @floatFromInt(win.mouse_x);
         const my: f32 = @floatFromInt(win.mouse_y);
         const half_hit = file_explorer.RESIZE_HIT_WIDTH / 2;
-        break :blk mx >= panel_right - half_hit and mx <= panel_right + half_hit and my >= titlebar_h and my < window_height;
+        break :blk mx >= layout.panel_right - half_hit and mx <= layout.panel_right + half_hit and my >= titlebar_h and my < window_height;
     };
     const edge_color = if (resize_hovered) blend(bg, accent, 0.38) else border_color;
-    ui_pipeline.fillQuad(panel_right - 1, 0, if (resize_hovered) 2 else 1, side_h, edge_color);
+    ui_pipeline.fillQuad(layout.panel_right - 1, 0, if (resize_hovered) 2 else 1, layout.side_height, edge_color);
 
     switch (file_explorer.g_panel_mode) {
-        .files => renderFiles(window_height, titlebar_h, header_h, row_h, panel_x, explorer_w, palette),
-        .agent_history => renderAgentHistory(window_height, titlebar_h, header_h, row_h, panel_x, explorer_w, palette),
+        .files => renderFiles(layout, palette),
+        .agent_history => renderAgentHistory(layout, palette),
     }
 }
 
 fn renderFiles(
-    window_height: f32,
-    titlebar_h: f32,
-    header_h: f32,
-    row_h: f32,
-    panel_x: f32,
-    explorer_w: f32,
+    layout: layout_math.Layout,
     palette: Palette,
 ) void {
     const bg = palette.bg;
@@ -202,36 +202,31 @@ fn renderFiles(
     const accent = palette.accent;
 
     // Header with mode indicator
-    const header_y = window_height - titlebar_h - header_h;
     const mode_label = switch (file_explorer.g_mode) {
         .remote => "REMOTE",
         .wsl => "WSL",
         .local => "LOCAL",
     };
     const mode_color = if (file_explorer.g_mode == .local) header_text else accent;
-    const header_text_y = header_y + (header_h - font.g_titlebar_cell_height) / 2;
-    const close = headerCloseRect(panel_x, explorer_w);
-    const refresh_rect = headerRefreshRect(panel_x, explorer_w);
+    const close = headerCloseRect(layout.panel_x, layout.explorer_width);
+    const refresh_rect = headerRefreshRect(layout.panel_x, layout.explorer_width);
     const text_limit_x = if (refresh_rect.w > 0) refresh_rect.x else close.x;
-    const label_end = titlebar.renderTextLimited(mode_label, panel_x + 12, header_text_y, mode_color, @max(1.0, text_limit_x - panel_x - 20));
-    _ = titlebar.renderTextLimited(" Explorer", label_end, header_text_y, header_text, @max(1.0, text_limit_x - label_end - 8));
-    renderHeaderRefreshButton(titlebar_h, header_y, header_h, panel_x, explorer_w, palette);
-    renderHeaderCloseButton(titlebar_h, header_y, header_h, panel_x, explorer_w, palette);
-    ui_pipeline.fillQuad(panel_x, header_y, explorer_w, 1, border_color);
+    const label_end = titlebar.renderTextLimited(mode_label, layout.panel_x + 12, layout.header_text_y, mode_color, @max(1.0, text_limit_x - layout.panel_x - 20));
+    _ = titlebar.renderTextLimited(" Explorer", label_end, layout.header_text_y, header_text, @max(1.0, text_limit_x - label_end - 8));
+    renderHeaderRefreshButton(layout.titlebar_height, layout.header_y, layout.header_height, layout.panel_x, layout.explorer_width, palette);
+    renderHeaderCloseButton(layout.titlebar_height, layout.header_y, layout.header_height, layout.panel_x, layout.explorer_width, palette);
+    ui_pipeline.fillQuad(layout.panel_x, layout.header_y, layout.explorer_width, 1, border_color);
 
     // File entries
-    const list_top_px = titlebar_h + header_h;
-    const visible_height = window_height - list_top_px;
     const scroll = file_explorer.g_scroll_offset;
 
     var i: usize = 0;
     while (i < file_explorer.g_entry_count) : (i += 1) {
-        const row_y_from_top = @as(f32, @floatFromInt(i)) * row_h - scroll;
-        if (row_y_from_top + row_h < 0) continue;
-        if (row_y_from_top >= visible_height) break;
-
-        const row_top_px = list_top_px + row_y_from_top;
-        const row_y = window_height - row_top_px - row_h;
+        const row = switch (layout.row(i, scroll)) {
+            .before => continue,
+            .after => break,
+            .visible => |row| row,
+        };
 
         const entry = &file_explorer.g_entries[i];
         const indent = @as(f32, @floatFromInt(entry.depth)) * file_explorer.INDENT_WIDTH;
@@ -242,20 +237,20 @@ fn renderFiles(
             if (win.mouse_x < 0 or win.mouse_y < 0) break :blk false;
             const mx: f32 = @floatFromInt(win.mouse_x);
             const my: f32 = @floatFromInt(win.mouse_y);
-            break :blk mx >= panel_x and mx < panel_x + explorer_w and my >= row_top_px and my < row_top_px + row_h;
+            break :blk mx >= layout.panel_x and mx < layout.panel_x + layout.explorer_width and my >= row.top_px and my < row.top_px + layout.row_height;
         };
 
         const is_selected = if (file_explorer.g_selected) |sel| sel == i else false;
 
         if (is_selected) {
-            ui_pipeline.fillQuad(panel_x, row_y, explorer_w, row_h, selected_bg);
+            ui_pipeline.fillQuad(layout.panel_x, row.y, layout.explorer_width, layout.row_height, selected_bg);
         } else if (row_hovered) {
-            ui_pipeline.fillQuad(panel_x, row_y, explorer_w, row_h, hover_bg);
+            ui_pipeline.fillQuad(layout.panel_x, row.y, layout.explorer_width, layout.row_height, hover_bg);
         }
 
         // Expand/collapse indicator for directories
-        const text_x = panel_x + 8 + indent;
-        const text_y = row_y + (row_h - font.g_titlebar_cell_height) / 2;
+        const text_x = layout.panel_x + 8 + indent;
+        const text_y = layout.textY(row.y);
 
         // When renaming this entry, show input buffer instead of name
         const is_renaming = is_selected and file_explorer.g_op_mode == .rename;
@@ -264,102 +259,87 @@ fn renderFiles(
             const arrow: u32 = if (entry.expanded) 0x25BE else 0x25B8; // ▾ or ▸
             titlebar.renderTitlebarChar(arrow, text_x, text_y, text_dir);
             if (is_renaming) {
-                renderInputField(text_x + 14, text_y, explorer_w - indent - 34, fg, accent);
+                renderInputField(text_x + 14, text_y, layout.explorer_width - indent - 34, fg, accent);
             } else {
                 _ = titlebar.renderTextLimited(
                     entry.name_buf[0..entry.name_len],
                     text_x + 14,
                     text_y,
                     text_dir,
-                    explorer_w - indent - 34,
+                    layout.explorer_width - indent - 34,
                 );
             }
         } else {
             if (is_renaming) {
-                renderInputField(text_x + 14, text_y, explorer_w - indent - 34, fg, accent);
+                renderInputField(text_x + 14, text_y, layout.explorer_width - indent - 34, fg, accent);
             } else {
                 _ = titlebar.renderTextLimited(
                     entry.name_buf[0..entry.name_len],
                     text_x + 14,
                     text_y,
                     text_normal,
-                    explorer_w - indent - 34,
+                    layout.explorer_width - indent - 34,
                 );
             }
         }
     }
 
     if (file_explorer.g_loading and file_explorer.g_entry_count == 0) {
-        const row_y = window_height - list_top_px - row_h;
-        const ty = row_y + (row_h - font.g_titlebar_cell_height) / 2;
-        const prefix_end = titlebar.renderTextLimited("Loading: ", panel_x + 8, ty, accent, explorer_w - 16);
-        _ = titlebar.renderTextLimited(file_explorer.g_loading_msg[0..file_explorer.g_loading_msg_len], prefix_end, ty, text_normal, explorer_w - (prefix_end - panel_x) - 8);
+        const row_y = layout.window_height - layout.list_top_px - layout.row_height;
+        const ty = layout.textY(row_y);
+        const prefix_end = titlebar.renderTextLimited("Loading: ", layout.panel_x + 8, ty, accent, layout.explorer_width - 16);
+        _ = titlebar.renderTextLimited(file_explorer.g_loading_msg[0..file_explorer.g_loading_msg_len], prefix_end, ty, text_normal, layout.explorer_width - (prefix_end - layout.panel_x) - 8);
     }
 
     // Render new file/dir input or delete confirmation at bottom of list
     if (file_explorer.g_op_mode == .new_file or file_explorer.g_op_mode == .new_dir) {
-        const new_row_top = list_top_px + @as(f32, @floatFromInt(file_explorer.g_entry_count)) * row_h - scroll;
-        if (new_row_top >= 0 and new_row_top < visible_height) {
-            const new_row_y = window_height - new_row_top - row_h;
-            ui_pipeline.fillQuad(panel_x, new_row_y, explorer_w, row_h, selected_bg);
+        if (layout.operationRow(file_explorer.g_entry_count, scroll)) |new_row| {
+            ui_pipeline.fillQuad(layout.panel_x, new_row.y, layout.explorer_width, layout.row_height, selected_bg);
             const label = if (file_explorer.g_op_mode == .new_dir) "New folder: " else "New file: ";
-            const input_y = new_row_y + (row_h - font.g_titlebar_cell_height) / 2;
-            const op_label_end = titlebar.renderTextLimited(label, panel_x + 8, input_y, header_text, explorer_w - 16);
-            renderInputField(op_label_end + 2, input_y, explorer_w - (op_label_end - panel_x) - 10, fg, accent);
+            const input_y = layout.textY(new_row.y);
+            const op_label_end = titlebar.renderTextLimited(label, layout.panel_x + 8, input_y, header_text, layout.explorer_width - 16);
+            renderInputField(op_label_end + 2, input_y, layout.explorer_width - (op_label_end - layout.panel_x) - 10, fg, accent);
         }
     } else if (file_explorer.g_op_mode == .confirm_delete) {
-        const del_row_top = list_top_px + @as(f32, @floatFromInt(file_explorer.g_entry_count)) * row_h - scroll;
-        if (del_row_top >= 0 and del_row_top < visible_height) {
-            const del_row_y = window_height - del_row_top - row_h;
+        if (layout.operationRow(file_explorer.g_entry_count, scroll)) |del_row| {
             const warn_bg = blend(bg, .{ 0.8, 0.2, 0.2 }, 0.2);
-            ui_pipeline.fillQuad(panel_x, del_row_y, explorer_w, row_h, warn_bg);
-            _ = titlebar.renderTextLimited("Delete? Enter=yes Esc=no", panel_x + 8, del_row_y + (row_h - font.g_titlebar_cell_height) / 2, fg, explorer_w - 16);
+            ui_pipeline.fillQuad(layout.panel_x, del_row.y, layout.explorer_width, layout.row_height, warn_bg);
+            _ = titlebar.renderTextLimited("Delete? Enter=yes Esc=no", layout.panel_x + 8, layout.textY(del_row.y), fg, layout.explorer_width - 16);
         }
     }
 
     // Loading status stays local to the panel; transfer status is shown by the
     // global bottom-right toast so terminal and File Explorer downloads match.
     if (file_explorer.g_loading) {
-        const status_h: f32 = @max(24, font.g_titlebar_cell_height + 8);
         const status_y: f32 = 0;
-        ui_pipeline.fillQuad(panel_x, status_y, explorer_w, status_h, blend(bg, accent, 0.15));
-        const ty = status_y + (status_h - font.g_titlebar_cell_height) / 2;
-        const prefix_end = titlebar.renderTextLimited("Loading: ", panel_x + 8, ty, accent, explorer_w - 16);
-        _ = titlebar.renderTextLimited(file_explorer.g_loading_msg[0..file_explorer.g_loading_msg_len], prefix_end, ty, fg, explorer_w - (prefix_end - panel_x) - 8);
+        ui_pipeline.fillQuad(layout.panel_x, status_y, layout.explorer_width, layout.status_height, blend(bg, accent, 0.15));
+        const ty = status_y + (layout.status_height - layout.text_height) / 2;
+        const prefix_end = titlebar.renderTextLimited("Loading: ", layout.panel_x + 8, ty, accent, layout.explorer_width - 16);
+        _ = titlebar.renderTextLimited(file_explorer.g_loading_msg[0..file_explorer.g_loading_msg_len], prefix_end, ty, fg, layout.explorer_width - (prefix_end - layout.panel_x) - 8);
     }
 }
 
 fn renderAgentHistory(
-    window_height: f32,
-    titlebar_h: f32,
-    header_h: f32,
-    row_h: f32,
-    panel_x: f32,
-    explorer_w: f32,
+    layout: layout_math.Layout,
     palette: Palette,
 ) void {
-    const header_y = window_height - titlebar_h - header_h;
-    const header_text_y = header_y + (header_h - font.g_titlebar_cell_height) / 2;
-    const close = headerCloseRect(panel_x, explorer_w);
-    const agent_end = titlebar.renderTextLimited("AGENT", panel_x + 12, header_text_y, palette.accent, @max(1.0, close.x - panel_x - 20));
-    _ = titlebar.renderTextLimited(" History", agent_end, header_text_y, palette.header_text, @max(1.0, close.x - agent_end - 8));
-    renderHeaderCloseButton(titlebar_h, header_y, header_h, panel_x, explorer_w, palette);
-    ui_pipeline.fillQuad(panel_x, header_y, explorer_w, 1, palette.border_color);
+    const close = headerCloseRect(layout.panel_x, layout.explorer_width);
+    const agent_end = titlebar.renderTextLimited("AGENT", layout.panel_x + 12, layout.header_text_y, palette.accent, @max(1.0, close.x - layout.panel_x - 20));
+    _ = titlebar.renderTextLimited(" History", agent_end, layout.header_text_y, palette.header_text, @max(1.0, close.x - agent_end - 8));
+    renderHeaderCloseButton(layout.titlebar_height, layout.header_y, layout.header_height, layout.panel_x, layout.explorer_width, palette);
+    ui_pipeline.fillQuad(layout.panel_x, layout.header_y, layout.explorer_width, 1, palette.border_color);
 
-    const list_top_px = titlebar_h + header_h;
-    const visible_height = window_height - list_top_px;
     const scroll = file_explorer.g_history_scroll_offset;
-    const two_line = row_h >= font.g_titlebar_cell_height * 2 + 6;
+    const two_line = layout.row_height >= font.g_titlebar_cell_height * 2 + 6;
 
     var row_buf: [32]u8 = undefined;
     var i: usize = 0;
     while (i < file_explorer.g_history_row_count) : (i += 1) {
-        const row_y_from_top = @as(f32, @floatFromInt(i)) * row_h - scroll;
-        if (row_y_from_top + row_h < 0) continue;
-        if (row_y_from_top >= visible_height) break;
-
-        const row_top_px = list_top_px + row_y_from_top;
-        const row_y = window_height - row_top_px - row_h;
+        const row_pos = switch (layout.row(i, scroll)) {
+            .before => continue,
+            .after => break,
+            .visible => |row| row,
+        };
         const row = &file_explorer.g_history_rows[i];
 
         const row_hovered = blk: {
@@ -367,27 +347,27 @@ fn renderAgentHistory(
             if (win.mouse_x < 0 or win.mouse_y < 0) break :blk false;
             const mx: f32 = @floatFromInt(win.mouse_x);
             const my: f32 = @floatFromInt(win.mouse_y);
-            break :blk mx >= panel_x and mx < panel_x + explorer_w and my >= row_top_px and my < row_top_px + row_h;
+            break :blk mx >= layout.panel_x and mx < layout.panel_x + layout.explorer_width and my >= row_pos.top_px and my < row_pos.top_px + layout.row_height;
         };
 
         const is_selected = if (file_explorer.g_history_selected) |selected| selected == i else false;
         if (is_selected) {
-            ui_pipeline.fillQuad(panel_x, row_y, explorer_w, row_h, palette.selected_bg);
+            ui_pipeline.fillQuad(layout.panel_x, row_pos.y, layout.explorer_width, layout.row_height, palette.selected_bg);
         } else if (row_hovered) {
-            ui_pipeline.fillQuad(panel_x, row_y, explorer_w, row_h, palette.hover_bg);
+            ui_pipeline.fillQuad(layout.panel_x, row_pos.y, layout.explorer_width, layout.row_height, palette.hover_bg);
         }
 
         const title = historyRowTitle(i, row);
-        const text_x = panel_x + 12;
+        const text_x = layout.panel_x + 12;
         if (two_line) {
-            const vertical_padding = @max(2.0, @floor((row_h - (font.g_titlebar_cell_height * 2 + 2)) / 2));
-            const secondary_y = row_y + vertical_padding;
+            const vertical_padding = @max(2.0, @floor((layout.row_height - (font.g_titlebar_cell_height * 2 + 2)) / 2));
+            const secondary_y = row_pos.y + vertical_padding;
             const primary_y = secondary_y + font.g_titlebar_cell_height + 2;
-            _ = titlebar.renderTextLimited(title, text_x, primary_y, palette.text_normal, explorer_w - 24);
-            _ = titlebar.renderTextLimited(historyRowSubtitle(row, &row_buf), text_x, secondary_y, palette.text_muted, explorer_w - 24);
+            _ = titlebar.renderTextLimited(title, text_x, primary_y, palette.text_normal, layout.explorer_width - 24);
+            _ = titlebar.renderTextLimited(historyRowSubtitle(row, &row_buf), text_x, secondary_y, palette.text_muted, layout.explorer_width - 24);
         } else {
-            const text_y = row_y + (row_h - font.g_titlebar_cell_height) / 2;
-            _ = titlebar.renderTextLimited(title, text_x, text_y, palette.text_normal, explorer_w - 24);
+            const text_y = layout.textY(row_pos.y);
+            _ = titlebar.renderTextLimited(title, text_x, text_y, palette.text_normal, layout.explorer_width - 24);
         }
     }
 }
