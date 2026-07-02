@@ -185,6 +185,146 @@ function Compare-Images([string]$BeforePath, [string]$AfterPath) {
     }
 }
 
+function Analyze-Region([string]$Path, [int]$Left, [int]$Top, [int]$Width, [int]$Height, [int]$Step = 2) {
+    $bitmap = [System.Drawing.Bitmap]::FromFile($Path)
+    try {
+        $right = [Math]::Min($bitmap.Width, $Left + $Width)
+        $bottom = [Math]::Min($bitmap.Height, $Top + $Height)
+        $samples = 0
+        $sumR = 0
+        $sumG = 0
+        $sumB = 0
+        $bright = 0
+        $saturated = 0
+
+        for ($y = [Math]::Max(0, $Top); $y -lt $bottom; $y += $Step) {
+            for ($x = [Math]::Max(0, $Left); $x -lt $right; $x += $Step) {
+                $color = $bitmap.GetPixel($x, $y)
+                $max = [Math]::Max($color.R, [Math]::Max($color.G, $color.B))
+                $min = [Math]::Min($color.R, [Math]::Min($color.G, $color.B))
+                $sumR += $color.R
+                $sumG += $color.G
+                $sumB += $color.B
+                if ($color.R -gt 120 -and $color.G -gt 120 -and $color.B -gt 120) { $bright++ }
+                if (($max - $min) -gt 45 -and $max -gt 90) { $saturated++ }
+                $samples++
+            }
+        }
+
+        if ($samples -le 0) {
+            return @{ Samples = 0; AvgR = 0.0; AvgG = 0.0; AvgB = 0.0; Luma = 0.0; Bright = 0; Saturated = 0 }
+        }
+
+        $avgR = $sumR / $samples
+        $avgG = $sumG / $samples
+        $avgB = $sumB / $samples
+        return @{
+            Samples = $samples
+            AvgR = $avgR
+            AvgG = $avgG
+            AvgB = $avgB
+            Luma = ($avgR * 0.2126 + $avgG * 0.7152 + $avgB * 0.0722)
+            Bright = $bright
+            Saturated = $saturated
+        }
+    } finally {
+        $bitmap.Dispose()
+    }
+}
+
+function Compare-ImageRegion([string]$BeforePath, [string]$AfterPath, [int]$Left, [int]$Top, [int]$Width, [int]$Height, [int]$Step = 2) {
+    $before = [System.Drawing.Bitmap]::FromFile($BeforePath)
+    $after = [System.Drawing.Bitmap]::FromFile($AfterPath)
+    try {
+        $right = [Math]::Min([Math]::Min($before.Width, $after.Width), $Left + $Width)
+        $bottom = [Math]::Min([Math]::Min($before.Height, $after.Height), $Top + $Height)
+        $samples = 0
+        $changed = 0
+
+        for ($y = [Math]::Max(0, $Top); $y -lt $bottom; $y += $Step) {
+            for ($x = [Math]::Max(0, $Left); $x -lt $right; $x += $Step) {
+                $a = $after.GetPixel($x, $y)
+                $b = $before.GetPixel($x, $y)
+                $delta = [Math]::Abs($a.R - $b.R) + [Math]::Abs($a.G - $b.G) + [Math]::Abs($a.B - $b.B)
+                if ($delta -gt 36) {
+                    $changed++
+                }
+                $samples++
+            }
+        }
+
+        $ratio = 0.0
+        if ($samples -gt 0) {
+            $ratio = $changed / $samples
+        }
+        return @{
+            Samples = $samples
+            Changed = $changed
+            ChangedRatio = $ratio
+        }
+    } finally {
+        $before.Dispose()
+        $after.Dispose()
+    }
+}
+
+function Analyze-TabChrome([string]$Active1Path, [string]$Active2Path, [string]$HoverPath) {
+    # These are screenshot-space regions for the default visible Windows smoke
+    # window. They match the rendered sidebar constants: titlebar, sidebar
+    # header, row height, tab text slot, plus icon, and close affordance slot.
+    $row1 = @{ Left = 0; Top = 108; Width = 220; Height = 55 }
+    $row2 = @{ Left = 0; Top = 163; Width = 220; Height = 55 }
+    $row1Text = @{ Left = 46; Top = 118; Width = 118; Height = 30 }
+    $row2Text = @{ Left = 46; Top = 173; Width = 118; Height = 30 }
+    $plus = @{ Left = 176; Top = 58; Width = 32; Height = 34 }
+    $close = @{ Left = 182; Top = 176; Width = 32; Height = 32 }
+
+    $active1Row1 = Analyze-Region $Active1Path $row1.Left $row1.Top $row1.Width $row1.Height 2
+    $active1Row2 = Analyze-Region $Active1Path $row2.Left $row2.Top $row2.Width $row2.Height 2
+    $active2Row1 = Analyze-Region $Active2Path $row1.Left $row1.Top $row1.Width $row1.Height 2
+    $active2Row2 = Analyze-Region $Active2Path $row2.Left $row2.Top $row2.Width $row2.Height 2
+    $text1 = Analyze-Region $Active1Path $row1Text.Left $row1Text.Top $row1Text.Width $row1Text.Height 1
+    $text2 = Analyze-Region $Active1Path $row2Text.Left $row2Text.Top $row2Text.Width $row2Text.Height 1
+    $plusRegion = Analyze-Region $Active1Path $plus.Left $plus.Top $plus.Width $plus.Height 1
+    $closeBefore = Analyze-Region $Active2Path $close.Left $close.Top $close.Width $close.Height 1
+    $closeAfter = Analyze-Region $HoverPath $close.Left $close.Top $close.Width $close.Height 1
+    $closeDelta = Compare-ImageRegion $Active2Path $HoverPath $close.Left $close.Top $close.Width $close.Height 1
+    $row2HoverDelta = Compare-ImageRegion $Active2Path $HoverPath $row2.Left $row2.Top $row2.Width $row2.Height 2
+
+    $row1ActiveAdvantage = $active1Row1.Luma - $active1Row2.Luma
+    $row2ActiveAdvantage = $active2Row2.Luma - $active2Row1.Luma
+    $rowSwapDelta = [Math]::Abs($active2Row1.Luma - $active1Row1.Luma) + [Math]::Abs($active2Row2.Luma - $active1Row2.Luma)
+    $textVisible = ($text1.Bright -gt 16 -and $text2.Bright -gt 16)
+    $plusVisible = ($plusRegion.Bright -gt 3 -or $plusRegion.Saturated -gt 3)
+    $closeAffordance = ($closeAfter.Bright -gt $closeBefore.Bright + 4 -or $closeDelta.Changed -gt 18 -or $row2HoverDelta.Changed -gt 80)
+    $activeStateSwap = ($row1ActiveAdvantage -gt 4.0 -and $row2ActiveAdvantage -gt 4.0 -and $rowSwapDelta -gt 10.0)
+
+    return @{
+        Pass = [bool]($activeStateSwap -and $textVisible -and $plusVisible -and $closeAffordance)
+        ActiveStateSwap = [bool]$activeStateSwap
+        TextVisible = [bool]$textVisible
+        PlusIconVisible = [bool]$plusVisible
+        CloseHoverAffordance = [bool]$closeAffordance
+        Row1ActiveAdvantage = $row1ActiveAdvantage
+        Row2ActiveAdvantage = $row2ActiveAdvantage
+        RowSwapDelta = $rowSwapDelta
+        Row1ActiveLuma = $active1Row1.Luma
+        Row1InactiveLuma = $active2Row1.Luma
+        Row2InactiveLuma = $active1Row2.Luma
+        Row2ActiveLuma = $active2Row2.Luma
+        Row1TextBright = $text1.Bright
+        Row2TextBright = $text2.Bright
+        PlusBright = $plusRegion.Bright
+        PlusSaturated = $plusRegion.Saturated
+        CloseBrightBefore = $closeBefore.Bright
+        CloseBrightAfter = $closeAfter.Bright
+        CloseChanged = $closeDelta.Changed
+        CloseChangedRatio = $closeDelta.ChangedRatio
+        Row2HoverChanged = $row2HoverDelta.Changed
+        Row2HoverChangedRatio = $row2HoverDelta.ChangedRatio
+    }
+}
+
 function Click-WindowCenter([IntPtr]$Hwnd) {
     $rect = Get-WindowRectValue $Hwnd
     $x = [int](($rect.Left + $rect.Right) / 2)
@@ -193,6 +333,11 @@ function Click-WindowCenter([IntPtr]$Hwnd) {
     [WispTermD3D11SmokeAutomation]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 80
     [WispTermD3D11SmokeAutomation]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+}
+
+function Move-MouseWindow([IntPtr]$Hwnd, [int]$X, [int]$Y) {
+    $rect = Get-WindowRectValue $Hwnd
+    [WispTermD3D11SmokeAutomation]::SetCursorPos($rect.Left + $X, $rect.Top + $Y) | Out-Null
 }
 
 function Send-KeyChord([byte[]]$Keys) {
@@ -220,6 +365,10 @@ function Send-CtrlShiftAltE() {
     Send-KeyChord ([byte[]](0x11, 0x10, 0x12, 0x45))
 }
 
+function Send-AltDigit([byte]$DigitKey) {
+    Send-KeyChord ([byte[]](0x12, $DigitKey))
+}
+
 function Send-Escape() {
     Send-KeyChord ([byte[]](0x1B))
 }
@@ -245,6 +394,8 @@ function Wait-ForDiagnosticText([string]$Path, [string]$Pattern, [int]$TimeoutSe
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $configPath = Join-Path $OutDir "d3d11-smoke-$timestamp.conf"
 $initialShot = Join-Path $OutDir "d3d11-initial-$timestamp.png"
+$tabsActive2Shot = Join-Path $OutDir "d3d11-tabs-active2-$timestamp.png"
+$tabsCloseHoverShot = Join-Path $OutDir "d3d11-tabs-close-hover-$timestamp.png"
 $sidebarShot = Join-Path $OutDir "d3d11-sidebar-$timestamp.png"
 $explorerShot = Join-Path $OutDir "d3d11-file-explorer-$timestamp.png"
 $paletteShot = Join-Path $OutDir "d3d11-command-palette-$timestamp.png"
@@ -297,9 +448,22 @@ try {
     Send-Escape
     Start-Sleep -Milliseconds 900
 
+    Send-AltDigit 0x31
+    Start-Sleep -Milliseconds 450
     $initialSize = Capture-Window $wisptermWindow $initialShot
     $initialMetrics = Analyze-Image $initialShot
 
+    Send-AltDigit 0x32
+    Start-Sleep -Milliseconds 700
+    Capture-Window $wisptermWindow $tabsActive2Shot | Out-Null
+
+    Move-MouseWindow $wisptermWindow 198 192
+    Start-Sleep -Milliseconds 1100
+    Capture-Window $wisptermWindow $tabsCloseHoverShot | Out-Null
+    $tabChromeMetrics = Analyze-TabChrome $initialShot $tabsActive2Shot $tabsCloseHoverShot
+
+    Move-MouseWindow $wisptermWindow 620 390
+    Start-Sleep -Milliseconds 250
     Send-CtrlShiftB
     Start-Sleep -Milliseconds 1000
     Capture-Window $wisptermWindow $sidebarShot | Out-Null
@@ -323,6 +487,7 @@ try {
 
     $pass = [bool](
         $initialMetrics.Pass -and
+        $tabChromeMetrics.Pass -and
         $sidebarDelta.Pass -and
         $explorerDelta.Pass -and
         $paletteDelta.Pass -and
@@ -341,6 +506,8 @@ try {
         diagnostic_log = $diagnosticPath
         screenshots = [ordered]@{
             initial = $initialShot
+            tabs_active_2 = $tabsActive2Shot
+            tabs_close_hover = $tabsCloseHoverShot
             sidebar = $sidebarShot
             file_explorer = $explorerShot
             command_palette = $paletteShot
@@ -351,6 +518,30 @@ try {
             bright = $initialMetrics.Bright
             saturated = $initialMetrics.Saturated
             pass = [bool]$initialMetrics.Pass
+        }
+        tab_chrome = [ordered]@{
+            active_state_swap = [bool]$tabChromeMetrics.ActiveStateSwap
+            text_visible = [bool]$tabChromeMetrics.TextVisible
+            plus_icon_visible = [bool]$tabChromeMetrics.PlusIconVisible
+            close_hover_affordance = [bool]$tabChromeMetrics.CloseHoverAffordance
+            row1_active_advantage = [Math]::Round($tabChromeMetrics.Row1ActiveAdvantage, 3)
+            row2_active_advantage = [Math]::Round($tabChromeMetrics.Row2ActiveAdvantage, 3)
+            row_swap_delta = [Math]::Round($tabChromeMetrics.RowSwapDelta, 3)
+            row1_active_luma = [Math]::Round($tabChromeMetrics.Row1ActiveLuma, 3)
+            row1_inactive_luma = [Math]::Round($tabChromeMetrics.Row1InactiveLuma, 3)
+            row2_inactive_luma = [Math]::Round($tabChromeMetrics.Row2InactiveLuma, 3)
+            row2_active_luma = [Math]::Round($tabChromeMetrics.Row2ActiveLuma, 3)
+            row1_text_bright = $tabChromeMetrics.Row1TextBright
+            row2_text_bright = $tabChromeMetrics.Row2TextBright
+            plus_bright = $tabChromeMetrics.PlusBright
+            plus_saturated = $tabChromeMetrics.PlusSaturated
+            close_bright_before = $tabChromeMetrics.CloseBrightBefore
+            close_bright_after = $tabChromeMetrics.CloseBrightAfter
+            close_changed = $tabChromeMetrics.CloseChanged
+            close_changed_ratio = [Math]::Round($tabChromeMetrics.CloseChangedRatio, 5)
+            row2_hover_changed = $tabChromeMetrics.Row2HoverChanged
+            row2_hover_changed_ratio = [Math]::Round($tabChromeMetrics.Row2HoverChangedRatio, 5)
+            pass = [bool]$tabChromeMetrics.Pass
         }
         sidebar_delta = [ordered]@{
             changed = $sidebarDelta.Changed
