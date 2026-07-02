@@ -1,9 +1,9 @@
-//! Direct3D 11 context bring-up for Phase II.
+//! Direct3D 11 context and swapchain ownership.
 //!
 //! This owns the native D3D11 device, immediate context, DXGI swapchain, and a
-//! tiny HLSL pipeline that draws a solid quad. Terminal/grid rendering stays in
-//! Phase III; this file only proves a real D3D11 backend can clear, draw, resize,
-//! and present a nonblank frame behind the existing GPU backend seam.
+//! tiny HLSL fallback pipeline that draws a solid quad when no feature renderer
+//! submits work. Terminal-grid rendering uses the D3D11 resource and pipeline
+//! modules through the existing GPU backend seam.
 
 const std = @import("std");
 const windows = std.os.windows;
@@ -420,7 +420,7 @@ pub fn deinit() void {
     state = null;
 }
 
-test "D3D11 context module exposes the Phase II lifecycle surface" {
+test "D3D11 context module exposes the backend lifecycle surface" {
     const init_info = @typeInfo(@TypeOf(initForWindow)).@"fn";
     try std.testing.expectEqual(@as(usize, 3), init_info.params.len);
     try std.testing.expect(@typeInfo(@TypeOf(resize)).@"fn".return_type.? == bool);

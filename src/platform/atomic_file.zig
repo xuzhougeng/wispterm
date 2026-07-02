@@ -30,8 +30,28 @@ pub fn writeFileReplaceSafeWithOptions(path: []const u8, data: []const u8, optio
     try atomic.file_writer.file.writeAll(data);
     try atomic.flush();
     if (options.sync_file) try atomic.file_writer.file.sync();
-    try atomic.renameIntoPlace();
+    try renameIntoPlaceReplaceSafe(&atomic);
     if (options.sync_parent_dir) syncParentDir(path);
+}
+
+fn renameIntoPlaceReplaceSafe(atomic: *std.fs.AtomicFile) !void {
+    if (builtin.os.tag != .windows) {
+        try atomic.renameIntoPlace();
+        return;
+    }
+
+    var attempts: u8 = 0;
+    while (true) : (attempts += 1) {
+        atomic.renameIntoPlace() catch |err| switch (err) {
+            error.AccessDenied => {
+                if (attempts >= 20) return err;
+                std.Thread.sleep(10 * std.time.ns_per_ms);
+                continue;
+            },
+            else => return err,
+        };
+        return;
+    }
 }
 
 fn syncParentDir(path: []const u8) void {

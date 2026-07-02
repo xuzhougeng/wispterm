@@ -1,4 +1,8 @@
-//! Phase II D3D11 framebuffer placeholder.
+//! D3D11 framebuffer compatibility wrapper.
+//!
+//! The Phase III terminal-grid path renders directly to the swapchain
+//! backbuffer. Offscreen D3D11 framebuffer ownership can be made real when the
+//! auxiliary UI/preview renderers need it.
 
 const c = @import("c.zig");
 const Texture = @import("Texture.zig");
