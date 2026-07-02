@@ -8,6 +8,7 @@
 const std = @import("std");
 const windows = std.os.windows;
 const core = @import("../../../platform/dxgi_core.zig");
+const present_policy = @import("present_policy.zig");
 const render_diagnostics = @import("../../../render_diagnostics.zig");
 const shaders = @import("shaders.zig");
 
@@ -84,6 +85,7 @@ const State = struct {
     vertex_shader: ?*anyopaque = null,
     pixel_shader: ?*anyopaque = null,
     adapter: AdapterInfo = .{},
+    policy: present_policy.Policy,
     width: i32,
     height: i32,
     feature_draws_this_frame: bool = false,
@@ -184,6 +186,7 @@ pub fn initForWindow(hwnd: HWND, width: i32, height: i32) InitError!void {
         .context = context.?,
         .swapchain = swapchain_result.swapchain,
         .adapter = swapchain_result.adapter,
+        .policy = present_policy.Policy.init(width, height),
         .width = width,
         .height = height,
     };
@@ -267,7 +270,7 @@ fn queryAdapterInfo(adapter: *anyopaque) AdapterInfo {
 fn logBackendInit(self: *const State) void {
     if (self.adapter.available) {
         render_diagnostics.log(
-            "gpu-backend=d3d11 present=dxgi swapchain={}x{} swap_effect={s} adapter_vendor=0x{x} adapter_device=0x{x} adapter_luid={x}:{x} adapter_flags=0x{x} fallback_reason=none",
+            "gpu-backend=d3d11 present=dxgi swapchain={}x{} swap_effect={s} adapter_vendor=0x{x} adapter_device=0x{x} adapter_luid={x}:{x} adapter_flags=0x{x} fallback_reason=none policy_state={s} fallback_candidate=false",
             .{
                 self.width,
                 self.height,
@@ -277,12 +280,13 @@ fn logBackendInit(self: *const State) void {
                 @as(u32, @bitCast(self.adapter.luid_high)),
                 self.adapter.luid_low,
                 self.adapter.flags,
+                self.policy.status().stateName(),
             },
         );
     } else {
         render_diagnostics.log(
-            "gpu-backend=d3d11 present=dxgi swapchain={}x{} swap_effect={s} adapter=unknown fallback_reason=none",
-            .{ self.width, self.height, core.dxgiSwapEffectName(core.DXGI_SWAP_EFFECT_FLIP_DISCARD) },
+            "gpu-backend=d3d11 present=dxgi swapchain={}x{} swap_effect={s} adapter=unknown fallback_reason=none policy_state={s} fallback_candidate=false",
+            .{ self.width, self.height, core.dxgiSwapEffectName(core.DXGI_SWAP_EFFECT_FLIP_DISCARD), self.policy.status().stateName() },
         );
     }
 }
@@ -449,22 +453,32 @@ pub fn bindBackbufferRenderTarget() void {
 }
 
 pub fn resize(width: i32, height: i32) bool {
-    if (width <= 0 or height <= 0) return false;
     if (state == null) return false;
     const self = &state.?;
-    if (self.width == width and self.height == height) return true;
+    switch (self.policy.frameAction(width, height)) {
+        .skip => return false,
+        .present => return true,
+        .resize_then_present => {},
+        .wait_for_recreate, .fallback_candidate => return false,
+    }
 
     self.releaseSized();
     const resize_buffers = core.comCall(self.swapchain, core.slot.DXGISwapChain_ResizeBuffers, *const fn (*anyopaque, u32, u32, u32, u32, u32) callconv(.winapi) HRESULT);
     const hr = resize_buffers(self.swapchain, 0, @intCast(width), @intCast(height), 0, 0);
     if (hr < 0) {
-        logDxgiFailure(self, "resize", hr);
+        const status = self.policy.noteDxgiFailure(.resize, hr);
+        logDxgiFailure(self, "resize", hr, status);
         return false;
     }
     createRenderTarget(self, width, height) catch |err| {
-        render_diagnostics.log("gpu-backend=d3d11 resize target failed: {s}", .{@errorName(err)});
+        const status = self.policy.noteBackendFailure(.resize_target, .render_target_failed, false);
+        render_diagnostics.log(
+            "gpu-backend=d3d11 resize target failed: {s} policy_state={s} fallback_candidate={} fallback_candidate_reason={s} requires_device_recreate={}",
+            .{ @errorName(err), status.stateName(), status.fallbackCandidate(), status.reasonName(), status.requires_device_recreate },
+        );
         return false;
     };
+    self.policy.noteResizeSucceeded(width, height);
     render_diagnostics.log("gpu-backend=d3d11 resized swapchain to {}x{}", .{ width, height });
     return true;
 }
@@ -503,10 +517,15 @@ pub fn drawPhase2Quad() void {
 pub fn present() PresentError!void {
     if (state == null) return;
     const self = &state.?;
+    switch (self.policy.frameAction(self.width, self.height)) {
+        .present => {},
+        .skip, .resize_then_present, .wait_for_recreate, .fallback_candidate => return,
+    }
     const present_fn = core.comCall(self.swapchain, core.slot.DXGISwapChain_Present, *const fn (*anyopaque, u32, u32) callconv(.winapi) HRESULT);
     const hr = present_fn(self.swapchain, 1, 0);
     if (hr < 0) {
-        logDxgiFailure(self, "present", hr);
+        const status = self.policy.noteDxgiFailure(.present, hr);
+        logDxgiFailure(self, "present", hr, status);
         return presentErrorFromHRESULT(hr);
     }
 }
@@ -526,20 +545,28 @@ fn deviceRemovedReason(self: *const State) HRESULT {
     return get_reason(self.device);
 }
 
-fn logDxgiFailure(self: *const State, operation: []const u8, hr: HRESULT) void {
+pub fn presentPolicyStatus() present_policy.Status {
+    return if (state) |*self| self.policy.status() else present_policy.Status.healthy();
+}
+
+pub fn needsDeviceRecreate() bool {
+    return presentPolicyStatus().state == .needs_recreate;
+}
+
+fn logDxgiFailure(self: *const State, operation: []const u8, hr: HRESULT, status: present_policy.Status) void {
     const kind = core.dxgiFailureKind(hr);
     if (kind.requiresDeviceRecreate()) {
         const reason = deviceRemovedReason(self);
         render_diagnostics.log(
-            "gpu-backend=d3d11 {s} failed hr=0x{x:0>8} kind={s} device_removed_reason=0x{x:0>8} device_removed_kind={s} requires_device_recreate=true fallback_reason=device_lost",
-            .{ operation, core.hresultBits(hr), kind.name(), core.hresultBits(reason), core.dxgiFailureName(reason) },
+            "gpu-backend=d3d11 {s} failed hr=0x{x:0>8} kind={s} device_removed_reason=0x{x:0>8} device_removed_kind={s} policy_state={s} fallback_candidate={} fallback_candidate_reason={s} requires_device_recreate=true fallback_reason=device_lost",
+            .{ operation, core.hresultBits(hr), kind.name(), core.hresultBits(reason), core.dxgiFailureName(reason), status.stateName(), status.fallbackCandidate(), status.reasonName() },
         );
         return;
     }
 
     render_diagnostics.log(
-        "gpu-backend=d3d11 {s} failed hr=0x{x:0>8} kind={s} requires_device_recreate=false fallback_reason={s}",
-        .{ operation, core.hresultBits(hr), kind.name(), if (kind == .invalid_call) "invalid_call" else "present_failed" },
+        "gpu-backend=d3d11 {s} failed hr=0x{x:0>8} kind={s} policy_state={s} fallback_candidate={} fallback_candidate_reason={s} requires_device_recreate=false fallback_reason={s}",
+        .{ operation, core.hresultBits(hr), kind.name(), status.stateName(), status.fallbackCandidate(), status.reasonName(), status.reasonName() },
     );
 }
 

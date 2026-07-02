@@ -197,6 +197,7 @@ test {
     _ = @import("renderer/post_process_policy.zig");
     _ = @import("renderer/gpu/gl_backend_guard.zig");
     _ = @import("renderer/gpu/types.zig");
+    _ = @import("renderer/gpu/d3d11/present_policy.zig");
     _ = @import("close_confirm.zig");
     _ = @import("command/palette_model.zig");
     _ = @import("command/center_state.zig");
