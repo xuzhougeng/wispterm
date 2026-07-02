@@ -325,11 +325,45 @@ function Analyze-TabChrome([string]$Active1Path, [string]$Active2Path, [string]$
     }
 }
 
+function Analyze-PageSurface(
+    [string]$BeforePath,
+    [string]$AfterPath,
+    [int]$Left,
+    [int]$Top,
+    [int]$Width,
+    [int]$Height,
+    [int]$MinChanged,
+    [double]$MinChangedRatio,
+    [int]$MinBright
+) {
+    $region = Analyze-Region $AfterPath $Left $Top $Width $Height 2
+    $delta = Compare-ImageRegion $BeforePath $AfterPath $Left $Top $Width $Height 2
+    $pass = ($delta.Changed -gt $MinChanged -and $delta.ChangedRatio -gt $MinChangedRatio -and $region.Bright -gt $MinBright)
+
+    return @{
+        Pass = [bool]$pass
+        Changed = $delta.Changed
+        ChangedRatio = $delta.ChangedRatio
+        Bright = $region.Bright
+        Saturated = $region.Saturated
+        Luma = $region.Luma
+        Samples = $region.Samples
+    }
+}
+
 function Click-WindowCenter([IntPtr]$Hwnd) {
     $rect = Get-WindowRectValue $Hwnd
     $x = [int](($rect.Left + $rect.Right) / 2)
     $y = [int](($rect.Top + $rect.Bottom) / 2)
     [WispTermD3D11SmokeAutomation]::SetCursorPos($x, $y) | Out-Null
+    [WispTermD3D11SmokeAutomation]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 80
+    [WispTermD3D11SmokeAutomation]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+}
+
+function Click-WindowPoint([IntPtr]$Hwnd, [int]$X, [int]$Y) {
+    Move-MouseWindow $Hwnd $X $Y
+    Start-Sleep -Milliseconds 80
     [WispTermD3D11SmokeAutomation]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 80
     [WispTermD3D11SmokeAutomation]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
@@ -399,6 +433,8 @@ $tabsCloseHoverShot = Join-Path $OutDir "d3d11-tabs-close-hover-$timestamp.png"
 $sidebarShot = Join-Path $OutDir "d3d11-sidebar-$timestamp.png"
 $explorerShot = Join-Path $OutDir "d3d11-file-explorer-$timestamp.png"
 $paletteShot = Join-Path $OutDir "d3d11-command-palette-$timestamp.png"
+$settingsShot = Join-Path $OutDir "d3d11-settings-page-$timestamp.png"
+$skillCenterShot = Join-Path $OutDir "d3d11-skill-center-$timestamp.png"
 $metricsPath = Join-Path $OutDir "d3d11-normal-session-$timestamp.json"
 $appDataDir = Join-Path $OutDir "appdata"
 $diagnosticPath = Join-Path $appDataDir "wispterm\render-diagnostic.log"
@@ -479,6 +515,22 @@ try {
     Capture-Window $wisptermWindow $paletteShot | Out-Null
     $paletteDelta = Compare-Images $explorerShot $paletteShot
 
+    Send-Escape
+    Start-Sleep -Milliseconds 650
+    Click-WindowPoint $wisptermWindow 1078 24
+    Start-Sleep -Milliseconds 1100
+    Capture-Window $wisptermWindow $settingsShot | Out-Null
+    $settingsPageMetrics = Analyze-PageSurface $explorerShot $settingsShot 230 54 780 662 900 0.018 120
+
+    Send-Escape
+    Start-Sleep -Milliseconds 650
+    Send-CtrlShiftP
+    Start-Sleep -Milliseconds 850
+    Click-WindowPoint $wisptermWindow 620 496
+    Start-Sleep -Milliseconds 1600
+    Capture-Window $wisptermWindow $skillCenterShot | Out-Null
+    $skillCenterMetrics = Analyze-PageSurface $explorerShot $skillCenterShot 220 46 1010 725 1100 0.014 140
+
     $diagText = Wait-ForDiagnosticText $diagnosticPath "d3d11-ui-smoke probe .* ok=true" 12
     $hasD3D11Present = $diagText -match "gpu-backend=d3d11 present=dxgi"
     $hasUiProbe = $diagText -match "d3d11-ui-smoke probe .* ok=true"
@@ -491,6 +543,8 @@ try {
         $sidebarDelta.Pass -and
         $explorerDelta.Pass -and
         $paletteDelta.Pass -and
+        $settingsPageMetrics.Pass -and
+        $skillCenterMetrics.Pass -and
         $hasD3D11Present -and
         $hasUiProbe -and
         $hasOffscreen -and
@@ -511,6 +565,8 @@ try {
             sidebar = $sidebarShot
             file_explorer = $explorerShot
             command_palette = $paletteShot
+            settings_page = $settingsShot
+            skill_center = $skillCenterShot
         }
         initial = [ordered]@{
             samples = $initialMetrics.Samples
@@ -560,6 +616,24 @@ try {
             samples = $paletteDelta.Samples
             changed_ratio = [Math]::Round($paletteDelta.ChangedRatio, 5)
             pass = [bool]$paletteDelta.Pass
+        }
+        settings_page = [ordered]@{
+            changed = $settingsPageMetrics.Changed
+            changed_ratio = [Math]::Round($settingsPageMetrics.ChangedRatio, 5)
+            bright = $settingsPageMetrics.Bright
+            saturated = $settingsPageMetrics.Saturated
+            luma = [Math]::Round($settingsPageMetrics.Luma, 3)
+            samples = $settingsPageMetrics.Samples
+            pass = [bool]$settingsPageMetrics.Pass
+        }
+        skill_center = [ordered]@{
+            changed = $skillCenterMetrics.Changed
+            changed_ratio = [Math]::Round($skillCenterMetrics.ChangedRatio, 5)
+            bright = $skillCenterMetrics.Bright
+            saturated = $skillCenterMetrics.Saturated
+            luma = [Math]::Round($skillCenterMetrics.Luma, 3)
+            samples = $skillCenterMetrics.Samples
+            pass = [bool]$skillCenterMetrics.Pass
         }
         diagnostics = [ordered]@{
             d3d11_present = [bool]$hasD3D11Present

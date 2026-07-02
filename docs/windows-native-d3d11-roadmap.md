@@ -56,10 +56,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-se
 It launches a real visible D3D11 WispTerm session, captures screenshots while
 switching active tabs, validating tab text, the `+` icon, active/inactive tab
 states, and the close-hover affordance, then toggling the tab sidebar, file
-explorer, and command palette. It also verifies the render-diagnostics log for
-D3D11 present, UI probe, and offscreen round-trip markers. This is runtime
-evidence for the Phase IV exit criteria; it is not a Phase V hardening
-substitute and does not change the Windows default backend.
+explorer, and command palette. It also opens the Settings page from the titlebar
+gear and the Skill Center from the Command Center, then verifies the
+render-diagnostics log for D3D11 present, UI probe, and offscreen round-trip
+markers. This is runtime evidence for the Phase IV exit criteria; it is not a
+Phase V hardening substitute and does not change the Windows default backend.
 
 ## Ghostty Comparison
 
