@@ -59,11 +59,12 @@ states, and the close-hover affordance, then toggling the tab sidebar, file
 explorer, and command palette. It also generates a high-contrast background
 image, verifies that it is visible through the initial screenshot, opens
 Markdown and image preview panes from a temporary File Explorer fixture, opens
-the Settings page from the titlebar gear and the Skill Center from the Command
-Center, then verifies the render-diagnostics log for D3D11 present, UI probe,
-and offscreen round-trip markers. This is runtime evidence for the Phase IV exit
-criteria; it is not a Phase V hardening substitute and does not change the
-Windows default backend.
+the startup shortcuts overlay from the Command Center, opens the Settings page
+from the titlebar gear and the Skill Center from the Command Center, then
+verifies the render-diagnostics log for D3D11 present, UI probe, and offscreen
+round-trip markers. This is runtime evidence for the Phase IV exit criteria; it
+is not a Phase V hardening substitute and does not change the Windows default
+backend.
 
 ## Ghostty Comparison
 
