@@ -87,6 +87,7 @@ pub const copySelectionToClipboard = clipboard.copySelectionToClipboard;
 pub const pasteFromClipboard = clipboard.pasteFromClipboard;
 const pasteClipboardIntoBrowserUrlBar = clipboard.pasteClipboardIntoBrowserUrlBar;
 const pasteClipboardIntoSessionLauncher = clipboard.pasteClipboardIntoSessionLauncher;
+const pasteClipboardIntoMcpForm = clipboard.pasteClipboardIntoMcpForm;
 const pasteFromClipboardIntoAiChat = clipboard.pasteFromClipboardIntoAiChat;
 const pasteImageIntoAiChat = clipboard.pasteImageIntoAiChat;
 pub const pasteImageFromClipboard = clipboard.pasteImageFromClipboard;
@@ -3085,6 +3086,9 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
         return overlays.sessionLauncherHandleKey(key_event);
     }
     if (overlays.mcpServersVisible()) {
+        if (actionIs(action, .paste)) {
+            return if (pasteClipboardIntoMcpForm()) .repaint else .none;
+        }
         return overlays.mcpServersHandleKey(key_event);
     }
     if (action) |app_action| {

@@ -282,6 +282,46 @@ model; a tool call is routed back to its server. Set `"enabled": false` to keep
 a server configured but off. Tool calls honor the same approval prompt
 (`ai-agent-permission`) as other agent tools.
 
+### Three ways to configure
+
+- **In-app panel** — command palette → **MCP Servers**. Add / edit / enable /
+  remove servers with a form (name, command, space-separated args); **Tab** or
+  **↑/↓** move between fields and **⌘V** pastes. Press **t** to *Test* a server
+  (runs the discovery handshake and shows its tool names or the failure reason),
+  **Tab** from the list for a read-only JSON preview of exactly what will be
+  written, and **Ctrl-S** to save. Saving reloads immediately.
+- **Edit `mcp.json` directly** — for anything the form doesn't cover (remote
+  servers, request headers), edit the file by hand, then run command palette →
+  **Reload MCP Servers** (no restart needed).
+- **Let the Copilot do it** — ask the Copilot to add a server; it edits
+  `mcp.json` with its file tools. Then run **Reload MCP Servers** to apply it.
+
+### Remote servers (via `mcp-remote`)
+
+A hosted/HTTP MCP server is reached through the `mcp-remote` bridge, launched
+over stdio like any other command:
+
+```json
+{
+  "mcpServers": {
+    "jina": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://mcp.jina.ai/v1",
+        "--header",
+        "Authorization: Bearer <YOUR_JINA_API_KEY>"
+      ]
+    }
+  }
+}
+```
+
+Put the API key **directly in the args** (the file is local, like `~/.ssh`).
+WispTerm spawns servers without a shell, so a `${ENV_VAR}` placeholder in args is
+**not** expanded yet — env-var / secret indirection is a planned follow-up. After
+editing, run **Reload MCP Servers**.
+
 **Troubleshooting.** MCP discovery and tool calls are logged under the `mcp`
 scope. Build a diagnostic app and read the log:
 
@@ -295,8 +335,10 @@ You'll see one line per server (`discovered N tool(s)` or the failure reason)
 and one per tool call. A server that fails to start/handshake is skipped, not
 fatal — the log line tells you why.
 
-Scope note (v0): stdio servers only — remote HTTP/OAuth servers, an in-app
-server manager, and a marketplace are not yet supported.
+Scope note: stdio only (local programs, or remote via `mcp-remote`); no native
+HTTP/OAuth transport and no marketplace. The in-app panel edits simple
+name/command/args servers; use direct `mcp.json` editing (by hand or via the
+Copilot) for `env`, request headers, or other complex configs.
 
 ## Skill Distillation
 

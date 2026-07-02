@@ -31,12 +31,21 @@ pub const Field = enum {
     command,
     args,
 
-    /// Tab order: name -> command -> args -> name.
+    /// Tab / down-arrow order: name -> command -> args -> name.
     pub fn next(self: Field) Field {
         return switch (self) {
             .name => .command,
             .command => .args,
             .args => .name,
+        };
+    }
+
+    /// Up-arrow order: reverse of `next`.
+    pub fn prev(self: Field) Field {
+        return switch (self) {
+            .name => .args,
+            .command => .name,
+            .args => .command,
         };
     }
 };

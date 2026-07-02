@@ -676,6 +676,7 @@ fn executeCommand(action: CommandAction) void {
         .toggle_ai_copilot => AppWindow.toggleAiCopilot(),
         .manage_ai_profiles => openAiListFromCommandPalette(),
         .manage_mcp_servers => openMcpServersFromCommandPalette(),
+        .reload_mcp_servers => reloadMcpServersFromCommandPalette(),
         .select_agent_history => commandPaletteOpenAgentHistory(),
         .split_right => AppWindow.splitFocused(.right),
         .split_down => AppWindow.splitFocused(.down),
@@ -2508,6 +2509,13 @@ fn openMcpServersFromCommandPalette() void {
     mcpState().open(allocator);
 }
 
+/// Re-read mcp.json and refresh the MCP tool cache, so an edit made directly to
+/// the file (by hand or by the Copilot) takes effect without a restart.
+fn reloadMcpServersFromCommandPalette() void {
+    const allocator = AppWindow.g_allocator orelse return;
+    ai_chat.reloadMcpTools(allocator);
+}
+
 pub fn mcpServersVisible() bool {
     return mcpState().visible;
 }
@@ -2536,6 +2544,18 @@ fn backspaceMcpFormField(field: mcp_servers.Field) void {
 /// Typed-character input into the MCP form's focused field. Only the form
 /// view accepts free text (list/json_preview are navigation-only); mirrors
 /// sessionLauncherInsertChar's per-overlay gating.
+/// Paste clipboard text into the focused form field (⌘V). Only in form view;
+/// keeps printable ASCII, matching `mcpServersInsertChar`.
+pub fn mcpServersPasteText(text: []const u8) bool {
+    if (mcpState().view != .form) return false;
+    const field = mcpState().form_focus;
+    for (text) |ch| {
+        if (ch < 0x20 or ch >= 0x7f) continue;
+        appendMcpFormChar(field, ch);
+    }
+    return true;
+}
+
 pub fn mcpServersInsertChar(codepoint: u21) void {
     if (mcpState().view != .form) return;
     // Drop the shortcut letter ('a'/'e') that just opened the form: its KeyEvent
@@ -2600,7 +2620,8 @@ pub fn mcpServersHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
             else => return .none,
         },
         .form => switch (ev.key) {
-            .tab => st.form_focus = st.form_focus.next(),
+            .tab, .arrow_down => st.form_focus = st.form_focus.next(),
+            .arrow_up => st.form_focus = st.form_focus.prev(),
             .backspace => backspaceMcpFormField(st.form_focus),
             .enter => {
                 st.commitForm() catch |err| {
