@@ -8,6 +8,7 @@ const text_wrap = @import("../text_wrap.zig");
 const ui_perf = @import("../ui_perf.zig");
 const PreviewPane = @import("../preview/pane.zig");
 const preview_diagnostics = @import("../preview/diagnostics.zig");
+const preview_image_layout = @import("../preview/image_layout.zig");
 const preview_close_button = @import("../input/preview_close_button.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
@@ -698,31 +699,30 @@ fn renderImageDocument(
         return;
     }
 
-    const image_w: f32 = @floatFromInt(pane.image_width);
-    const image_h: f32 = @floatFromInt(pane.image_height);
-    if (image_w <= 0 or image_h <= 0) return;
+    const image_size = preview_image_layout.Size{
+        .width = @floatFromInt(pane.image_width),
+        .height = @floatFromInt(pane.image_height),
+    };
+    const view_size = preview_image_layout.Size{ .width = content_w, .height = body_h };
+    const draw_size = preview_image_layout.drawSize(image_size, view_size, pane.imageZoom()) orelse return;
+    pane.clampImagePan(content_w, body_h, draw_size.width, draw_size.height);
 
-    const scale = @min(content_w / image_w, body_h / image_h) * pane.imageZoom();
-    if (scale <= 0) return;
-
-    const draw_w = image_w * scale;
-    const draw_h = image_h * scale;
-    pane.clampImagePan(content_w, body_h, draw_w, draw_h);
-    const draw_x = content_x + (content_w - draw_w) / 2 + pane.imagePanX();
-    const draw_top = body_top + (body_h - draw_h) / 2 + pane.imagePanY();
-    const draw_y = window_height - draw_top - draw_h;
-
-    const clip_x: i32 = @intFromFloat(@max(0, @floor(content_x)));
-    const clip_y: i32 = @intFromFloat(@max(0, @floor(window_height - body_top - body_h)));
-    const clip_w: i32 = @intFromFloat(@max(0, @ceil(content_w)));
-    const clip_h: i32 = @intFromFloat(@max(0, @ceil(body_h)));
-    if (clip_w <= 0 or clip_h <= 0) return;
+    const layout = preview_image_layout.compute(.{
+        .content_x = content_x,
+        .content_width = content_w,
+        .body_top = body_top,
+        .body_height = body_h,
+        .window_height = window_height,
+        .image = image_size,
+        .zoom = pane.imageZoom(),
+        .pan = .{ .x = pane.imagePanX(), .y = pane.imagePanY() },
+    }) orelse return;
 
     // Clip the image to the body area, restoring any outer scissor afterward.
     const saved_scissor = gpu.state.scissorState();
-    gpu.state.setScissor(.{ .x = clip_x, .y = clip_y, .w = clip_w, .h = clip_h });
-    ui_pipeline.fillQuad(draw_x - 1, draw_y - 1, draw_w + 2, draw_h + 2, border);
-    drawImageTexture(pane, draw_x, draw_y, draw_w, draw_h, window_height);
+    gpu.state.setScissor(.{ .x = layout.scissor.x, .y = layout.scissor.y, .w = layout.scissor.w, .h = layout.scissor.h });
+    ui_pipeline.fillQuad(layout.border.x, layout.border.y, layout.border.w, layout.border.h, border);
+    drawImageTexture(pane, layout.vertices);
     gpu.state.restoreScissor(saved_scissor);
 }
 
@@ -805,18 +805,8 @@ fn ensureImageTexture(pane: *PreviewPane) bool {
     return true;
 }
 
-fn drawImageTexture(pane: *PreviewPane, x: f32, y: f32, w: f32, h: f32, window_height: f32) void {
-    _ = window_height;
+fn drawImageTexture(pane: *PreviewPane, vertices: preview_image_layout.Vertices) void {
     if (!pane.image_texture.isValid() or ui_pipeline.emoji.program == 0) return;
-
-    const vertices = [6][4]f32{
-        .{ x, y + h, 0, 0 },
-        .{ x, y, 0, 1 },
-        .{ x + w, y, 1, 1 },
-        .{ x, y + h, 0, 0 },
-        .{ x + w, y, 1, 1 },
-        .{ x + w, y + h, 1, 0 },
-    };
 
     ui_pipeline.drawTextureQuad(vertices, pane.image_texture, 1.0);
 }
