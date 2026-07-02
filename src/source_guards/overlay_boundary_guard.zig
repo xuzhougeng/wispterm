@@ -23,6 +23,7 @@ const pure_overlay_modules = [_]PureModule{
     .{ .name = "command_palette_layout.zig", .source = @embedFile("../renderer/overlays/command_palette_layout.zig") },
     .{ .name = "command_palette_input.zig", .source = @embedFile("../renderer/overlays/command_palette_input.zig") },
     .{ .name = "command_palette_state.zig", .source = @embedFile("../renderer/overlays/command_palette_state.zig") },
+    .{ .name = "startup_shortcuts_layout.zig", .source = @embedFile("../renderer/overlays/startup_shortcuts_layout.zig") },
     .{ .name = "assistant_profiles.zig", .source = @embedFile("../renderer/overlays/assistant_profiles.zig") },
     .{ .name = "profile_codec.zig", .source = @embedFile("../renderer/overlays/profile_codec.zig") },
     .{ .name = "ssh_profiles.zig", .source = @embedFile("../renderer/overlays/ssh_profiles.zig") },

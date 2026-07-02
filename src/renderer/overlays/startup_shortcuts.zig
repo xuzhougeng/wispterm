@@ -9,6 +9,7 @@ const ui_pipeline = @import("../ui_pipeline.zig");
 const keybind = @import("../../keybind.zig");
 const i18n = @import("../../i18n.zig");
 const primitives = @import("primitives.zig");
+const layout_math = @import("startup_shortcuts_layout.zig");
 const mixColor = primitives.mixColor;
 const renderRoundedQuadAlpha = primitives.renderRoundedQuadAlpha;
 
@@ -218,39 +219,28 @@ pub fn renderStartupShortcutsOverlay(window_width: f32, window_height: f32, top_
         max_action_width = @max(max_action_width, measureTitlebarText(localizedAction(entry)));
     }
 
-    const pad_x: f32 = 24;
-    const pad_y: f32 = 18;
-    const pair_gap_base: f32 = 48;
-    const column_gap: f32 = 38;
     const line_height = overlayLineHeight();
-    const heading_gap: f32 = 16;
-    const hint_gap: f32 = 12;
     const hint = i18n.s().shortcuts_hint;
     const heading = i18n.s().shortcuts_heading;
-    const content_height = @max(1.0, window_height - top_offset);
-    const available_height = @max(line_height, content_height - 24.0);
-    const fixed_height = pad_y * 2 + overlayTextHeight() + heading_gap + hint_gap + overlayTextHeight();
-    const available_entry_height = @max(line_height, available_height - fixed_height);
-    const rows_fit: usize = @max(1, @as(usize, @intFromFloat(@floor(available_entry_height / line_height))));
-    var columns: usize = (STARTUP_SHORTCUT_ENTRIES.len + rows_fit - 1) / rows_fit;
-    columns = @min(@max(columns, 1), 3);
-    const rows_per_column = (STARTUP_SHORTCUT_ENTRIES.len + columns - 1) / columns;
-    const entries_height = line_height * @as(f32, @floatFromInt(rows_per_column));
-    const pair_width = max_keys_width + pair_gap_base + max_action_width;
-    const desired_box_width = @round(@max(
-        measureTitlebarText(heading) + pad_x * 2,
-        @max(measureTitlebarText(hint) + pad_x * 2, pair_width * @as(f32, @floatFromInt(columns)) + column_gap * @as(f32, @floatFromInt(columns - 1)) + pad_x * 2),
-    ));
-    const box_width = @round(@min(desired_box_width, @max(260.0, window_width - 24.0)));
-    const box_height = @round(fixed_height + entries_height);
-
-    const box_x = @round(@max(12, (window_width - box_width) / 2));
-    const box_y = @round(@max(12, (content_height - box_height) / 2));
+    const heading_w = measureTitlebarText(heading);
+    const hint_w = measureTitlebarText(hint);
+    const layout = layout_math.compute(.{
+        .window_width = window_width,
+        .window_height = window_height,
+        .top_offset = top_offset,
+        .text_height = overlayTextHeight(),
+        .line_height = line_height,
+        .entry_count = STARTUP_SHORTCUT_ENTRIES.len,
+        .max_keys_width = max_keys_width,
+        .max_action_width = max_action_width,
+        .heading_width = heading_w,
+        .hint_width = hint_w,
+    });
 
     const panel_color = mixColor(AppWindow.g_theme.background, AppWindow.g_theme.foreground, 0.035);
     const border_color = mixColor(AppWindow.g_theme.background, AppWindow.g_theme.cursor_color, 0.24);
-    renderRoundedQuadAlpha(box_x - 1, box_y - 1, box_width + 2, box_height + 2, 11, border_color, alpha * 0.24);
-    renderRoundedQuadAlpha(box_x, box_y, box_width, box_height, 10, panel_color, alpha * 0.94);
+    renderRoundedQuadAlpha(layout.box_x - 1, layout.box_y - 1, layout.box_width + 2, layout.box_height + 2, 11, border_color, alpha * 0.24);
+    renderRoundedQuadAlpha(layout.box_x, layout.box_y, layout.box_width, layout.box_height, 10, panel_color, alpha * 0.94);
 
     const heading_base = mixColor(AppWindow.g_theme.foreground, AppWindow.g_theme.cursor_color, 0.18);
     const keys_base = mixColor(AppWindow.g_theme.foreground, AppWindow.g_theme.cursor_color, 0.08);
@@ -261,30 +251,16 @@ pub fn renderStartupShortcutsOverlay(window_width: f32, window_height: f32, top_
     const action_color = mixColor(AppWindow.g_theme.background, action_base, alpha);
     const hint_color = mixColor(AppWindow.g_theme.background, hint_base, alpha);
 
-    const heading_w = measureTitlebarText(heading);
-    const heading_y = @round(box_y + box_height - pad_y - overlayTextHeight());
-    renderTitlebarText(heading, box_x + (box_width - heading_w) / 2, heading_y, heading_color);
-    ui_pipeline.fillQuadAlpha(box_x + pad_x, heading_y - heading_gap / 2 - 1, box_width - pad_x * 2, 1, border_color, alpha * 0.36);
-
-    const inner_w = @max(1.0, box_width - pad_x * 2);
-    const total_column_gap = column_gap * @as(f32, @floatFromInt(columns - 1));
-    const column_w = @max(1.0, (inner_w - total_column_gap) / @as(f32, @floatFromInt(columns)));
-    const pair_gap = @min(pair_gap_base, @max(18.0, column_w * 0.08));
-    const keys_w = @min(max_keys_width, column_w * 0.48);
-    const action_w = @max(1.0, column_w - keys_w - pair_gap);
+    renderTitlebarText(heading, layout.box_x + (layout.box_width - heading_w) / 2, layout.heading_y, heading_color);
+    ui_pipeline.fillQuadAlpha(layout.box_x + layout.pad_x, layout.divider_y, layout.box_width - layout.pad_x * 2, 1, border_color, alpha * 0.36);
 
     for (STARTUP_SHORTCUT_ENTRIES, 0..) |entry, idx| {
         var keys_buf: [256]u8 = undefined;
         const keys = startupShortcutKeys(entry, &keys_buf);
-        const col = idx / rows_per_column;
-        const row = idx % rows_per_column;
-        const col_x = @round(box_x + pad_x + @as(f32, @floatFromInt(col)) * (column_w + column_gap));
-        const action_x = @round(col_x + keys_w + pair_gap);
-        const y = @round(heading_y - heading_gap - line_height - @as(f32, @floatFromInt(row)) * line_height);
-        renderTitlebarTextLimited(keys, col_x, y, keys_color, keys_w);
-        renderTitlebarTextLimited(localizedAction(entry), action_x, y, action_color, action_w);
+        const item = layout.entry(idx) orelse continue;
+        renderTitlebarTextLimited(keys, item.keys_x, item.y, keys_color, item.keys_width);
+        renderTitlebarTextLimited(localizedAction(entry), item.action_x, item.y, action_color, item.action_width);
     }
 
-    const hint_w = measureTitlebarText(hint);
-    renderTitlebarTextLimited(hint, box_x + (box_width - @min(hint_w, box_width - pad_x * 2)) / 2, box_y + pad_y, hint_color, box_width - pad_x * 2);
+    renderTitlebarTextLimited(hint, layout.hint_x, layout.hint_y, hint_color, layout.hint_max_width);
 }
