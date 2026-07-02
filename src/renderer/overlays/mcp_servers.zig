@@ -23,7 +23,7 @@ pub const Server = struct {
     enabled: bool = true,
 };
 
-pub const View = enum { list, form, json_preview };
+pub const View = enum { list, form };
 
 /// Form field identifiers, indexed into `State.form_bufs`/`form_lens`.
 pub const Field = enum {
@@ -291,12 +291,6 @@ pub const State = struct {
     }
 
     /// Read-only JSON preview of what `save` would write.
-    pub fn jsonPreview(self: *const State, allocator: std.mem.Allocator) ![]u8 {
-        const cfgs = try self.toServerConfigs(allocator);
-        defer mcp_registry.freeServersConfig(allocator, cfgs);
-        return mcp_registry.writeServersConfig(allocator, cfgs);
-    }
-
     /// Write `servers[0..count]` to `<config-dir>/mcp.json`.
     /// The caller is responsible for triggering an MCP tools reload.
     pub fn save(self: *State, allocator: std.mem.Allocator) !void {
@@ -432,7 +426,7 @@ test "edit preserves enabled state of a disabled server" {
     try std.testing.expect(!s.servers[0].enabled);
 }
 
-test "jsonPreview equals what save writes, and splits args" {
+test "toServerConfigs splits args and serializes to mcp.json" {
     const a = std.testing.allocator;
     var s: State = .{};
     s.beginAdd();
@@ -447,10 +441,10 @@ test "jsonPreview equals what save writes, and splits args" {
     try std.testing.expectEqual(@as(usize, 2), cfgs[0].args.len);
     try std.testing.expectEqualStrings("pkg", cfgs[0].args[1]);
 
-    const preview = try s.jsonPreview(a);
-    defer a.free(preview);
-    try std.testing.expect(std.mem.indexOf(u8, preview, "\"c\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, preview, "\"npx\"") != null);
+    const json = try mcp_registry.writeServersConfig(a, cfgs);
+    defer a.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"c\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"npx\"") != null);
 }
 
 test "applyProbeResult stores tool names and status on the state" {

@@ -43,6 +43,8 @@ const toasts = @import("overlays/toasts.zig");
 const ssh_profiles = @import("overlays/ssh_profiles.zig");
 const ssh_profiles_layout = @import("overlays/ssh_profiles_layout.zig");
 const mcp_servers = @import("overlays/mcp_servers.zig");
+const mcp_registry = @import("../tools/mcp_registry.zig");
+const platform_editor = @import("../platform/editor.zig");
 const mcp_probe = @import("../assistant/mcp_probe.zig");
 const assistant_profiles = @import("overlays/assistant_profiles.zig");
 const feishu_config = @import("overlays/feishu_config.zig");
@@ -676,7 +678,6 @@ fn executeCommand(action: CommandAction) void {
         .toggle_ai_copilot => AppWindow.toggleAiCopilot(),
         .manage_ai_profiles => openAiListFromCommandPalette(),
         .manage_mcp_servers => openMcpServersFromCommandPalette(),
-        .reload_mcp_servers => reloadMcpServersFromCommandPalette(),
         .select_agent_history => commandPaletteOpenAgentHistory(),
         .split_right => AppWindow.splitFocused(.right),
         .split_down => AppWindow.splitFocused(.down),
@@ -2509,11 +2510,24 @@ fn openMcpServersFromCommandPalette() void {
     mcpState().open(allocator);
 }
 
-/// Re-read mcp.json and refresh the MCP tool cache, so an edit made directly to
-/// the file (by hand or by the Copilot) takes effect without a restart.
-fn reloadMcpServersFromCommandPalette() void {
+/// Re-read mcp.json into the panel list AND refresh the runtime MCP tool cache,
+/// so an edit made directly to the file (by hand or by the Copilot) takes effect
+/// without a restart. Bound to `r` in the list view.
+fn reloadMcpServersInPanel() void {
     const allocator = AppWindow.g_allocator orelse return;
     ai_chat.reloadMcpTools(allocator);
+    mcpState().open(allocator); // re-load the on-disk servers into the panel
+}
+
+/// Open `<config-dir>/mcp.json` in the OS default text editor (creating an empty
+/// template first if it doesn't exist). Bound to `o` in the list view — the
+/// panel intentionally has no in-app JSON editor.
+fn openMcpJsonInEditor() void {
+    const allocator = AppWindow.g_allocator orelse return;
+    mcp_registry.ensureConfigFile(allocator) catch return;
+    const path = mcp_registry.configPath(allocator) catch return;
+    defer allocator.free(path);
+    _ = platform_editor.openTextFile(allocator, .{ .path = path });
 }
 
 pub fn mcpServersVisible() bool {
@@ -2542,7 +2556,7 @@ fn backspaceMcpFormField(field: mcp_servers.Field) void {
 }
 
 /// Typed-character input into the MCP form's focused field. Only the form
-/// view accepts free text (list/json_preview are navigation-only); mirrors
+/// view accepts free text (the list view is navigation-only); mirrors
 /// sessionLauncherInsertChar's per-overlay gating.
 /// Paste clipboard text into the focused form field (⌘V). Only in form view;
 /// keeps printable ASCII, matching `mcpServersInsertChar`.
@@ -2609,7 +2623,8 @@ pub fn mcpServersHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
                 mcp_probe.start(allocator, command, args_buf[0..args_len], mcpProbeDone, @ptrCast(st));
             },
             .space => st.toggleSelected(),
-            .tab => st.view = .json_preview,
+            .key_r => reloadMcpServersInPanel(),
+            .key_o => openMcpJsonInEditor(),
             .key_s => {
                 if (!ev.ctrlOnly(.key_s)) return .none;
                 const allocator = AppWindow.g_allocator orelse return .none;
@@ -2632,10 +2647,6 @@ pub fn mcpServersHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
                 st.view = .list;
             },
             .escape => st.view = .list,
-            else => return .none,
-        },
-        .json_preview => switch (ev.key) {
-            .tab, .escape => st.view = .list,
             else => return .none,
         },
     }
@@ -5965,10 +5976,9 @@ fn mcpEnabledMark(enabled: bool) []const u8 {
 }
 
 // Two short lines so the hint fits the panel width at the overlay font size.
-const MCP_LIST_FOOTER1 = "a add \u{00b7} e edit \u{00b7} d del \u{00b7} space toggle";
-const MCP_LIST_FOOTER2 = "t test \u{00b7} Tab JSON \u{00b7} Ctrl-S save \u{00b7} Esc";
-const MCP_FORM_FOOTER = "Tab next \u{00b7} Enter save \u{00b7} Esc back";
-const MCP_JSON_FOOTER = "Tab/Esc back";
+const MCP_LIST_FOOTER1 = "a add \u{00b7} e edit \u{00b7} d del \u{00b7} space toggle \u{00b7} t test";
+const MCP_LIST_FOOTER2 = "o edit mcp.json \u{00b7} r reload \u{00b7} Ctrl-S save \u{00b7} Esc";
+const MCP_FORM_FOOTER = "Tab/\u{2191}\u{2193} field \u{00b7} Enter save \u{00b7} Esc back";
 const MCP_ERROR_COLOR = [3]f32{ 0.92, 0.35, 0.32 };
 
 fn mcpFormErrorText(err: mcp_servers.FormError) []const u8 {
@@ -6080,52 +6090,11 @@ fn renderMcpFormView(window_width: f32, window_height: f32, top_offset: f32) voi
     renderMcpRow(layout, window_height, name_row, "Name", st.formField(.name), st.form_focus == .name);
     renderMcpRow(layout, window_height, command_row, "Command", st.formField(.command), st.form_focus == .command);
     renderMcpRow(layout, window_height, args_row, "Args", st.formField(.args), st.form_focus == .args);
-    renderMcpLine(layout, window_height, hint_row, "space-separated (see JSON view)", muted_color);
+    renderMcpLine(layout, window_height, hint_row, "space-separated \u{00b7} o edits mcp.json for advanced setups", muted_color);
     if (st.form_error) |err| {
         renderMcpLine(layout, window_height, error_row, mcpFormErrorText(err), MCP_ERROR_COLOR);
     }
     renderMcpLine(layout, window_height, footer_row, MCP_FORM_FOOTER, muted_color);
-}
-
-fn renderMcpJsonPreviewView(window_width: f32, window_height: f32, top_offset: f32) void {
-    const allocator = AppWindow.g_allocator orelse return;
-    const preview = mcpState().jsonPreview(allocator) catch return;
-    defer allocator.free(preview);
-
-    var line_count: usize = 1;
-    for (preview) |b| {
-        if (b == '\n') line_count += 1;
-    }
-    const header_row_count = 1; // "mcp.json (read-only preview)..." header line
-    const footer_row = header_row_count + line_count;
-    const row_count = footer_row + 1;
-    const layout = mcpLayout(window_width, window_height, top_offset, row_count, 0);
-    const box_y = @round(window_height - layout.box_top_px - layout.box_h);
-
-    const bg = AppWindow.g_theme.background;
-    const fg = AppWindow.g_theme.foreground;
-    const accent = AppWindow.g_theme.cursor_color;
-    const panel_color = mixColor(bg, fg, 0.035);
-    const border_color = mixColor(bg, accent, 0.24);
-    const title_color = mixColor(fg, accent, 0.14);
-    const muted_color = mixColor(bg, fg, 0.58);
-
-    ui_pipeline.fillQuadAlpha(0, 0, window_width, window_height, .{ 0.0, 0.0, 0.0 }, 0.18);
-    renderRoundedQuadAlpha(layout.box_x - 1, box_y - 1, layout.box_w + 2, layout.box_h + 2, 11, border_color, 0.24);
-    renderRoundedQuadAlpha(layout.box_x, box_y, layout.box_w, layout.box_h, 10, panel_color, 0.96);
-
-    const title_y = textYFromTop(window_height, layout.box_top_px + 18);
-    const hint_y = textYFromTop(window_height, layout.box_top_px + 18 + overlayLineHeight());
-    renderTitlebarTextStrong("mcp.json (read-only preview)", layout.box_x + 24, title_y, title_color);
-    renderTitlebarTextStrongLimited("This is what Ctrl-S in the list saves.", layout.box_x + 24, hint_y, muted_color, layout.box_w - 48);
-
-    var row: usize = header_row_count;
-    var lines = std.mem.splitScalar(u8, preview, '\n');
-    while (lines.next()) |line| : (row += 1) {
-        renderMcpLine(layout, window_height, row, line, fg);
-    }
-
-    renderMcpLine(layout, window_height, footer_row, MCP_JSON_FOOTER, muted_color);
 }
 
 pub fn renderMcpServers(window_width: f32, window_height: f32, top_offset: f32) void {
@@ -6134,7 +6103,6 @@ pub fn renderMcpServers(window_width: f32, window_height: f32, top_offset: f32) 
     switch (st.view) {
         .list => renderMcpListView(window_width, window_height, top_offset),
         .form => renderMcpFormView(window_width, window_height, top_offset),
-        .json_preview => renderMcpJsonPreviewView(window_width, window_height, top_offset),
     }
 }
 

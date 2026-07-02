@@ -205,6 +205,39 @@ pub fn saveConfigFile(allocator: std.mem.Allocator, servers: []const ServerConfi
     try atomic_file.writeFileReplaceSafe(path, json);
 }
 
+/// Absolute path to the MCP config file (`<config-dir>/mcp.json`). Owned.
+pub fn configPath(allocator: std.mem.Allocator) ![]const u8 {
+    return platform_dirs.pathInConfigDir(allocator, "mcp.json");
+}
+
+const CONFIG_TEMPLATE =
+    \\{
+    \\  "mcpServers": {
+    \\    "example": {
+    \\      "command": "npx",
+    \\      "args": ["-y", "@upstash/context7-mcp"],
+    \\      "enabled": false
+    \\    }
+    \\  }
+    \\}
+    \\
+;
+
+/// Create `<config-dir>/mcp.json` with a starter template if it doesn't exist,
+/// so "open in editor" always has a valid, illustrative file to show. An
+/// existing file is left untouched.
+pub fn ensureConfigFile(allocator: std.mem.Allocator) !void {
+    const path = try configPath(allocator);
+    defer allocator.free(path);
+    if (std.fs.cwd().access(path, .{})) |_| {
+        return; // already there — never clobber the user's file
+    } else |_| {}
+    const dir = try platform_dirs.configDir(allocator);
+    defer allocator.free(dir);
+    std.fs.cwd().makePath(dir) catch {};
+    try atomic_file.writeFileReplaceSafe(path, CONFIG_TEMPLATE);
+}
+
 test "saveConfigFile then loadConfigFile round-trips via the config dir" {
     const a = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -223,6 +256,31 @@ test "saveConfigFile then loadConfigFile round-trips via the config dir" {
     try std.testing.expectEqual(@as(usize, 1), back.len);
     try std.testing.expectEqualStrings("gh", back[0].name);
     try std.testing.expectEqualStrings("github-mcp", back[0].command);
+}
+
+test "ensureConfigFile writes a valid template only when absent" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(dir_path);
+    platform_dirs.setTestConfigDirOverride(dir_path);
+    defer platform_dirs.setTestConfigDirOverride(null);
+
+    // Absent → writes a parseable template (with the disabled example server).
+    try ensureConfigFile(a);
+    const first = try loadConfigFile(a);
+    defer freeServersConfig(a, first);
+    try std.testing.expect(first.len >= 1);
+
+    // Present → left untouched (overwrite with empty, ensure it survives).
+    const path = try configPath(a);
+    defer a.free(path);
+    try atomic_file.writeFileReplaceSafe(path, "{\"mcpServers\":{}}\n");
+    try ensureConfigFile(a);
+    const second = try loadConfigFile(a);
+    defer freeServersConfig(a, second);
+    try std.testing.expectEqual(@as(usize, 0), second.len);
 }
 
 test "loadConfigFile returns empty when the file is absent" {

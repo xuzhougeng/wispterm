@@ -284,17 +284,17 @@ a server configured but off. Tool calls honor the same approval prompt
 
 ### Three ways to configure
 
-- **In-app panel** — command palette → **MCP Servers**. Add / edit / enable /
-  remove servers with a form (name, command, space-separated args); **Tab** or
-  **↑/↓** move between fields and **⌘V** pastes. Press **t** to *Test* a server
-  (runs the discovery handshake and shows its tool names or the failure reason),
-  **Tab** from the list for a read-only JSON preview of exactly what will be
-  written, and **Ctrl-S** to save. Saving reloads immediately.
+- **In-app panel** — command palette → **MCP Servers**. List keys: **a** add,
+  **e**/**Enter** edit, **d** delete, **space** enable/disable, **t** *Test* (runs
+  the discovery handshake and shows the server's tool names or failure reason),
+  **Ctrl-S** save, **Esc** close. In the add/edit form, **Tab** or **↑/↓** move
+  between fields (name, command, space-separated args) and **⌘V** pastes.
 - **Edit `mcp.json` directly** — for anything the form doesn't cover (remote
-  servers, request headers), edit the file by hand, then run command palette →
-  **Reload MCP Servers** (no restart needed).
+  servers, request headers), press **o** in the panel to open `mcp.json` in your
+  default editor (or edit the file at the path above). After saving the file,
+  press **r** in the panel to reload — no restart needed.
 - **Let the Copilot do it** — ask the Copilot to add a server; it edits
-  `mcp.json` with its file tools. Then run **Reload MCP Servers** to apply it.
+  `mcp.json` with its file tools. Then press **r** in the panel to apply it.
 
 ### Remote servers (via `mcp-remote`)
 
@@ -319,8 +319,8 @@ over stdio like any other command:
 
 Put the API key **directly in the args** (the file is local, like `~/.ssh`).
 WispTerm spawns servers without a shell, so a `${ENV_VAR}` placeholder in args is
-**not** expanded yet — env-var / secret indirection is a planned follow-up. After
-editing, run **Reload MCP Servers**.
+**not** expanded — use the literal key. After editing, press **r** in the MCP
+Servers panel to reload.
 
 **Troubleshooting.** MCP discovery and tool calls are logged under the `mcp`
 scope. Build a diagnostic app and read the log:
