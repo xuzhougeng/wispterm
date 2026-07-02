@@ -20,7 +20,6 @@ const agent_detector = @import("../terminal_agents/detector.zig");
 const keybind = @import("../keybind.zig");
 const Character = font.Character;
 
-pub const CaptionButtonType = enum { minimize, maximize, close };
 pub const SIDEBAR_WIDTH: f32 = 220;
 pub const SIDEBAR_MIN_WIDTH: f32 = 160;
 pub const SIDEBAR_MAX_WIDTH: f32 = 720;
@@ -90,6 +89,31 @@ fn mouseInTitlebarRange(titlebar_h: f32, left: f32, right: f32) bool {
 fn currentWindowIsMaximized() bool {
     const win = AppWindow.g_window orelse return false;
     return window_backend.isMaximized(win);
+}
+
+fn captionIconGlyph(icon: titlebar_layout.CaptionButtonIcon) font_backend.TitlebarIcon {
+    return switch (icon) {
+        .minimize => .minimize,
+        .maximize => .maximize,
+        .restore => .restore,
+        .close => .close,
+    };
+}
+
+fn captionButtonVisual(
+    kind: titlebar_layout.CaptionButtonKind,
+    rect: titlebar_layout.Rect,
+    hovered: bool,
+) titlebar_layout.CaptionButtonVisual {
+    const is_focused = if (AppWindow.g_window) |win| window_backend.isFocused(win) else false;
+    const is_maximized = currentWindowIsMaximized();
+    const is_fullscreen = if (AppWindow.g_window) |win| window_backend.isFullscreen(win) else false;
+    return titlebar_layout.captionButtonVisual(kind, rect, .{
+        .hovered = hovered,
+        .focused = is_focused,
+        .maximized = is_maximized,
+        .fullscreen = is_fullscreen,
+    });
 }
 
 pub fn sidebarMaxWidthForWindow(window_width: f32) f32 {
@@ -465,7 +489,6 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
             renderFallbackMenuIcon(toggle_x, layout.top_y, TITLEBAR_TOGGLE_W, titlebar_h, icon_color);
         }
 
-        const top_btn_h: f32 = titlebar_h;
         const top_hovered: window_backend.CaptionButton = if (AppWindow.g_window) |w| window_backend.hoveredCaptionButton(w) else .none;
 
         const config_x = layout.config_x;
@@ -525,9 +548,9 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
             _ = renderTextLimited(title, layout.title_text_x, text_y, blend(bg, fg, 0.90), layout.title_text_max_w);
         }
 
-        renderCaptionButton(layout.caption_start_x, layout.top_y, layout.caption_button_w, top_btn_h, .minimize, top_hovered == .minimize);
-        renderCaptionButton(layout.caption_start_x + layout.caption_button_w, layout.top_y, layout.caption_button_w, top_btn_h, .maximize, top_hovered == .maximize);
-        renderCaptionButton(layout.caption_start_x + layout.caption_button_w * 2, layout.top_y, layout.caption_button_w, top_btn_h, .close, top_hovered == .close);
+        renderCaptionButton(captionButtonVisual(.minimize, layout.caption_buttons.minimize, top_hovered == .minimize));
+        renderCaptionButton(captionButtonVisual(.maximize, layout.caption_buttons.maximize, top_hovered == .maximize));
+        renderCaptionButton(captionButtonVisual(.close, layout.caption_buttons.close, top_hovered == .close));
 
         {
             const is_focused = if (AppWindow.g_window) |w| window_backend.isFocused(w) else false;
@@ -1027,10 +1050,10 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
     const btn_h: f32 = titlebar_h;
     const hovered: window_backend.CaptionButton = if (AppWindow.g_window) |w| window_backend.hoveredCaptionButton(w) else .none;
 
-    const caption_start = window_width - caption_area_w;
-    renderCaptionButton(caption_start, tb_top, caption_btn_w, btn_h, .minimize, hovered == .minimize);
-    renderCaptionButton(caption_start + caption_btn_w, tb_top, caption_btn_w, btn_h, .maximize, hovered == .maximize);
-    renderCaptionButton(caption_start + caption_btn_w * 2, tb_top, caption_btn_w, btn_h, .close, hovered == .close);
+    const caption_rects = titlebar_layout.captionButtonRects(window_width, tb_top, btn_h, caption_btn_w);
+    renderCaptionButton(captionButtonVisual(.minimize, caption_rects.minimize, hovered == .minimize));
+    renderCaptionButton(captionButtonVisual(.maximize, caption_rects.maximize, hovered == .maximize));
+    renderCaptionButton(captionButtonVisual(.close, caption_rects.close, hovered == .close));
 
     // --- Focus border: 1px accent border when window is focused (matches Explorer/DWM) ---
     {
@@ -1277,13 +1300,15 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
 }
 
 /// Draw a native caption button with hover support.
-/// Each button is 46×40px with a 10×10 icon centered inside.
 /// Platform/window provides the concrete colors and metrics.
-pub fn renderCaptionButton(x: f32, y: f32, w: f32, h: f32, btn_type: CaptionButtonType, hovered: bool) void {
+pub fn renderCaptionButton(button: titlebar_layout.CaptionButtonVisual) void {
+    const rect = button.rect;
+    if (rect.w <= 0 or rect.h <= 0) return;
+
     const visual = window_backend.caption_button_visual_style;
     // Draw hover background, respecting the 1px focus border on edges
-    if (hovered) {
-        const hover_bg = switch (btn_type) {
+    if (button.hovered) {
+        const hover_bg = switch (button.kind) {
             .close => visual.close_hover_background,
             else => [3]f32{
                 @min(1.0, AppWindow.g_theme.background[0] + visual.hover_background_delta),
@@ -1291,42 +1316,26 @@ pub fn renderCaptionButton(x: f32, y: f32, w: f32, h: f32, btn_type: CaptionButt
                 @min(1.0, AppWindow.g_theme.background[2] + visual.hover_background_delta),
             },
         };
-        // Close button is at the window edge; inset by the focus border.
-        if (btn_type == .close) {
-            const is_focused = if (AppWindow.g_window) |win| window_backend.isFocused(win) else false;
-            const is_maximized = currentWindowIsMaximized();
-            const b: f32 = if (is_focused and !is_maximized) 1 else 0;
-            ui_pipeline.fillQuad(x, y + b, w - b, h - b, hover_bg);
-        } else {
-            ui_pipeline.fillQuad(x, y, w, h, hover_bg);
-        }
+        const hover = button.hover_rect;
+        ui_pipeline.fillQuad(hover.x, hover.y, hover.w, hover.h, hover_bg);
     }
 
-    const icon_color: [3]f32 = if (hovered) visual.hover_icon_color else visual.icon_color;
-
-    // Check if window is maximized or fullscreen (for restore icon)
-    const is_maximized = currentWindowIsMaximized();
-    const is_fullscreen = if (AppWindow.g_window) |win| window_backend.isFullscreen(win) else false;
-
-    const icon_codepoint = font_backend.titlebarIconGlyph(switch (btn_type) {
-        .close => .close,
-        .maximize => if (is_maximized or is_fullscreen) .restore else .maximize,
-        .minimize => .minimize,
-    });
+    const icon_color: [3]f32 = if (button.hovered) visual.hover_icon_color else visual.icon_color;
+    const icon_codepoint = font_backend.titlebarIconGlyph(captionIconGlyph(button.icon));
 
     // Try rendering from the platform caption icon font.
     if (font.icon_face != null) {
         if (font.loadIconGlyph(icon_codepoint)) |ch| {
-            renderIconGlyph(ch, x, y, w, h, icon_color, 1.0);
+            renderIconGlyph(ch, rect.x, rect.y, rect.w, rect.h, icon_color, 1.0);
             return;
         }
     }
 
     // Fallback: quad-based icons
-    const cx = x + w / 2;
-    const cy = y + h / 2;
+    const cx = rect.x + rect.w / 2;
+    const cy = rect.y + rect.h / 2;
 
-    switch (btn_type) {
+    switch (button.icon) {
         .close => {
             const size: f32 = 5;
             const steps: usize = 32;
@@ -1347,6 +1356,22 @@ pub fn renderCaptionButton(x: f32, y: f32, w: f32, h: f32, btn_type: CaptionButt
             ui_pipeline.fillQuad(cx - size, cy - size, size * 2, t, icon_color); // bottom
             ui_pipeline.fillQuad(cx - size, cy - size, t, size * 2, icon_color); // left
             ui_pipeline.fillQuad(cx + size - t, cy - size, t, size * 2, icon_color); // right
+        },
+        .restore => {
+            const size: f32 = 4.5;
+            const t: f32 = 1;
+            const offset: f32 = 3;
+            const back_x = cx - size + offset;
+            const back_y = cy - size + offset;
+            ui_pipeline.fillQuad(back_x, back_y + size * 2 - t, size * 2, t, icon_color);
+            ui_pipeline.fillQuad(back_x + size * 2 - t, back_y, t, size * 2, icon_color);
+
+            const front_x = cx - size - offset / 2;
+            const front_y = cy - size - offset / 2;
+            ui_pipeline.fillQuad(front_x, front_y + size * 2 - t, size * 2, t, icon_color);
+            ui_pipeline.fillQuad(front_x, front_y, size * 2, t, icon_color);
+            ui_pipeline.fillQuad(front_x, front_y, t, size * 2, icon_color);
+            ui_pipeline.fillQuad(front_x + size * 2 - t, front_y, t, size * 2, icon_color);
         },
         .minimize => {
             const size: f32 = 5;
