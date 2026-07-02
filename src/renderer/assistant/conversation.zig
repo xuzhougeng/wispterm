@@ -188,20 +188,19 @@ pub fn render(
     const panel = mixColor(bg, fg, 0.045);
     const line = mixColor(bg, fg, 0.18);
 
-    const x = @round(chat_x);
-    const w = @round(@max(1.0, chat_w));
-    const top = @round(titlebar_offset);
-    const h = @round(@max(1.0, window_height - top));
-    if (w <= 1 or h <= 1) return;
+    const frame = ai_chat_layout.panelFrame(window_height, titlebar_offset, chat_x, chat_w, HEADER_H) orelse return;
+    const x = frame.x;
+    const w = frame.w;
+    const top = frame.top_px;
 
-    ui_pipeline.fillQuad(x, 0, w, h, bg);
+    ui_pipeline.fillQuad(frame.panel.x, frame.panel.y, frame.panel.w, frame.panel.h, bg);
 
     session.mutex.lock();
     defer session.mutex.unlock();
 
-    const header_y = window_height - top - HEADER_H;
-    ui_pipeline.fillQuadAlpha(x, header_y, w, HEADER_H, panel, 0.95);
-    ui_pipeline.fillQuadAlpha(x, header_y, w, 1, line, 0.8);
+    const header_y = frame.header.y;
+    ui_pipeline.fillQuadAlpha(frame.header.x, frame.header.y, frame.header.w, frame.header.h, panel, 0.95);
+    ui_pipeline.fillQuadAlpha(frame.header_rule.x, frame.header_rule.y, frame.header_rule.w, frame.header_rule.h, line, 0.8);
     const permission = ai_chat.agentPermission();
     const chip_x = permissionChipX(x, w);
     const mode_text = if (session.agent_enabled) "Agent" else "Chat";
@@ -269,9 +268,9 @@ pub fn render(
     const input_text = session.input();
     const layout = inputLayout(x, w, input_text);
     const input_h = layout.input_h;
-    const input_y: f32 = 0;
-    ui_pipeline.fillQuadAlpha(x, input_y, w, input_h, panel, 0.98);
-    ui_pipeline.fillQuadAlpha(x, input_y + input_h - 1, w, 1, line, 0.72);
+    const input_band = ai_chat_layout.inputBand(frame, input_h);
+    ui_pipeline.fillQuadAlpha(input_band.panel.x, input_band.panel.y, input_band.panel.w, input_band.panel.h, panel, 0.98);
+    ui_pipeline.fillQuadAlpha(input_band.top_rule.x, input_band.top_rule.y, input_band.top_rule.w, input_band.top_rule.h, line, 0.72);
 
     const field_bg = mixColor(bg, fg, 0.075);
     ui_pipeline.fillQuadAlpha(layout.field_x, layout.field_y, layout.field_w, layout.field_h, field_bg, 0.95);
@@ -354,12 +353,12 @@ pub fn render(
     const question_h: f32 = if (question) |view| questionCardHeight(view) + APPROVAL_GAP else 0;
     const card_footer_h = approval_h + question_h;
 
-    const transcript_top = top + HEADER_H + 18;
-    const transcript_bottom = input_h + card_footer_h + 18;
-    const transcript_h = @max(1.0, window_height - transcript_top - transcript_bottom);
-    const content_w = w - LINE_PAD_X * 2;
-    const content_x = x + LINE_PAD_X;
-    const viewport_bottom_top_px = window_height - transcript_bottom;
+    const transcript_viewport = ai_chat_layout.transcriptViewport(frame, window_height, input_h, card_footer_h, LINE_PAD_X, 18);
+    const transcript_top = transcript_viewport.transcript_top_px;
+    const transcript_h = transcript_viewport.clip.h;
+    const content_w = transcript_viewport.content_w;
+    const content_x = transcript_viewport.content_x;
+    const viewport_bottom_top_px = transcript_viewport.viewport_bottom_top_px;
 
     var content_h: f32 = 0;
     for (session.messages.items) |msg| {
@@ -375,7 +374,12 @@ pub fn render(
     const max_scroll = @max(0.0, content_h - transcript_h);
     session.scroll_px = @min(session.scroll_px, max_scroll);
 
-    ui_pipeline.beginClip(.{ .x = x, .y = transcript_bottom, .w = w, .h = transcript_h });
+    ui_pipeline.beginClip(.{
+        .x = transcript_viewport.clip.x,
+        .y = transcript_viewport.clip.y,
+        .w = transcript_viewport.clip.w,
+        .h = transcript_viewport.clip.h,
+    });
 
     const gravity_offset = @max(0.0, transcript_h - content_h);
     const palette = markdownPalette(bg, fg, accent);
@@ -830,18 +834,16 @@ fn transcriptLayoutLocked(
     chat_w: f32,
 ) ?TranscriptLayout {
     _ = window_width;
-    const x = @round(chat_x);
-    const w = @round(@max(1.0, chat_w));
-    if (w <= 1) return null;
+    const frame = ai_chat_layout.panelFrame(window_height, titlebar_offset, chat_x, chat_w, HEADER_H) orelse return null;
+    const x = frame.x;
+    const w = frame.w;
 
     const approval = session.approvalView();
     const approval_h: f32 = if (approval) |view| approvalCardHeight(view) + APPROVAL_GAP else 0;
     const question_h: f32 = if (approval == null) (if (session.questionView()) |view| questionCardHeight(view) + APPROVAL_GAP else 0) else 0;
     const input_h = inputLayout(x, w, session.input()).input_h;
-    const transcript_top = titlebar_offset + HEADER_H + 18;
-    const transcript_bottom = input_h + approval_h + question_h + 18;
-    const transcript_h = @max(1.0, window_height - transcript_top - transcript_bottom);
-    const content_w = w - LINE_PAD_X * 2;
+    const transcript_viewport = ai_chat_layout.transcriptViewport(frame, window_height, input_h, approval_h + question_h, LINE_PAD_X, 18);
+    const content_w = transcript_viewport.content_w;
 
     var content_h: f32 = 0;
     for (session.messages.items) |msg| {
@@ -858,8 +860,8 @@ fn transcriptLayoutLocked(
     return .{
         .x = x,
         .w = w,
-        .transcript_top = transcript_top,
-        .transcript_h = transcript_h,
+        .transcript_top = transcript_viewport.transcript_top_px,
+        .transcript_h = transcript_viewport.clip.h,
         .content_h = content_h,
     };
 }

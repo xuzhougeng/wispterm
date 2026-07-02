@@ -18,6 +18,39 @@ pub const Rect = struct {
     h: f32,
 };
 
+/// Renderer draw-space rect with bottom-left-origin `y` (the coordinate system
+/// accepted by ui_pipeline fill/clip calls).
+pub const DrawRect = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+};
+
+pub const PanelFrame = struct {
+    x: f32,
+    w: f32,
+    top_px: f32,
+    h: f32,
+    panel: DrawRect,
+    header: DrawRect,
+    header_rule: DrawRect,
+};
+
+pub const InputBand = struct {
+    panel: DrawRect,
+    top_rule: DrawRect,
+};
+
+pub const TranscriptViewport = struct {
+    clip: DrawRect,
+    transcript_top_px: f32,
+    transcript_bottom_y: f32,
+    viewport_bottom_top_px: f32,
+    content_x: f32,
+    content_w: f32,
+};
+
 /// Horizontal placement of a message bubble: `x` is its left edge (which is
 /// right-shifted for the right-aligned user bubble) and `w` its width.
 pub const BubbleGeometry = struct {
@@ -27,6 +60,59 @@ pub const BubbleGeometry = struct {
 
 pub fn pointInRect(px: f32, py: f32, rect: Rect) bool {
     return px >= rect.x and px <= rect.x + rect.w and py >= rect.top_px and py <= rect.top_px + rect.h;
+}
+
+pub fn panelFrame(
+    window_height: f32,
+    titlebar_offset: f32,
+    chat_x: f32,
+    chat_w: f32,
+    header_h: f32,
+) ?PanelFrame {
+    const x = @round(chat_x);
+    const w = @round(@max(1.0, chat_w));
+    const top = @round(titlebar_offset);
+    const h = @round(@max(1.0, window_height - top));
+    if (w <= 1 or h <= 1) return null;
+
+    const header_y = window_height - top - header_h;
+    return .{
+        .x = x,
+        .w = w,
+        .top_px = top,
+        .h = h,
+        .panel = .{ .x = x, .y = 0, .w = w, .h = h },
+        .header = .{ .x = x, .y = header_y, .w = w, .h = header_h },
+        .header_rule = .{ .x = x, .y = header_y, .w = w, .h = 1 },
+    };
+}
+
+pub fn inputBand(frame: PanelFrame, input_h: f32) InputBand {
+    return .{
+        .panel = .{ .x = frame.x, .y = 0, .w = frame.w, .h = input_h },
+        .top_rule = .{ .x = frame.x, .y = input_h - 1, .w = frame.w, .h = 1 },
+    };
+}
+
+pub fn transcriptViewport(
+    frame: PanelFrame,
+    window_height: f32,
+    input_h: f32,
+    card_footer_h: f32,
+    line_pad_x: f32,
+    gap: f32,
+) TranscriptViewport {
+    const transcript_top = frame.top_px + frame.header.h + gap;
+    const transcript_bottom = input_h + card_footer_h + gap;
+    const transcript_h = @max(1.0, window_height - transcript_top - transcript_bottom);
+    return .{
+        .clip = .{ .x = frame.x, .y = transcript_bottom, .w = frame.w, .h = transcript_h },
+        .transcript_top_px = transcript_top,
+        .transcript_bottom_y = transcript_bottom,
+        .viewport_bottom_top_px = window_height - transcript_bottom,
+        .content_x = frame.x + line_pad_x,
+        .content_w = frame.w - line_pad_x * 2,
+    };
 }
 
 pub fn bubbleGeometry(is_user: bool, x: f32, w: f32) BubbleGeometry {
@@ -263,6 +349,45 @@ test "pointInRect inside, edges, outside" {
     try std.testing.expect(pointInRect(20, 20, r)); // bottom-right edge inclusive
     try std.testing.expect(!pointInRect(21, 10, r));
     try std.testing.expect(!pointInRect(10, 21, r));
+}
+
+test "panelFrame converts assistant panel chrome to draw rectangles" {
+    const frame = panelFrame(700, 40, 100.4, 400.2, 54).?;
+
+    try std.testing.expectEqual(@as(f32, 100), frame.x);
+    try std.testing.expectEqual(@as(f32, 400), frame.w);
+    try std.testing.expectEqual(@as(f32, 40), frame.top_px);
+    try std.testing.expectEqual(@as(f32, 660), frame.h);
+    try std.testing.expectEqual(DrawRect{ .x = 100, .y = 0, .w = 400, .h = 660 }, frame.panel);
+    try std.testing.expectEqual(DrawRect{ .x = 100, .y = 606, .w = 400, .h = 54 }, frame.header);
+    try std.testing.expectEqual(DrawRect{ .x = 100, .y = 606, .w = 400, .h = 1 }, frame.header_rule);
+}
+
+test "inputBand anchors the composer at the bottom of the assistant panel" {
+    const frame = panelFrame(700, 40, 100, 400, 54).?;
+    const band = inputBand(frame, 120);
+
+    try std.testing.expectEqual(DrawRect{ .x = 100, .y = 0, .w = 400, .h = 120 }, band.panel);
+    try std.testing.expectEqual(DrawRect{ .x = 100, .y = 119, .w = 400, .h = 1 }, band.top_rule);
+}
+
+test "transcriptViewport reserves header, composer, footer cards, and side padding" {
+    const frame = panelFrame(700, 40, 100, 400, 54).?;
+    const viewport = transcriptViewport(frame, 700, 120, 80, 18, 18);
+
+    try std.testing.expectEqual(@as(f32, 112), viewport.transcript_top_px);
+    try std.testing.expectEqual(@as(f32, 218), viewport.transcript_bottom_y);
+    try std.testing.expectEqual(@as(f32, 482), viewport.viewport_bottom_top_px);
+    try std.testing.expectEqual(DrawRect{ .x = 100, .y = 218, .w = 400, .h = 370 }, viewport.clip);
+    try std.testing.expectEqual(@as(f32, 118), viewport.content_x);
+    try std.testing.expectEqual(@as(f32, 364), viewport.content_w);
+}
+
+test "transcriptViewport keeps a positive clip height on cramped windows" {
+    const frame = panelFrame(180, 40, 0, 240, 54).?;
+    const viewport = transcriptViewport(frame, 180, 100, 80, 18, 18);
+
+    try std.testing.expectEqual(@as(f32, 1), viewport.clip.h);
 }
 
 test "bubbleGeometry user vs assistant" {
