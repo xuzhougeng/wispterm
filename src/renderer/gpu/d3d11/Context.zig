@@ -549,6 +549,10 @@ pub fn presentPolicyStatus() present_policy.Status {
     return if (state) |*self| self.policy.status() else present_policy.Status.healthy();
 }
 
+pub fn takeRecoveryRequest() ?present_policy.RecoveryRequest {
+    return if (state) |*self| self.policy.takeRecoveryRequest() else null;
+}
+
 pub fn needsDeviceRecreate() bool {
     return presentPolicyStatus().state == .needs_recreate;
 }

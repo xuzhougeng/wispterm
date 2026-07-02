@@ -49,7 +49,9 @@ page, Skill Center, D3D11 present diagnostics, UI probe, and offscreen
 round-trip marker. This does not make D3D11 product-default-ready yet: Phase V
 hardening has started with backend-owned present/device-loss diagnostics and a
 pure D3D11 present policy that latches `needs_recreate` / `fallback_candidate`
-state from classified DXGI failures, but device recreation, automatic fallback
+state from classified DXGI failures. The host now consumes a single-shot D3D11
+recovery request and records whether the requested action is device recreation
+or fallback-candidate handling, but actual device recreation, automatic fallback
 policy, environment validation, and Phase VI default migration remain blocked
 until fallback coverage is proven. Windows `auto` still must not default to
 D3D11 on this branch.
@@ -72,10 +74,11 @@ shortcuts overlay from the Command Center, opens the Settings page from the
 titlebar gear and the Skill Center from the Command Center, then verifies the
 render-diagnostics log for D3D11 present, init details (swap effect, adapter or
 unknown-adapter fallback, fallback reason, and healthy D3D11 policy state), UI
-probe, and offscreen round-trip markers. This is runtime evidence for the Phase
-IV exit criteria and the first Phase V diagnostics/policy slice; it is not a
-device-recreation or automatic fallback substitute and does not change the
-Windows default backend.
+probe, offscreen round-trip markers, and the absence of a D3D11 recovery
+request in the healthy smoke path. This is runtime evidence for the Phase IV
+exit criteria and the first Phase V diagnostics/policy/recovery-coordination
+slice; it is not a device-recreation or automatic fallback substitute and does
+not change the Windows default backend.
 
 ## Ghostty Comparison
 

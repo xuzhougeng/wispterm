@@ -1605,6 +1605,30 @@ fn presentBackendFrame(win: *window_backend.Window) void {
     }
 }
 
+fn handleD3D11RecoveryRequest(allocator: std.mem.Allocator) void {
+    if (comptime gpu.active == .d3d11) {
+        const request = gpu.Context.takeRecoveryRequest() orelse return;
+        const status = request.status;
+        render_diagnostics.log(
+            "gpu-backend=d3d11 recovery requested action={s} policy_state={s} operation={s} fallback_candidate_reason={s} dxgi_kind={s} requires_device_recreate={} automatic_fallback=false default_unchanged=true",
+            .{
+                request.actionName(),
+                status.stateName(),
+                status.operationName(),
+                status.reasonName(),
+                status.dxgiKindName(),
+                status.requires_device_recreate,
+            },
+        );
+
+        if (status.requires_device_recreate) {
+            font.clearGlyphCache(allocator);
+        }
+        applyUiEffect(UiEffect.repaint);
+        markAllRenderersDirty();
+    }
+}
+
 threadlocal var g_diag_last_fb_w: c_int = -1;
 threadlocal var g_diag_last_fb_h: c_int = -1;
 threadlocal var g_diag_last_client_w: i32 = -1;
@@ -7159,6 +7183,7 @@ fn runMainLoop(self: *AppWindow) !void {
         gpu.state.endFrame();
         agent_requests.capturePendingUiScreenshots(agentRequestHost());
         presentBackendFrame(win);
+        handleD3D11RecoveryRequest(allocator);
         if (windowState().takePresentBringupSettlement()) {
             platform_window_state.settleD3dBringup(allocator);
         }

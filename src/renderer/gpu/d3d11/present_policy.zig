@@ -45,6 +45,18 @@ pub const Action = enum {
     fallback_candidate,
 };
 
+pub const RecoveryAction = enum {
+    recreate_device,
+    flag_fallback_candidate,
+
+    pub fn name(self: RecoveryAction) []const u8 {
+        return switch (self) {
+            .recreate_device => "recreate_device",
+            .flag_fallback_candidate => "flag_fallback_candidate",
+        };
+    }
+};
+
 pub const FallbackReason = enum {
     none,
     device_lost,
@@ -97,10 +109,20 @@ pub const Status = struct {
     }
 };
 
+pub const RecoveryRequest = struct {
+    status: Status,
+    action: RecoveryAction,
+
+    pub fn actionName(self: RecoveryRequest) []const u8 {
+        return self.action.name();
+    }
+};
+
 pub const Policy = struct {
     width: i32,
     height: i32,
     status_value: Status = .{},
+    recovery_pending: bool = false,
 
     pub fn init(width: i32, height: i32) Policy {
         return .{ .width = width, .height = height };
@@ -168,9 +190,22 @@ pub const Policy = struct {
                 .dxgi_kind = kind,
                 .requires_device_recreate = requires_recreate,
             };
+            self.recovery_pending = true;
         }
 
         return self.status_value;
+    }
+
+    pub fn takeRecoveryRequest(self: *Policy) ?RecoveryRequest {
+        if (!self.recovery_pending or self.status_value.state == .healthy) return null;
+        self.recovery_pending = false;
+        return .{
+            .status = self.status_value,
+            .action = if (self.status_value.requires_device_recreate)
+                .recreate_device
+            else
+                .flag_fallback_candidate,
+        };
     }
 };
 
@@ -208,6 +243,12 @@ test "D3D11 present policy latches device loss as recreate state" {
     try std.testing.expect(status.fallbackCandidate());
     try std.testing.expectEqual(Action.wait_for_recreate, policy.frameAction(800, 600));
 
+    const request = policy.takeRecoveryRequest() orelse return error.MissingRecoveryRequest;
+    try std.testing.expectEqual(RecoveryAction.recreate_device, request.action);
+    try std.testing.expectEqual(State.needs_recreate, request.status.state);
+    try std.testing.expectEqualStrings("recreate_device", request.actionName());
+    try std.testing.expect(policy.takeRecoveryRequest() == null);
+
     policy.noteResizeSucceeded(1024, 768);
     try std.testing.expectEqual(Action.wait_for_recreate, policy.frameAction(1024, 768));
 }
@@ -222,17 +263,28 @@ test "D3D11 present policy records non-device-loss fallback candidates" {
     try std.testing.expect(!status.requires_device_recreate);
     try std.testing.expect(status.fallbackCandidate());
     try std.testing.expectEqual(Action.fallback_candidate, policy.frameAction(800, 600));
+
+    const request = policy.takeRecoveryRequest() orelse return error.MissingRecoveryRequest;
+    try std.testing.expectEqual(RecoveryAction.flag_fallback_candidate, request.action);
+    try std.testing.expectEqual(FallbackReason.invalid_call, request.status.reason);
+    try std.testing.expect(policy.takeRecoveryRequest() == null);
 }
 
 test "D3D11 present policy upgrades a fallback candidate to device recreate" {
     var policy = Policy.init(800, 600);
     _ = policy.noteDxgiFailure(.resize, core.DXGI_ERROR_INVALID_CALL);
+    _ = policy.takeRecoveryRequest() orelse return error.MissingRecoveryRequest;
+
     const status = policy.noteDxgiFailure(.present, core.DXGI_ERROR_DEVICE_RESET);
 
     try std.testing.expectEqual(State.needs_recreate, status.state);
     try std.testing.expectEqual(Operation.present, status.operation.?);
     try std.testing.expectEqual(FallbackReason.device_lost, status.reason);
     try std.testing.expectEqual(core.DxgiFailureKind.device_reset, status.dxgi_kind);
+
+    const request = policy.takeRecoveryRequest() orelse return error.MissingRecoveryRequest;
+    try std.testing.expectEqual(RecoveryAction.recreate_device, request.action);
+    try std.testing.expectEqual(core.DxgiFailureKind.device_reset, request.status.dxgi_kind);
 }
 
 test "D3D11 present policy records render-target creation failures" {
