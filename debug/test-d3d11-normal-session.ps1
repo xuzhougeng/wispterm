@@ -136,6 +136,41 @@ const backend = "d3d11";
     }
 }
 
+function ConvertTo-HexField([string]$Value) {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+    $builder = New-Object System.Text.StringBuilder
+    foreach ($byte in $bytes) {
+        [void]$builder.AppendFormat("{0:X2}", $byte)
+    }
+    return $builder.ToString()
+}
+
+function New-SmokeAiProfile([string]$AppDataDir) {
+    $wispDir = Join-Path $AppDataDir "wispterm"
+    New-Item -ItemType Directory -Force -Path $wispDir | Out-Null
+    $profilePath = Join-Path $wispDir "ai_profiles"
+    $fields = @(
+        "D3D11 Smoke",
+        "https://api.invalid.local",
+        "d3d11-smoke-key",
+        "d3d11-smoke-model",
+        "D3D11 smoke profile",
+        "disabled",
+        "low",
+        "false",
+        "true",
+        "chat_completions",
+        "1024",
+        "off"
+    )
+    $line = ($fields | ForEach-Object { ConvertTo-HexField $_ }) -join "`t"
+    @(
+        "# WispTerm AI Chat profiles. Fields are hex encoded: name, base_url, api_key, model, system_prompt, thinking, reasoning_effort, stream, agent, protocol, max_tokens, vision.",
+        $line
+    ) | Set-Content -LiteralPath $profilePath -Encoding UTF8
+    return $profilePath
+}
+
 function Get-WindowRectValue([IntPtr]$Hwnd) {
     [WispTermD3D11SmokeAutomation+RECT]$rect = New-Object WispTermD3D11SmokeAutomation+RECT
     [WispTermD3D11SmokeAutomation]::GetWindowRect($Hwnd, [ref]$rect) | Out-Null
@@ -493,6 +528,23 @@ function Analyze-StartupShortcutsOverlay([string]$BeforePath, [string]$AfterPath
     }
 }
 
+function Analyze-AssistantPanelSurface([string]$BeforePath, [string]$AfterPath) {
+    $delta = Compare-ImageRegion $BeforePath $AfterPath 840 52 390 692 2
+    $header = Analyze-Region $AfterPath 850 58 365 70 2
+    $composer = Analyze-Region $AfterPath 858 625 345 105 2
+    $pass = ($delta.Changed -gt 4200 -and $delta.ChangedRatio -gt 0.055 -and ($header.Bright + $composer.Bright) -gt 120)
+
+    return @{
+        Pass = [bool]$pass
+        Changed = $delta.Changed
+        ChangedRatio = $delta.ChangedRatio
+        HeaderBright = $header.Bright
+        ComposerBright = $composer.Bright
+        ComposerLuma = $composer.Luma
+        Samples = $composer.Samples
+    }
+}
+
 function Click-WindowCenter([IntPtr]$Hwnd) {
     $rect = Get-WindowRectValue $Hwnd
     $x = [int](($rect.Left + $rect.Right) / 2)
@@ -541,6 +593,10 @@ function Send-CtrlShiftB() {
 
 function Send-CtrlShiftP() {
     Send-KeyChord ([byte[]](0x11, 0x10, 0x50))
+}
+
+function Send-CtrlShiftA() {
+    Send-KeyChord ([byte[]](0x11, 0x10, 0x41))
 }
 
 function Send-CtrlShiftAltE() {
@@ -595,6 +651,7 @@ $sidebarShot = Join-Path $OutDir "d3d11-sidebar-$timestamp.png"
 $explorerShot = Join-Path $OutDir "d3d11-file-explorer-$timestamp.png"
 $markdownPreviewShot = Join-Path $OutDir "d3d11-markdown-preview-$timestamp.png"
 $imagePreviewShot = Join-Path $OutDir "d3d11-image-preview-$timestamp.png"
+$assistantPanelShot = Join-Path $OutDir "d3d11-assistant-panel-$timestamp.png"
 $paletteShot = Join-Path $OutDir "d3d11-command-palette-$timestamp.png"
 $startupShortcutsShot = Join-Path $OutDir "d3d11-startup-shortcuts-$timestamp.png"
 $settingsShot = Join-Path $OutDir "d3d11-settings-page-$timestamp.png"
@@ -606,6 +663,7 @@ $diagnosticPath = Join-Path $appDataDir "wispterm\render-diagnostic.log"
 New-Item -ItemType Directory -Force -Path $appDataDir | Out-Null
 New-SmokeBackgroundImage $backgroundImagePath
 $previewFixtures = New-SmokePreviewFixtures $previewFixtureDir
+$aiProfilePath = New-SmokeAiProfile $appDataDir
 if (!$workingDirectoryProvided) {
     $WorkingDirectory = $previewFixtureDir
 }
@@ -613,6 +671,7 @@ if (!$workingDirectoryProvided) {
 shell = $Shell
 wispterm-debug-render = true
 restore-tabs-on-startup = false
+ai-default-profile = D3D11 Smoke
 background-image = $backgroundImagePath
 background-opacity = 0.18
 background-image-mode = fill
@@ -671,6 +730,9 @@ try {
     Capture-Window $wisptermWindow $tabsCloseHoverShot | Out-Null
     $tabChromeMetrics = Analyze-TabChrome $initialShot $tabsActive2Shot $tabsCloseHoverShot
 
+    Send-AltDigit 0x31
+    Start-Sleep -Milliseconds 700
+
     Move-MouseWindow $wisptermWindow 620 390
     Start-Sleep -Milliseconds 250
     Send-CtrlShiftB
@@ -692,6 +754,14 @@ try {
     Start-Sleep -Milliseconds 2200
     Capture-Window $wisptermWindow $imagePreviewShot | Out-Null
     $imagePreviewMetrics = Analyze-ImagePreviewSurface $markdownPreviewShot $imagePreviewShot
+
+    Send-CtrlShiftA
+    Start-Sleep -Milliseconds 1300
+    Capture-Window $wisptermWindow $assistantPanelShot | Out-Null
+    $assistantPanelMetrics = Analyze-AssistantPanelSurface $imagePreviewShot $assistantPanelShot
+
+    Send-CtrlShiftA
+    Start-Sleep -Milliseconds 900
 
     Send-CtrlShiftP
     Start-Sleep -Milliseconds 1000
@@ -735,6 +805,7 @@ try {
         $explorerDelta.Pass -and
         $markdownPreviewMetrics.Pass -and
         $imagePreviewMetrics.Pass -and
+        $assistantPanelMetrics.Pass -and
         $paletteDelta.Pass -and
         $startupShortcutsMetrics.Pass -and
         $settingsPageMetrics.Pass -and
@@ -752,6 +823,7 @@ try {
         exe = $ExePath
         config = $configPath
         background_image = $backgroundImagePath
+        ai_profile = $aiProfilePath
         preview_fixture_dir = $previewFixtureDir
         preview_markdown = $previewFixtures.Markdown
         preview_image = $previewFixtures.Image
@@ -765,6 +837,7 @@ try {
             file_explorer = $explorerShot
             markdown_preview = $markdownPreviewShot
             image_preview = $imagePreviewShot
+            assistant_panel = $assistantPanelShot
             command_palette = $paletteShot
             startup_shortcuts = $startupShortcutsShot
             settings_page = $settingsShot
@@ -840,6 +913,15 @@ try {
             luma = [Math]::Round($imagePreviewMetrics.Luma, 3)
             samples = $imagePreviewMetrics.Samples
             pass = [bool]$imagePreviewMetrics.Pass
+        }
+        assistant_panel = [ordered]@{
+            changed = $assistantPanelMetrics.Changed
+            changed_ratio = [Math]::Round($assistantPanelMetrics.ChangedRatio, 5)
+            header_bright = $assistantPanelMetrics.HeaderBright
+            composer_bright = $assistantPanelMetrics.ComposerBright
+            composer_luma = [Math]::Round($assistantPanelMetrics.ComposerLuma, 3)
+            samples = $assistantPanelMetrics.Samples
+            pass = [bool]$assistantPanelMetrics.Pass
         }
         command_palette_delta = [ordered]@{
             changed = $paletteDelta.Changed
