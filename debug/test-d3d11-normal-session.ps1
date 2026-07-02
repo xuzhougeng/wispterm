@@ -58,6 +58,7 @@ public static class WispTermD3D11SmokeAutomation {
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassNameW(IntPtr hWnd, StringBuilder text, int count);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageW(IntPtr hWnd, uint msg, UIntPtr wParam, IntPtr lParam);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
 }
 "@
@@ -475,6 +476,23 @@ function Analyze-ImagePreviewSurface([string]$BeforePath, [string]$AfterPath) {
     }
 }
 
+function Analyze-StartupShortcutsOverlay([string]$BeforePath, [string]$AfterPath) {
+    $delta = Compare-ImageRegion $BeforePath $AfterPath 220 70 800 650 3
+    $heading = Analyze-Region $AfterPath 330 76 580 94 2
+    $body = Analyze-Region $AfterPath 255 145 730 505 3
+    $pass = ($delta.Changed -gt 2500 -and $delta.ChangedRatio -gt 0.028 -and ($heading.Bright + $body.Bright) -gt 520)
+
+    return @{
+        Pass = [bool]$pass
+        Changed = $delta.Changed
+        ChangedRatio = $delta.ChangedRatio
+        HeadingBright = $heading.Bright
+        BodyBright = $body.Bright
+        BodyLuma = $body.Luma
+        Samples = $body.Samples
+    }
+}
+
 function Click-WindowCenter([IntPtr]$Hwnd) {
     $rect = Get-WindowRectValue $Hwnd
     $x = [int](($rect.Left + $rect.Right) / 2)
@@ -529,12 +547,23 @@ function Send-CtrlShiftAltE() {
     Send-KeyChord ([byte[]](0x11, 0x10, 0x12, 0x45))
 }
 
+function Send-Enter() {
+    Send-KeyChord ([byte[]](0x0D))
+}
+
 function Send-AltDigit([byte]$DigitKey) {
     Send-KeyChord ([byte[]](0x12, $DigitKey))
 }
 
 function Send-Escape() {
     Send-KeyChord ([byte[]](0x1B))
+}
+
+function Send-WindowText([IntPtr]$Hwnd, [string]$Text) {
+    foreach ($ch in $Text.ToCharArray()) {
+        [WispTermD3D11SmokeAutomation]::SendMessageW($Hwnd, 0x0102, [UIntPtr]([uint32][char]$ch), [IntPtr]::Zero) | Out-Null
+        Start-Sleep -Milliseconds 35
+    }
 }
 
 function Wait-ForDiagnosticText([string]$Path, [string]$Pattern, [int]$TimeoutSeconds) {
@@ -567,6 +596,7 @@ $explorerShot = Join-Path $OutDir "d3d11-file-explorer-$timestamp.png"
 $markdownPreviewShot = Join-Path $OutDir "d3d11-markdown-preview-$timestamp.png"
 $imagePreviewShot = Join-Path $OutDir "d3d11-image-preview-$timestamp.png"
 $paletteShot = Join-Path $OutDir "d3d11-command-palette-$timestamp.png"
+$startupShortcutsShot = Join-Path $OutDir "d3d11-startup-shortcuts-$timestamp.png"
 $settingsShot = Join-Path $OutDir "d3d11-settings-page-$timestamp.png"
 $skillCenterShot = Join-Path $OutDir "d3d11-skill-center-$timestamp.png"
 $metricsPath = Join-Path $OutDir "d3d11-normal-session-$timestamp.json"
@@ -668,6 +698,13 @@ try {
     Capture-Window $wisptermWindow $paletteShot | Out-Null
     $paletteDelta = Compare-Images $imagePreviewShot $paletteShot
 
+    Send-WindowText $wisptermWindow "keyboard"
+    Start-Sleep -Milliseconds 600
+    Send-Enter
+    Start-Sleep -Milliseconds 1200
+    Capture-Window $wisptermWindow $startupShortcutsShot | Out-Null
+    $startupShortcutsMetrics = Analyze-StartupShortcutsOverlay $imagePreviewShot $startupShortcutsShot
+
     Send-Escape
     Start-Sleep -Milliseconds 650
     Click-WindowPoint $wisptermWindow 1078 24
@@ -699,6 +736,7 @@ try {
         $markdownPreviewMetrics.Pass -and
         $imagePreviewMetrics.Pass -and
         $paletteDelta.Pass -and
+        $startupShortcutsMetrics.Pass -and
         $settingsPageMetrics.Pass -and
         $skillCenterMetrics.Pass -and
         $hasD3D11Present -and
@@ -728,6 +766,7 @@ try {
             markdown_preview = $markdownPreviewShot
             image_preview = $imagePreviewShot
             command_palette = $paletteShot
+            startup_shortcuts = $startupShortcutsShot
             settings_page = $settingsShot
             skill_center = $skillCenterShot
         }
@@ -807,6 +846,15 @@ try {
             samples = $paletteDelta.Samples
             changed_ratio = [Math]::Round($paletteDelta.ChangedRatio, 5)
             pass = [bool]$paletteDelta.Pass
+        }
+        startup_shortcuts = [ordered]@{
+            changed = $startupShortcutsMetrics.Changed
+            changed_ratio = [Math]::Round($startupShortcutsMetrics.ChangedRatio, 5)
+            heading_bright = $startupShortcutsMetrics.HeadingBright
+            body_bright = $startupShortcutsMetrics.BodyBright
+            body_luma = [Math]::Round($startupShortcutsMetrics.BodyLuma, 3)
+            samples = $startupShortcutsMetrics.Samples
+            pass = [bool]$startupShortcutsMetrics.Pass
         }
         settings_page = [ordered]@{
             changed = $settingsPageMetrics.Changed

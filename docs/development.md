@@ -168,8 +168,9 @@ two visible tabs, checks tab text, the `+` icon, active/inactive row states, and
 the close-hover affordance, then toggles the tab sidebar, file explorer, and
 command palette. It also generates a high-contrast background image, verifies it
 through the initial D3D11 screenshot, opens Markdown and image preview panes
-from a temporary File Explorer fixture, opens the Settings page from the
-titlebar gear, and opens the Skill Center from the Command Center. It captures
+from a temporary File Explorer fixture, opens the startup shortcuts overlay from
+the Command Center, opens the Settings page from the titlebar gear, and opens
+the Skill Center from the Command Center. It captures
 screenshots, writes JSON metrics under
 `zig-out\d3d11-normal-session-smoke\`, and verifies that
 `render-diagnostic.log` contains `gpu-backend=d3d11 present=dxgi`, a successful
