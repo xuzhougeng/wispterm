@@ -86,7 +86,20 @@ pub const DeviceRecreatePreparation = struct {
     }
 };
 
+pub const DeviceRecreateResult = struct {
+    attempted: bool = false,
+    succeeded: bool = false,
+    width: i32 = 0,
+    height: i32 = 0,
+    error_name: []const u8 = "none",
+
+    pub fn failed(self: DeviceRecreateResult) bool {
+        return self.attempted and !self.succeeded;
+    }
+};
+
 const State = struct {
+    hwnd: HWND,
     device: *anyopaque,
     context: *anyopaque,
     swapchain: *anyopaque,
@@ -103,14 +116,32 @@ const State = struct {
     height: i32,
     feature_draws_this_frame: bool = false,
 
+    fn clearAndFlushContext(self: *State) void {
+        const clear_state = core.comCall(self.context, core.slot.D3D11DeviceContext_ClearState, *const fn (*anyopaque) callconv(.winapi) void);
+        clear_state(self.context);
+        const flush = core.comCall(self.context, core.slot.D3D11DeviceContext_Flush, *const fn (*anyopaque) callconv(.winapi) void);
+        flush(self.context);
+        self.current_rtv = null;
+        self.current_width = 0;
+        self.current_height = 0;
+    }
+
+    fn unbindRenderTargets(self: *State) void {
+        const om_set = core.comCall(self.context, core.slot.D3D11DeviceContext_OMSetRenderTargets, *const fn (*anyopaque, u32, [*]const ?*anyopaque, ?*anyopaque) callconv(.winapi) void);
+        var rtvs = [_]?*anyopaque{null};
+        om_set(self.context, 1, &rtvs, null);
+        self.current_rtv = null;
+        self.current_width = 0;
+        self.current_height = 0;
+    }
+
     fn releaseSized(self: *State) void {
+        self.unbindRenderTargets();
+        self.clearAndFlushContext();
         if (self.rtv) |rtv| {
             core.comRelease(rtv);
             self.rtv = null;
         }
-        self.current_rtv = null;
-        self.current_width = 0;
-        self.current_height = 0;
         if (self.backbuffer) |backbuffer| {
             core.comRelease(backbuffer);
             self.backbuffer = null;
@@ -131,8 +162,8 @@ const State = struct {
     fn deinit(self: *State) void {
         self.releaseSized();
         self.releaseShaders();
-        core.comRelease(self.swapchain);
         core.comRelease(self.context);
+        core.comRelease(self.swapchain);
         core.comRelease(self.device);
     }
 };
@@ -165,6 +196,17 @@ pub fn initWithLayer(_: ?*anyopaque) !void {
 }
 
 pub fn initForWindow(hwnd: HWND, width: i32, height: i32) InitError!void {
+    if (state) |*self| {
+        self.deinit();
+        state = null;
+    }
+
+    state = try createStateForWindow(hwnd, width, height);
+    logBackendInit(&state.?);
+    std.debug.print("D3D11: native backend initialized {}x{}\n", .{ width, height });
+}
+
+fn createStateForWindow(hwnd: HWND, width: i32, height: i32) InitError!State {
     if (width <= 0 or height <= 0) return error.SwapchainCreateFailed;
 
     const d3d11 = LoadLibraryW(std.unicode.utf8ToUtf16LeStringLiteral("d3d11.dll")) orelse
@@ -195,6 +237,7 @@ pub fn initForWindow(hwnd: HWND, width: i32, height: i32) InitError!void {
     errdefer core.comRelease(swapchain_result.swapchain);
 
     var next = State{
+        .hwnd = hwnd,
         .device = device.?,
         .context = context.?,
         .swapchain = swapchain_result.swapchain,
@@ -208,9 +251,7 @@ pub fn initForWindow(hwnd: HWND, width: i32, height: i32) InitError!void {
     try createRenderTarget(&next, width, height);
     try createPhase2Pipeline(&next);
 
-    state = next;
-    logBackendInit(&state.?);
-    std.debug.print("D3D11: native backend initialized {}x{}\n", .{ width, height });
+    return next;
 }
 
 fn createSwapchain(device: *anyopaque, hwnd: HWND, width: i32, height: i32) InitError!SwapchainCreateResult {
@@ -253,8 +294,14 @@ fn createSwapchain(device: *anyopaque, hwnd: HWND, width: i32, height: i32) Init
         *?*anyopaque,
     ) callconv(.winapi) HRESULT);
     var swapchain: ?*anyopaque = null;
-    if (create_for_hwnd(factory.?, device, hwnd, &desc, null, null, &swapchain) < 0 or swapchain == null)
+    const hr = create_for_hwnd(factory.?, device, hwnd, &desc, null, null, &swapchain);
+    if (hr < 0 or swapchain == null) {
+        render_diagnostics.log(
+            "gpu-backend=d3d11 create swapchain failed hr=0x{x:0>8} kind={s} swapchain={}x{}",
+            .{ core.hresultBits(hr), core.dxgiFailureKind(hr).name(), width, height },
+        );
         return error.SwapchainCreateFailed;
+    }
 
     const make_assoc = core.comCall(factory.?, core.slot.DXGIFactory_MakeWindowAssociation, *const fn (*anyopaque, HWND, u32) callconv(.winapi) HRESULT);
     _ = make_assoc(factory.?, hwnd, DXGI_MWA_NO_ALT_ENTER);
@@ -593,6 +640,54 @@ pub fn prepareForDeviceRecreate() DeviceRecreatePreparation {
     return result;
 }
 
+pub fn recreateDevice(width: i32, height: i32) DeviceRecreateResult {
+    if (state == null) return .{ .error_name = "not_initialized" };
+
+    const self = &state.?;
+    const hwnd = self.hwnd;
+    const target_width = if (width > 0) width else self.width;
+    const target_height = if (height > 0) height else self.height;
+    const result_base = DeviceRecreateResult{
+        .attempted = true,
+        .width = target_width,
+        .height = target_height,
+    };
+
+    var old = state.?;
+    state = null;
+    old.deinit();
+
+    const next = createStateForWindow(hwnd, target_width, target_height) catch |err| {
+        render_diagnostics.log(
+            "gpu-backend=d3d11 device recreate failed error={s} swapchain={}x{} automatic_fallback=false default_unchanged=true",
+            .{ @errorName(err), target_width, target_height },
+        );
+        var failed_result = result_base;
+        failed_result.error_name = @errorName(err);
+        return failed_result;
+    };
+
+    state = next;
+    logBackendInit(&state.?);
+    render_diagnostics.log(
+        "gpu-backend=d3d11 device recreate succeeded swapchain={}x{} policy_state={s} automatic_fallback=false default_unchanged=true",
+        .{ target_width, target_height, state.?.policy.status().stateName() },
+    );
+    var success_result = result_base;
+    success_result.succeeded = true;
+    return success_result;
+}
+
+pub fn requestDeviceRecreateForSmoke() bool {
+    if (state == null) return false;
+    const status = state.?.policy.noteBackendFailure(.present, .device_lost, true);
+    render_diagnostics.log(
+        "gpu-backend=d3d11 recreate smoke latched policy_state={s} fallback_candidate_reason={s} requires_device_recreate={}",
+        .{ status.stateName(), status.reasonName(), status.requires_device_recreate },
+    );
+    return status.requires_device_recreate;
+}
+
 fn logDxgiFailure(self: *const State, operation: []const u8, hr: HRESULT, status: present_policy.Status) void {
     const kind = core.dxgiFailureKind(hr);
     if (kind.requiresDeviceRecreate()) {
@@ -634,4 +729,12 @@ test "D3D11 context device recreate preparation is a no-op when uninitialized" {
     const preparation = prepareForDeviceRecreate();
     try std.testing.expect(!preparation.initialized);
     try std.testing.expect(!preparation.anyReleased());
+}
+
+test "D3D11 context device recreate reports no attempt when uninitialized" {
+    const result = recreateDevice(800, 600);
+    try std.testing.expect(!result.attempted);
+    try std.testing.expect(!result.succeeded);
+    try std.testing.expect(!result.failed());
+    try std.testing.expectEqualStrings("not_initialized", result.error_name);
 }

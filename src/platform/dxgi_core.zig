@@ -435,6 +435,8 @@ pub const slot = struct {
     pub const D3D11DeviceContext_CopyResource: usize = 47;
     pub const D3D11DeviceContext_UpdateSubresource: usize = 48;
     pub const D3D11DeviceContext_ClearRenderTargetView: usize = 50;
+    pub const D3D11DeviceContext_ClearState: usize = 110;
+    pub const D3D11DeviceContext_Flush: usize = 111;
 
     // ID3DBlob (IUnknown + GetBufferPointer/GetBufferSize).
     pub const Blob_GetBufferPointer: usize = 3;

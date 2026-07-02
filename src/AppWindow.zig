@@ -90,6 +90,7 @@ pub const overlays = @import("renderer/overlays.zig");
 const post_process = @import("renderer/post_process.zig");
 const d3d11_offscreen_smoke = @import("renderer/d3d11_offscreen_smoke.zig");
 const d3d11_ui_smoke = @import("renderer/d3d11_ui_smoke.zig");
+const d3d11_recreate_smoke = @import("renderer/d3d11_recreate_smoke.zig");
 pub const gpu = @import("renderer/gpu/gpu.zig");
 pub const split_layout = @import("appwindow/split_layout.zig");
 const render_gate = @import("appwindow/render_gate.zig");
@@ -1630,7 +1631,28 @@ fn prepareD3D11DeviceRecreateResources() void {
     }
 }
 
-fn handleD3D11RecoveryRequest() void {
+fn restoreD3D11DeviceRecreateResources(allocator: std.mem.Allocator) void {
+    if (comptime gpu.active == .d3d11) {
+        ui_pipeline.init();
+        cell_pipeline.init();
+        post_process.init(allocator, g_shader_path);
+        if (g_app) |app| {
+            app.mutex.lock();
+            const image_path: ?[]u8 = if (app.background_image) |p| (allocator.dupe(u8, p) catch null) else null;
+            app.mutex.unlock();
+            if (image_path) |p| {
+                defer allocator.free(p);
+                background_image.load(allocator, p);
+            }
+        }
+        render_diagnostics.log(
+            "gpu-backend=d3d11 resource recreate restored feature_pipelines=true background_reloaded={} post_process_rechecked=true automatic_fallback=false default_unchanged=true",
+            .{background_image.g_enabled},
+        );
+    }
+}
+
+fn handleD3D11RecoveryRequest(allocator: std.mem.Allocator, fb_width: c_int, fb_height: c_int) void {
     if (comptime gpu.active == .d3d11) {
         const request = gpu.Context.takeRecoveryRequest() orelse return;
         const status = request.status;
@@ -1648,6 +1670,14 @@ fn handleD3D11RecoveryRequest() void {
 
         if (status.requires_device_recreate) {
             prepareD3D11DeviceRecreateResources();
+            const recreate = gpu.Context.recreateDevice(fb_width, fb_height);
+            render_diagnostics.log(
+                "gpu-backend=d3d11 recovery recreate attempt attempted={} succeeded={} error={s} swapchain={}x{} automatic_fallback=false default_unchanged=true",
+                .{ recreate.attempted, recreate.succeeded, recreate.error_name, recreate.width, recreate.height },
+            );
+            if (recreate.succeeded) {
+                restoreD3D11DeviceRecreateResources(allocator);
+            }
         }
         applyUiEffect(UiEffect.repaint);
         markAllRenderersDirty();
@@ -7203,12 +7233,13 @@ fn runMainLoop(self: *AppWindow) !void {
 
         d3d11_offscreen_smoke.render(fb_width, fb_height);
         d3d11_ui_smoke.render(fb_width, fb_height);
+        d3d11_recreate_smoke.maybeRequest();
         logSwapDiagnosticsIfChanged(win, fb_width, fb_height);
         forceOpaqueBackbufferForPresent();
         gpu.state.endFrame();
         agent_requests.capturePendingUiScreenshots(agentRequestHost());
         presentBackendFrame(win);
-        handleD3D11RecoveryRequest();
+        handleD3D11RecoveryRequest(allocator, fb_width, fb_height);
         if (windowState().takePresentBringupSettlement()) {
             platform_window_state.settleD3dBringup(allocator);
         }

@@ -59,8 +59,15 @@ device-recreate preparation path: when the backend latches a recreate-class
 failure, the host releases D3D11-owned pipelines, auxiliary render targets,
 background/post-process resources, font atlas GPU textures, and backend
 backbuffer/RTV/phase2 shader resources, then logs that preparation. Actual
-device/swapchain recreation and automatic fallback are still intentionally
-separate Phase V work.
+device/swapchain recreation has now started as a controlled single-shot attempt:
+after recreate-class failure preparation, the backend can rebuild its D3D11
+device, immediate context, swapchain, backbuffer, and minimal shader resources
+for the same HWND/current framebuffer size, then the host restores the
+backend-neutral feature pipelines and reloadable auxiliary resources. Automatic
+fallback, environment validation, and Phase VI default migration are still
+intentionally separate work. The normal-session smoke has an opt-in
+`-RecreateSmoke` mode that latches one recreate-class request and verifies the
+successful recreate/restore diagnostics without changing the healthy path.
 
 The Phase IV normal-session evidence gate is the checked-in Windows GUI smoke:
 

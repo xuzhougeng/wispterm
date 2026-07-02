@@ -7,6 +7,7 @@ param(
     [int]$WindowY = 90,
     [int]$WindowWidth = 1240,
     [int]$WindowHeight = 780,
+    [switch]$RecreateSmoke,
     [switch]$KeepOpen
 )
 
@@ -681,11 +682,17 @@ $oldAppData = $env:APPDATA
 $oldRenderDiagnostics = $env:WISPTERM_RENDER_DIAGNOSTICS
 $oldUiSmoke = $env:WISPTERM_D3D11_UI_SMOKE
 $oldOffscreenSmoke = $env:WISPTERM_D3D11_OFFSCREEN_SMOKE
+$oldRecreateSmoke = $env:WISPTERM_D3D11_RECREATE_SMOKE
 
 $env:APPDATA = $appDataDir
 $env:WISPTERM_RENDER_DIAGNOSTICS = "1"
 $env:WISPTERM_D3D11_UI_SMOKE = "1"
 $env:WISPTERM_D3D11_OFFSCREEN_SMOKE = "1"
+if ($RecreateSmoke) {
+    $env:WISPTERM_D3D11_RECREATE_SMOKE = "1"
+} else {
+    Remove-Item Env:WISPTERM_D3D11_RECREATE_SMOKE -ErrorAction SilentlyContinue
+}
 
 $proc = $null
 try {
@@ -802,9 +809,17 @@ try {
     )
     $hasD3D11PolicyHealthy = $diagText -match "gpu-backend=d3d11 present=dxgi .*policy_state=healthy.*fallback_candidate=false"
     $hasD3D11RecoveryRequested = $diagText -match "gpu-backend=d3d11 recovery requested"
+    $hasD3D11RecreateSmokeRequest = $diagText -match "d3d11-recreate-smoke requested device recreate"
+    $hasD3D11RecreateSucceeded = $diagText -match "gpu-backend=d3d11 recovery recreate attempt attempted=true succeeded=true"
+    $hasD3D11ResourceRestore = $diagText -match "gpu-backend=d3d11 resource recreate restored"
     $hasUiProbe = $diagText -match "d3d11-ui-smoke probe .* ok=true"
     $hasOffscreen = $diagText -match "d3d11-offscreen-smoke round-trip active"
     $hasFailures = $diagText -match "present failed|shader compile failed|backbuffer probe failed|resize sync failed"
+    $recreateExpectation = if ($RecreateSmoke) {
+        ($hasD3D11RecoveryRequested -and $hasD3D11RecreateSmokeRequest -and $hasD3D11RecreateSucceeded -and $hasD3D11ResourceRestore)
+    } else {
+        (!$hasD3D11RecoveryRequested -and !$hasD3D11RecreateSmokeRequest -and !$hasD3D11RecreateSucceeded)
+    }
 
     $pass = [bool](
         $initialMetrics.Pass -and
@@ -822,7 +837,7 @@ try {
         $hasD3D11Present -and
         $hasD3D11InitDetails -and
         $hasD3D11PolicyHealthy -and
-        !$hasD3D11RecoveryRequested -and
+        $recreateExpectation -and
         $hasUiProbe -and
         $hasOffscreen -and
         !$hasFailures
@@ -973,6 +988,9 @@ try {
             d3d11_init_details = [bool]$hasD3D11InitDetails
             d3d11_policy_healthy = [bool]$hasD3D11PolicyHealthy
             d3d11_recovery_requested = [bool]$hasD3D11RecoveryRequested
+            d3d11_recreate_smoke_requested = [bool]$hasD3D11RecreateSmokeRequest
+            d3d11_recreate_succeeded = [bool]$hasD3D11RecreateSucceeded
+            d3d11_resource_restore = [bool]$hasD3D11ResourceRestore
             ui_probe_ok = [bool]$hasUiProbe
             offscreen_round_trip = [bool]$hasOffscreen
             failure_lines = [bool]$hasFailures
@@ -1001,4 +1019,5 @@ try {
     $env:WISPTERM_RENDER_DIAGNOSTICS = $oldRenderDiagnostics
     $env:WISPTERM_D3D11_UI_SMOKE = $oldUiSmoke
     $env:WISPTERM_D3D11_OFFSCREEN_SMOKE = $oldOffscreenSmoke
+    $env:WISPTERM_D3D11_RECREATE_SMOKE = $oldRecreateSmoke
 }
