@@ -206,6 +206,14 @@ the session remains nonblank with D3D11 resize diagnostics and no present/resize
 failure lines. It is Phase V hardening evidence only; it does not change the
 Windows default backend or fallback policy.
 
+D3D11 fallback is a next-launch policy while the renderer backend remains a
+comptime selection. Do not implement same-process D3D11-to-OpenGL switching
+without first changing the backend architecture. The `d3d11-fallback` state-file
+marker is separate from the older OpenGL+DXGI present `d3d-bringup` fuse,
+scoped by app version and adapter identity, and currently feeds only tests and
+future-auto dry-run decisions. Explicit `d3d11` must ignore a matching marker
+except for diagnostics; current Windows `auto` still resolves to OpenGL.
+
 ## macOS UI Smoke Tests
 
 macOS UI debugging is native-target first. Unless a task explicitly asks for

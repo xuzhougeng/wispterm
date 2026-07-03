@@ -198,6 +198,7 @@ test {
     _ = @import("renderer/d3d11_recreate_smoke.zig");
     _ = @import("renderer/gpu/gl_backend_guard.zig");
     _ = @import("renderer/gpu/types.zig");
+    _ = @import("renderer/gpu/d3d11/fallback_marker.zig");
     _ = @import("renderer/gpu/d3d11/present_policy.zig");
     _ = @import("close_confirm.zig");
     _ = @import("command/palette_model.zig");

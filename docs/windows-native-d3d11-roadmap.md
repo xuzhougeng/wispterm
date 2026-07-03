@@ -70,7 +70,12 @@ intentionally separate work. The normal-session smoke has an opt-in
 successful recreate/restore diagnostics without changing the healthy path. It
 also has an opt-in `-RapidResizeSmoke` mode that drives a burst of real Win32
 resizes, restores the baseline window size, and verifies the session remains
-nonblank with D3D11 resize diagnostics and no resize/present failure lines.
+nonblank with D3D11 resize diagnostics and no resize/present failure lines. The
+native D3D11 fallback topology is now defined as next-launch/future-auto policy,
+not in-process renderer switching: explicit `d3d11` continues to honor the
+user's build/runtime choice and only reports a warning when a matching marker is
+present, while a future Windows `auto` default can use a version+adapter-scoped
+`d3d11-fallback` marker to choose OpenGL without changing the current default.
 
 The Phase IV normal-session evidence gate is the checked-in Windows GUI smoke:
 
@@ -98,6 +103,11 @@ not change the Windows default backend.
 
 Add `-RapidResizeSmoke` to the same command to include Phase V rapid-resize
 stress evidence in the normal-session run.
+
+The fallback marker policy is intentionally policy-only at this stage. It
+defines marker format, persistence, stale-version/adapter handling, explicit
+backend behavior, and the future-auto dry-run decision surface, but it does not
+write markers from live failures and does not change renderer selection.
 
 ## Ghostty Comparison
 

@@ -13,6 +13,7 @@ pub const Pipeline = @import("Pipeline.zig");
 pub const Framebuffer = @import("Framebuffer.zig");
 pub const readback = @import("readback.zig");
 pub const shaders = @import("shaders.zig");
+pub const fallback_marker = @import("fallback_marker.zig");
 pub const present_policy = @import("present_policy.zig");
 pub const render_state = @import("render_state.zig");
 pub const vertex = @import("vertex.zig");

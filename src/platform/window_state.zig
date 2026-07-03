@@ -50,7 +50,7 @@ fn loadPersisted(allocator: std.mem.Allocator) codec.PersistedState {
 fn savePersisted(allocator: std.mem.Allocator, state: codec.PersistedState) void {
     const path = stateFilePath(allocator) orelse return;
     defer allocator.free(path);
-    var buf: [384]u8 = undefined;
+    var buf: [768]u8 = undefined;
     const content = codec.format(&buf, state) catch return;
     // Create the config directory first: on a first-ever launch it does not
     // exist yet (Config.ensureConfigExists only runs later, in the window
@@ -203,6 +203,22 @@ pub fn blockD3dBringup(allocator: std.mem.Allocator, version: []const u8) void {
     recordD3dBringup(allocator, marker);
 }
 
+/// The stored native D3D11 renderer fallback marker (empty when none). Separate
+/// from the OpenGL+DXGI presenter bring-up fuse above.
+pub fn d3d11Fallback(allocator: std.mem.Allocator, buf: []u8) []const u8 {
+    const m = loadPersisted(allocator).d3d11Fallback();
+    const n = @min(m.len, buf.len);
+    @memcpy(buf[0..n], m[0..n]);
+    return buf[0..n];
+}
+
+/// Persist a native D3D11 renderer fallback marker. Later Phase V slices will
+/// decide when to write it; this helper only provides the state-file plumbing.
+pub fn recordD3d11Fallback(allocator: std.mem.Allocator, marker: []const u8) void {
+    const current = loadPersisted(allocator);
+    savePersisted(allocator, codec.withD3d11Fallback(current, marker));
+}
+
 test "savePersisted creates the config directory on a fresh profile" {
     const allocator = std.testing.allocator;
 
@@ -226,4 +242,32 @@ test "savePersisted creates the config directory on a fresh profile" {
 
     var buf: [codec.bringup_max_len]u8 = undefined;
     try std.testing.expectEqualStrings("probing:9.9.9", d3dBringup(allocator, &buf));
+}
+
+test "d3d11 fallback marker persists independently from d3d bringup" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const config_dir = try std.fs.path.join(allocator, &.{ base, "d3d11-fallback", "wispterm" });
+    defer allocator.free(config_dir);
+
+    platform_dirs.setTestConfigDirForCurrentThread(config_dir);
+    defer platform_dirs.clearTestConfigDirForCurrentThread();
+
+    recordD3dBringup(allocator, "probing:9.9.9");
+    const marker = "d3d11:v1;kind=blocked;version=9.9.9;adapter=v10ded2684l1234abcd00000000;reason=device_lost";
+    recordD3d11Fallback(allocator, marker);
+
+    var bringup_buf: [codec.bringup_max_len]u8 = undefined;
+    var fallback_buf: [codec.d3d11_fallback_max_len]u8 = undefined;
+    try std.testing.expectEqualStrings("probing:9.9.9", d3dBringup(allocator, &bringup_buf));
+    try std.testing.expectEqualStrings(marker, d3d11Fallback(allocator, &fallback_buf));
+
+    recordD3d11Fallback(allocator, "");
+    try std.testing.expectEqualStrings("", d3d11Fallback(allocator, &fallback_buf));
+    try std.testing.expectEqualStrings("probing:9.9.9", d3dBringup(allocator, &bringup_buf));
 }

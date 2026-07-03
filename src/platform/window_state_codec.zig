@@ -18,6 +18,11 @@ pub const version_max_len: usize = 24;
 /// ("probing:<version>" / "blocked:<version>", see dxgi_core's crash fuse).
 pub const bringup_max_len: usize = 32;
 
+/// Max stored length of the native D3D11 renderer fallback marker.
+/// Format is defined in renderer/gpu/d3d11/fallback_marker.zig; duplicated here
+/// to keep this platform codec independent from renderer modules.
+pub const d3d11_fallback_max_len: usize = 160;
+
 pub const PersistedState = struct {
     x: ?i32 = null,
     y: ?i32 = null,
@@ -46,6 +51,10 @@ pub const PersistedState = struct {
     // app version (see dxgi_core.bringupFuseDecision).
     d3d_bringup_buf: [bringup_max_len]u8 = undefined,
     d3d_bringup_len: usize = 0,
+    // Native D3D11 renderer next-launch fallback marker. Separate from
+    // d3d-bringup, which belongs to the older OpenGL+DXGI presenter fuse.
+    d3d11_fallback_buf: [d3d11_fallback_max_len]u8 = undefined,
+    d3d11_fallback_len: usize = 0,
 
     pub fn lastSeenVersion(self: *const PersistedState) []const u8 {
         return self.last_seen_version_buf[0..self.last_seen_version_len];
@@ -53,6 +62,10 @@ pub const PersistedState = struct {
 
     pub fn d3dBringup(self: *const PersistedState) []const u8 {
         return self.d3d_bringup_buf[0..self.d3d_bringup_len];
+    }
+
+    pub fn d3d11Fallback(self: *const PersistedState) []const u8 {
+        return self.d3d11_fallback_buf[0..self.d3d11_fallback_len];
     }
 };
 
@@ -102,6 +115,10 @@ pub fn parse(data: []const u8) PersistedState {
             const n = @min(val.len, bringup_max_len);
             @memcpy(state.d3d_bringup_buf[0..n], val[0..n]);
             state.d3d_bringup_len = n;
+        } else if (std.mem.eql(u8, key, "d3d11-fallback")) {
+            const n = @min(val.len, d3d11_fallback_max_len);
+            @memcpy(state.d3d11_fallback_buf[0..n], val[0..n]);
+            state.d3d11_fallback_len = n;
         }
     }
     return state;
@@ -127,6 +144,9 @@ pub fn format(buf: []u8, state: PersistedState) ![]const u8 {
     if (state.d3d_bringup_len > 0) {
         len += (try std.fmt.bufPrint(buf[len..], "d3d-bringup = {s}\n", .{state.d3dBringup()})).len;
     }
+    if (state.d3d11_fallback_len > 0) {
+        len += (try std.fmt.bufPrint(buf[len..], "d3d11-fallback = {s}\n", .{state.d3d11Fallback()})).len;
+    }
     return buf[0..len];
 }
 
@@ -137,6 +157,16 @@ pub fn withD3dBringup(state: PersistedState, marker: []const u8) PersistedState 
     const n = @min(marker.len, bringup_max_len);
     @memcpy(next.d3d_bringup_buf[0..n], marker[0..n]);
     next.d3d_bringup_len = n;
+    return next;
+}
+
+/// Copy of `state` with the native D3D11 renderer fallback marker replaced
+/// (truncated to d3d11_fallback_max_len; empty clears it).
+pub fn withD3d11Fallback(state: PersistedState, marker: []const u8) PersistedState {
+    var next = state;
+    const n = @min(marker.len, d3d11_fallback_max_len);
+    @memcpy(next.d3d11_fallback_buf[0..n], marker[0..n]);
+    next.d3d11_fallback_len = n;
     return next;
 }
 
@@ -310,7 +340,7 @@ test "over-length last-seen-version is truncated, never overflows" {
 }
 
 test "d3d-bringup marker round-trips, clears, and is omitted when empty" {
-    var buf: [384]u8 = undefined;
+    var buf: [640]u8 = undefined;
     // empty → omitted
     const empty_text = try format(&buf, .{});
     try std.testing.expect(std.mem.indexOf(u8, empty_text, "d3d-bringup") == null);
@@ -330,6 +360,33 @@ test "old state file without d3d-bringup leaves the marker empty" {
     try std.testing.expectEqual(@as(usize, 0), s.d3d_bringup_len);
 }
 
+test "d3d11 fallback marker round-trips, clears, and is omitted when empty" {
+    var buf: [640]u8 = undefined;
+    const empty_text = try format(&buf, .{});
+    try std.testing.expect(std.mem.indexOf(u8, empty_text, "d3d11-fallback") == null);
+
+    const marker = "d3d11:v1;kind=blocked;version=1.20.0;adapter=v10ded2684l1234abcd00000000;reason=device_lost";
+    const set = withD3d11Fallback(.{ .x = 4, .ai_setup_prompted = true }, marker);
+    const text = try format(&buf, set);
+    const reparsed = parse(text);
+    try std.testing.expectEqualStrings(marker, reparsed.d3d11Fallback());
+    try std.testing.expectEqual(@as(?i32, 4), reparsed.x);
+
+    const cleared_text = try format(&buf, withD3d11Fallback(reparsed, ""));
+    try std.testing.expect(std.mem.indexOf(u8, cleared_text, "d3d11-fallback") == null);
+}
+
+test "old state file without d3d11 fallback marker leaves it empty" {
+    const s = parse("window-x = 10\nai-setup-prompted = 1\n");
+    try std.testing.expectEqual(@as(usize, 0), s.d3d11_fallback_len);
+}
+
+test "over-length d3d11 fallback marker is truncated, never overflows" {
+    const long = "d3d11:v1;kind=blocked;version=1.20.0;adapter=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;reason=device_lost";
+    const s = withD3d11Fallback(.{}, long);
+    try std.testing.expectEqual(d3d11_fallback_max_len, s.d3d11_fallback_len);
+}
+
 test "a full state file fits the save buffer with the bring-up marker" {
     // savePersisted formats into a fixed buffer; every key at worst-case
     // width must fit or the marker write would be silently dropped.
@@ -347,7 +404,8 @@ test "a full state file fits the save buffer with the bring-up marker" {
     };
     full = withLastSeenVersion(full, "1.2.3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     full = withD3dBringup(full, "probing:1.2.3-aaaaaaaaaaaaaaaaaaaaaaaa");
-    var buf: [384]u8 = undefined;
+    full = withD3d11Fallback(full, "d3d11:v1;kind=fallback_candidate;version=1.2.3-aaaaaaaaaaaaaaaa;adapter=v10ded2684l1234abcd00000000;reason=render_target_failed");
+    var buf: [640]u8 = undefined;
     _ = try format(&buf, full);
 }
 
