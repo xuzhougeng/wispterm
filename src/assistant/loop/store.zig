@@ -186,6 +186,31 @@ pub const Store = struct {
         return .{ .id = id, .kind = .watch, .daily = p.daily, .next_fire_ms = p.next_fire_ms };
     }
 
+    pub fn registerContinuation(
+        self: *Store,
+        delay_ms: i64,
+        prompt: []const u8,
+        ctx: SessionCtx,
+        now_ms: i64,
+    ) error{OutOfMemory}!RegisterInfo {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const next_fire_ms = now_ms + delay_ms;
+        const id = try self.appendOwned(.{
+            .kind = .watch,
+            .session_id = ctx.session_id,
+            .model = ctx.model,
+            .title = ctx.title,
+            .prompt = prompt,
+            .daily = false,
+            .remaining = 1,
+            .next_fire_ms = next_fire_ms,
+            .created_ms = now_ms,
+        });
+        self.saveLocked();
+        return .{ .id = id, .kind = .watch, .daily = false, .next_fire_ms = next_fire_ms };
+    }
+
     pub fn snapshotForSession(self: *Store, allocator: std.mem.Allocator, session_id: []const u8, kind: TaskKind) ![]TaskView {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -403,6 +428,45 @@ test "register loop, snapshot, stop, persist round-trip" {
     const snap3 = try store2.snapshotForSession(a, "session-7", .loop);
     defer freeSnapshot(a, snap3);
     try std.testing.expectEqual(@as(usize, 0), snap3.len);
+}
+
+test "registerContinuation schedules a one-shot watch task after delay" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(dir_path);
+    const path = try std.fs.path.join(a, &.{ dir_path, "loop_tasks.json" });
+    defer a.free(path);
+
+    var store = Store.init(a, path);
+    defer store.deinit();
+
+    const now_ms: i64 = 10_000;
+    const delay_ms: i64 = 30 * std.time.ms_per_min;
+    const info = try store.registerContinuation(
+        delay_ms,
+        "Continue the previous task. First inspect the terminal with terminal_snapshot.",
+        .{ .session_id = "session-continue", .model = "deepseek", .title = "Build" },
+        now_ms,
+    );
+
+    try std.testing.expectEqual(TaskKind.watch, info.kind);
+    try std.testing.expect(!info.daily);
+    try std.testing.expectEqual(now_ms + delay_ms, info.next_fire_ms);
+
+    const snap = try store.snapshotForSession(a, "session-continue", .watch);
+    defer freeSnapshot(a, snap);
+    try std.testing.expectEqual(@as(usize, 1), snap.len);
+    try std.testing.expect(!snap[0].daily);
+    try std.testing.expectEqual(@as(u32, 1), snap[0].remaining);
+    try std.testing.expectEqual(now_ms + delay_ms, snap[0].next_fire_ms);
+    try std.testing.expectEqualStrings("deepseek", snap[0].model);
+    try std.testing.expectEqualStrings("Build", snap[0].title);
+    try std.testing.expectEqualStrings(
+        "Continue the previous task. First inspect the terminal with terminal_snapshot.",
+        snap[0].prompt,
+    );
 }
 
 test "snapshotAll and stopById support global copilot task management" {
