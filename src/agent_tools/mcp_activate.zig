@@ -55,7 +55,9 @@ pub fn activateByName(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
     }
 
     mcp_registry.reloadCache(allocator);
-    _ = mcp_registry.activateServer(name);
+    if (!mcp_registry.activateServer(name)) {
+        return std.fmt.allocPrint(allocator, "Could not activate MCP server \"{s}\" — activation slots are full (32) or the name is too long. Its tools can still be called directly.", .{name});
+    }
 
     // Summarize what just became available from this thread's fresh cache.
     var out: std.ArrayListUnmanaged(u8) = .empty;
@@ -76,7 +78,7 @@ pub fn activateByName(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
 /// Tool entrypoint.
 pub fn run(ctx: *ToolContext, arguments_json: []const u8) ![]u8 {
     var parsed = tool_args.parse(ctx.allocator, arguments_json) orelse
-        return ctx.allocator.dupe(u8, "Invalid tool arguments.");
+        return ctx.allocator.dupe(u8, "Invalid tool arguments");
     defer parsed.deinit();
     const name = tool_args.string(parsed.value, "server") orelse
         tool_args.string(parsed.value, "name") orelse
