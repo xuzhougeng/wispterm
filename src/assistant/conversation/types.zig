@@ -52,6 +52,12 @@ pub const McpTool = struct {
     server_args: []const []const u8 = &.{},
 };
 
+pub const ScheduleContext = struct {
+    session_id: []const u8,
+    model: []const u8,
+    title: []const u8,
+};
+
 // AgentPermission lives in agent/config.zig (extracted so config.zig
 // stays out of the ai_chat dependency graph). Re-export the single source of truth.
 pub const AgentPermission = @import("../../agent/config.zig").AgentPermission;
@@ -346,6 +352,7 @@ pub const ToolContext = struct {
     settings: AgentSettings,
     copilot: bool = false,
     reply_context: ?OwnedReplyContext = null,
+    schedule_context: ?ScheduleContext = null,
     write_context_surface_id: [64]u8 = undefined,
     write_context_surface_id_len: usize = 0,
 

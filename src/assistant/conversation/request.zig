@@ -886,6 +886,11 @@ fn toolContextFromRequest(request: *ChatRequest) ai_chat_types.ToolContext {
         .settings = settings,
         .copilot = request.copilot,
         .reply_context = request.reply_context,
+        .schedule_context = if (request.schedule_session_id.len > 0) .{
+            .session_id = request.schedule_session_id,
+            .model = request.model,
+            .title = request.schedule_title,
+        } else null,
         .write_context_surface_id = request.write_context_surface_id,
         .write_context_surface_id_len = request.write_context_surface_id_len,
         .approve = toolApprove,
@@ -1242,6 +1247,22 @@ fn testSessionAndRequest(a: std.mem.Allocator) !struct { session: *Session, requ
         .started_ms = 0,
     };
     return .{ .session = session, .request = request };
+}
+
+test "toolContextFromRequest exposes scheduling identity" {
+    const a = std.testing.allocator;
+    const env = try testSessionAndRequest(a);
+    defer env.session.deinit();
+    defer env.request.deinit();
+
+    env.request.schedule_session_id = try a.dupe(u8, "session-abc");
+    env.request.schedule_title = try a.dupe(u8, "Long Build");
+
+    const ctx = toolContextFromRequest(env.request);
+    const schedule = ctx.schedule_context orelse return error.MissingScheduleContext;
+    try std.testing.expectEqualStrings("session-abc", schedule.session_id);
+    try std.testing.expectEqualStrings("model", schedule.model);
+    try std.testing.expectEqualStrings("Long Build", schedule.title);
 }
 
 test "subagent loop rejects disallowed tools, returns the final report, accumulates usage" {

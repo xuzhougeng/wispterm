@@ -179,6 +179,8 @@ pub const ChatRequest = struct {
     mcp_tool_specs: []const ai_chat_protocol.McpToolSpec = &.{},
     mcp_tools: []const ai_chat_types.McpTool = &.{},
     disabled_first_party_tools: []const []const u8 = &.{},
+    schedule_session_id: []u8 = &.{},
+    schedule_title: []u8 = &.{},
     copilot: bool = false,
     tool_host: ?ToolHost,
     tool_snapshot: ?ToolSnapshot,
@@ -206,6 +208,8 @@ pub const ChatRequest = struct {
         freeOwnedMcpToolSpecs(self.allocator, self.mcp_tool_specs);
         freeOwnedMcpTools(self.allocator, self.mcp_tools);
         freeOwnedStringList(self.allocator, self.disabled_first_party_tools);
+        if (self.schedule_session_id.len > 0) self.allocator.free(self.schedule_session_id);
+        if (self.schedule_title.len > 0) self.allocator.free(self.schedule_title);
         if (self.tool_snapshot) |snapshot| snapshot.deinit(self.allocator);
         if (self.reply_context) |*ctx| ctx.deinit(self.allocator);
         if (self.subagent_profile) |profile| profile.deinit(self.allocator);
@@ -4164,6 +4168,12 @@ pub const Session = struct {
         const disabled_first_party_tools = try cloneStringList(self.allocator, settings.disabled_first_party_tools);
         var disabled_first_party_tools_owned = true;
         errdefer if (disabled_first_party_tools_owned) freeOwnedStringList(self.allocator, disabled_first_party_tools);
+        const schedule_session_id = try self.allocator.dupe(u8, self.sessionId());
+        var schedule_session_id_owned = true;
+        errdefer if (schedule_session_id_owned) self.allocator.free(schedule_session_id);
+        const schedule_title = try self.allocator.dupe(u8, self.title());
+        var schedule_title_owned = true;
+        errdefer if (schedule_title_owned) self.allocator.free(schedule_title);
 
         req.* = .{
             .allocator = self.allocator,
@@ -4185,6 +4195,8 @@ pub const Session = struct {
             .mcp_tool_specs = mcp_tool_specs,
             .mcp_tools = mcp_tools,
             .disabled_first_party_tools = disabled_first_party_tools,
+            .schedule_session_id = schedule_session_id,
+            .schedule_title = schedule_title,
             .copilot = self.presentation().isSidebar(),
             .tool_host = tool_host,
             .tool_snapshot = tool_snapshot,
@@ -4204,6 +4216,8 @@ pub const Session = struct {
         mcp_tool_specs_owned = false;
         mcp_tools_owned = false;
         disabled_first_party_tools_owned = false;
+        schedule_session_id_owned = false;
+        schedule_title_owned = false;
         if (self.presentation().isSidebar() and self.bound_surface_id_len > 0) {
             // Inline the write-context seed directly on ChatRequest (the field
             // layout is identical to ToolContext; terminal tool helpers operate
@@ -8285,6 +8299,23 @@ test "ai chat session request owns dynamic tool specs snapshot" {
 
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"agent_docx_review\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"agent_xlsx_review\"") == null);
+}
+
+test "buildRequestLocked captures schedule identity for agent tools" {
+    const a = std.testing.allocator;
+    const session = try Session.init(a, "Long Build", "", "", "model-x", "", "", "", "", "true");
+    defer session.deinit();
+    session.copySessionId("session-build");
+
+    session.mutex.lock();
+    const request = try session.buildRequestLocked();
+    session.mutex.unlock();
+    defer request.deinit();
+    defer mcp_registry.reloadCacheFromServersForTest(a, &.{});
+
+    try std.testing.expectEqualStrings("session-build", request.schedule_session_id);
+    try std.testing.expectEqualStrings("Long Build", request.schedule_title);
+    try std.testing.expectEqualStrings("model-x", request.model);
 }
 
 test "ai chat session request owns dynamic binary runtime snapshot" {
