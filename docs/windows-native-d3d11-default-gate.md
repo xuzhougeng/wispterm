@@ -46,7 +46,8 @@ unavailable environment is missing evidence, not a passing result.
 | Accepted partial soak | Optional operator-accepted evidence under `zig-out/d3d11-accepted-soak/`; this closes the local soak gap only when explicitly accepted and remains distinct from the automated 20-minute gate. |
 | Environment package | `debug/test-d3d11-environment-smoke.ps1` emits `environment.json`, `matrix-summary.md`, normal-session JSON, screenshots, adapter facts, Win32 session facts, record-only matrix fields, and policy fields. |
 | Environment ledger | `debug/summarize-d3d11-environment-matrix.ps1` emits `matrix-ledger.md` / `matrix-ledger.json` showing recorded, failing, mismatched, operator-review, and missing classes, plus `matrix-collection-plan.md` / `matrix-collection-plan.json` for the remaining collector commands. |
-| Artifact audit | `debug/audit-d3d11-default-gate.ps1` emits `default-gate-audit.md` / `default-gate-audit.json` from existing smoke and matrix artifacts without rerunning them. |
+| Accepted matrix gaps | Optional operator acceptance under `KNOWN_ISSUES.md` section `Accepted D3D11 Phase V Environment Matrix Gaps`; this closes unavailable environment gaps as `accepted`, not `pass`. |
+| Artifact audit | `debug/audit-d3d11-default-gate.ps1` emits `default-gate-audit.md` / `default-gate-audit.json` from existing smoke, matrix, accepted-soak, and known-issues artifacts without rerunning them. |
 | Test gates | `zig build check-sizes`, `zig build test`, `zig build test-full --summary all`, `zig build`, and PR CI pass. |
 
 ## Environment Matrix
@@ -127,14 +128,20 @@ zig build test-full --summary all
 ```
 
 The artifact audit is intentionally read-only. It reports `complete` only when
-the collected JSON artifacts satisfy the smoke and matrix evidence gates; it
+the collected JSON artifacts satisfy the smoke evidence gates and the matrix
+classes are either recorded or explicitly accepted in `KNOWN_ISSUES.md`; it
 does not run the build/test gates and does not turn unavailable matrix classes
 into passes. Use `-FailOnIncomplete` only for final closeout automation after
-the evidence directories are expected to be complete.
+the evidence directories and accepted-gap record are expected to be complete.
 When an operator explicitly accepts a shorter soak, place the summary under
 `zig-out\d3d11-accepted-soak\`; the audit reports that gate as `accepted`, not
 `pass`, so reviewers can distinguish manual acceptance from the full automated
 20-minute soak JSON.
+When an operator explicitly accepts unavailable environment classes, list each
+class as its own backticked bullet under the `KNOWN_ISSUES.md` heading
+`Accepted D3D11 Phase V Environment Matrix Gaps`; the audit reports the
+environment-ledger gate as `accepted` and keeps the original ledger status in
+the generated matrix table.
 
 ## Rollback Rule
 

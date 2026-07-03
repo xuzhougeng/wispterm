@@ -221,6 +221,11 @@ write fallback markers, or alter renderer selection.
 If a shorter soak is explicitly accepted by an operator, store its
 `accepted-partial-soak-summary.json` under `zig-out\d3d11-accepted-soak\`; the
 audit reports that evidence as `accepted` rather than an automated `pass`.
+If unavailable environment classes are explicitly accepted by an operator, list
+them under `KNOWN_ISSUES.md` heading
+`Accepted D3D11 Phase V Environment Matrix Gaps`; the audit reports those
+matrix rows and the environment-ledger gate as `accepted`, not as recorded
+evidence.
 
 ## Ghostty Comparison
 

@@ -128,4 +128,7 @@ cannot prove hybrid topology by itself.
 | Multi-monitor mixed DPI | Missing | Collect with `-MatrixClass multi-monitor-mixed-dpi -RequireMatrixClass`. |
 
 Phase VI must not start until this ledger is backed by current artifacts or the
-remaining gaps are explicitly accepted in `KNOWN_ISSUES.md`.
+remaining gaps are explicitly accepted in `KNOWN_ISSUES.md`. Accepted gaps must
+be listed as individual backticked bullets under the heading
+`Accepted D3D11 Phase V Environment Matrix Gaps`; the default-gate audit treats
+those classes as `accepted`, never as recorded/pass evidence.

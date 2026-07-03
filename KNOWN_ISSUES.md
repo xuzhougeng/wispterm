@@ -34,9 +34,28 @@ console release unless the release explicitly includes `remote/`.
   is satisfied.
 - D3D11 fallback is next-launch/future-auto policy only. The app does not switch
   from D3D11 to OpenGL inside the same running process.
-- RDP, virtual-machine, hybrid-GPU, weak-integrated-GPU, and multi-monitor
-  mixed-DPI evidence is still tracked as matrix evidence rather than a fully
-  closed release claim.
+- D3D11 Phase V environment matrix gaps are accepted known issues where the
+  current operators do not have matching machines or sessions available. These
+  accepted gaps are not passing test evidence, and should be replaced with
+  real `debug\test-d3d11-environment-smoke.ps1` artifacts when the environment
+  becomes available.
+
+### Accepted D3D11 Phase V Environment Matrix Gaps
+
+The following matrix classes are explicitly accepted as untested for the
+current Phase V closeout because matching hardware, monitor topology, VM, or
+RDP session coverage is not available:
+
+- `rdp`
+- `virtual-machine`
+- `hybrid-gpu`
+- `weak-integrated-gpu`
+- `single-monitor`
+- `multi-monitor-same-dpi`
+
+The current evidence set records `local-physical` and
+`multi-monitor-mixed-dpi`; the classes above remain accepted gaps rather than
+tested passes.
 
 ## macOS
 

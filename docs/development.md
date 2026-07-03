@@ -271,7 +271,11 @@ does not accept missing classes.
 To audit the collected Phase V artifacts against the default-migration gate
 without rerunning smokes, use `debug\audit-d3d11-default-gate.ps1`; it emits
 `default-gate-audit.md` / `default-gate-audit.json` and keeps missing evidence
-as missing rather than treating it as a pass.
+as missing rather than treating it as a pass. If unavailable environment
+classes are explicitly accepted under `KNOWN_ISSUES.md` heading
+`Accepted D3D11 Phase V Environment Matrix Gaps`, the audit marks those matrix
+rows and the environment-ledger gate as `accepted` while preserving the original
+ledger status.
 If a shorter soak is explicitly operator-accepted, keep its summary under
 `zig-out\d3d11-accepted-soak\`; the audit marks that gate as `accepted` so it is
 visible and distinct from a completed 20-minute automated soak.

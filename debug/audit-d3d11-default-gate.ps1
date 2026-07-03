@@ -4,6 +4,7 @@ param(
     [string]$EnvironmentRoot = "",
     [string]$MatrixLedger = "",
     [string]$AcceptedSoakRoot = "",
+    [string]$KnownIssuesPath = "",
     [string]$OutDir = "",
     [int]$MinSoakSeconds = 1200,
     [int]$AcceptedSoakMinSeconds = 510,
@@ -25,6 +26,9 @@ if ($EnvironmentRoot.Length -eq 0) {
 }
 if ($AcceptedSoakRoot.Length -eq 0) {
     $AcceptedSoakRoot = Join-Path $repoRoot "zig-out\d3d11-accepted-soak"
+}
+if ($KnownIssuesPath.Length -eq 0) {
+    $KnownIssuesPath = Join-Path $repoRoot "KNOWN_ISSUES.md"
 }
 if ($OutDir.Length -eq 0) {
     $OutDir = Join-Path $repoRoot ("zig-out\d3d11-default-gate-audit\{0}" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
@@ -118,6 +122,59 @@ function Read-JsonEntries([string]$Root, [string]$Filter, [string]$Kind) {
         }
     }
     return @($entries)
+}
+
+function Read-KnownIssuesAcceptedMatrixClasses([string]$Path) {
+    if (!(Test-Path -LiteralPath $Path)) {
+        return [pscustomobject][ordered]@{
+            path = $Path
+            available = $false
+            section_found = $false
+            accepted_classes = @()
+            details = "KNOWN_ISSUES.md not found"
+        }
+    }
+
+    $text = Get-Content -LiteralPath $Path -Raw
+    $lines = $text -split "`r?`n"
+    $inSection = $false
+    $sectionFound = $false
+    $accepted = @()
+    foreach ($line in $lines) {
+        if ($line -match '^###\s+Accepted D3D11 Phase V Environment Matrix Gaps\s*$') {
+            $inSection = $true
+            $sectionFound = $true
+            continue
+        }
+        if ($inSection -and $line -match '^##\s+') {
+            break
+        }
+        if (!$inSection) {
+            continue
+        }
+
+        $acceptedLine = [regex]::Match($line, '^\s*-\s+`([^`]+)`\s*$')
+        if ($acceptedLine.Success) {
+            $candidate = $acceptedLine.Groups[1].Value
+            if ($matrixClasses -contains $candidate -and !($accepted -contains $candidate)) {
+                $accepted += $candidate
+            }
+        }
+    }
+
+    $details = if ($sectionFound) {
+        "accepted matrix classes found: $($accepted -join ', ')"
+    } else {
+        "accepted matrix gap section not found"
+    }
+
+    return [pscustomobject][ordered]@{
+        path = $Path
+        available = $true
+        section_found = $sectionFound
+        accepted_classes = @($accepted)
+        details = $details
+    }
 }
 
 function Select-LatestEvidence([object[]]$Entries, [scriptblock]$Predicate) {
@@ -352,7 +409,7 @@ function Test-EnvironmentEvidence([object]$Entry) {
     )
 }
 
-function Summarize-MatrixLedger([object]$Entry) {
+function Summarize-MatrixLedger([object]$Entry, [object]$KnownIssuesAcceptance) {
     if ($null -eq $Entry) {
         return [pscustomobject][ordered]@{
             status = "missing"
@@ -366,21 +423,44 @@ function Summarize-MatrixLedger([object]$Entry) {
     foreach ($class in $matrixClasses) {
         $match = @($classes | Where-Object { (Get-JsonField $_ "class") -eq $class } | Select-Object -First 1)
         if ($match.Count -eq 0) {
-            $rows += [pscustomobject][ordered]@{ class = $class; status = "missing"; evidence_count = 0 }
-        } else {
-            $row = $match[0]
+            $acceptedByKnownIssues = $KnownIssuesAcceptance.accepted_classes -contains $class
             $rows += [pscustomobject][ordered]@{
                 class = $class
-                status = Get-JsonField $row "status"
+                status = if ($acceptedByKnownIssues) { "accepted" } else { "missing" }
+                original_status = "missing"
+                evidence_count = 0
+                selected_environment_json = $null
+                selected_generated_at = $null
+                accepted_by_known_issues = $acceptedByKnownIssues
+                accepted_evidence = if ($acceptedByKnownIssues) { $KnownIssuesAcceptance.path } else { $null }
+            }
+        } else {
+            $row = $match[0]
+            $status = Get-JsonField $row "status"
+            $acceptedByKnownIssues = ($status -ne "recorded") -and ($KnownIssuesAcceptance.accepted_classes -contains $class)
+            $rows += [pscustomobject][ordered]@{
+                class = $class
+                status = if ($acceptedByKnownIssues) { "accepted" } else { $status }
+                original_status = $status
                 evidence_count = Get-JsonField $row "evidence_count"
                 selected_environment_json = Get-JsonField $row "selected_environment_json"
                 selected_generated_at = Get-JsonField $row "selected_generated_at"
+                accepted_by_known_issues = $acceptedByKnownIssues
+                accepted_evidence = if ($acceptedByKnownIssues) { $KnownIssuesAcceptance.path } else { $null }
             }
         }
     }
 
-    $notRecorded = @($rows | Where-Object { $_.status -ne "recorded" })
-    if ($notRecorded.Count -eq 0) {
+    $notClosed = @($rows | Where-Object { $_.status -ne "recorded" -and $_.status -ne "accepted" })
+    $acceptedRows = @($rows | Where-Object { $_.status -eq "accepted" })
+    if ($notClosed.Count -eq 0) {
+        if ($acceptedRows.Count -gt 0) {
+            return [pscustomObject][ordered]@{
+                status = "accepted"
+                details = "matrix gaps accepted in KNOWN_ISSUES.md: $((@($acceptedRows | ForEach-Object { $_.class })) -join ', ')"
+                rows = @($rows)
+            }
+        }
         return [pscustomobject][ordered]@{
             status = "pass"
             details = "all matrix classes are recorded"
@@ -390,7 +470,7 @@ function Summarize-MatrixLedger([object]$Entry) {
 
     $parts = @()
     foreach ($status in @("missing", "failing", "mismatch", "operator-review", "recorded-unclassified")) {
-        $classesForStatus = @($notRecorded | Where-Object { $_.status -eq $status } | ForEach-Object { $_.class })
+        $classesForStatus = @($notClosed | Where-Object { $_.status -eq $status } | ForEach-Object { $_.class })
         if ($classesForStatus.Count -gt 0) {
             $parts += ("{0}: {1}" -f $status, ($classesForStatus -join ", "))
         }
@@ -428,7 +508,8 @@ $acceptedSoak = Select-LatestEvidence $acceptedSoakEntries { param($entry) Test-
 $openglFallback = Select-LatestEvidence $openglEntries { param($entry) Test-OpenGLEvidence $entry }
 $environmentPackage = Select-LatestEvidence $environmentEntries { param($entry) Test-EnvironmentEvidence $entry }
 $latestLedger = if ($ledgerEntries.Count -gt 0) { @($ledgerEntries | Sort-Object last_write_utc -Descending | Select-Object -First 1)[0] } else { $null }
-$matrixSummary = Summarize-MatrixLedger $latestLedger
+$knownIssuesAcceptance = Read-KnownIssuesAcceptedMatrixClasses $KnownIssuesPath
+$matrixSummary = Summarize-MatrixLedger $latestLedger $knownIssuesAcceptance
 $soakGate = if ($null -ne $soak) {
     New-GateRow "long-run-soak" "Long-run soak" "pass" $soak ("soak artifact found with duration >= {0}s" -f $MinSoakSeconds)
 } elseif ($null -ne $acceptedSoak) {
@@ -470,6 +551,7 @@ $audit = [ordered]@{
         opengl = $OpenGLRoot
         environment = $EnvironmentRoot
         accepted_soak = $AcceptedSoakRoot
+        known_issues = $KnownIssuesPath
         matrix_ledger = if ($null -eq $latestLedger) { $null } else { $latestLedger.path }
         output = $OutDir
     }
@@ -479,12 +561,14 @@ $audit = [ordered]@{
         does_not_infer_build_gates = $true
         does_not_change_default = $true
         automatic_fallback = $false
+        known_issues_acceptance = $true
     }
     counts = [ordered]@{
         normal_session_artifacts = $normalEntries.Count
         opengl_artifacts = $openglEntries.Count
         environment_packages = $environmentEntries.Count
         accepted_soak_artifacts = $acceptedSoakEntries.Count
+        known_issues_accepted_matrix_classes = @($knownIssuesAcceptance.accepted_classes).Count
         matrix_ledgers = $ledgerEntries.Count
         passing_gates = @($gates | Where-Object { $_.status -eq "pass" }).Count
         accepted_gates = @($gates | Where-Object { $_.status -eq "accepted" }).Count
@@ -495,6 +579,7 @@ $audit = [ordered]@{
         status = $matrixSummary.status
         details = $matrixSummary.details
         classes = @($matrixSummary.rows)
+        known_issues_acceptance = $knownIssuesAcceptance
     }
 }
 
@@ -518,6 +603,7 @@ $lines.Add("| Normal-session root | $(Format-AuditValue (Short-Path $NormalRoot)
 $lines.Add("| OpenGL fallback root | $(Format-AuditValue (Short-Path $OpenGLRoot)) |") | Out-Null
 $lines.Add("| Environment root | $(Format-AuditValue (Short-Path $EnvironmentRoot)) |") | Out-Null
 $lines.Add("| Accepted partial soak root | $(Format-AuditValue (Short-Path $AcceptedSoakRoot)) |") | Out-Null
+$lines.Add("| Known issues | $(Format-AuditValue (Short-Path $KnownIssuesPath)) |") | Out-Null
 $lines.Add("| Matrix ledger | $(Format-AuditValue (Short-Path $ledgerPathForMarkdown)) |") | Out-Null
 $lines.Add("| Minimum soak seconds | $MinSoakSeconds |") | Out-Null
 $lines.Add("| Accepted partial soak minimum seconds | $AcceptedSoakMinSeconds |") | Out-Null
@@ -532,10 +618,10 @@ foreach ($gate in $gates) {
 $lines.Add("") | Out-Null
 $lines.Add("## Environment Matrix") | Out-Null
 $lines.Add("") | Out-Null
-$lines.Add("| Class | Status | Evidence count | Selected evidence |") | Out-Null
-$lines.Add("|---|---|---:|---|") | Out-Null
+$lines.Add("| Class | Status | Ledger status | Evidence count | Selected evidence | Known issue |") | Out-Null
+$lines.Add("|---|---|---|---:|---|---|") | Out-Null
 foreach ($row in $matrixSummary.rows) {
-    $lines.Add("| $(Format-AuditValue $row.class) | $(Format-AuditValue $row.status) | $(Format-AuditValue $row.evidence_count) | $(Format-AuditValue (Short-Path $row.selected_environment_json)) |") | Out-Null
+    $lines.Add("| $(Format-AuditValue $row.class) | $(Format-AuditValue $row.status) | $(Format-AuditValue $row.original_status) | $(Format-AuditValue $row.evidence_count) | $(Format-AuditValue (Short-Path $row.selected_environment_json)) | $(Format-AuditValue (Short-Path $row.accepted_evidence)) |") | Out-Null
 }
 $lines.Add("") | Out-Null
 $lines.Add('A gate with status `accepted` is operator-accepted evidence. It closes the audit gap but remains distinct from an automated `pass`.') | Out-Null
