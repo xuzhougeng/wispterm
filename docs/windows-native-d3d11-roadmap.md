@@ -70,12 +70,17 @@ intentionally separate work. The normal-session smoke has an opt-in
 successful recreate/restore diagnostics without changing the healthy path. It
 also has an opt-in `-RapidResizeSmoke` mode that drives a burst of real Win32
 resizes, restores the baseline window size, and verifies the session remains
-nonblank with D3D11 resize diagnostics and no resize/present failure lines. The
-native D3D11 fallback topology is now defined as next-launch/future-auto policy,
-not in-process renderer switching: explicit `d3d11` continues to honor the
-user's build/runtime choice and only reports a warning when a matching marker is
-present, while a future Windows `auto` default can use a version+adapter-scoped
-`d3d11-fallback` marker to choose OpenGL without changing the current default.
+nonblank with D3D11 resize diagnostics and no resize/present failure lines.
+Window-state hardening has started too: `-WindowStateSmoke` drives maximize,
+restore, minimize, and restore-from-minimize through real Win32 state APIs,
+then verifies visible screenshots, baseline-size restoration, D3D11 resize
+diagnostics, and no present/resize failures. Fullscreen remains a separate
+startup/config smoke target. The native D3D11 fallback topology is now defined
+as next-launch/future-auto policy, not in-process renderer switching: explicit
+`d3d11` continues to honor the user's build/runtime choice and only reports a
+warning when a matching marker is present, while a future Windows `auto` default
+can use a version+adapter-scoped `d3d11-fallback` marker to choose OpenGL
+without changing the current default.
 The failed-recreate escalation path now has an opt-in `-RecreateFailureSmoke`
 mode: it injects one synthetic recreate failure, verifies the policy transitions
 to a `recreate_failed` fallback candidate exactly once, persists a
@@ -126,6 +131,11 @@ not change the Windows default backend.
 
 Add `-RapidResizeSmoke` to the same command to include Phase V rapid-resize
 stress evidence in the normal-session run.
+
+Add `-WindowStateSmoke` to the same command to include Phase V maximize,
+restore, minimize, and restore-from-minimize evidence. This smoke intentionally
+does not claim fullscreen coverage yet; fullscreen remains in the Phase V matrix
+until a dedicated startup/config smoke lands.
 
 The fallback marker policy is intentionally policy-only at this stage. It
 defines marker format, persistence, stale-version/adapter handling, explicit

@@ -12,6 +12,7 @@ param(
     [switch]$RecreateSmoke,
     [switch]$RecreateFailureSmoke,
     [switch]$RapidResizeSmoke,
+    [switch]$WindowStateSmoke,
     [switch]$FallbackMarkerSmoke,
     [switch]$KeepOpen
 )
@@ -39,8 +40,8 @@ if (!(Test-Path -LiteralPath $ExePath)) {
     throw "WispTerm executable not found: $ExePath. Run $buildHint first."
 }
 
-if ($Backend -eq "opengl" -and ($RecreateSmoke -or $RecreateFailureSmoke -or $FallbackMarkerSmoke)) {
-    throw "-RecreateSmoke, -RecreateFailureSmoke, and -FallbackMarkerSmoke require -Backend d3d11."
+if ($Backend -eq "opengl" -and ($RecreateSmoke -or $RecreateFailureSmoke -or $FallbackMarkerSmoke -or $WindowStateSmoke)) {
+    throw "-RecreateSmoke, -RecreateFailureSmoke, -FallbackMarkerSmoke, and -WindowStateSmoke require -Backend d3d11."
 }
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
@@ -65,6 +66,7 @@ public static class WispTermD3D11SmokeAutomation {
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
@@ -301,6 +303,86 @@ function Invoke-RapidResizeSmoke([IntPtr]$Hwnd, [int]$X, [int]$Y, [int]$BaseWidt
         NonDark = $metrics.NonDark
         Bright = $metrics.Bright
         Saturated = $metrics.Saturated
+    }
+}
+
+function Invoke-WindowStateSmoke([IntPtr]$Hwnd, [int]$X, [int]$Y, [int]$BaseWidth, [int]$BaseHeight, [hashtable]$ShotPaths) {
+    [WispTermD3D11SmokeAutomation]::SetForegroundWindow($Hwnd) | Out-Null
+    [WispTermD3D11SmokeAutomation]::ShowWindow($Hwnd, 3) | Out-Null # SW_MAXIMIZE
+    Start-Sleep -Milliseconds 1100
+    $maximizeSize = Capture-Window $Hwnd $ShotPaths.Maximize
+    $maximizeMetrics = Analyze-Image $ShotPaths.Maximize
+    $maximizeDelta = [Math]::Max(
+        [Math]::Abs($maximizeSize.Width - $BaseWidth),
+        [Math]::Abs($maximizeSize.Height - $BaseHeight)
+    )
+
+    [WispTermD3D11SmokeAutomation]::ShowWindow($Hwnd, 9) | Out-Null # SW_RESTORE
+    Start-Sleep -Milliseconds 450
+    [WispTermD3D11SmokeAutomation]::SetWindowPos($Hwnd, [IntPtr]::Zero, $X, $Y, $BaseWidth, $BaseHeight, 0x0040) | Out-Null
+    [WispTermD3D11SmokeAutomation]::SetForegroundWindow($Hwnd) | Out-Null
+    Start-Sleep -Milliseconds 950
+    $restoreSize = Capture-Window $Hwnd $ShotPaths.Restore
+    $restoreMetrics = Analyze-Image $ShotPaths.Restore
+    $restoreWidthDelta = [Math]::Abs($restoreSize.Width - $BaseWidth)
+    $restoreHeightDelta = [Math]::Abs($restoreSize.Height - $BaseHeight)
+
+    [WispTermD3D11SmokeAutomation]::ShowWindow($Hwnd, 6) | Out-Null # SW_MINIMIZE
+    Start-Sleep -Milliseconds 650
+    $minimized = [WispTermD3D11SmokeAutomation]::IsIconic($Hwnd)
+
+    [WispTermD3D11SmokeAutomation]::ShowWindow($Hwnd, 9) | Out-Null # SW_RESTORE
+    Start-Sleep -Milliseconds 450
+    [WispTermD3D11SmokeAutomation]::SetWindowPos($Hwnd, [IntPtr]::Zero, $X, $Y, $BaseWidth, $BaseHeight, 0x0040) | Out-Null
+    [WispTermD3D11SmokeAutomation]::SetForegroundWindow($Hwnd) | Out-Null
+    Start-Sleep -Milliseconds 1100
+    $minimizeRestoreSize = Capture-Window $Hwnd $ShotPaths.MinimizeRestore
+    $minimizeRestoreMetrics = Analyze-Image $ShotPaths.MinimizeRestore
+    $minimizeRestoreWidthDelta = [Math]::Abs($minimizeRestoreSize.Width - $BaseWidth)
+    $minimizeRestoreHeightDelta = [Math]::Abs($minimizeRestoreSize.Height - $BaseHeight)
+
+    $maximizePass = [bool]($maximizeMetrics.Pass -and $maximizeDelta -gt 24)
+    $restorePass = [bool]($restoreMetrics.Pass -and $restoreWidthDelta -le 12 -and $restoreHeightDelta -le 12)
+    $minimizeRestorePass = [bool]($minimized -and $minimizeRestoreMetrics.Pass -and $minimizeRestoreWidthDelta -le 12 -and $minimizeRestoreHeightDelta -le 12)
+
+    return @{
+        Enabled = $true
+        Pass = [bool]($maximizePass -and $restorePass -and $minimizeRestorePass)
+        Maximize = @{
+            Pass = $maximizePass
+            Width = $maximizeSize.Width
+            Height = $maximizeSize.Height
+            SizeDelta = $maximizeDelta
+            NonDark = $maximizeMetrics.NonDark
+            Bright = $maximizeMetrics.Bright
+            Saturated = $maximizeMetrics.Saturated
+        }
+        Restore = @{
+            Pass = $restorePass
+            Width = $restoreSize.Width
+            Height = $restoreSize.Height
+            WidthDelta = $restoreWidthDelta
+            HeightDelta = $restoreHeightDelta
+            NonDark = $restoreMetrics.NonDark
+            Bright = $restoreMetrics.Bright
+            Saturated = $restoreMetrics.Saturated
+        }
+        MinimizeRestore = @{
+            Pass = $minimizeRestorePass
+            Minimized = [bool]$minimized
+            Width = $minimizeRestoreSize.Width
+            Height = $minimizeRestoreSize.Height
+            WidthDelta = $minimizeRestoreWidthDelta
+            HeightDelta = $minimizeRestoreHeightDelta
+            NonDark = $minimizeRestoreMetrics.NonDark
+            Bright = $minimizeRestoreMetrics.Bright
+            Saturated = $minimizeRestoreMetrics.Saturated
+        }
+        Fullscreen = @{
+            Enabled = $false
+            Pass = $true
+            Reason = "not covered by this Win32 state smoke; fullscreen remains a separate startup/config smoke"
+        }
     }
 }
 
@@ -708,6 +790,9 @@ $startupShortcutsShot = Join-Path $OutDir "$artifactPrefix-startup-shortcuts-$ti
 $settingsShot = Join-Path $OutDir "$artifactPrefix-settings-page-$timestamp.png"
 $skillCenterShot = Join-Path $OutDir "$artifactPrefix-skill-center-$timestamp.png"
 $rapidResizeShot = Join-Path $OutDir "$artifactPrefix-rapid-resize-$timestamp.png"
+$windowStateMaximizeShot = Join-Path $OutDir "$artifactPrefix-window-state-maximize-$timestamp.png"
+$windowStateRestoreShot = Join-Path $OutDir "$artifactPrefix-window-state-restore-$timestamp.png"
+$windowStateMinimizeRestoreShot = Join-Path $OutDir "$artifactPrefix-window-state-minimize-restore-$timestamp.png"
 $metricsPath = Join-Path $OutDir "$artifactPrefix-normal-session-$timestamp.json"
 $appDataDir = Join-Path $OutDir "appdata"
 $diagnosticPath = Join-Path $appDataDir "wispterm\render-diagnostic.log"
@@ -874,8 +959,55 @@ try {
         Bright = 0
         Saturated = 0
     }
+    $windowStateMetrics = @{
+        Enabled = [bool]$WindowStateSmoke
+        Pass = $true
+        Maximize = @{
+            Pass = $true
+            Width = 0
+            Height = 0
+            SizeDelta = 0
+            NonDark = 0
+            Bright = 0
+            Saturated = 0
+        }
+        Restore = @{
+            Pass = $true
+            Width = $initialSize.Width
+            Height = $initialSize.Height
+            WidthDelta = 0
+            HeightDelta = 0
+            NonDark = 0
+            Bright = 0
+            Saturated = 0
+        }
+        MinimizeRestore = @{
+            Pass = $true
+            Minimized = $false
+            Width = $initialSize.Width
+            Height = $initialSize.Height
+            WidthDelta = 0
+            HeightDelta = 0
+            NonDark = 0
+            Bright = 0
+            Saturated = 0
+        }
+        Fullscreen = @{
+            Enabled = $false
+            Pass = $true
+            Reason = "disabled"
+        }
+    }
     if ($RapidResizeSmoke) {
         $rapidResizeMetrics = Invoke-RapidResizeSmoke $wisptermWindow $WindowX $WindowY $initialSize.Width $initialSize.Height $rapidResizeShot
+        Start-Sleep -Milliseconds 500
+    }
+    if ($WindowStateSmoke) {
+        $windowStateMetrics = Invoke-WindowStateSmoke $wisptermWindow $WindowX $WindowY $initialSize.Width $initialSize.Height @{
+            Maximize = $windowStateMaximizeShot
+            Restore = $windowStateRestoreShot
+            MinimizeRestore = $windowStateMinimizeRestoreShot
+        }
         Start-Sleep -Milliseconds 500
     }
 
@@ -973,6 +1105,7 @@ try {
     $hasOffscreen = $diagText -match "d3d11-offscreen-smoke round-trip active"
     $d3d11ResizeEventCount = [regex]::Matches($diagText, "gpu-backend=d3d11 resized swapchain to").Count
     $rapidResizeDiagnostic = if ($isD3D11Backend -and $RapidResizeSmoke) { $d3d11ResizeEventCount -gt 0 } else { $true }
+    $windowStateDiagnostic = if ($isD3D11Backend -and $WindowStateSmoke) { $d3d11ResizeEventCount -ge 2 } else { $true }
     $hasFailures = $diagText -match "present failed|shader compile failed|backbuffer probe failed|resize sync failed"
     $recreateExpectation = if ($isD3D11Backend -and $RecreateSmoke) {
         ($hasD3D11RecoveryRequested -and $hasD3D11RecreateSmokeRequest -and $hasD3D11RecreateSucceeded -and $hasD3D11ResourceRestore)
@@ -1011,10 +1144,12 @@ try {
         $settingsPageMetrics.Pass -and
         $skillCenterMetrics.Pass -and
         $rapidResizeMetrics.Pass -and
+        $windowStateMetrics.Pass -and
         $backendExpectation -and
         $recreateExpectation -and
         $fallbackMarkerExpectation -and
         $rapidResizeDiagnostic -and
+        $windowStateDiagnostic -and
         $probeExpectation -and
         !$hasFailures
     )
@@ -1047,6 +1182,9 @@ try {
             settings_page = $settingsShot
             skill_center = $skillCenterShot
             rapid_resize = if ($RapidResizeSmoke) { $rapidResizeShot } else { "" }
+            window_state_maximize = if ($WindowStateSmoke) { $windowStateMaximizeShot } else { "" }
+            window_state_restore = if ($WindowStateSmoke) { $windowStateRestoreShot } else { "" }
+            window_state_minimize_restore = if ($WindowStateSmoke) { $windowStateMinimizeRestoreShot } else { "" }
         }
         initial = [ordered]@{
             samples = $initialMetrics.Samples
@@ -1172,6 +1310,45 @@ try {
             saturated = $rapidResizeMetrics.Saturated
             pass = [bool]$rapidResizeMetrics.Pass
         }
+        window_state = [ordered]@{
+            enabled = [bool]$windowStateMetrics.Enabled
+            maximize = [ordered]@{
+                width = $windowStateMetrics.Maximize.Width
+                height = $windowStateMetrics.Maximize.Height
+                size_delta = $windowStateMetrics.Maximize.SizeDelta
+                non_dark = $windowStateMetrics.Maximize.NonDark
+                bright = $windowStateMetrics.Maximize.Bright
+                saturated = $windowStateMetrics.Maximize.Saturated
+                pass = [bool]$windowStateMetrics.Maximize.Pass
+            }
+            restore = [ordered]@{
+                width = $windowStateMetrics.Restore.Width
+                height = $windowStateMetrics.Restore.Height
+                width_delta = $windowStateMetrics.Restore.WidthDelta
+                height_delta = $windowStateMetrics.Restore.HeightDelta
+                non_dark = $windowStateMetrics.Restore.NonDark
+                bright = $windowStateMetrics.Restore.Bright
+                saturated = $windowStateMetrics.Restore.Saturated
+                pass = [bool]$windowStateMetrics.Restore.Pass
+            }
+            minimize_restore = [ordered]@{
+                minimized = [bool]$windowStateMetrics.MinimizeRestore.Minimized
+                width = $windowStateMetrics.MinimizeRestore.Width
+                height = $windowStateMetrics.MinimizeRestore.Height
+                width_delta = $windowStateMetrics.MinimizeRestore.WidthDelta
+                height_delta = $windowStateMetrics.MinimizeRestore.HeightDelta
+                non_dark = $windowStateMetrics.MinimizeRestore.NonDark
+                bright = $windowStateMetrics.MinimizeRestore.Bright
+                saturated = $windowStateMetrics.MinimizeRestore.Saturated
+                pass = [bool]$windowStateMetrics.MinimizeRestore.Pass
+            }
+            fullscreen = [ordered]@{
+                enabled = [bool]$windowStateMetrics.Fullscreen.Enabled
+                reason = $windowStateMetrics.Fullscreen.Reason
+                pass = [bool]$windowStateMetrics.Fullscreen.Pass
+            }
+            pass = [bool]$windowStateMetrics.Pass
+        }
         diagnostics = [ordered]@{
             opengl_backend = [bool]$hasOpenGLBackend
             opengl_host_present = [bool]$hasOpenGLHostPresent
@@ -1182,6 +1359,7 @@ try {
             d3d11_policy_healthy = [bool]$hasD3D11PolicyHealthy
             d3d11_resize_events = $d3d11ResizeEventCount
             d3d11_rapid_resize_diagnostics = [bool]$rapidResizeDiagnostic
+            d3d11_window_state_diagnostics = [bool]$windowStateDiagnostic
             d3d11_recovery_requested = [bool]$hasD3D11RecoveryRequested
             d3d11_recreate_smoke_requested = [bool]$hasD3D11RecreateSmokeRequest
             d3d11_recreate_succeeded = [bool]$hasD3D11RecreateSucceeded

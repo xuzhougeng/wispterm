@@ -279,6 +279,20 @@ the session remains nonblank with D3D11 resize diagnostics and no present/resize
 failure lines. It is Phase V hardening evidence only; it does not change the
 Windows default backend or fallback policy.
 
+To exercise Win32 window-state transitions on D3D11, run:
+
+```powershell
+zig build -Dgpu-backend=d3d11
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -WindowStateSmoke
+```
+
+This drives maximize, restore, minimize, and restore-from-minimize through real
+Win32 window state APIs, captures screenshots after the visible states, verifies
+the session returns to the baseline window size, and checks that D3D11 resize
+diagnostics were emitted without present/resize failure lines. It is a Phase V
+window-state sub-slice only; fullscreen remains a separate startup/config smoke
+target.
+
 D3D11 fallback is a next-launch policy while the renderer backend remains a
 comptime selection. Do not implement same-process D3D11-to-OpenGL switching
 without first changing the backend architecture. The `d3d11-fallback` state-file
