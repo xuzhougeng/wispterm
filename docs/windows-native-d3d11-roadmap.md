@@ -108,6 +108,14 @@ normal-session smoke and emits a timestamped evidence package with
 facts, Win32 session facts, monitor topology, and explicit policy fields stating
 that no environment classification, blocking, default change, or automatic
 fallback was applied.
+Long-run coverage is now an opt-in normal-session extension too:
+`-SoakMinutes <minutes>` keeps the D3D11 window active after the first terminal
+capture, sends a shell output burst when the shell is recognized, alternates
+tab switches with small Win32 resize/restore cycles for the requested duration,
+captures periodic screenshots plus a final restored-size screenshot, and
+requires nonblank captures, process liveness, D3D11 resize diagnostics, and no
+present/resize failure lines. This is Phase V reliability evidence only; it
+does not change Windows `auto`, fallback policy, or renderer selection.
 
 The Phase IV normal-session evidence gate is the checked-in Windows GUI smoke:
 
@@ -143,6 +151,11 @@ Add `-FullscreenStartupSmoke` by itself to verify the Phase V fullscreen startup
 path and exit-to-windowed restore evidence. This mode is intentionally separate
 from the normal-session UI parity flow because it launches from a different
 config state.
+
+Add `-SoakMinutes 20` to the normal-session smoke to record Phase V long-run
+evidence. Shorter values are useful for script validation, but release/default
+migration evidence should use a meaningful duration such as 20 minutes and keep
+the emitted screenshots and JSON with the environment matrix artifact.
 
 The fallback marker policy is intentionally policy-only at this stage. It
 defines marker format, persistence, stale-version/adapter handling, explicit

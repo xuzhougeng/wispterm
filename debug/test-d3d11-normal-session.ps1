@@ -9,6 +9,7 @@ param(
     [int]$WindowY = 90,
     [int]$WindowWidth = 1240,
     [int]$WindowHeight = 780,
+    [double]$SoakMinutes = 0.0,
     [switch]$RecreateSmoke,
     [switch]$RecreateFailureSmoke,
     [switch]$RapidResizeSmoke,
@@ -41,8 +42,12 @@ if (!(Test-Path -LiteralPath $ExePath)) {
     throw "WispTerm executable not found: $ExePath. Run $buildHint first."
 }
 
-if ($Backend -eq "opengl" -and ($RecreateSmoke -or $RecreateFailureSmoke -or $FallbackMarkerSmoke -or $WindowStateSmoke -or $FullscreenStartupSmoke)) {
-    throw "-RecreateSmoke, -RecreateFailureSmoke, -FallbackMarkerSmoke, -WindowStateSmoke, and -FullscreenStartupSmoke require -Backend d3d11."
+if ($SoakMinutes -lt 0.0) {
+    throw "-SoakMinutes must be zero or greater."
+}
+
+if ($Backend -eq "opengl" -and ($RecreateSmoke -or $RecreateFailureSmoke -or $FallbackMarkerSmoke -or $WindowStateSmoke -or $FullscreenStartupSmoke -or $SoakMinutes -gt 0.0)) {
+    throw "-RecreateSmoke, -RecreateFailureSmoke, -FallbackMarkerSmoke, -WindowStateSmoke, -FullscreenStartupSmoke, and -SoakMinutes require -Backend d3d11."
 }
 if ($FullscreenStartupSmoke -and ($RecreateSmoke -or $RecreateFailureSmoke -or $RapidResizeSmoke -or $WindowStateSmoke -or $FallbackMarkerSmoke)) {
     throw "-FullscreenStartupSmoke must run by itself."
@@ -387,6 +392,147 @@ function Invoke-WindowStateSmoke([IntPtr]$Hwnd, [int]$X, [int]$Y, [int]$BaseWidt
             Pass = $true
             Reason = "not covered by this Win32 state smoke; fullscreen remains a separate startup/config smoke"
         }
+    }
+}
+
+function Get-SoakOutputCommand([string]$ShellValue, [int]$LineCount) {
+    $shellName = [System.IO.Path]::GetFileNameWithoutExtension($ShellValue).ToLowerInvariant()
+    if ($shellName -eq "cmd") {
+        return "for /L %i in (1,1,$LineCount) do @echo WISPTERM_D3D11_SOAK_%i"
+    }
+    if ($shellName -eq "powershell" -or $shellName -eq "pwsh") {
+        return "1..$LineCount | ForEach-Object { `"WISPTERM_D3D11_SOAK_`$_`" }"
+    }
+    return ""
+}
+
+function Invoke-D3D11SoakSmoke(
+    [System.Diagnostics.Process]$Process,
+    [IntPtr]$Hwnd,
+    [int]$X,
+    [int]$Y,
+    [int]$BaseWidth,
+    [int]$BaseHeight,
+    [double]$Minutes,
+    [string]$ShellValue,
+    [string]$ShotDir,
+    [string]$FinalShotPath
+) {
+    if ($Minutes -le 0.0) {
+        return @{
+            Enabled = $false
+            Pass = $true
+            DurationSeconds = 0
+            Iterations = 0
+            Captures = 0
+            BlankCaptures = 0
+            ResizeCycles = 0
+            OutputCommandSent = $false
+            FinalWidth = $BaseWidth
+            FinalHeight = $BaseHeight
+            FinalWidthDelta = 0
+            FinalHeightDelta = 0
+            NonDark = 0
+            Bright = 0
+            Saturated = 0
+            SampleShots = @()
+        }
+    }
+
+    New-Item -ItemType Directory -Force -Path $ShotDir | Out-Null
+    $durationSeconds = [Math]::Max(1, [int][Math]::Ceiling($Minutes * 60.0))
+    $sampleEveryIterations = [Math]::Max(2, [int][Math]::Ceiling($durationSeconds / 6.0))
+    $lineCount = [Math]::Max(80, [Math]::Min(1200, $durationSeconds * 12))
+    $outputCommand = Get-SoakOutputCommand $ShellValue $lineCount
+    $sampleShots = [System.Collections.Generic.List[string]]::new()
+    $captures = 0
+    $blankCaptures = 0
+    $resizeCycles = 0
+    $iterations = 0
+    $processExited = $false
+
+    [WispTermD3D11SmokeAutomation]::SetForegroundWindow($Hwnd) | Out-Null
+    Click-WindowCenter $Hwnd
+    Start-Sleep -Milliseconds 250
+    Send-AltDigit 0x31
+    Start-Sleep -Milliseconds 300
+    if ($outputCommand.Length -gt 0) {
+        Send-WindowText $Hwnd $outputCommand
+        Send-Enter
+        Start-Sleep -Milliseconds 700
+    }
+
+    $deadline = (Get-Date).AddSeconds($durationSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $Process.Refresh()
+        if ($Process.HasExited) {
+            $processExited = $true
+            break
+        }
+
+        if (($iterations % 4) -eq 0) {
+            [WispTermD3D11SmokeAutomation]::SetWindowPos($Hwnd, [IntPtr]::Zero, $X, $Y, $BaseWidth + 36, $BaseHeight + 24, 0x0040) | Out-Null
+            $resizeCycles++
+        } elseif (($iterations % 4) -eq 1) {
+            [WispTermD3D11SmokeAutomation]::SetWindowPos($Hwnd, [IntPtr]::Zero, $X, $Y, $BaseWidth, $BaseHeight, 0x0040) | Out-Null
+            $resizeCycles++
+        } elseif (($iterations % 4) -eq 2) {
+            Send-AltDigit 0x32
+        } else {
+            Send-AltDigit 0x31
+        }
+
+        Start-Sleep -Milliseconds 900
+        if (($iterations % $sampleEveryIterations) -eq 0) {
+            $samplePath = Join-Path $ShotDir ("soak-sample-{0:D3}.png" -f $captures)
+            Capture-Window $Hwnd $samplePath | Out-Null
+            $sampleMetrics = Analyze-Image $samplePath
+            if (!$sampleMetrics.Pass) {
+                $blankCaptures++
+            }
+            [void]$sampleShots.Add($samplePath)
+            $captures++
+        }
+        $iterations++
+    }
+
+    [WispTermD3D11SmokeAutomation]::SetWindowPos($Hwnd, [IntPtr]::Zero, $X, $Y, $BaseWidth, $BaseHeight, 0x0040) | Out-Null
+    [WispTermD3D11SmokeAutomation]::SetForegroundWindow($Hwnd) | Out-Null
+    Start-Sleep -Milliseconds 950
+    $finalSize = Capture-Window $Hwnd $FinalShotPath
+    $finalMetrics = Analyze-Image $FinalShotPath
+    $finalWidthDelta = [Math]::Abs($finalSize.Width - $BaseWidth)
+    $finalHeightDelta = [Math]::Abs($finalSize.Height - $BaseHeight)
+    if (!$finalMetrics.Pass) {
+        $blankCaptures++
+    }
+
+    return @{
+        Enabled = $true
+        Pass = [bool](
+            !$processExited -and
+            $iterations -gt 0 -and
+            $captures -gt 0 -and
+            $blankCaptures -eq 0 -and
+            $resizeCycles -gt 0 -and
+            $finalMetrics.Pass -and
+            $finalWidthDelta -le 12 -and
+            $finalHeightDelta -le 12
+        )
+        DurationSeconds = $durationSeconds
+        Iterations = $iterations
+        Captures = $captures
+        BlankCaptures = $blankCaptures
+        ResizeCycles = $resizeCycles
+        OutputCommandSent = [bool]($outputCommand.Length -gt 0)
+        FinalWidth = $finalSize.Width
+        FinalHeight = $finalSize.Height
+        FinalWidthDelta = $finalWidthDelta
+        FinalHeightDelta = $finalHeightDelta
+        NonDark = $finalMetrics.NonDark
+        Bright = $finalMetrics.Bright
+        Saturated = $finalMetrics.Saturated
+        SampleShots = @($sampleShots.ToArray())
     }
 }
 
@@ -803,6 +949,8 @@ $windowStateRestoreShot = Join-Path $OutDir "$artifactPrefix-window-state-restor
 $windowStateMinimizeRestoreShot = Join-Path $OutDir "$artifactPrefix-window-state-minimize-restore-$timestamp.png"
 $fullscreenStartupShot = Join-Path $OutDir "$artifactPrefix-fullscreen-startup-$timestamp.png"
 $fullscreenStartupRestoreShot = Join-Path $OutDir "$artifactPrefix-fullscreen-startup-restore-$timestamp.png"
+$soakShotDir = Join-Path $OutDir "$artifactPrefix-soak-samples-$timestamp"
+$soakFinalShot = Join-Path $OutDir "$artifactPrefix-soak-final-$timestamp.png"
 $metricsPath = Join-Path $OutDir "$artifactPrefix-normal-session-$timestamp.json"
 $appDataDir = Join-Path $OutDir "appdata"
 $diagnosticPath = Join-Path $appDataDir "wispterm\render-diagnostic.log"
@@ -1137,6 +1285,28 @@ try {
         }
         Start-Sleep -Milliseconds 500
     }
+    $soakMetrics = @{
+        Enabled = [bool]($SoakMinutes -gt 0.0)
+        Pass = $true
+        DurationSeconds = 0
+        Iterations = 0
+        Captures = 0
+        BlankCaptures = 0
+        ResizeCycles = 0
+        OutputCommandSent = $false
+        FinalWidth = $initialSize.Width
+        FinalHeight = $initialSize.Height
+        FinalWidthDelta = 0
+        FinalHeightDelta = 0
+        NonDark = 0
+        Bright = 0
+        Saturated = 0
+        SampleShots = @()
+    }
+    if ($SoakMinutes -gt 0.0) {
+        $soakMetrics = Invoke-D3D11SoakSmoke $proc $wisptermWindow $WindowX $WindowY $initialSize.Width $initialSize.Height $SoakMinutes $Shell $soakShotDir $soakFinalShot
+        Start-Sleep -Milliseconds 500
+    }
 
     Send-AltDigit 0x32
     Start-Sleep -Milliseconds 700
@@ -1233,6 +1403,7 @@ try {
     $d3d11ResizeEventCount = [regex]::Matches($diagText, "gpu-backend=d3d11 resized swapchain to").Count
     $rapidResizeDiagnostic = if ($isD3D11Backend -and $RapidResizeSmoke) { $d3d11ResizeEventCount -gt 0 } else { $true }
     $windowStateDiagnostic = if ($isD3D11Backend -and $WindowStateSmoke) { $d3d11ResizeEventCount -ge 2 } else { $true }
+    $soakDiagnostic = if ($isD3D11Backend -and $SoakMinutes -gt 0.0) { $d3d11ResizeEventCount -gt 0 } else { $true }
     $hasFailures = $diagText -match "present failed|shader compile failed|backbuffer probe failed|resize sync failed"
     $recreateExpectation = if ($isD3D11Backend -and $RecreateSmoke) {
         ($hasD3D11RecoveryRequested -and $hasD3D11RecreateSmokeRequest -and $hasD3D11RecreateSucceeded -and $hasD3D11ResourceRestore)
@@ -1272,11 +1443,13 @@ try {
         $skillCenterMetrics.Pass -and
         $rapidResizeMetrics.Pass -and
         $windowStateMetrics.Pass -and
+        $soakMetrics.Pass -and
         $backendExpectation -and
         $recreateExpectation -and
         $fallbackMarkerExpectation -and
         $rapidResizeDiagnostic -and
         $windowStateDiagnostic -and
+        $soakDiagnostic -and
         $probeExpectation -and
         !$hasFailures
     )
@@ -1312,6 +1485,8 @@ try {
             window_state_maximize = if ($WindowStateSmoke) { $windowStateMaximizeShot } else { "" }
             window_state_restore = if ($WindowStateSmoke) { $windowStateRestoreShot } else { "" }
             window_state_minimize_restore = if ($WindowStateSmoke) { $windowStateMinimizeRestoreShot } else { "" }
+            soak_final = if ($SoakMinutes -gt 0.0) { $soakFinalShot } else { "" }
+            soak_samples = if ($SoakMinutes -gt 0.0) { @($soakMetrics.SampleShots) } else { @() }
         }
         initial = [ordered]@{
             samples = $initialMetrics.Samples
@@ -1476,6 +1651,24 @@ try {
             }
             pass = [bool]$windowStateMetrics.Pass
         }
+        soak = [ordered]@{
+            enabled = [bool]$soakMetrics.Enabled
+            requested_minutes = [Math]::Round($SoakMinutes, 4)
+            duration_seconds = $soakMetrics.DurationSeconds
+            iterations = $soakMetrics.Iterations
+            captures = $soakMetrics.Captures
+            blank_captures = $soakMetrics.BlankCaptures
+            resize_cycles = $soakMetrics.ResizeCycles
+            output_command_sent = [bool]$soakMetrics.OutputCommandSent
+            final_width = $soakMetrics.FinalWidth
+            final_height = $soakMetrics.FinalHeight
+            final_width_delta = $soakMetrics.FinalWidthDelta
+            final_height_delta = $soakMetrics.FinalHeightDelta
+            final_non_dark = $soakMetrics.NonDark
+            final_bright = $soakMetrics.Bright
+            final_saturated = $soakMetrics.Saturated
+            pass = [bool]$soakMetrics.Pass
+        }
         diagnostics = [ordered]@{
             opengl_backend = [bool]$hasOpenGLBackend
             opengl_host_present = [bool]$hasOpenGLHostPresent
@@ -1487,6 +1680,7 @@ try {
             d3d11_resize_events = $d3d11ResizeEventCount
             d3d11_rapid_resize_diagnostics = [bool]$rapidResizeDiagnostic
             d3d11_window_state_diagnostics = [bool]$windowStateDiagnostic
+            d3d11_soak_diagnostics = [bool]$soakDiagnostic
             d3d11_recovery_requested = [bool]$hasD3D11RecoveryRequested
             d3d11_recreate_smoke_requested = [bool]$hasD3D11RecreateSmokeRequest
             d3d11_recreate_succeeded = [bool]$hasD3D11RecreateSucceeded

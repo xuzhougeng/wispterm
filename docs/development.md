@@ -305,6 +305,21 @@ Alt+Enter to exit fullscreen, restores the baseline window rectangle, and
 verifies both visible states are nonblank with D3D11 fullscreen/resize
 diagnostics and no present/resize failure lines.
 
+To add a D3D11 long-run soak loop to the normal-session smoke, run:
+
+```powershell
+zig build -Dgpu-backend=d3d11
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -SoakMinutes 20
+```
+
+The soak mode keeps the real window active after the initial terminal capture,
+sends a shell output burst when the shell is recognized, loops tab switches and
+small Win32 resize/restore cycles for the requested duration, captures periodic
+screenshots plus a final restored-size screenshot, and verifies the process
+survives with nonblank frames, D3D11 resize diagnostics, and no present/resize
+failure lines. It is Phase V reliability evidence only; it does not change the
+Windows default backend or fallback policy.
+
 D3D11 fallback is a next-launch policy while the renderer backend remains a
 comptime selection. Do not implement same-process D3D11-to-OpenGL switching
 without first changing the backend architecture. The `d3d11-fallback` state-file
