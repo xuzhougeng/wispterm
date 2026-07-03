@@ -242,6 +242,21 @@ verifies current Windows `auto` remains OpenGL, and verifies a future-auto
 dry-run would select OpenGL from the marker. It does not enable live failure
 writes or automatic fallback.
 
+To prove the Windows OpenGL fallback path still runs the same normal-session UI
+subset on the native-render branch, build the default backend and run:
+
+```powershell
+zig build
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -Backend opengl
+```
+
+This reuses the normal-session screenshot workflow for tab chrome, sidebar,
+file explorer, Markdown/image previews, assistant panel, command palette,
+startup shortcuts, Settings, Skill Center, and background image rendering, but
+expects `gpu-backend=opengl` diagnostics instead of D3D11 probes. It also
+verifies that no D3D11 recovery, fallback-marker, UI-probe, or offscreen-smoke
+markers fire in the OpenGL fallback session.
+
 ## macOS UI Smoke Tests
 
 macOS UI debugging is native-target first. Unless a task explicitly asks for

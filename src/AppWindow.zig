@@ -6429,7 +6429,13 @@ fn runMainLoop(self: *AppWindow) !void {
     // --- Initialize the active GPU backend through the host surface seam ---
     switch (gpu.active) {
         .metal => try gpu.Context.initWithLayer(window_backend.metalLayer(&backend_window)),
-        .opengl => try gpu.Context.init(@ptrCast(&window_backend.glGetProcAddress)),
+        .opengl => {
+            try gpu.Context.init(@ptrCast(&window_backend.glGetProcAddress));
+            render_diagnostics.log(
+                "gpu-backend=opengl present=window_backend fallback_path=available d3d11_active=false default_unchanged=true",
+                .{},
+            );
+        },
         .d3d11 => {
             const fb = window_backend.framebufferSize(&backend_window);
             try gpu.Context.initForWindow(window_backend.nativeHandle(&backend_window), fb.width, fb.height);

@@ -81,6 +81,12 @@ mode: it injects one synthetic recreate failure, verifies the policy transitions
 to a `recreate_failed` fallback candidate exactly once, persists a
 version+adapter-scoped `d3d11-fallback` marker in the isolated smoke profile,
 and still reports `automatic_fallback=false` / `default_unchanged=true`.
+The Windows OpenGL fallback path now has explicit normal-session evidence too:
+`-Backend opengl` reuses the same screenshot workflow for tabs, sidebar, file
+explorer, previews, assistant panel, command palette, startup shortcuts,
+Settings, Skill Center, and background image rendering while verifying
+`gpu-backend=opengl` diagnostics and the absence of D3D11 recovery/probe/marker
+activity.
 
 The Phase IV normal-session evidence gate is the checked-in Windows GUI smoke:
 
@@ -123,6 +129,11 @@ Add `-RecreateFailureSmoke` to the same smoke to exercise the failed-recreate
 escalation path. This mode is intentionally a diagnostics/state-file proof: it
 does not attempt same-process OpenGL fallback, does not change Windows `auto`,
 and treats the persisted marker as next-launch/future-auto evidence only.
+
+Add `-Backend opengl` after a default `zig build` to run the OpenGL fallback
+normal-session smoke. This is the Phase V proof that the compatibility renderer
+still supports the same core user-visible workflow on the native-render
+integration branch.
 
 ## Ghostty Comparison
 

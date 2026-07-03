@@ -3,6 +3,8 @@ param(
     [string]$ExePath = "",
     [string]$WorkingDirectory = "",
     [string]$OutDir = "",
+    [ValidateSet("d3d11", "opengl")]
+    [string]$Backend = "d3d11",
     [int]$WindowX = 90,
     [int]$WindowY = 90,
     [int]$WindowWidth = 1240,
@@ -25,11 +27,20 @@ if ($WorkingDirectory.Length -eq 0) {
     $WorkingDirectory = $repoRoot
 }
 if ($OutDir.Length -eq 0) {
-    $OutDir = Join-Path $repoRoot "zig-out\d3d11-normal-session-smoke"
+    if ($Backend -eq "opengl") {
+        $OutDir = Join-Path $repoRoot "zig-out\opengl-fallback-session-smoke"
+    } else {
+        $OutDir = Join-Path $repoRoot "zig-out\d3d11-normal-session-smoke"
+    }
 }
 
 if (!(Test-Path -LiteralPath $ExePath)) {
-    throw "WispTerm executable not found: $ExePath. Run zig build -Dgpu-backend=d3d11 first."
+    $buildHint = if ($Backend -eq "opengl") { "zig build" } else { "zig build -Dgpu-backend=d3d11" }
+    throw "WispTerm executable not found: $ExePath. Run $buildHint first."
+}
+
+if ($Backend -eq "opengl" -and ($RecreateSmoke -or $RecreateFailureSmoke -or $FallbackMarkerSmoke)) {
+    throw "-RecreateSmoke, -RecreateFailureSmoke, and -FallbackMarkerSmoke require -Backend d3d11."
 }
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
@@ -113,14 +124,14 @@ function New-SmokePreviewImage([string]$Path) {
     }
 }
 
-function New-SmokePreviewFixtures([string]$Dir) {
+function New-SmokePreviewFixtures([string]$Dir, [string]$BackendLabel, [string]$BackendValue) {
     New-Item -ItemType Directory -Force -Path $Dir | Out-Null
     $markdownPath = Join-Path $Dir "a-preview.md"
     $imagePath = Join-Path $Dir "b-image.png"
-    @'
-# D3D11 Preview Smoke
+    (@'
+# {0} Preview Smoke
 
-This markdown preview is rendered inside a normal WispTerm D3D11 session.
+This markdown preview is rendered inside a normal WispTerm {0} session.
 
 ## Evidence
 
@@ -129,9 +140,9 @@ This markdown preview is rendered inside a normal WispTerm D3D11 session.
 - `inline code`
 
 ````zig
-const backend = "d3d11";
+const backend = "{1}";
 ````
-'@ | Set-Content -LiteralPath $markdownPath -Encoding UTF8
+'@ -f $BackendLabel, $BackendValue) | Set-Content -LiteralPath $markdownPath -Encoding UTF8
     New-SmokePreviewImage $imagePath
     return @{
         Dir = $Dir
@@ -149,16 +160,16 @@ function ConvertTo-HexField([string]$Value) {
     return $builder.ToString()
 }
 
-function New-SmokeAiProfile([string]$AppDataDir) {
+function New-SmokeAiProfile([string]$AppDataDir, [string]$ProfileName, [string]$ProfileSlug) {
     $wispDir = Join-Path $AppDataDir "wispterm"
     New-Item -ItemType Directory -Force -Path $wispDir | Out-Null
     $profilePath = Join-Path $wispDir "ai_profiles"
     $fields = @(
-        "D3D11 Smoke",
+        $ProfileName,
         "https://api.invalid.local",
-        "d3d11-smoke-key",
-        "d3d11-smoke-model",
-        "D3D11 smoke profile",
+        "$ProfileSlug-smoke-key",
+        "$ProfileSlug-smoke-model",
+        "$ProfileName profile",
         "disabled",
         "low",
         "false",
@@ -678,23 +689,26 @@ function Wait-ForDiagnosticText([string]$Path, [string]$Pattern, [int]$TimeoutSe
 }
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$configPath = Join-Path $OutDir "d3d11-smoke-$timestamp.conf"
-$backgroundImagePath = Join-Path $OutDir "d3d11-background-image-$timestamp.png"
+$artifactPrefix = if ($Backend -eq "opengl") { "opengl-fallback" } else { "d3d11" }
+$backendLabel = if ($Backend -eq "opengl") { "OpenGL fallback" } else { "D3D11" }
+$profileName = if ($Backend -eq "opengl") { "OpenGL fallback smoke" } else { "D3D11 smoke" }
+$configPath = Join-Path $OutDir "$artifactPrefix-smoke-$timestamp.conf"
+$backgroundImagePath = Join-Path $OutDir "$artifactPrefix-background-image-$timestamp.png"
 $previewFixtureDir = Join-Path $OutDir "preview-fixture-$timestamp"
-$initialShot = Join-Path $OutDir "d3d11-initial-$timestamp.png"
-$tabsActive2Shot = Join-Path $OutDir "d3d11-tabs-active2-$timestamp.png"
-$tabsCloseHoverShot = Join-Path $OutDir "d3d11-tabs-close-hover-$timestamp.png"
-$sidebarShot = Join-Path $OutDir "d3d11-sidebar-$timestamp.png"
-$explorerShot = Join-Path $OutDir "d3d11-file-explorer-$timestamp.png"
-$markdownPreviewShot = Join-Path $OutDir "d3d11-markdown-preview-$timestamp.png"
-$imagePreviewShot = Join-Path $OutDir "d3d11-image-preview-$timestamp.png"
-$assistantPanelShot = Join-Path $OutDir "d3d11-assistant-panel-$timestamp.png"
-$paletteShot = Join-Path $OutDir "d3d11-command-palette-$timestamp.png"
-$startupShortcutsShot = Join-Path $OutDir "d3d11-startup-shortcuts-$timestamp.png"
-$settingsShot = Join-Path $OutDir "d3d11-settings-page-$timestamp.png"
-$skillCenterShot = Join-Path $OutDir "d3d11-skill-center-$timestamp.png"
-$rapidResizeShot = Join-Path $OutDir "d3d11-rapid-resize-$timestamp.png"
-$metricsPath = Join-Path $OutDir "d3d11-normal-session-$timestamp.json"
+$initialShot = Join-Path $OutDir "$artifactPrefix-initial-$timestamp.png"
+$tabsActive2Shot = Join-Path $OutDir "$artifactPrefix-tabs-active2-$timestamp.png"
+$tabsCloseHoverShot = Join-Path $OutDir "$artifactPrefix-tabs-close-hover-$timestamp.png"
+$sidebarShot = Join-Path $OutDir "$artifactPrefix-sidebar-$timestamp.png"
+$explorerShot = Join-Path $OutDir "$artifactPrefix-file-explorer-$timestamp.png"
+$markdownPreviewShot = Join-Path $OutDir "$artifactPrefix-markdown-preview-$timestamp.png"
+$imagePreviewShot = Join-Path $OutDir "$artifactPrefix-image-preview-$timestamp.png"
+$assistantPanelShot = Join-Path $OutDir "$artifactPrefix-assistant-panel-$timestamp.png"
+$paletteShot = Join-Path $OutDir "$artifactPrefix-command-palette-$timestamp.png"
+$startupShortcutsShot = Join-Path $OutDir "$artifactPrefix-startup-shortcuts-$timestamp.png"
+$settingsShot = Join-Path $OutDir "$artifactPrefix-settings-page-$timestamp.png"
+$skillCenterShot = Join-Path $OutDir "$artifactPrefix-skill-center-$timestamp.png"
+$rapidResizeShot = Join-Path $OutDir "$artifactPrefix-rapid-resize-$timestamp.png"
+$metricsPath = Join-Path $OutDir "$artifactPrefix-normal-session-$timestamp.json"
 $appDataDir = Join-Path $OutDir "appdata"
 $diagnosticPath = Join-Path $appDataDir "wispterm\render-diagnostic.log"
 
@@ -702,8 +716,8 @@ New-Item -ItemType Directory -Force -Path $appDataDir | Out-Null
 $statePath = Join-Path $appDataDir "wispterm\state"
 Remove-Item -LiteralPath $statePath -ErrorAction SilentlyContinue
 New-SmokeBackgroundImage $backgroundImagePath
-$previewFixtures = New-SmokePreviewFixtures $previewFixtureDir
-$aiProfilePath = New-SmokeAiProfile $appDataDir
+$previewFixtures = New-SmokePreviewFixtures $previewFixtureDir $backendLabel $Backend
+$aiProfilePath = New-SmokeAiProfile $appDataDir $profileName $artifactPrefix
 if (!$workingDirectoryProvided) {
     $WorkingDirectory = $previewFixtureDir
 }
@@ -711,7 +725,7 @@ if (!$workingDirectoryProvided) {
 shell = $Shell
 wispterm-debug-render = true
 restore-tabs-on-startup = false
-ai-default-profile = D3D11 Smoke
+ai-default-profile = $profileName
 background-image = $backgroundImagePath
 background-opacity = 0.18
 background-image-mode = fill
@@ -727,19 +741,25 @@ $oldFallbackMarkerSmoke = $env:WISPTERM_D3D11_FALLBACK_MARKER_SMOKE
 
 $env:APPDATA = $appDataDir
 $env:WISPTERM_RENDER_DIAGNOSTICS = "1"
-$env:WISPTERM_D3D11_UI_SMOKE = "1"
-$env:WISPTERM_D3D11_OFFSCREEN_SMOKE = "1"
-if ($RecreateSmoke -and !$RecreateFailureSmoke) {
+$isD3D11Backend = $Backend -eq "d3d11"
+if ($isD3D11Backend) {
+    $env:WISPTERM_D3D11_UI_SMOKE = "1"
+    $env:WISPTERM_D3D11_OFFSCREEN_SMOKE = "1"
+} else {
+    Remove-Item Env:WISPTERM_D3D11_UI_SMOKE -ErrorAction SilentlyContinue
+    Remove-Item Env:WISPTERM_D3D11_OFFSCREEN_SMOKE -ErrorAction SilentlyContinue
+}
+if ($isD3D11Backend -and $RecreateSmoke -and !$RecreateFailureSmoke) {
     $env:WISPTERM_D3D11_RECREATE_SMOKE = "1"
 } else {
     Remove-Item Env:WISPTERM_D3D11_RECREATE_SMOKE -ErrorAction SilentlyContinue
 }
-if ($RecreateFailureSmoke) {
+if ($isD3D11Backend -and $RecreateFailureSmoke) {
     $env:WISPTERM_D3D11_RECREATE_FAILURE_SMOKE = "1"
 } else {
     Remove-Item Env:WISPTERM_D3D11_RECREATE_FAILURE_SMOKE -ErrorAction SilentlyContinue
 }
-if ($FallbackMarkerSmoke) {
+if ($isD3D11Backend -and $FallbackMarkerSmoke) {
     $env:WISPTERM_D3D11_FALLBACK_MARKER_SMOKE = "1"
 } else {
     Remove-Item Env:WISPTERM_D3D11_FALLBACK_MARKER_SMOKE -ErrorAction SilentlyContinue
@@ -806,6 +826,7 @@ try {
         $result = [ordered]@{
             pass = $pass
             mode = "recreate_failure"
+            backend = $Backend
             shell = $Shell
             exe = $ExePath
             config = $configPath
@@ -928,7 +949,10 @@ try {
     Capture-Window $wisptermWindow $skillCenterShot | Out-Null
     $skillCenterMetrics = Analyze-PageSurface $imagePreviewShot $skillCenterShot 220 46 1010 725 1100 0.014 140
 
-    $diagText = Wait-ForDiagnosticText $diagnosticPath "d3d11-ui-smoke probe .* ok=true" 12
+    $diagProbePattern = if ($isD3D11Backend) { "d3d11-ui-smoke probe .* ok=true" } else { "gpu-backend=opengl" }
+    $diagText = Wait-ForDiagnosticText $diagnosticPath $diagProbePattern 12
+    $hasOpenGLBackend = $diagText -match "gpu-backend=opengl .*d3d11_active=false"
+    $hasOpenGLHostPresent = $diagText -match "dx-present active|dx-present unavailable"
     $hasD3D11Present = $diagText -match "gpu-backend=d3d11 present=dxgi"
     $hasD3D11InitDetails = (
         $diagText -match "gpu-backend=d3d11 present=dxgi .*swap_effect=flip_discard.*fallback_reason=none.*policy_state=healthy.*fallback_candidate=false" -and
@@ -946,19 +970,29 @@ try {
     $hasUiProbe = $diagText -match "d3d11-ui-smoke probe .* ok=true"
     $hasOffscreen = $diagText -match "d3d11-offscreen-smoke round-trip active"
     $d3d11ResizeEventCount = [regex]::Matches($diagText, "gpu-backend=d3d11 resized swapchain to").Count
-    $rapidResizeDiagnostic = if ($RapidResizeSmoke) { $d3d11ResizeEventCount -gt 0 } else { $true }
+    $rapidResizeDiagnostic = if ($isD3D11Backend -and $RapidResizeSmoke) { $d3d11ResizeEventCount -gt 0 } else { $true }
     $hasFailures = $diagText -match "present failed|shader compile failed|backbuffer probe failed|resize sync failed"
-    $recreateExpectation = if ($RecreateSmoke) {
+    $recreateExpectation = if ($isD3D11Backend -and $RecreateSmoke) {
         ($hasD3D11RecoveryRequested -and $hasD3D11RecreateSmokeRequest -and $hasD3D11RecreateSucceeded -and $hasD3D11ResourceRestore)
     } else {
         (!$hasD3D11RecoveryRequested -and !$hasD3D11RecreateSmokeRequest -and !$hasD3D11RecreateSucceeded)
     }
     $stateText = if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw } else { "" }
     $hasD3D11FallbackMarkerState = $stateText -match "d3d11-fallback = d3d11:v1;kind=fallback_candidate;.*reason=environment_blocked"
-    $fallbackMarkerExpectation = if ($FallbackMarkerSmoke) {
+    $fallbackMarkerExpectation = if ($isD3D11Backend -and $FallbackMarkerSmoke) {
         ($hasD3D11FallbackMarkerSmoke -and $hasD3D11FallbackMarkerState)
     } else {
-        (!$hasD3D11FallbackMarkerSmoke)
+        (!$hasD3D11FallbackMarkerSmoke -and !$hasD3D11FallbackMarkerState)
+    }
+    $backendExpectation = if ($isD3D11Backend) {
+        ($hasD3D11Present -and $hasD3D11InitDetails -and $hasD3D11PolicyHealthy)
+    } else {
+        ($hasOpenGLBackend -and $hasOpenGLHostPresent -and !$hasD3D11Present -and !$hasD3D11InitDetails -and !$hasD3D11PolicyHealthy)
+    }
+    $probeExpectation = if ($isD3D11Backend) {
+        ($hasUiProbe -and $hasOffscreen)
+    } else {
+        (!$hasUiProbe -and !$hasOffscreen)
     }
 
     $pass = [bool](
@@ -975,19 +1009,17 @@ try {
         $settingsPageMetrics.Pass -and
         $skillCenterMetrics.Pass -and
         $rapidResizeMetrics.Pass -and
-        $hasD3D11Present -and
-        $hasD3D11InitDetails -and
-        $hasD3D11PolicyHealthy -and
+        $backendExpectation -and
         $recreateExpectation -and
         $fallbackMarkerExpectation -and
         $rapidResizeDiagnostic -and
-        $hasUiProbe -and
-        $hasOffscreen -and
+        $probeExpectation -and
         !$hasFailures
     )
 
     $result = [ordered]@{
         pass = $pass
+        backend = $Backend
         shell = $Shell
         window = "$($initialSize.Width)x$($initialSize.Height)"
         exe = $ExePath
@@ -1139,6 +1171,8 @@ try {
             pass = [bool]$rapidResizeMetrics.Pass
         }
         diagnostics = [ordered]@{
+            opengl_backend = [bool]$hasOpenGLBackend
+            opengl_host_present = [bool]$hasOpenGLHostPresent
             d3d11_present = [bool]$hasD3D11Present
             d3d11_init_details = [bool]$hasD3D11InitDetails
             d3d11_policy_healthy = [bool]$hasD3D11PolicyHealthy
