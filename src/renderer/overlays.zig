@@ -3496,7 +3496,10 @@ fn mergeOpenSshCandidate(candidate: openssh_config_import.Candidate, stats: *Ope
         return;
     }
 
-    const found_idx = findLoadedSshProfileIndex(name) orelse findLoadedSshProfileIndex(host);
+    // Dedup by Host alias only: same server on multiple ports (e.g. port
+    // forwards / containers) are distinct OpenSSH Host blocks, so merging by
+    // shared HostName/IP would collapse them into one. ponytail: name-only.
+    const found_idx = findLoadedSshProfileIndex(name);
     var created_new = false;
     const idx = found_idx orelse blk: {
         if (sshState().profile_count >= SSH_PROFILE_MAX) {
@@ -7421,6 +7424,34 @@ test "overlays: OpenSSH import keeps more than sixteen SSH profiles" {
     try std.testing.expectEqual(@as(usize, 27), sshState().profile_count);
     try std.testing.expectEqual(@as(usize, 27), stats.created);
     try std.testing.expect(!stats.capped);
+}
+
+test "overlays: OpenSSH import keeps same-host different-port aliases separate" {
+    const saved_count = sshState().profile_count;
+    var saved_profiles: [SSH_PROFILE_MAX]SshProfile = undefined;
+    if (saved_count > 0) @memcpy(saved_profiles[0..saved_count], sshState().profiles[0..saved_count]);
+    defer {
+        sshState().profile_count = saved_count;
+        if (saved_count > 0) @memcpy(sshState().profiles[0..saved_count], saved_profiles[0..saved_count]);
+    }
+
+    sshState().profile_count = 0;
+    var stats = OpenSshImportStats{};
+    const ports = [_][]const u8{ "7524", "7525", "7422" };
+    const names = [_][]const u8{ "90_mengzijun", "91_mengzijun", "98_mengzijun" };
+    for (ports, names) |port, name| {
+        var candidate = openssh_config_import.Candidate{};
+        opensshCandidateSetForTest(&candidate, .name, name);
+        opensshCandidateSetForTest(&candidate, .host, "172.16.190.96");
+        opensshCandidateSetForTest(&candidate, .user, "mengzijun");
+        opensshCandidateSetForTest(&candidate, .port, port);
+        mergeOpenSshCandidate(candidate, &stats);
+    }
+
+    // Shared HostName must NOT collapse the three Host blocks into one.
+    try std.testing.expectEqual(@as(usize, 3), sshState().profile_count);
+    try std.testing.expectEqual(@as(usize, 3), stats.created);
+    try std.testing.expectEqual(@as(usize, 0), stats.updated);
 }
 
 test "overlays: SSH delete picker supports multi-select batch delete" {
