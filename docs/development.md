@@ -226,6 +226,20 @@ recovery request in the healthy path. It is a Phase IV and Phase V
 diagnostics/policy/recovery-coordination evidence tool only; it does not change
 the Windows default renderer.
 
+Use `debug\test-d3d11-environment-smoke.ps1` after a D3D11 build to wrap the
+normal-session smoke into a matrix evidence package:
+
+```powershell
+zig build -Dgpu-backend=d3d11
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-environment-smoke.ps1
+```
+
+The collector writes `zig-out\d3d11-env-smoke\<timestamp>\environment.json`, a
+`normal-session\` result directory, copied screenshots under `screenshots\`, and
+the original render diagnostics path. It records adapter/session/monitor facts
+and smoke health only; it does not classify or block environments and it does
+not change fallback policy.
+
 To exercise the controlled Phase V device-recreate path, run the same smoke
 with `-RecreateSmoke` after building the D3D11 executable:
 

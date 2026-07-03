@@ -93,7 +93,12 @@ adapter flags, output count, feature level, and swap effect, while the Win32
 host logs remote-session state, process session id, monitor count, mixed-DPI
 state, primary DPI, and system DPI. The normal-session smoke verifies both
 lines so later RDP/VM/hybrid-GPU/multi-monitor matrix runs have a stable JSON
-and log surface.
+and log surface. A dedicated environment smoke collector now wraps the
+normal-session smoke and emits a timestamped evidence package with
+`environment.json`, the raw normal-session JSON, copied screenshots, adapter
+facts, Win32 session facts, monitor topology, and explicit policy fields stating
+that no environment classification, blocking, default change, or automatic
+fallback was applied.
 
 The Phase IV normal-session evidence gate is the checked-in Windows GUI smoke:
 
@@ -146,6 +151,19 @@ The D3D11 normal-session smoke also gates the environment-diagnostics surface:
 `d3d11_environment` and `windows_environment` must be true in the emitted JSON.
 This still only reports and verifies environment facts; it does not classify or
 block any environment yet.
+
+Add the environment collector when recording Phase V matrix evidence:
+
+```powershell
+zig build -Dgpu-backend=d3d11
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-environment-smoke.ps1
+```
+
+The default output root is `zig-out\d3d11-env-smoke\<timestamp>\`. Each run
+contains `environment.json`, `normal-session\`, and `screenshots\`. Use the same
+collector in RDP, VM, hybrid-GPU, weak-integrated-GPU, single-monitor,
+multi-monitor, and mixed-DPI environments; skipped or unavailable environments
+must be recorded as missing evidence rather than treated as passing.
 
 ## Ghostty Comparison
 
