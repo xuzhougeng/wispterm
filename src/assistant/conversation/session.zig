@@ -230,6 +230,22 @@ pub const ChatRequest = struct {
     }
 };
 
+/// Re-snapshot the request's MCP advertise + dispatch lists from the registry.
+/// Called by the agent loop after an mcp_activate call so newly activated
+/// (possibly newly discovered) tools are usable in the SAME turn.
+pub fn refreshRequestMcpTools(request: *ChatRequest) void {
+    mcp_registry.ensureCacheFresh(request.allocator);
+    const specs = mcp_registry.cloneActivatedSpecs(request.allocator) catch return;
+    const tools = cloneMcpTools(request.allocator, mcp_registry.cachedTools()) catch {
+        freeOwnedMcpToolSpecs(request.allocator, specs);
+        return;
+    };
+    freeOwnedMcpToolSpecs(request.allocator, request.mcp_tool_specs);
+    freeOwnedMcpTools(request.allocator, request.mcp_tools);
+    request.mcp_tool_specs = specs;
+    request.mcp_tools = tools;
+}
+
 /// Lightweight background job for a `$websearch` user command. Owns its query.
 /// The spawning code stores the thread in `session.request_thread`, so
 /// `Session.deinit` joins it before freeing the session (no use-after-free).
@@ -579,30 +595,6 @@ fn freeOwnedMcpTools(allocator: std.mem.Allocator, tools: []const ai_chat_types.
         freeOwnedStringList(allocator, tool.server_args);
     }
     allocator.free(tools);
-}
-
-fn cloneMcpToolSpecs(allocator: std.mem.Allocator, specs: []const ai_chat_protocol.McpToolSpec) ![]ai_chat_protocol.McpToolSpec {
-    if (specs.len == 0) return &.{};
-    const out = try allocator.alloc(ai_chat_protocol.McpToolSpec, specs.len);
-    var written: usize = 0;
-    errdefer {
-        for (out[0..written]) |spec| {
-            allocator.free(spec.name);
-            allocator.free(spec.description);
-            allocator.free(spec.properties_json);
-        }
-        allocator.free(out);
-    }
-    for (specs) |spec| {
-        const name = try allocator.dupe(u8, spec.name);
-        errdefer allocator.free(name);
-        const description = try allocator.dupe(u8, spec.description);
-        errdefer allocator.free(description);
-        const properties_json = try allocator.dupe(u8, spec.properties_json);
-        out[written] = .{ .name = name, .description = description, .properties_json = properties_json };
-        written += 1;
-    }
-    return out;
 }
 
 fn cloneMcpTools(allocator: std.mem.Allocator, tools: []const ai_chat_types.McpTool) ![]ai_chat_types.McpTool {
@@ -4147,7 +4139,8 @@ pub const Session = struct {
         var model_owned = true;
         errdefer if (model_owned) self.allocator.free(model_name);
         const working_dir = self.effectiveWorkingDirLocked() orelse "";
-        const system_prompt = try composeSystemPromptWithMemory(self.allocator, self.systemPrompt(), settings.memory_enabled, working_dir);
+        const base_prompt = try composeSystemPromptWithMemory(self.allocator, self.systemPrompt(), settings.memory_enabled, working_dir);
+        const system_prompt = appendToolCatalogDigest(self.allocator, base_prompt);
         var system_prompt_owned = true;
         errdefer if (system_prompt_owned) self.allocator.free(system_prompt);
         const reasoning_effort = try self.allocator.dupe(u8, self.reasoningEffort());
@@ -4162,10 +4155,10 @@ pub const Session = struct {
         const dynamic_binary_tools = try cloneDynamicBinaryTools(self.allocator, settings.dynamic_binary_tools);
         var dynamic_binary_tools_owned = true;
         errdefer if (dynamic_binary_tools_owned) freeOwnedDynamicBinaryTools(self.allocator, dynamic_binary_tools);
-        const mcp_tool_specs = try cloneMcpToolSpecs(self.allocator, mcp_registry.cachedSpecs());
+        const mcp_tool_specs = try mcp_registry.cloneActivatedSpecs(self.allocator);
         var mcp_tool_specs_owned = true;
         errdefer if (mcp_tool_specs_owned) freeOwnedMcpToolSpecs(self.allocator, mcp_tool_specs);
-        const mcp_tools = try cloneMcpTools(self.allocator, settings.mcp_tools);
+        const mcp_tools = try cloneMcpTools(self.allocator, mcp_registry.cachedTools());
         var mcp_tools_owned = true;
         errdefer if (mcp_tools_owned) freeOwnedMcpTools(self.allocator, mcp_tools);
         const disabled_first_party_tools = try cloneStringList(self.allocator, settings.disabled_first_party_tools);
@@ -4425,6 +4418,32 @@ pub const Session = struct {
         @memcpy(self.status_buf[0..self.status_len], value[0..self.status_len]);
     }
 };
+
+/// Append the deferred-tool digest (inactive MCP servers + installed skills)
+/// to the composed system prompt. Takes ownership of `base`; returns either
+/// `base` unchanged or a new owned string (base freed). Never fails the
+/// request — digest errors just mean no digest.
+fn appendToolCatalogDigest(allocator: std.mem.Allocator, base: []u8) []u8 {
+    const digest = composeToolCatalogDigest(allocator) orelse return base;
+    defer allocator.free(digest);
+    const joined = std.fmt.allocPrint(allocator, "{s}\n\n{s}", .{ base, digest }) catch return base;
+    allocator.free(base);
+    return joined;
+}
+
+fn composeToolCatalogDigest(allocator: std.mem.Allocator) ?[]u8 {
+    mcp_registry.ensureCacheFresh(allocator);
+    const mcp_part = mcp_registry.inactiveDigest(allocator) catch null;
+    defer if (mcp_part) |p| allocator.free(p);
+    const skills_part = ai_chat_skills.skillsDigest(allocator) catch null;
+    defer if (skills_part) |p| allocator.free(p);
+    if (mcp_part == null and skills_part == null) return null;
+    return std.fmt.allocPrint(allocator, "{s}{s}{s}", .{
+        if (mcp_part) |p| p else "",
+        if (mcp_part != null and skills_part != null) "\n" else "",
+        if (skills_part) |p| p else "",
+    }) catch null;
+}
 
 /// Returns base prompt, or base + memory index block when memory is enabled.
 /// Best-effort: any memory error degrades to just the base prompt. Caller owns.
@@ -8204,6 +8223,7 @@ test "ai chat agent request json includes stable skill_info tool schema" {
     const request = try session.buildRequestLocked();
     session.mutex.unlock();
     defer request.deinit();
+    defer mcp_registry.reloadCacheFromServersForTest(allocator, &.{});
 
     const json = try ai_chat_request.buildRequestJson(allocator, request);
     defer allocator.free(json);
@@ -8255,6 +8275,7 @@ test "ai chat session request owns dynamic tool specs snapshot" {
     const request = try session.buildRequestLocked();
     session.mutex.unlock();
     defer request.deinit();
+    defer mcp_registry.reloadCacheFromServersForTest(allocator, &.{});
 
     @memcpy(name, "agent_xlsx_review");
     setDynamicToolSpecsForTest(&.{});
@@ -8311,6 +8332,7 @@ test "ai chat session request owns dynamic binary runtime snapshot" {
     const request = try session.buildRequestLocked();
     session.mutex.unlock();
     defer request.deinit();
+    defer mcp_registry.reloadCacheFromServersForTest(allocator, &.{});
 
     @memcpy(function_name, "gone_tool");
     setDynamicBinaryToolsForTest(&.{});
@@ -8357,6 +8379,7 @@ test "ai chat session request owns disabled first-party tool snapshot" {
     const request = try session.buildRequestLocked();
     session.mutex.unlock();
     defer request.deinit();
+    defer mcp_registry.reloadCacheFromServersForTest(allocator, &.{});
 
     @memcpy(disabled_name, "pubmed!");
     g_first_party_disabled_tools = &.{};
@@ -8448,6 +8471,7 @@ test "copilot request appends bound-terminal snapshot to latest user message" {
     const request = try session.buildRequestLocked();
     session.mutex.unlock();
     defer request.deinit();
+    defer mcp_registry.reloadCacheFromServersForTest(allocator, &.{});
 
     try std.testing.expect(request.messages.len == 1);
     const user_content = request.messages[0].content;
@@ -8494,6 +8518,7 @@ test "ai chat request json replays durable tool messages and skips progress tool
     const request = try session.buildRequestLocked();
     session.mutex.unlock();
     defer request.deinit();
+    defer mcp_registry.reloadCacheFromServersForTest(allocator, &.{});
 
     const json = try ai_chat_request.buildRequestJsonForMessages(allocator, request, request.messages, true);
     defer allocator.free(json);
@@ -8539,6 +8564,7 @@ test "ai chat request skips replayable tool messages missing identity" {
     const request = try session.buildRequestLocked();
     session.mutex.unlock();
     defer request.deinit();
+    defer mcp_registry.reloadCacheFromServersForTest(allocator, &.{});
 
     try std.testing.expectEqual(@as(usize, 1), request.messages.len);
 
@@ -8551,6 +8577,7 @@ test "ai chat request skips replayable tool messages missing identity" {
 
 test "ai chat request setup cleans scalar fields on allocation failure" {
     const allocator = std.testing.allocator;
+    defer mcp_registry.reloadCacheFromServersForTest(allocator, &.{});
 
     var saw_oom = false;
     var fail_index: usize = 0;
@@ -8600,6 +8627,7 @@ test "copilot session pre-targets the bound surface in its request" {
 
     const req = try session.buildRequestLocked();
     defer req.deinit();
+    defer mcp_registry.reloadCacheFromServersForTest(std.testing.allocator, &.{});
 
     try std.testing.expectEqualStrings("abc123", req.write_context_surface_id[0..req.write_context_surface_id_len]);
 }
