@@ -264,6 +264,10 @@ not change fallback policy. The durable ledger format is documented in
 After collecting one or more environment packages, run
 `debug\summarize-d3d11-environment-matrix.ps1` to emit a consolidated
 `matrix-ledger.md` / `matrix-ledger.json` for PR or issue review.
+To audit the collected Phase V artifacts against the default-migration gate
+without rerunning smokes, use `debug\audit-d3d11-default-gate.ps1`; it emits
+`default-gate-audit.md` / `default-gate-audit.json` and keeps missing evidence
+as missing rather than treating it as a pass.
 
 To exercise the controlled Phase V device-recreate path, run the same smoke
 with `-RecreateSmoke` after building the D3D11 executable:

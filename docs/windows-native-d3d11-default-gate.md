@@ -45,6 +45,7 @@ unavailable environment is missing evidence, not a passing result.
 | Long-run soak | `-SoakMinutes 20` records periodic nonblank screenshots, process liveness, resize diagnostics, and no failure lines. |
 | Environment package | `debug/test-d3d11-environment-smoke.ps1` emits `environment.json`, `matrix-summary.md`, normal-session JSON, screenshots, adapter facts, Win32 session facts, record-only matrix fields, and policy fields. |
 | Environment ledger | `debug/summarize-d3d11-environment-matrix.ps1` emits `matrix-ledger.md` / `matrix-ledger.json` showing recorded, failing, mismatched, operator-review, and missing classes. |
+| Artifact audit | `debug/audit-d3d11-default-gate.ps1` emits `default-gate-audit.md` / `default-gate-audit.json` from existing smoke and matrix artifacts without rerunning them. |
 | Test gates | `zig build check-sizes`, `zig build test`, `zig build test-full --summary all`, `zig build`, and PR CI pass. |
 
 ## Environment Matrix
@@ -114,6 +115,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-se
 powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -SoakMinutes 20
 powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-environment-smoke.ps1 -MatrixClass local-physical
 powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\summarize-d3d11-environment-matrix.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\audit-d3d11-default-gate.ps1
 
 zig build
 powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -Backend opengl
@@ -122,6 +124,12 @@ zig build check-sizes
 zig build test
 zig build test-full --summary all
 ```
+
+The artifact audit is intentionally read-only. It reports `complete` only when
+the collected JSON artifacts satisfy the smoke and matrix evidence gates; it
+does not run the build/test gates and does not turn unavailable matrix classes
+into passes. Use `-FailOnIncomplete` only for final closeout automation after
+the evidence directories are expected to be complete.
 
 ## Rollback Rule
 
