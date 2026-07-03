@@ -320,6 +320,11 @@ survives with nonblank frames, D3D11 resize diagnostics, and no present/resize
 failure lines. It is Phase V reliability evidence only; it does not change the
 Windows default backend or fallback policy.
 
+The Phase VI default migration gate is documented in
+[windows-native-d3d11-default-gate.md](windows-native-d3d11-default-gate.md).
+Use it as the checklist for collecting evidence, recording matrix gaps, and
+keeping the eventual Windows `auto` default change small and revertible.
+
 D3D11 fallback is a next-launch policy while the renderer backend remains a
 comptime selection. Do not implement same-process D3D11-to-OpenGL switching
 without first changing the backend architecture. The `d3d11-fallback` state-file

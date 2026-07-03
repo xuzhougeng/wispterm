@@ -25,6 +25,19 @@ The Remote web console/relay version is separate and lives under `remote/`
 `remote/src/client/version.ts`). A desktop release does not imply a Remote web
 console release unless the release explicitly includes `remote/`.
 
+## Windows
+
+- The native D3D11 renderer on `windows-native-render` is still opt-in and is
+  not the Windows `auto` default. Phase VI is blocked until the evidence and
+  rollback checklist in
+  [windows-native-d3d11-default-gate.md](docs/windows-native-d3d11-default-gate.md)
+  is satisfied.
+- D3D11 fallback is next-launch/future-auto policy only. The app does not switch
+  from D3D11 to OpenGL inside the same running process.
+- RDP, virtual-machine, hybrid-GPU, weak-integrated-GPU, and multi-monitor
+  mixed-DPI evidence is still tracked as matrix evidence rather than a fully
+  closed release claim.
+
 ## macOS
 
 - Event buffers in `window_macos_bridge.m` cross the AppKit main thread and the

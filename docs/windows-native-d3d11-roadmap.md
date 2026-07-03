@@ -157,6 +157,11 @@ evidence. Shorter values are useful for script validation, but release/default
 migration evidence should use a meaningful duration such as 20 minutes and keep
 the emitted screenshots and JSON with the environment matrix artifact.
 
+The Phase VI entry checklist and rollback constraints live in
+[windows-native-d3d11-default-gate.md](windows-native-d3d11-default-gate.md).
+Do not start the Windows `auto` default migration until that gate is satisfied
+with current evidence.
+
 The fallback marker policy is intentionally policy-only at this stage. It
 defines marker format, persistence, stale-version/adapter handling, explicit
 backend behavior, and the future-auto dry-run decision surface, but marker
