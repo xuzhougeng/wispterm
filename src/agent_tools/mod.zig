@@ -29,6 +29,7 @@ const agent_exec = @import("exec.zig");
 const agent_dynamic = @import("dynamic.zig");
 const agent_mcp = @import("mcp.zig");
 const agent_mcp_config = @import("mcp_config.zig");
+const agent_mcp_activate = @import("mcp_activate.zig");
 const agent_weixin = @import("weixin.zig");
 const agent_ui_screenshot = @import("ui_screenshot.zig");
 
@@ -224,6 +225,9 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
     }
     if (std.mem.eql(u8, call.name, "mcp_config")) {
         return agent_mcp_config.run(ctx, call.arguments);
+    }
+    if (std.mem.eql(u8, call.name, "mcp_activate")) {
+        return agent_mcp_activate.run(ctx, call.arguments);
     }
     if (std.mem.eql(u8, call.name, "send_attachment") or
         std.mem.eql(u8, call.name, "weixin_send_attachment")) // legacy alias
