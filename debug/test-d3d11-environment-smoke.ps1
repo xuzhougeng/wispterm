@@ -4,6 +4,9 @@ param(
     [string]$OutDir = "",
     [ValidateSet("d3d11", "opengl")]
     [string]$Backend = "d3d11",
+    [ValidateSet("unspecified", "local-physical", "rdp", "virtual-machine", "hybrid-gpu", "weak-integrated-gpu", "single-monitor", "multi-monitor-same-dpi", "multi-monitor-mixed-dpi")]
+    [string]$MatrixClass = "unspecified",
+    [switch]$RequireMatrixClass,
     [int]$WindowX = 90,
     [int]$WindowY = 90,
     [int]$WindowWidth = 1240,
@@ -134,6 +137,88 @@ function Read-MonitorTopology([string]$DiagnosticText) {
     return @($items)
 }
 
+function Test-TextMatchesAny([string]$Text, [string[]]$Patterns) {
+    if ($null -eq $Text) {
+        return $false
+    }
+    foreach ($pattern in $Patterns) {
+        if ($Text -match $pattern) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Read-MatrixDetection([object]$D3D11Environment, [object]$WindowsEnvironment, [object[]]$Monitors) {
+    $adapterDescription = if ($null -ne $D3D11Environment.adapter_description) {
+        [string]$D3D11Environment.adapter_description
+    } else {
+        ""
+    }
+    $adapterText = $adapterDescription.ToLowerInvariant()
+    $adapterFlags = $D3D11Environment.adapter_flags
+    $softwareAdapter = ($null -ne $adapterFlags) -and (([UInt64]$adapterFlags -band [UInt64]2) -ne 0)
+    $virtualMachineCandidate = $softwareAdapter -or (Test-TextMatchesAny $adapterText @(
+        "microsoft basic render",
+        "microsoft remote",
+        "vmware",
+        "virtualbox",
+        "parallels",
+        "hyper-v",
+        "virtual",
+        "virtio",
+        "qxl"
+    ))
+    $integratedGpuCandidate = Test-TextMatchesAny $adapterText @(
+        "intel",
+        "uhd graphics",
+        "iris",
+        "radeon\(tm\) graphics",
+        "radeon graphics",
+        "vega",
+        "integrated"
+    )
+    $dedicatedVideoMemory = $D3D11Environment.dedicated_video_memory
+    $weakIntegratedGpuCandidate = $integratedGpuCandidate -and
+        ($null -ne $dedicatedVideoMemory) -and
+        ([UInt64]$dedicatedVideoMemory -le [UInt64]1073741824)
+    $monitorCount = $WindowsEnvironment.monitor_count
+    $mixedDpi = $WindowsEnvironment.mixed_dpi
+
+    return [ordered]@{
+        remote_session = $WindowsEnvironment.remote_session
+        session_id = $WindowsEnvironment.session_id
+        monitor_count = $monitorCount
+        mixed_dpi = $mixedDpi
+        single_monitor = ($null -ne $monitorCount) -and ([UInt64]$monitorCount -eq [UInt64]1)
+        multi_monitor_same_dpi = ($null -ne $monitorCount) -and ([UInt64]$monitorCount -gt [UInt64]1) -and ($mixedDpi -eq $false)
+        multi_monitor_mixed_dpi = ($null -ne $monitorCount) -and ([UInt64]$monitorCount -gt [UInt64]1) -and ($mixedDpi -eq $true)
+        adapter_description = $adapterDescription
+        software_adapter_candidate = $softwareAdapter
+        virtual_machine_candidate = $virtualMachineCandidate
+        integrated_gpu_candidate = $integratedGpuCandidate
+        weak_integrated_gpu_candidate = $weakIntegratedGpuCandidate
+        hybrid_gpu_candidate = $null
+        hybrid_gpu_note = "operator-declared evidence; a single DXGI adapter diagnostic cannot prove hybrid topology"
+        monitor_topology_count = @($Monitors).Count
+    }
+}
+
+function Test-MatrixClassMatch([string]$Class, [object]$Detection) {
+    switch ($Class) {
+        "unspecified" { return $null }
+        "local-physical" { return (($Detection.remote_session -eq $false) -and ($Detection.virtual_machine_candidate -ne $true)) }
+        "rdp" { return ($Detection.remote_session -eq $true) }
+        "virtual-machine" { return ($Detection.virtual_machine_candidate -eq $true) }
+        "hybrid-gpu" { return $null }
+        "weak-integrated-gpu" { return ($Detection.weak_integrated_gpu_candidate -eq $true) }
+        "single-monitor" { return ($Detection.single_monitor -eq $true) }
+        "multi-monitor-same-dpi" { return ($Detection.multi_monitor_same_dpi -eq $true) }
+        "multi-monitor-mixed-dpi" { return ($Detection.multi_monitor_mixed_dpi -eq $true) }
+    }
+    return $null
+}
+
 function Copy-SmokeScreenshots([object]$NormalResult, [string]$ScreenshotsDir) {
     New-Item -ItemType Directory -Force -Path $ScreenshotsDir | Out-Null
     $copied = [ordered]@{}
@@ -196,6 +281,12 @@ $diagnosticText = if (Test-Path -LiteralPath $diagnosticPath) {
     ""
 }
 
+$d3d11Environment = Read-D3D11Environment $diagnosticText
+$windowsEnvironment = Read-WindowsEnvironment $diagnosticText
+$monitorTopology = Read-MonitorTopology $diagnosticText
+$matrixDetection = Read-MatrixDetection $d3d11Environment $windowsEnvironment $monitorTopology
+$matrixClassMatch = Test-MatrixClassMatch $MatrixClass $matrixDetection
+
 $copiedScreenshots = Copy-SmokeScreenshots $normalResult $screenshotsDir
 $gitBranch = (& git -C $repoRoot branch --show-current).Trim()
 $gitCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
@@ -228,15 +319,24 @@ $environment = [ordered]@{
         failure_lines = [bool]$normalResult.diagnostics.failure_lines
     }
     environment = [ordered]@{
-        d3d11 = Read-D3D11Environment $diagnosticText
-        windows = Read-WindowsEnvironment $diagnosticText
-        monitors = Read-MonitorTopology $diagnosticText
+        d3d11 = $d3d11Environment
+        windows = $windowsEnvironment
+        monitors = $monitorTopology
+    }
+    matrix = [ordered]@{
+        requested_class = $MatrixClass
+        class_match = $matrixClassMatch
+        require_class_match = [bool]$RequireMatrixClass
+        detection = $matrixDetection
+        missing_evidence = $false
+        note = "record-only matrix evidence; no environment blocking or fallback decision is applied"
     }
     policy = [ordered]@{
         automatic_fallback = $false
         environment_blocking = $false
+        environment_classification = "record-only"
         default_unchanged = $true
-        note = "collector only; no environment classification or fallback decision is applied"
+        note = "collector only; no environment blocking or fallback decision is applied"
     }
 }
 
@@ -251,10 +351,16 @@ $summary = [ordered]@{
     diagnostic_log = $diagnosticPath
     screenshots = $screenshotsDir
     normal_session_exit_code = $normalSessionExitCode
+    matrix_class = $MatrixClass
+    matrix_class_match = $matrixClassMatch
     d3d11_environment = [bool]$normalResult.diagnostics.d3d11_environment
     windows_environment = [bool]$normalResult.diagnostics.windows_environment
 }
 $summary | ConvertTo-Json -Depth 5
+
+if ($RequireMatrixClass -and $MatrixClass -ne "unspecified" -and $matrixClassMatch -ne $true) {
+    throw "matrix class '$MatrixClass' did not match detected facts; environment evidence was written to $environmentJsonPath"
+}
 
 if ($normalSessionExitCode -ne 0 -or ![bool]$normalResult.pass) {
     throw "normal-session smoke failed; environment evidence was written to $environmentJsonPath"

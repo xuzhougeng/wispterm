@@ -202,10 +202,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-environme
 ```
 
 The default output root is `zig-out\d3d11-env-smoke\<timestamp>\`. Each run
-contains `environment.json`, `normal-session\`, and `screenshots\`. Use the same
-collector in RDP, VM, hybrid-GPU, weak-integrated-GPU, single-monitor,
-multi-monitor, and mixed-DPI environments; skipped or unavailable environments
-must be recorded as missing evidence rather than treated as passing.
+contains `environment.json`, `normal-session\`, and `screenshots\`. Pass
+`-MatrixClass <class>` to label evidence for RDP, VM, hybrid-GPU,
+weak-integrated-GPU, single-monitor, multi-monitor same-DPI, and mixed-DPI
+environments; use `-RequireMatrixClass` only when the requested class can be
+proved from collected facts. Skipped or unavailable environments must be
+recorded as missing evidence rather than treated as passing. The ledger format
+lives in [windows-native-d3d11-environment-matrix.md](windows-native-d3d11-environment-matrix.md).
 
 ## Ghostty Comparison
 

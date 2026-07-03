@@ -43,14 +43,16 @@ unavailable environment is missing evidence, not a passing result.
 | Window state | `-WindowStateSmoke` proves maximize, restore, minimize, and restore-from-minimize. |
 | Fullscreen startup | `-FullscreenStartupSmoke` proves config startup fullscreen, Alt+Enter exit, and restored baseline size. |
 | Long-run soak | `-SoakMinutes 20` records periodic nonblank screenshots, process liveness, resize diagnostics, and no failure lines. |
-| Environment package | `debug/test-d3d11-environment-smoke.ps1` emits `environment.json`, normal-session JSON, screenshots, adapter facts, Win32 session facts, and policy fields. |
+| Environment package | `debug/test-d3d11-environment-smoke.ps1` emits `environment.json`, normal-session JSON, screenshots, adapter facts, Win32 session facts, record-only matrix fields, and policy fields. |
 | Test gates | `zig build check-sizes`, `zig build test`, `zig build test-full --summary all`, `zig build`, and PR CI pass. |
 
 ## Environment Matrix
 
 The matrix evidence should cover at least these classes before default
-migration. Use the environment collector for each run and keep the generated
-artifact directory with the PR or issue that records the result.
+migration. Use the environment collector for each run, pass the matching
+`-MatrixClass`, and keep the generated artifact directory with the PR or issue
+that records the result. The ledger format lives in
+[windows-native-d3d11-environment-matrix.md](windows-native-d3d11-environment-matrix.md).
 
 | Environment class | Evidence expectation |
 |---|---|
@@ -109,7 +111,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-se
 powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -WindowStateSmoke
 powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -FullscreenStartupSmoke
 powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -SoakMinutes 20
-powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-environment-smoke.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-environment-smoke.ps1 -MatrixClass local-physical
 
 zig build
 powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -Backend opengl
