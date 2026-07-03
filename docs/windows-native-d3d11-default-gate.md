@@ -43,6 +43,7 @@ unavailable environment is missing evidence, not a passing result.
 | Window state | `-WindowStateSmoke` proves maximize, restore, minimize, and restore-from-minimize. |
 | Fullscreen startup | `-FullscreenStartupSmoke` proves config startup fullscreen, Alt+Enter exit, and restored baseline size. |
 | Long-run soak | `-SoakMinutes 20` records periodic nonblank screenshots, process liveness, resize diagnostics, and no failure lines. |
+| Accepted partial soak | Optional operator-accepted evidence under `zig-out/d3d11-accepted-soak/`; this closes the local soak gap only when explicitly accepted and remains distinct from the automated 20-minute gate. |
 | Environment package | `debug/test-d3d11-environment-smoke.ps1` emits `environment.json`, `matrix-summary.md`, normal-session JSON, screenshots, adapter facts, Win32 session facts, record-only matrix fields, and policy fields. |
 | Environment ledger | `debug/summarize-d3d11-environment-matrix.ps1` emits `matrix-ledger.md` / `matrix-ledger.json` showing recorded, failing, mismatched, operator-review, and missing classes. |
 | Artifact audit | `debug/audit-d3d11-default-gate.ps1` emits `default-gate-audit.md` / `default-gate-audit.json` from existing smoke and matrix artifacts without rerunning them. |
@@ -130,6 +131,10 @@ the collected JSON artifacts satisfy the smoke and matrix evidence gates; it
 does not run the build/test gates and does not turn unavailable matrix classes
 into passes. Use `-FailOnIncomplete` only for final closeout automation after
 the evidence directories are expected to be complete.
+When an operator explicitly accepts a shorter soak, place the summary under
+`zig-out\d3d11-accepted-soak\`; the audit reports that gate as `accepted`, not
+`pass`, so reviewers can distinguish manual acceptance from the full automated
+20-minute soak JSON.
 
 ## Rollback Rule
 

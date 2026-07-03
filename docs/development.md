@@ -268,6 +268,9 @@ To audit the collected Phase V artifacts against the default-migration gate
 without rerunning smokes, use `debug\audit-d3d11-default-gate.ps1`; it emits
 `default-gate-audit.md` / `default-gate-audit.json` and keeps missing evidence
 as missing rather than treating it as a pass.
+If a shorter soak is explicitly operator-accepted, keep its summary under
+`zig-out\d3d11-accepted-soak\`; the audit marks that gate as `accepted` so it is
+visible and distinct from a completed 20-minute automated soak.
 
 To exercise the controlled Phase V device-recreate path, run the same smoke
 with `-RecreateSmoke` after building the D3D11 executable:

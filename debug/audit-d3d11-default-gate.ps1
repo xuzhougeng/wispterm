@@ -3,8 +3,10 @@ param(
     [string]$OpenGLRoot = "",
     [string]$EnvironmentRoot = "",
     [string]$MatrixLedger = "",
+    [string]$AcceptedSoakRoot = "",
     [string]$OutDir = "",
     [int]$MinSoakSeconds = 1200,
+    [int]$AcceptedSoakMinSeconds = 510,
     [switch]$FailOnIncomplete
 )
 
@@ -20,6 +22,9 @@ if ($OpenGLRoot.Length -eq 0) {
 }
 if ($EnvironmentRoot.Length -eq 0) {
     $EnvironmentRoot = Join-Path $repoRoot "zig-out\d3d11-env-smoke"
+}
+if ($AcceptedSoakRoot.Length -eq 0) {
+    $AcceptedSoakRoot = Join-Path $repoRoot "zig-out\d3d11-accepted-soak"
 }
 if ($OutDir.Length -eq 0) {
     $OutDir = Join-Path $repoRoot ("zig-out\d3d11-default-gate-audit\{0}" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
@@ -300,6 +305,21 @@ function Test-SoakEvidence([object]$Entry) {
     )
 }
 
+function Test-AcceptedPartialSoakEvidence([object]$Entry) {
+    $json = $Entry.json
+    return (
+        ((Get-JsonField $json "schema") -eq "wispterm-d3d11-accepted-partial-soak/v1") -and
+        (Test-True (Get-JsonField $json "operator_accepted")) -and
+        (Test-True (Get-JsonField $json "pass_operator_accepted")) -and
+        (Test-True (Get-JsonField $json "sample_images_all_pass")) -and
+        ((Get-JsonField $json "sample_span_seconds") -ge $AcceptedSoakMinSeconds) -and
+        ((Get-JsonField $json "sample_count") -gt 0) -and
+        ((Get-JsonField $json "diagnostic_failure_lines") -eq 0) -and
+        ((Get-JsonField $json "diagnostic_resize_events") -gt 0) -and
+        (Test-True (Get-JsonField $json "not_normal_session_completion_json"))
+    )
+}
+
 function Test-OpenGLEvidence([object]$Entry) {
     $json = $Entry.json
     $diag = Get-Diagnostics $Entry
@@ -385,6 +405,7 @@ function Summarize-MatrixLedger([object]$Entry) {
 $normalEntries = @(Read-JsonEntries $NormalRoot "*-normal-session-*.json" "normal-session")
 $openglEntries = @(Read-JsonEntries $OpenGLRoot "*-normal-session-*.json" "opengl-normal-session")
 $environmentEntries = @(Read-JsonEntries $EnvironmentRoot "environment.json" "environment")
+$acceptedSoakEntries = @(Read-JsonEntries $AcceptedSoakRoot "accepted-partial-soak-summary.json" "accepted-partial-soak")
 if ($MatrixLedger.Length -gt 0) {
     if (!(Test-Path -LiteralPath $MatrixLedger)) {
         throw "matrix ledger not found: $MatrixLedger"
@@ -403,10 +424,18 @@ $rapidResize = Select-LatestEvidence $normalEntries { param($entry) Test-RapidRe
 $windowState = Select-LatestEvidence $normalEntries { param($entry) Test-WindowStateEvidence $entry }
 $fullscreenStartup = Select-LatestEvidence $normalEntries { param($entry) Test-FullscreenStartupEvidence $entry }
 $soak = Select-LatestEvidence $normalEntries { param($entry) Test-SoakEvidence $entry }
+$acceptedSoak = Select-LatestEvidence $acceptedSoakEntries { param($entry) Test-AcceptedPartialSoakEvidence $entry }
 $openglFallback = Select-LatestEvidence $openglEntries { param($entry) Test-OpenGLEvidence $entry }
 $environmentPackage = Select-LatestEvidence $environmentEntries { param($entry) Test-EnvironmentEvidence $entry }
 $latestLedger = if ($ledgerEntries.Count -gt 0) { @($ledgerEntries | Sort-Object last_write_utc -Descending | Select-Object -First 1)[0] } else { $null }
 $matrixSummary = Summarize-MatrixLedger $latestLedger
+$soakGate = if ($null -ne $soak) {
+    New-GateRow "long-run-soak" "Long-run soak" "pass" $soak ("soak artifact found with duration >= {0}s" -f $MinSoakSeconds)
+} elseif ($null -ne $acceptedSoak) {
+    New-GateRow "long-run-soak" "Long-run soak" "accepted" $acceptedSoak ("operator-accepted partial soak artifact found with duration >= {0}s; not a completed 20-minute normal-session JSON" -f $AcceptedSoakMinSeconds)
+} else {
+    New-GateRow "long-run-soak" "Long-run soak" "missing" $null ("no passing -SoakMinutes artifact with duration >= {0}s and no operator-accepted partial soak artifact with duration >= {1}s" -f $MinSoakSeconds, $AcceptedSoakMinSeconds)
+}
 
 $gates = @(
     (New-EvidenceGate "d3d11-normal-session" "D3D11 normal session" $d3d11Normal "healthy D3D11 normal-session artifact found" "no passing D3D11 normal-session artifact with required diagnostics"),
@@ -418,12 +447,12 @@ $gates = @(
     (New-EvidenceGate "rapid-resize" "Rapid resize" $rapidResize "rapid resize artifact found" "no passing -RapidResizeSmoke artifact"),
     (New-EvidenceGate "window-state" "Window state" $windowState "maximize/restore/minimize artifact found" "no passing -WindowStateSmoke artifact"),
     (New-EvidenceGate "fullscreen-startup" "Fullscreen startup" $fullscreenStartup "fullscreen startup artifact found" "no passing -FullscreenStartupSmoke artifact"),
-    (New-EvidenceGate "long-run-soak" "Long-run soak" $soak ("soak artifact found with duration >= {0}s" -f $MinSoakSeconds) ("no passing -SoakMinutes artifact with duration >= {0}s" -f $MinSoakSeconds)),
+    $soakGate,
     (New-EvidenceGate "environment-package" "Environment package" $environmentPackage "environment package artifact found" "no passing environment.json package artifact"),
     (New-GateRow "environment-ledger" "Environment ledger" $matrixSummary.status $latestLedger $matrixSummary.details)
 )
 
-$incomplete = @($gates | Where-Object { $_.status -ne "pass" })
+$incomplete = @($gates | Where-Object { $_.status -ne "pass" -and $_.status -ne "accepted" })
 $artifactStatus = if ($incomplete.Count -eq 0) { "complete" } else { "incomplete" }
 $generatedAt = (Get-Date).ToString("o")
 
@@ -440,6 +469,7 @@ $audit = [ordered]@{
         normal = $NormalRoot
         opengl = $OpenGLRoot
         environment = $EnvironmentRoot
+        accepted_soak = $AcceptedSoakRoot
         matrix_ledger = if ($null -eq $latestLedger) { $null } else { $latestLedger.path }
         output = $OutDir
     }
@@ -454,8 +484,10 @@ $audit = [ordered]@{
         normal_session_artifacts = $normalEntries.Count
         opengl_artifacts = $openglEntries.Count
         environment_packages = $environmentEntries.Count
+        accepted_soak_artifacts = $acceptedSoakEntries.Count
         matrix_ledgers = $ledgerEntries.Count
         passing_gates = @($gates | Where-Object { $_.status -eq "pass" }).Count
+        accepted_gates = @($gates | Where-Object { $_.status -eq "accepted" }).Count
         incomplete_gates = $incomplete.Count
     }
     gates = @($gates)
@@ -485,8 +517,10 @@ $lines.Add("|---|---|") | Out-Null
 $lines.Add("| Normal-session root | $(Format-AuditValue (Short-Path $NormalRoot)) |") | Out-Null
 $lines.Add("| OpenGL fallback root | $(Format-AuditValue (Short-Path $OpenGLRoot)) |") | Out-Null
 $lines.Add("| Environment root | $(Format-AuditValue (Short-Path $EnvironmentRoot)) |") | Out-Null
+$lines.Add("| Accepted partial soak root | $(Format-AuditValue (Short-Path $AcceptedSoakRoot)) |") | Out-Null
 $lines.Add("| Matrix ledger | $(Format-AuditValue (Short-Path $ledgerPathForMarkdown)) |") | Out-Null
 $lines.Add("| Minimum soak seconds | $MinSoakSeconds |") | Out-Null
+$lines.Add("| Accepted partial soak minimum seconds | $AcceptedSoakMinSeconds |") | Out-Null
 $lines.Add("") | Out-Null
 $lines.Add("## Gates") | Out-Null
 $lines.Add("") | Out-Null
@@ -503,6 +537,8 @@ $lines.Add("|---|---|---:|---|") | Out-Null
 foreach ($row in $matrixSummary.rows) {
     $lines.Add("| $(Format-AuditValue $row.class) | $(Format-AuditValue $row.status) | $(Format-AuditValue $row.evidence_count) | $(Format-AuditValue (Short-Path $row.selected_environment_json)) |") | Out-Null
 }
+$lines.Add("") | Out-Null
+$lines.Add('A gate with status `accepted` is operator-accepted evidence. It closes the audit gap but remains distinct from an automated `pass`.') | Out-Null
 $lines.Add("") | Out-Null
 $lines.Add('Build/test gates remain separate: run `zig build check-sizes`, `zig build test`, `zig build test-full --summary all`, `zig build`, and PR CI before treating Phase V evidence as closeout-ready.') | Out-Null
 $lines | Set-Content -LiteralPath $auditMdPath -Encoding UTF8

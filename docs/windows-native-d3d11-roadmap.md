@@ -216,6 +216,9 @@ artifacts to generate a read-only `default-gate-audit.md` /
 `default-gate-audit.json`. The audit checks existing evidence against the
 Phase VI entry gate, keeps missing evidence incomplete, and does not run smokes,
 write fallback markers, or alter renderer selection.
+If a shorter soak is explicitly accepted by an operator, store its
+`accepted-partial-soak-summary.json` under `zig-out\d3d11-accepted-soak\`; the
+audit reports that evidence as `accepted` rather than an automated `pass`.
 
 ## Ghostty Comparison
 
