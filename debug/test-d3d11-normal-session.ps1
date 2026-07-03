@@ -13,6 +13,7 @@ param(
     [switch]$RecreateFailureSmoke,
     [switch]$RapidResizeSmoke,
     [switch]$WindowStateSmoke,
+    [switch]$FullscreenStartupSmoke,
     [switch]$FallbackMarkerSmoke,
     [switch]$KeepOpen
 )
@@ -40,8 +41,11 @@ if (!(Test-Path -LiteralPath $ExePath)) {
     throw "WispTerm executable not found: $ExePath. Run $buildHint first."
 }
 
-if ($Backend -eq "opengl" -and ($RecreateSmoke -or $RecreateFailureSmoke -or $FallbackMarkerSmoke -or $WindowStateSmoke)) {
-    throw "-RecreateSmoke, -RecreateFailureSmoke, -FallbackMarkerSmoke, and -WindowStateSmoke require -Backend d3d11."
+if ($Backend -eq "opengl" -and ($RecreateSmoke -or $RecreateFailureSmoke -or $FallbackMarkerSmoke -or $WindowStateSmoke -or $FullscreenStartupSmoke)) {
+    throw "-RecreateSmoke, -RecreateFailureSmoke, -FallbackMarkerSmoke, -WindowStateSmoke, and -FullscreenStartupSmoke require -Backend d3d11."
+}
+if ($FullscreenStartupSmoke -and ($RecreateSmoke -or $RecreateFailureSmoke -or $RapidResizeSmoke -or $WindowStateSmoke -or $FallbackMarkerSmoke)) {
+    throw "-FullscreenStartupSmoke must run by itself."
 }
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
@@ -741,6 +745,10 @@ function Send-AltDigit([byte]$DigitKey) {
     Send-KeyChord ([byte[]](0x12, $DigitKey))
 }
 
+function Send-AltEnter() {
+    Send-KeyChord ([byte[]](0x12, 0x0D))
+}
+
 function Send-Escape() {
     Send-KeyChord ([byte[]](0x1B))
 }
@@ -793,6 +801,8 @@ $rapidResizeShot = Join-Path $OutDir "$artifactPrefix-rapid-resize-$timestamp.pn
 $windowStateMaximizeShot = Join-Path $OutDir "$artifactPrefix-window-state-maximize-$timestamp.png"
 $windowStateRestoreShot = Join-Path $OutDir "$artifactPrefix-window-state-restore-$timestamp.png"
 $windowStateMinimizeRestoreShot = Join-Path $OutDir "$artifactPrefix-window-state-minimize-restore-$timestamp.png"
+$fullscreenStartupShot = Join-Path $OutDir "$artifactPrefix-fullscreen-startup-$timestamp.png"
+$fullscreenStartupRestoreShot = Join-Path $OutDir "$artifactPrefix-fullscreen-startup-restore-$timestamp.png"
 $metricsPath = Join-Path $OutDir "$artifactPrefix-normal-session-$timestamp.json"
 $appDataDir = Join-Path $OutDir "appdata"
 $diagnosticPath = Join-Path $appDataDir "wispterm\render-diagnostic.log"
@@ -806,10 +816,12 @@ $aiProfilePath = New-SmokeAiProfile $appDataDir $profileName $artifactPrefix
 if (!$workingDirectoryProvided) {
     $WorkingDirectory = $previewFixtureDir
 }
+$fullscreenConfigValue = if ($FullscreenStartupSmoke) { "true" } else { "false" }
 @"
 shell = $Shell
 wispterm-debug-render = true
 restore-tabs-on-startup = false
+fullscreen = $fullscreenConfigValue
 ai-default-profile = $profileName
 background-image = $backgroundImagePath
 background-opacity = 0.18
@@ -867,6 +879,121 @@ try {
 
     if ($wisptermWindow -eq [IntPtr]::Zero) {
         throw "WispTerm window did not appear"
+    }
+
+    if ($FullscreenStartupSmoke) {
+        [WispTermD3D11SmokeAutomation]::SetForegroundWindow($wisptermWindow) | Out-Null
+        Start-Sleep -Milliseconds 2200
+        Click-WindowCenter $wisptermWindow
+        Start-Sleep -Milliseconds 600
+
+        $diagText = Wait-ForDiagnosticText $diagnosticPath "toggle-fullscreen requested|fullscreen=true" 12
+        Start-Sleep -Milliseconds 900
+        $fullscreenSize = Capture-Window $wisptermWindow $fullscreenStartupShot
+        $fullscreenMetrics = Analyze-Image $fullscreenStartupShot
+        $fullscreenSizeDelta = [Math]::Max(
+            [Math]::Abs($fullscreenSize.Width - $WindowWidth),
+            [Math]::Abs($fullscreenSize.Height - $WindowHeight)
+        )
+
+        [WispTermD3D11SmokeAutomation]::SetForegroundWindow($wisptermWindow) | Out-Null
+        Click-WindowCenter $wisptermWindow
+        Start-Sleep -Milliseconds 300
+        Send-AltEnter
+        Start-Sleep -Milliseconds 1200
+        [WispTermD3D11SmokeAutomation]::SetWindowPos($wisptermWindow, [IntPtr]::Zero, $WindowX, $WindowY, $WindowWidth, $WindowHeight, 0x0040) | Out-Null
+        [WispTermD3D11SmokeAutomation]::SetForegroundWindow($wisptermWindow) | Out-Null
+        Start-Sleep -Milliseconds 1100
+        $restoreSize = Capture-Window $wisptermWindow $fullscreenStartupRestoreShot
+        $restoreMetrics = Analyze-Image $fullscreenStartupRestoreShot
+        $restoreWidthDelta = [Math]::Abs($restoreSize.Width - $WindowWidth)
+        $restoreHeightDelta = [Math]::Abs($restoreSize.Height - $WindowHeight)
+
+        $diagText = if (Test-Path -LiteralPath $diagnosticPath) { Get-Content -LiteralPath $diagnosticPath -Raw } else { $diagText }
+        $hasD3D11Present = $diagText -match "gpu-backend=d3d11 present=dxgi"
+        $hasD3D11Environment = $diagText -match "gpu-backend=d3d11 environment .*feature_level=([0-9_]+|unknown).*swap_effect=flip_discard"
+        $hasWindowsEnvironment = $diagText -match "windows-environment remote_session=(true|false) session_id=[0-9]+ monitor_count=[0-9]+ mixed_dpi=(true|false) primary_dpi=[0-9]+x[0-9]+ system_dpi=[0-9]+"
+        $hasD3D11PolicyHealthy = $diagText -match "gpu-backend=d3d11 present=dxgi .*policy_state=healthy.*fallback_candidate=false"
+        $hasFullscreenRequest = $diagText -match "toggle-fullscreen requested .*full=false"
+        $hasFullscreenState = $diagText -match "fullscreen=true"
+        $hasFullscreenExit = $diagText -match "toggle-maximize requested .*full=true"
+        $hasUiProbe = $diagText -match "d3d11-ui-smoke probe .* ok=true"
+        $hasOffscreen = $diagText -match "d3d11-offscreen-smoke round-trip active"
+        $d3d11ResizeEventCount = [regex]::Matches($diagText, "gpu-backend=d3d11 resized swapchain to").Count
+        $hasFailures = $diagText -match "present failed|shader compile failed|backbuffer probe failed|resize sync failed"
+        $proc.Refresh()
+
+        $fullscreenPass = [bool]($fullscreenMetrics.Pass -and $hasFullscreenRequest -and $hasFullscreenState)
+        $restorePass = [bool]($restoreMetrics.Pass -and $restoreWidthDelta -le 12 -and $restoreHeightDelta -le 12)
+        $pass = [bool](
+            !$proc.HasExited -and
+            $fullscreenPass -and
+            $restorePass -and
+            $hasFullscreenExit -and
+            $hasD3D11Present -and
+            $hasD3D11Environment -and
+            $hasWindowsEnvironment -and
+            $hasD3D11PolicyHealthy -and
+            $hasUiProbe -and
+            $hasOffscreen -and
+            $d3d11ResizeEventCount -ge 2 -and
+            !$hasFailures
+        )
+
+        $result = [ordered]@{
+            pass = $pass
+            mode = "fullscreen_startup"
+            backend = $Backend
+            shell = $Shell
+            exe = $ExePath
+            config = $configPath
+            diagnostic_log = $diagnosticPath
+            screenshots = [ordered]@{
+                fullscreen = $fullscreenStartupShot
+                restore = $fullscreenStartupRestoreShot
+            }
+            fullscreen = [ordered]@{
+                width = $fullscreenSize.Width
+                height = $fullscreenSize.Height
+                size_delta = $fullscreenSizeDelta
+                non_dark = $fullscreenMetrics.NonDark
+                bright = $fullscreenMetrics.Bright
+                saturated = $fullscreenMetrics.Saturated
+                request_diagnostic = [bool]$hasFullscreenRequest
+                fullscreen_state_diagnostic = [bool]$hasFullscreenState
+                pass = [bool]$fullscreenPass
+            }
+            restore = [ordered]@{
+                width = $restoreSize.Width
+                height = $restoreSize.Height
+                width_delta = $restoreWidthDelta
+                height_delta = $restoreHeightDelta
+                non_dark = $restoreMetrics.NonDark
+                bright = $restoreMetrics.Bright
+                saturated = $restoreMetrics.Saturated
+                exit_diagnostic = [bool]$hasFullscreenExit
+                pass = [bool]$restorePass
+            }
+            diagnostics = [ordered]@{
+                d3d11_present = [bool]$hasD3D11Present
+                d3d11_environment = [bool]$hasD3D11Environment
+                windows_environment = [bool]$hasWindowsEnvironment
+                d3d11_policy_healthy = [bool]$hasD3D11PolicyHealthy
+                ui_probe_ok = [bool]$hasUiProbe
+                offscreen_round_trip = [bool]$hasOffscreen
+                d3d11_resize_events = $d3d11ResizeEventCount
+                failure_lines = [bool]$hasFailures
+            }
+        }
+
+        $json = $result | ConvertTo-Json -Depth 6
+        $json | Set-Content -LiteralPath $metricsPath -Encoding UTF8
+        $json
+
+        if (!$pass) {
+            throw "D3D11 fullscreen-startup smoke failed. Inspect metrics=$metricsPath and diagnostic_log=$diagnosticPath"
+        }
+        return
     }
 
     [WispTermD3D11SmokeAutomation]::ShowWindow($wisptermWindow, 5) | Out-Null

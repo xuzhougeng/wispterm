@@ -74,9 +74,13 @@ nonblank with D3D11 resize diagnostics and no resize/present failure lines.
 Window-state hardening has started too: `-WindowStateSmoke` drives maximize,
 restore, minimize, and restore-from-minimize through real Win32 state APIs,
 then verifies visible screenshots, baseline-size restoration, D3D11 resize
-diagnostics, and no present/resize failures. Fullscreen remains a separate
-startup/config smoke target. The native D3D11 fallback topology is now defined
-as next-launch/future-auto policy, not in-process renderer switching: explicit
+diagnostics, and no present/resize failures. Fullscreen startup coverage is now
+separate and explicit: `-FullscreenStartupSmoke` writes `fullscreen = true` into
+the isolated smoke config, verifies the startup fullscreen path renders nonblank
+with fullscreen diagnostics, exits fullscreen through Alt+Enter, restores the
+baseline window rectangle, and checks D3D11 resize diagnostics without
+present/resize failures. The native D3D11 fallback topology is now defined as
+next-launch/future-auto policy, not in-process renderer switching: explicit
 `d3d11` continues to honor the user's build/runtime choice and only reports a
 warning when a matching marker is present, while a future Windows `auto` default
 can use a version+adapter-scoped `d3d11-fallback` marker to choose OpenGL
@@ -133,9 +137,12 @@ Add `-RapidResizeSmoke` to the same command to include Phase V rapid-resize
 stress evidence in the normal-session run.
 
 Add `-WindowStateSmoke` to the same command to include Phase V maximize,
-restore, minimize, and restore-from-minimize evidence. This smoke intentionally
-does not claim fullscreen coverage yet; fullscreen remains in the Phase V matrix
-until a dedicated startup/config smoke lands.
+restore, minimize, and restore-from-minimize evidence.
+
+Add `-FullscreenStartupSmoke` by itself to verify the Phase V fullscreen startup
+path and exit-to-windowed restore evidence. This mode is intentionally separate
+from the normal-session UI parity flow because it launches from a different
+config state.
 
 The fallback marker policy is intentionally policy-only at this stage. It
 defines marker format, persistence, stale-version/adapter handling, explicit

@@ -290,8 +290,20 @@ This drives maximize, restore, minimize, and restore-from-minimize through real
 Win32 window state APIs, captures screenshots after the visible states, verifies
 the session returns to the baseline window size, and checks that D3D11 resize
 diagnostics were emitted without present/resize failure lines. It is a Phase V
-window-state sub-slice only; fullscreen remains a separate startup/config smoke
-target.
+window-state sub-slice only.
+
+To exercise fullscreen startup on D3D11, run:
+
+```powershell
+zig build -Dgpu-backend=d3d11
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -FullscreenStartupSmoke
+```
+
+This writes `fullscreen = true` into the isolated smoke config, launches through
+the real startup fullscreen path, captures a fullscreen screenshot, uses
+Alt+Enter to exit fullscreen, restores the baseline window rectangle, and
+verifies both visible states are nonblank with D3D11 fullscreen/resize
+diagnostics and no present/resize failure lines.
 
 D3D11 fallback is a next-launch policy while the renderer backend remains a
 comptime selection. Do not implement same-process D3D11-to-OpenGL switching
