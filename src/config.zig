@@ -332,6 +332,9 @@ theme: ?[]const u8 = null,
 /// platform/pty_command.zig; any other value is treated as a raw command path.
 shell: []const u8 = platform_pty_command.default_shell_name,
 
+/// Working directory for the first local terminal surface (unset = inherit app cwd).
+@"working-directory": ?[]const u8 = null,
+
 /// Name of the saved AI profile used as the default for startup auto-open,
 /// remote auto-open, and the "New Agent" command. Empty falls back to the
 /// first saved profile.
@@ -912,6 +915,9 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         }
     } else if (std.mem.eql(u8, key, "shell")) {
         self.shell = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "working-directory")) {
+        const trimmed = std.mem.trim(u8, value, " \t\r\n");
+        self.@"working-directory" = if (trimmed.len == 0) null else self.dupeString(allocator, trimmed) orelse return;
     } else if (std.mem.eql(u8, key, "ai-default-profile")) {
         self.@"ai-default-profile" = self.dupeString(allocator, value) orelse return;
     } else if (std.mem.eql(u8, key, "ai-subagent-profile")) {
@@ -1430,6 +1436,7 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --ai-agent-command-timeout-ms <ms> Agent command timeout budget
         \\  --ai-agent-output-limit <bytes> Max bytes returned by each tool
         \\  --ai-agent-working-dir <path> Default working directory for agent local commands
+        \\  --working-directory <path>  Working directory for the first terminal
         \\  --jina-api-key <key>         API key for Jina web search/read ($websearch, $webread)
         \\  --windows-conpty <mode>      Windows pseudo console host: auto | system
         \\  --auto-update-check <bool>  Check GitHub Releases after startup
@@ -1784,6 +1791,9 @@ const default_config_template =
     \\
 ++ platform_pty_command.default_shell_assignment_comment ++
     \\
+    \\# Working directory for the first terminal. Empty/unset inherits WispTerm's cwd.
+    \\# working-directory =
+    \\
     \\
     \\# Remote access foundation (disabled by default)
     \\# remote-session-key is the browser pairing key, not the web admin login password.
@@ -2012,6 +2022,29 @@ test "config: restore-tabs-on-startup parses true/false" {
     // Invalid value leaves the previous state untouched (still false).
     cfg.applyKeyValue(allocator, "restore-tabs-on-startup", "maybe", ".");
     try std.testing.expectEqual(false, cfg.@"restore-tabs-on-startup");
+}
+
+test "config: working-directory defaults unset and parses paths" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+    defer cfg.deinit(allocator);
+
+    try std.testing.expect(cfg.@"working-directory" == null);
+
+    cfg.applyKeyValue(allocator, "working-directory", "/tmp/wispterm-project", ".");
+    try std.testing.expectEqualStrings("/tmp/wispterm-project", cfg.@"working-directory".?);
+
+    cfg.applyKeyValue(allocator, "working-directory", "", ".");
+    try std.testing.expect(cfg.@"working-directory" == null);
+}
+
+test "config: help lists working-directory CLI option" {
+    const allocator = std.testing.allocator;
+    var out = std.ArrayList(u8){};
+    defer out.deinit(allocator);
+
+    try writeHelp(out.writer(allocator));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "--working-directory <path>") != null);
 }
 
 test "config: feishu-enabled parses true/false (regression: field needs a parse handler)" {

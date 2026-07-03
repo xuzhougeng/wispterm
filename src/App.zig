@@ -228,6 +228,18 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
     const jina_api_key = try dupeStr(allocator, cfg.@"jina-api-key");
     errdefer allocator.free(jina_api_key);
 
+    var initial_cwd_buf: platform_pty_command.CwdBuffer = undefined;
+    var initial_cwd_len: usize = 0;
+    if (cfg.@"working-directory") |dir| {
+        if (dir.len > 0) {
+            const owned_cwd = try platform_pty_command.allocCwdFromUtf8(allocator, dir);
+            defer platform_pty_command.freeCwd(allocator, owned_cwd);
+            initial_cwd_len = @min(owned_cwd.len, initial_cwd_buf.len - 1);
+            @memcpy(initial_cwd_buf[0..initial_cwd_len], owned_cwd[0..initial_cwd_len]);
+            initial_cwd_buf[initial_cwd_len] = 0;
+        }
+    }
+
     var app = App{
         .allocator = allocator,
         .shell_cmd_buf = undefined,
@@ -310,6 +322,8 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .download_worker_running = false,
         .download_completed = false,
         .startup_update_check_started = false,
+        .next_window_cwd = initial_cwd_buf,
+        .next_window_cwd_len = initial_cwd_len,
         .windows = .empty,
         .mutex = .{},
         .window_threads = .empty,
@@ -1208,6 +1222,21 @@ test "app: updateConfig refreshes configured shell command" {
     const expected_len = platform_pty_command.resolveShellCommandLine(&expected_buf, next_shell);
     const CommandUnit = @TypeOf(expected_buf[0]);
     try testing.expectEqualSlices(CommandUnit, expected_buf[0..expected_len], app.getShellCmd());
+}
+
+test "app: working-directory seeds initial cwd once" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var app = try App.init(allocator, .{ .@"working-directory" = "/tmp/wispterm-project" });
+    defer app.deinit();
+
+    var cwd_buf: platform_pty_command.CwdBuffer = undefined;
+    const len = app.takeInitialCwd(&cwd_buf);
+    var utf8: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = platform_pty_command.cwdToUtf8(&utf8, platform_pty_command.cwdFromBuffer(&cwd_buf, len)).?;
+    try testing.expectEqualStrings("/tmp/wispterm-project", cwd);
+    try testing.expectEqual(@as(usize, 0), app.takeInitialCwd(&cwd_buf));
 }
 
 test "app: WeChat direct can start while remote client is active" {
