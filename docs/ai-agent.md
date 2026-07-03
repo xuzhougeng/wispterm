@@ -276,11 +276,20 @@ It uses the standard `mcpServers` format (see [`mcp.json.example`](mcp.json.exam
 }
 ```
 
-Each server is a local program launched over stdio. At startup WispTerm runs
-`tools/list` against every enabled server and advertises its tools to the
-model; a tool call is routed back to its server. Set `"enabled": false` to keep
-a server configured but off. Tool calls honor the same approval prompt
+Each server is a local program launched over stdio. Set `"enabled": false` to
+keep a server configured but off. Tool calls honor the same approval prompt
 (`ai-agent-permission`) as other agent tools.
+
+**Deferred loading.** WispTerm does **not** spawn any MCP server at startup —
+the system prompt just lists the configured-but-not-yet-activated servers (and
+skills) by name, so the model knows what's available without paying a
+handshake cost up front. The model activates a server on demand with the
+built-in `mcp_activate` tool; the first activation of a server runs the real
+discovery handshake and caches the result to `mcp_catalog.json` in the config
+directory, so later activations (this session or a future one) are instant.
+Running **Test connection** in the panel (below) performs the same discovery
+handshake and writes the same cache — so testing a server after configuring it
+means the catalog is already warm the first time the model activates it.
 
 ### Three ways to configure
 
