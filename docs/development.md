@@ -125,6 +125,47 @@ preview is visible, the table preview labels should move with the regression.
 For that scenario, add `-ManualSetupSeconds 15`, open the CSV/TSV preview during
 the pause, then let the script run the resize sequence.
 
+## Performance Benchmarking
+
+`wispterm-bench` is the CPU-side benchmark CLI (Ghostty-aligned: mirrors
+`ghostty-bench`'s `--duration` case-runner shape). It links ghostty-vt and
+drives a synthetic VT byte stream through the same parser the shipped app uses,
+so the number is directly comparable across branches and machines. Build and
+run it with:
+
+```powershell
+zig build -Demit-bench -Doptimize=ReleaseFast
+.\zig-out\bin\wispterm-bench.exe --list
+.\zig-out\bin\wispterm-bench.exe --case terminal-stream --duration 1000
+```
+
+Always pass `-Doptimize=ReleaseFast` for benchmarks — a debug build is not
+representative of real performance. Use `--duration <ms>` to set the per-case
+window (default 1000ms) and `--case <name>` to run a single case.
+
+The CLI writes a machine-readable `benchmark-report-<timestamp>.json` and a
+paste-ready `benchmark-report-<timestamp>.md` into the WispTerm config dir
+(`%APPDATA%\wispterm\` on Windows, `~/Library/Application Support/wispterm/` on
+macOS), and prints the Markdown to stdout. Paste that Markdown block into a
+**Performance Report** issue (or a Discussion) so we can compare results across
+hardware and renderer backends. The JSON is for tooling/regression tracking.
+
+The bench module's own tests (which link ghostty-vt and so cannot run in the
+lean fast suite) have their own step:
+
+```powershell
+zig build test-bench
+```
+
+An in-app GPU-side benchmark (`wispterm --benchmark`, measuring per-frame render
+latency and FPS through the real renderer) is planned; the report schema in
+`src/benchmark/report.zig` already reserves the GPU-adapter / window / DPI /
+grid fields that mode will fill, so CLI and in-app reports stay comparable.
+
+When publishing a desktop release, run `wispterm-bench --case terminal-stream
+--duration 1000` on the release machine and attach the Markdown report to the
+release notes as a regression baseline for that version.
+
 ## Windows UI Automation
 
 When debugging UI behavior, automate WispTerm as a real visible Windows app from

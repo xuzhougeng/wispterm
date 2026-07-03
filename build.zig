@@ -418,6 +418,14 @@ test "standalone filetool build contract is declared" {
     try expectSourceContains(source, "b.step(\"wispterm-filetool\"");
 }
 
+test "standalone benchmark CLI build contract is declared" {
+    const source = @embedFile("build.zig");
+    try expectSourceContains(source, ".name = \"wispterm-bench\"");
+    try expectSourceContains(source, "src/wispterm_bench.zig");
+    try expectSourceContains(source, "b.step(\"bench\"");
+    try expectSourceContains(source, "-Demit-bench");
+}
+
 test "shared compile checks default to platforms without desktop backends" {
     try std.testing.expect(!defaultEmitSharedCompileChecks(PlatformFeatures.forOs(.windows)));
     try std.testing.expect(!defaultEmitSharedCompileChecks(PlatformFeatures.forOs(.linux)));
@@ -586,6 +594,14 @@ pub fn build(b: *std.Build) void {
         "emit-shared-compile-checks",
         "Compile shared modules without running them on targets that do not have desktop host backends yet.",
     ) orelse defaultEmitSharedCompileChecks(platform);
+    // Standalone CPU-side benchmark CLI (Ghostty-aligned `wispterm-bench`). Off
+    // by default: it links ghostty-vt and is meant for branch-to-branch
+    // performance comparisons, not for app packaging or the pre-merge gate.
+    const emit_bench = b.option(
+        bool,
+        "emit-bench",
+        "Build the standalone wispterm-bench CPU benchmark CLI (links ghostty-vt).",
+    ) orelse false;
     const app_version = packageVersion(b);
 
     if (emit_desktop_exe) {
@@ -667,6 +683,39 @@ pub fn build(b: *std.Build) void {
     if (platform.supports_gui_subsystem) filetool_exe.subsystem = .Console;
     const filetool_step = b.step("wispterm-filetool", "Build the standalone remote-side file edit helper");
     filetool_step.dependOn(&b.addInstallArtifact(filetool_exe, .{}).step);
+
+    // Standalone CPU benchmark CLI. Mirrors Ghostty's `zig build -Demit-bench`:
+    // a separate artifact that links ghostty-vt for the TerminalStream case.
+    // Built only on explicit request (`-Demit-bench` or `zig build bench`).
+    const bench_step = b.step("bench", "Build the standalone wispterm-bench CPU benchmark CLI (separate artifact; not bundled with the app)");
+    if (emit_bench) {
+        const bench_mod = createBenchModule(b, target, optimize);
+        const bench_exe = b.addExecutable(.{
+            .name = "wispterm-bench",
+            .root_module = bench_mod,
+        });
+        if (platform.supports_gui_subsystem) bench_exe.subsystem = .Console;
+        const install_bench = b.addInstallArtifact(bench_exe, .{});
+        bench_step.dependOn(&install_bench.step);
+        // Include in the default install too, so `zig build -Demit-bench`
+        // actually produces the binary (the named `bench` step alone is not
+        // run by a bare `zig build`).
+        b.getInstallStep().dependOn(&install_bench.step);
+    } else {
+        bench_step.dependOn(&b.addFail("bench requires -Demit-bench").step);
+    }
+
+    // `test-bench`: runs the bench modules' own tests (TerminalStream + cli),
+    // which link ghostty-vt and so cannot live in the lean fast suite. Kept
+    // separate from test-full so it does not slow the pre-merge gate; run it
+    // explicitly when touching the benchmark code.
+    const bench_test_mod = createBenchModule(b, target, optimize);
+    const bench_tests = b.addTest(.{
+        .name = "wispterm-bench-test",
+        .root_module = bench_test_mod,
+    });
+    const test_bench_step = b.step("test-bench", "Run the wispterm-bench module tests (links ghostty-vt)");
+    test_bench_step.dependOn(&b.addRunArtifact(bench_tests).step);
 
     b.installDirectory(.{
         .source_dir = b.path("plugins"),
@@ -1280,6 +1329,40 @@ fn createAppModuleWithRootAndTestShard(
         app_mod.linkSystemLibrary("objc", .{});
     }
     return app_mod;
+}
+
+fn createBenchModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    const bench_mod = b.createModule(.{
+        .root_source_file = b.path("src/wispterm_bench.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    // env.zig reads app_version + gpu_backend from build_options. The bench
+    // CLI links no GPU backend, so gpu_backend is reported as "n/a".
+    const bench_options = b.addOptions();
+    bench_options.addOption([]const u8, "app_version", packageVersion(b));
+    bench_options.addOption([]const u8, "gpu_backend", "n/a");
+    bench_mod.addOptions("build_options", bench_options);
+    // The TerminalStream case drives ghostty-vt; wire the same dep + stb the
+    // app uses so the VT parser is the exact shipped code path.
+    if (b.lazyDependency("ghostty", .{
+        .target = target,
+        .optimize = optimize,
+        .simd = false,
+    })) |dep| {
+        bench_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
+        bench_mod.addIncludePath(dep.path("src/stb"));
+        bench_mod.addCSourceFile(.{
+            .file = dep.path("src/stb/stb.c"),
+            .flags = &.{},
+        });
+    }
+    return bench_mod;
 }
 
 fn addMacosAppBundle(
