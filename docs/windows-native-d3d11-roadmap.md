@@ -209,8 +209,10 @@ environments; use `-RequireMatrixClass` only when the requested class can be
 proved from collected facts. Skipped or unavailable environments must be
 recorded as missing evidence rather than treated as passing. Use
 `debug\summarize-d3d11-environment-matrix.ps1` to aggregate packages into a
-reviewable `matrix-ledger.md` / `matrix-ledger.json`. The ledger format lives
-in [windows-native-d3d11-environment-matrix.md](windows-native-d3d11-environment-matrix.md).
+reviewable `matrix-ledger.md` / `matrix-ledger.json` and a
+`matrix-collection-plan.md` / `matrix-collection-plan.json` for the remaining
+non-recorded classes. The ledger format lives in
+[windows-native-d3d11-environment-matrix.md](windows-native-d3d11-environment-matrix.md).
 Use `debug\audit-d3d11-default-gate.ps1` after collecting the smoke and matrix
 artifacts to generate a read-only `default-gate-audit.md` /
 `default-gate-audit.json`. The audit checks existing evidence against the

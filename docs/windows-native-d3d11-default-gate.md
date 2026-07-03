@@ -45,7 +45,7 @@ unavailable environment is missing evidence, not a passing result.
 | Long-run soak | `-SoakMinutes 20` records periodic nonblank screenshots, process liveness, resize diagnostics, and no failure lines. |
 | Accepted partial soak | Optional operator-accepted evidence under `zig-out/d3d11-accepted-soak/`; this closes the local soak gap only when explicitly accepted and remains distinct from the automated 20-minute gate. |
 | Environment package | `debug/test-d3d11-environment-smoke.ps1` emits `environment.json`, `matrix-summary.md`, normal-session JSON, screenshots, adapter facts, Win32 session facts, record-only matrix fields, and policy fields. |
-| Environment ledger | `debug/summarize-d3d11-environment-matrix.ps1` emits `matrix-ledger.md` / `matrix-ledger.json` showing recorded, failing, mismatched, operator-review, and missing classes. |
+| Environment ledger | `debug/summarize-d3d11-environment-matrix.ps1` emits `matrix-ledger.md` / `matrix-ledger.json` showing recorded, failing, mismatched, operator-review, and missing classes, plus `matrix-collection-plan.md` / `matrix-collection-plan.json` for the remaining collector commands. |
 | Artifact audit | `debug/audit-d3d11-default-gate.ps1` emits `default-gate-audit.md` / `default-gate-audit.json` from existing smoke and matrix artifacts without rerunning them. |
 | Test gates | `zig build check-sizes`, `zig build test`, `zig build test-full --summary all`, `zig build`, and PR CI pass. |
 

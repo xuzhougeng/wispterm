@@ -263,7 +263,11 @@ not change fallback policy. The durable ledger format is documented in
 [windows-native-d3d11-environment-matrix.md](windows-native-d3d11-environment-matrix.md).
 After collecting one or more environment packages, run
 `debug\summarize-d3d11-environment-matrix.ps1` to emit a consolidated
-`matrix-ledger.md` / `matrix-ledger.json` for PR or issue review.
+`matrix-ledger.md` / `matrix-ledger.json` plus a
+`matrix-collection-plan.md` / `matrix-collection-plan.json` for PR or issue
+review. The collection plan lists remaining non-recorded classes and the exact
+collector command to run in each matching environment; it is not evidence and
+does not accept missing classes.
 To audit the collected Phase V artifacts against the default-migration gate
 without rerunning smokes, use `debug\audit-d3d11-default-gate.ps1`; it emits
 `default-gate-audit.md` / `default-gate-audit.json` and keeps missing evidence

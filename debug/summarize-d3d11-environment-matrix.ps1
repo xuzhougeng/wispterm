@@ -91,6 +91,65 @@ function StatusRank([string]$Status) {
     return 5
 }
 
+function Get-CollectionSpec([string]$Class) {
+    $requireClassMatch = $true
+    $operatorAction = "Run the collector on a machine or session that actually matches this class."
+    $note = "Use -RequireMatrixClass so a mismatched run stays visible as non-passing evidence."
+
+    switch ($Class) {
+        "local-physical" {
+            $operatorAction = "Run on a non-remote physical Windows machine with a non-virtual D3D11 adapter."
+        }
+        "rdp" {
+            $operatorAction = "Run from inside an RDP session."
+        }
+        "virtual-machine" {
+            $operatorAction = "Run inside the target VM and keep the adapter facts if the heuristic does not match."
+            $note = "Use -RequireMatrixClass when the VM adapter is expected to be detectable; otherwise rerun without it and review the adapter facts."
+        }
+        "hybrid-gpu" {
+            $requireClassMatch = $false
+            $operatorAction = "Run on a hybrid-GPU laptop or workstation and add operator confirmation of the topology in the PR or issue."
+            $note = "Hybrid topology cannot be proven from the single DXGI adapter diagnostic, so the ledger reports operator-review until the evidence is explicitly accepted."
+        }
+        "weak-integrated-gpu" {
+            $operatorAction = "Run on an integrated GPU with <= 1 GiB dedicated video memory."
+        }
+        "single-monitor" {
+            $operatorAction = "Run with exactly one active monitor."
+        }
+        "multi-monitor-same-dpi" {
+            $operatorAction = "Run with more than one active monitor and matching DPI values."
+        }
+        "multi-monitor-mixed-dpi" {
+            $operatorAction = "Run with more than one active monitor and mixed DPI values."
+        }
+    }
+
+    $command = "powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-environment-smoke.ps1 -MatrixClass $Class"
+    if ($requireClassMatch) {
+        $command += " -RequireMatrixClass"
+    }
+
+    return [pscustomobject][ordered]@{
+        require_class_match = $requireClassMatch
+        command = $command
+        operator_action = $operatorAction
+        note = $note
+    }
+}
+
+function Get-CollectionReason([string]$Status) {
+    switch ($Status) {
+        "missing" { return "No evidence package exists for this class." }
+        "operator-review" { return "Evidence exists but still needs explicit operator confirmation or acceptance." }
+        "recorded-unclassified" { return "Evidence passed, but class_match is null and does not prove the requested class." }
+        "mismatch" { return "Evidence exists, but detected facts contradict the requested class." }
+        "failing" { return "Evidence exists, but the smoke failed." }
+    }
+    return "Status is not recorded."
+}
+
 function Add-MarkdownRow([object]$Lines, [object[]]$Values) {
     $cells = @()
     foreach ($value in $Values) {
@@ -201,6 +260,8 @@ $ledger = [ordered]@{
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $ledgerJsonPath = Join-Path $OutDir "matrix-ledger.json"
 $ledgerMdPath = Join-Path $OutDir "matrix-ledger.md"
+$collectionPlanJsonPath = Join-Path $OutDir "matrix-collection-plan.json"
+$collectionPlanMdPath = Join-Path $OutDir "matrix-collection-plan.md"
 $ledger | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $ledgerJsonPath -Encoding UTF8
 
 $lines = [System.Collections.Generic.List[string]]::new()
@@ -263,11 +324,85 @@ if ($missing.Count -gt 0) {
 
 $lines | Set-Content -LiteralPath $ledgerMdPath -Encoding UTF8
 
+$outstandingRows = @($classRows | Where-Object { $_.status -ne "recorded" })
+$collectionItems = @()
+foreach ($row in $outstandingRows) {
+    $spec = Get-CollectionSpec $row.class
+    $collectionItems += [pscustomobject][ordered]@{
+        class = $row.class
+        current_status = $row.status
+        reason = Get-CollectionReason $row.status
+        evidence_count = $row.evidence_count
+        selected_environment_json = $row.selected_environment_json
+        require_class_match = $spec.require_class_match
+        command = $spec.command
+        operator_action = $spec.operator_action
+        note = $spec.note
+    }
+}
+
+$collectionPlan = [ordered]@{
+    schema = "wispterm-d3d11-environment-collection-plan/v1"
+    generated_at = $generatedAt
+    input_root = $InputRoot
+    ledger_json = $ledgerJsonPath
+    ledger_markdown = $ledgerMdPath
+    outstanding_count = $collectionItems.Count
+    policy = [ordered]@{
+        record_only = $true
+        does_not_create_evidence = $true
+        does_not_accept_missing_classes = $true
+        default_unchanged = $true
+    }
+    items = @($collectionItems)
+}
+$collectionPlan | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $collectionPlanJsonPath -Encoding UTF8
+
+$planLines = [System.Collections.Generic.List[string]]::new()
+$planLines.Add("# WispTerm D3D11 Environment Collection Plan") | Out-Null
+$planLines.Add("") | Out-Null
+$planLines.Add("Generated at: $generatedAt") | Out-Null
+$planLines.Add("") | Out-Null
+$planLines.Add("Input root: $InputRoot") | Out-Null
+$planLines.Add("") | Out-Null
+$planLines.Add("This plan is derived from the current matrix ledger. It does not create evidence, accept missing classes, block environments, or change the Windows default renderer.") | Out-Null
+$planLines.Add("") | Out-Null
+$planLines.Add("Build the D3D11 executable before running any collector command:") | Out-Null
+$planLines.Add("") | Out-Null
+$planLines.Add('```powershell') | Out-Null
+$planLines.Add("zig build -Dgpu-backend=d3d11") | Out-Null
+$planLines.Add('```') | Out-Null
+$planLines.Add("") | Out-Null
+if ($collectionItems.Count -eq 0) {
+    $planLines.Add("All matrix classes are recorded in the current ledger.") | Out-Null
+} else {
+    $planLines.Add("## Outstanding Classes") | Out-Null
+    $planLines.Add("") | Out-Null
+    $planLines.Add("| Class | Current status | Reason | Evidence | Require match | Collector command | Operator action | Note |") | Out-Null
+    $planLines.Add("|---|---|---|---:|---|---|---|---|") | Out-Null
+    foreach ($item in $collectionItems) {
+        Add-MarkdownRow $planLines @(
+            $item.class,
+            $item.current_status,
+            $item.reason,
+            $item.evidence_count,
+            $item.require_class_match,
+            $item.command,
+            $item.operator_action,
+            $item.note
+        )
+    }
+}
+$planLines | Set-Content -LiteralPath $collectionPlanMdPath -Encoding UTF8
+
 $summary = [ordered]@{
     evidence_count = $entries.Count
     missing_count = $missing.Count
+    outstanding_count = $collectionItems.Count
     ledger_json = $ledgerJsonPath
     ledger_markdown = $ledgerMdPath
+    collection_plan_json = $collectionPlanJsonPath
+    collection_plan_markdown = $collectionPlanMdPath
 }
 $summary | ConvertTo-Json -Depth 4
 
