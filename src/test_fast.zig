@@ -324,6 +324,14 @@ test {
     _ = @import("notification.zig");
     _ = @import("clipboard_osc52.zig");
     _ = @import("renderer/gpu/backend.zig");
+    // Performance benchmark core (pure modules). cli.zig is excluded here
+    // because it pulls in TerminalStream → ghostty-vt, which the lean fast
+    // suite does not link; the cli module's tests run via the wispterm-bench
+    // binary and test-full.
+    _ = @import("benchmark/Benchmark.zig");
+    _ = @import("benchmark/stats.zig");
+    _ = @import("benchmark/options.zig");
+    _ = @import("benchmark/report.zig");
     _ = @import("renderer/cell_geometry.zig");
     _ = @import("renderer/titlebar_layout.zig");
     _ = @import("assistant/conversation/layout.zig");
