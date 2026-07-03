@@ -251,15 +251,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-environme
 ```
 
 The collector writes `zig-out\d3d11-env-smoke\<timestamp>\environment.json`, a
-`normal-session\` result directory, copied screenshots under `screenshots\`, and
-the original render diagnostics path. It records adapter/session/monitor facts
-and smoke health, plus a record-only `matrix` section when `-MatrixClass` is
-provided. Use classes such as `local-physical`, `rdp`, `virtual-machine`,
-`hybrid-gpu`, `weak-integrated-gpu`, `single-monitor`,
-`multi-monitor-same-dpi`, and `multi-monitor-mixed-dpi`; add
-`-RequireMatrixClass` only when the class can be proven from collected facts.
-The collector does not block environments and does not change fallback policy.
-The durable ledger format is documented in
+redacted `matrix-summary.md` review artifact, a `normal-session\` result
+directory, copied screenshots under `screenshots\`, and the original render
+diagnostics path. It records adapter/session/monitor facts and smoke health,
+plus a record-only `matrix` section when `-MatrixClass` is provided. Use classes
+such as `local-physical`, `rdp`, `virtual-machine`, `hybrid-gpu`,
+`weak-integrated-gpu`, `single-monitor`, `multi-monitor-same-dpi`, and
+`multi-monitor-mixed-dpi`; add `-RequireMatrixClass` only when the class can be
+proven from collected facts. The collector does not block environments and does
+not change fallback policy. The durable ledger format is documented in
 [windows-native-d3d11-environment-matrix.md](windows-native-d3d11-environment-matrix.md).
 
 To exercise the controlled Phase V device-recreate path, run the same smoke

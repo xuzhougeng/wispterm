@@ -202,8 +202,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-environme
 ```
 
 The default output root is `zig-out\d3d11-env-smoke\<timestamp>\`. Each run
-contains `environment.json`, `normal-session\`, and `screenshots\`. Pass
-`-MatrixClass <class>` to label evidence for RDP, VM, hybrid-GPU,
+contains `environment.json`, `matrix-summary.md`, `normal-session\`, and
+`screenshots\`. Pass `-MatrixClass <class>` to label evidence for RDP, VM, hybrid-GPU,
 weak-integrated-GPU, single-monitor, multi-monitor same-DPI, and mixed-DPI
 environments; use `-RequireMatrixClass` only when the requested class can be
 proved from collected facts. Skipped or unavailable environments must be

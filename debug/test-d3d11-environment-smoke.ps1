@@ -219,6 +219,99 @@ function Test-MatrixClassMatch([string]$Class, [object]$Detection) {
     return $null
 }
 
+function Format-SummaryValue([object]$Value) {
+    if ($null -eq $Value) {
+        return "unknown"
+    }
+    if ($Value -is [bool]) {
+        if ($Value) {
+            return "true"
+        }
+        return "false"
+    }
+    return ([string]$Value).Replace("|", "\|").Replace("`r", " ").Replace("`n", " ")
+}
+
+function Add-SummaryRow([object]$Lines, [string]$Name, [object]$Value) {
+    $Lines.Add("| $Name | $(Format-SummaryValue $Value) |") | Out-Null
+}
+
+function Write-MatrixSummary([string]$Path, [object]$Environment) {
+    $repo = $Environment["repo"]
+    $artifacts = $Environment["artifacts"]
+    $smoke = $Environment["smoke"]
+    $envFacts = $Environment["environment"]
+    $d3d11 = $envFacts["d3d11"]
+    $windows = $envFacts["windows"]
+    $matrix = $Environment["matrix"]
+    $detection = $matrix["detection"]
+    $policy = $Environment["policy"]
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $lines.Add("# WispTerm D3D11 Environment Matrix Summary") | Out-Null
+    $lines.Add("") | Out-Null
+    $lines.Add("This summary is generated from environment.json for PR/issue review. It is record-only Phase V evidence and does not imply a Windows default renderer change.") | Out-Null
+    $lines.Add("") | Out-Null
+    $lines.Add("## Run") | Out-Null
+    $lines.Add("") | Out-Null
+    $lines.Add("| Field | Value |") | Out-Null
+    $lines.Add("|---|---|") | Out-Null
+    Add-SummaryRow $lines "Generated at" $Environment["generated_at"]
+    Add-SummaryRow $lines "Branch" $repo["branch"]
+    Add-SummaryRow $lines "Commit" $repo["commit"]
+    Add-SummaryRow $lines "Backend" $Environment["backend"]
+    Add-SummaryRow $lines "Pass" $Environment["pass"]
+    Add-SummaryRow $lines "Normal-session exit code" $smoke["normal_session_exit_code"]
+    Add-SummaryRow $lines "Environment JSON" $artifacts["environment_json"]
+    Add-SummaryRow $lines "Normal-session JSON" $artifacts["normal_session_json"]
+    Add-SummaryRow $lines "Diagnostic log" $artifacts["diagnostic_log"]
+
+    $lines.Add("") | Out-Null
+    $lines.Add("## Matrix") | Out-Null
+    $lines.Add("") | Out-Null
+    $lines.Add("| Field | Value |") | Out-Null
+    $lines.Add("|---|---|") | Out-Null
+    Add-SummaryRow $lines "Requested class" $matrix["requested_class"]
+    Add-SummaryRow $lines "Class match" $matrix["class_match"]
+    Add-SummaryRow $lines "Require class match" $matrix["require_class_match"]
+    Add-SummaryRow $lines "Remote session" $detection["remote_session"]
+    Add-SummaryRow $lines "Session id" $detection["session_id"]
+    Add-SummaryRow $lines "Monitor count" $detection["monitor_count"]
+    Add-SummaryRow $lines "Mixed DPI" $detection["mixed_dpi"]
+    Add-SummaryRow $lines "Single monitor" $detection["single_monitor"]
+    Add-SummaryRow $lines "Multi-monitor same DPI" $detection["multi_monitor_same_dpi"]
+    Add-SummaryRow $lines "Multi-monitor mixed DPI" $detection["multi_monitor_mixed_dpi"]
+    Add-SummaryRow $lines "Virtual-machine candidate" $detection["virtual_machine_candidate"]
+    Add-SummaryRow $lines "Integrated-GPU candidate" $detection["integrated_gpu_candidate"]
+    Add-SummaryRow $lines "Weak integrated-GPU candidate" $detection["weak_integrated_gpu_candidate"]
+    Add-SummaryRow $lines "Hybrid-GPU candidate" $detection["hybrid_gpu_candidate"]
+
+    $lines.Add("") | Out-Null
+    $lines.Add("## Adapter And Policy") | Out-Null
+    $lines.Add("") | Out-Null
+    $lines.Add("| Field | Value |") | Out-Null
+    $lines.Add("|---|---|") | Out-Null
+    Add-SummaryRow $lines "Adapter" $d3d11["adapter_description"]
+    Add-SummaryRow $lines "Vendor id" $d3d11["vendor_id_hex"]
+    Add-SummaryRow $lines "Device id" $d3d11["device_id_hex"]
+    Add-SummaryRow $lines "Feature level" $d3d11["feature_level"]
+    Add-SummaryRow $lines "Dedicated video memory" $d3d11["dedicated_video_memory"]
+    Add-SummaryRow $lines "Output count" $d3d11["output_count"]
+    Add-SummaryRow $lines "Primary DPI" $windows["primary_dpi"]
+    Add-SummaryRow $lines "System DPI" $windows["system_dpi"]
+    Add-SummaryRow $lines "D3D11 environment line present" $smoke["d3d11_environment"]
+    Add-SummaryRow $lines "Windows environment line present" $smoke["windows_environment"]
+    Add-SummaryRow $lines "Failure lines" $smoke["failure_lines"]
+    Add-SummaryRow $lines "Automatic fallback" $policy["automatic_fallback"]
+    Add-SummaryRow $lines "Environment blocking" $policy["environment_blocking"]
+    Add-SummaryRow $lines "Environment classification" $policy["environment_classification"]
+    Add-SummaryRow $lines "Default unchanged" $policy["default_unchanged"]
+
+    $lines.Add("") | Out-Null
+    $lines.Add("Screenshots are copied under the package screenshots directory recorded in environment.json.") | Out-Null
+    Set-Content -LiteralPath $Path -Value $lines -Encoding UTF8
+}
+
 function Copy-SmokeScreenshots([object]$NormalResult, [string]$ScreenshotsDir) {
     New-Item -ItemType Directory -Force -Path $ScreenshotsDir | Out-Null
     $copied = [ordered]@{}
@@ -290,6 +383,8 @@ $matrixClassMatch = Test-MatrixClassMatch $MatrixClass $matrixDetection
 $copiedScreenshots = Copy-SmokeScreenshots $normalResult $screenshotsDir
 $gitBranch = (& git -C $repoRoot branch --show-current).Trim()
 $gitCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
+$environmentJsonPath = Join-Path $OutDir "environment.json"
+$matrixSummaryPath = Join-Path $OutDir "matrix-summary.md"
 
 $environment = [ordered]@{
     schema = "wispterm-d3d11-environment-smoke/v1"
@@ -302,7 +397,8 @@ $environment = [ordered]@{
     }
     artifacts = [ordered]@{
         root = $OutDir
-        environment_json = (Join-Path $OutDir "environment.json")
+        environment_json = $environmentJsonPath
+        matrix_summary = $matrixSummaryPath
         normal_session_json = $normalJsonPath
         diagnostic_log = $diagnosticPath
         screenshots = $copiedScreenshots
@@ -340,13 +436,14 @@ $environment = [ordered]@{
     }
 }
 
-$environmentJsonPath = Join-Path $OutDir "environment.json"
+Write-MatrixSummary $matrixSummaryPath $environment
 $environment | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $environmentJsonPath -Encoding UTF8
 
 $summary = [ordered]@{
     pass = [bool]$normalResult.pass
     backend = $Backend
     environment_json = $environmentJsonPath
+    matrix_summary = $matrixSummaryPath
     normal_session_json = $normalJsonPath
     diagnostic_log = $diagnosticPath
     screenshots = $screenshotsDir

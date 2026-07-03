@@ -43,7 +43,7 @@ unavailable environment is missing evidence, not a passing result.
 | Window state | `-WindowStateSmoke` proves maximize, restore, minimize, and restore-from-minimize. |
 | Fullscreen startup | `-FullscreenStartupSmoke` proves config startup fullscreen, Alt+Enter exit, and restored baseline size. |
 | Long-run soak | `-SoakMinutes 20` records periodic nonblank screenshots, process liveness, resize diagnostics, and no failure lines. |
-| Environment package | `debug/test-d3d11-environment-smoke.ps1` emits `environment.json`, normal-session JSON, screenshots, adapter facts, Win32 session facts, record-only matrix fields, and policy fields. |
+| Environment package | `debug/test-d3d11-environment-smoke.ps1` emits `environment.json`, `matrix-summary.md`, normal-session JSON, screenshots, adapter facts, Win32 session facts, record-only matrix fields, and policy fields. |
 | Test gates | `zig build check-sizes`, `zig build test`, `zig build test-full --summary all`, `zig build`, and PR CI pass. |
 
 ## Environment Matrix

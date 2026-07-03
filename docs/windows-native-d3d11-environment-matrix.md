@@ -12,7 +12,8 @@ Windows `auto` remains OpenGL until the separate Phase VI gate is satisfied.
 - A skipped or unavailable environment is missing evidence, not a pass.
 - Keep generated artifacts outside the repository unless a PR or issue asks for
   a small redacted sample. The durable record should point to the artifact
-  directory or uploaded artifact.
+  directory or uploaded artifact, and should include the generated
+  `matrix-summary.md` when possible.
 - `-RequireMatrixClass` is optional and should be used only when the class can
   be proven from collected facts.
 
@@ -58,7 +59,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-environme
 
 ## JSON Contract
 
-Each `environment.json` contains:
+Each collector run writes both `environment.json` and a redacted
+`matrix-summary.md` review artifact. `environment.json` contains:
 
 | Field | Meaning |
 |---|---|
@@ -72,6 +74,11 @@ Each `environment.json` contains:
 | `matrix.detection.weak_integrated_gpu_candidate` | Integrated adapter with low dedicated video memory. |
 | `policy.environment_classification` | Always `record-only` during Phase V. |
 | `policy.environment_blocking` | Always `false` during Phase V. |
+
+`matrix-summary.md` is derived from the same JSON and is intended for PR or
+issue comments. It includes branch/commit, requested matrix class, class-match
+state, adapter facts, monitor/DPI facts, smoke health, and record-only policy
+fields, without copying raw diagnostic log lines.
 
 ## Ledger
 
