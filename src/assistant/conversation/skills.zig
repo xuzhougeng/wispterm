@@ -48,6 +48,30 @@ fn listSkillsForDisplayFromRoots(allocator: std.mem.Allocator, root_paths: []con
     return out.toOwnedSlice(allocator);
 }
 
+/// System-prompt digest of available skills (one line each), so the model
+/// knows what skill_info can load. Null when no skills are installed.
+pub fn skillsDigest(allocator: std.mem.Allocator) !?[]u8 {
+    const roots = try defaultSkillRootPaths(allocator);
+    defer freeSkillRootPaths(allocator, roots);
+    return skillsDigestFromRoots(allocator, roots);
+}
+
+fn skillsDigestFromRoots(allocator: std.mem.Allocator, root_paths: []const []const u8) !?[]u8 {
+    const merged = try loadSkillSuggestionListFromRoots(allocator, root_paths);
+    defer {
+        freeOwnedSkillMetaList(allocator, merged);
+        allocator.free(merged);
+    }
+    if (merged.len == 0) return null;
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "Skills — call skill_info with the name to load full instructions:\n");
+    for (merged) |meta| {
+        try out.print(allocator, "- {s}: {s}\n", .{ meta.name, meta.description });
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
 pub fn loadSkillSuggestionListFromRoots(allocator: std.mem.Allocator, root_paths: []const []const u8) ![]skill_registry.SkillMeta {
     var merged: std.ArrayListUnmanaged(skill_registry.SkillMeta) = .empty;
     errdefer {
@@ -380,6 +404,29 @@ test "ai chat lists skills from explicit root paths" {
     defer allocator.free(output);
 
     try std.testing.expect(std.mem.indexOf(u8, output, "- $pdf: Work with PDF files.") != null);
+}
+
+test "skillsDigest lists skills or returns null when none" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(tmp_root);
+    const root = try std.fs.path.join(a, &.{ tmp_root, "skills" });
+    defer a.free(root);
+    const roots = [_][]const u8{root};
+
+    try std.testing.expect(try skillsDigestFromRoots(a, roots[0..]) == null);
+
+    try tmp.dir.makePath("skills/pdf-tools");
+    var f = try tmp.dir.createFile("skills/pdf-tools/SKILL.md", .{});
+    defer f.close();
+    try f.writeAll("---\nname: pdf-tools\ndescription: Extract and convert PDF files\n---\nbody\n");
+
+    const digest = (try skillsDigestFromRoots(a, roots[0..])).?;
+    defer a.free(digest);
+    try std.testing.expect(std.mem.indexOf(u8, digest, "pdf-tools: Extract and convert PDF files") != null);
+    try std.testing.expect(std.mem.indexOf(u8, digest, "skill_info") != null);
 }
 
 test "ai chat default skill roots include plugin skills directory" {
