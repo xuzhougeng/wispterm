@@ -249,7 +249,12 @@ const ssh_remote_env_prefix = "export TERM_PROGRAM=ghostty; ";
 
 fn buildSshCommandLine(buf: []u8, options: SshCommandOptions, export_term_program: bool) ?[]const u8 {
     var pos: usize = 0;
-    if (!appendAscii(buf, &pos, "ssh -tt ")) return null;
+    // ServerAlive*: 30s probes keep NAT/firewall state alive (kernel TCP
+    // keepalive defaults to 2h, far past middlebox idle timeouts); CountMax=20
+    // gives a 10-minute tolerance window so lossy links are ridden out by TCP
+    // retransmission instead of OpenSSH hard-killing the session after 3
+    // missed probes. Keep in sync with pty_command_windows.zig.
+    if (!appendAscii(buf, &pos, "ssh -tt -o ServerAliveInterval=30 -o ServerAliveCountMax=20 ")) return null;
     if (options.proxy_jump.len > 0) {
         if (!appendAscii(buf, &pos, "-o ProxyJump=")) return null;
         if (!appendAscii(buf, &pos, options.proxy_jump)) return null;
@@ -299,13 +304,13 @@ test "unsupported backend builds SSH interactive command lines with ProxyJump" {
 
     // No jump host keeps the existing bare invocation shape.
     try std.testing.expectEqualStrings(
-        "ssh -tt user@example.test",
+        "ssh -tt -o ServerAliveInterval=30 -o ServerAliveCountMax=20 user@example.test",
         sshInteractiveCommand(&buf, .{ .user = "user", .host = "example.test" }).?,
     );
 
     // ProxyJump is inserted before the destination, after any port flag.
     try std.testing.expectEqualStrings(
-        "ssh -tt -o ProxyJump=admin@jump.test user@example.test",
+        "ssh -tt -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o ProxyJump=admin@jump.test user@example.test",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -314,7 +319,7 @@ test "unsupported backend builds SSH interactive command lines with ProxyJump" {
     );
 
     try std.testing.expectEqualStrings(
-        "ssh -tt -o ProxyJump=admin@jump.test:2200 -p 2222 user@example.test",
+        "ssh -tt -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o ProxyJump=admin@jump.test:2200 -p 2222 user@example.test",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -331,7 +336,7 @@ test "unsupported backend exports TERM_PROGRAM into the SSH remote command (#302
     // a Kitty-capable TERM_PROGRAM (ssh doesn't forward the local one). The
     // original command stays intact inside the same single-quoted argument.
     try std.testing.expectEqualStrings(
-        "ssh -tt user@example.test 'export TERM_PROGRAM=ghostty; cd '\\''/srv/p'\\'' && claude'",
+        "ssh -tt -o ServerAliveInterval=30 -o ServerAliveCountMax=20 user@example.test 'export TERM_PROGRAM=ghostty; cd '\\''/srv/p'\\'' && claude'",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -341,7 +346,7 @@ test "unsupported backend exports TERM_PROGRAM into the SSH remote command (#302
 
     // No remote command (plain interactive login shell) is left untouched.
     try std.testing.expectEqualStrings(
-        "ssh -tt user@example.test",
+        "ssh -tt -o ServerAliveInterval=30 -o ServerAliveCountMax=20 user@example.test",
         sshInteractiveCommand(&buf, .{ .user = "user", .host = "example.test" }).?,
     );
 }

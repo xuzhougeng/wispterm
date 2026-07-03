@@ -430,9 +430,11 @@ fn effectiveSshAuthMethod(options: SshCommandOptions) ssh_connection.SshAuthMeth
 }
 
 fn appendSshOptionString(buf: []u8, pos: *usize, options: SshCommandOptions, mode: SshInvocationMode) bool {
-    // ServerAlive* prevents long-idle interactive sessions from hanging behind
-    // NAT/firewall drops while preserving the existing OpenSSH invocation shape.
-    if (!appendAscii(buf, pos, "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 ")) return false;
+    // ServerAlive*: 30s probes keep NAT/firewall state alive; CountMax=20 gives
+    // a 10-minute tolerance window so lossy links (e.g. cross-border routes) are
+    // ridden out by TCP retransmission instead of OpenSSH hard-killing the
+    // session after 3 missed probes. Keep both platforms' builders in sync.
+    if (!appendAscii(buf, pos, "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 ")) return false;
     const auth_method = effectiveSshAuthMethod(options);
     switch (auth_method) {
         .password => {
@@ -743,7 +745,7 @@ test "windows pty command builds SSH interactive command lines" {
     var buf: [1024]u8 = undefined;
 
     try std.testing.expectEqualStrings(
-        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -p 2222 user@example.test",
+        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -p 2222 user@example.test",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -754,7 +756,7 @@ test "windows pty command builds SSH interactive command lines" {
     );
 
     try std.testing.expectEqualStrings(
-        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o HostkeyAlgorithms=+ssh-rsa,ssh-dss -o PubkeyAcceptedAlgorithms=+ssh-rsa,ssh-dss -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1 -o Ciphers=+aes128-cbc,3des-cbc user@example.test",
+        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o HostkeyAlgorithms=+ssh-rsa,ssh-dss -o PubkeyAcceptedAlgorithms=+ssh-rsa,ssh-dss -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1 -o Ciphers=+aes128-cbc,3des-cbc user@example.test",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -766,7 +768,7 @@ test "windows pty command builds SSH interactive command lines" {
 
     // ProxyJump is inserted after the auth/legacy flags, before any port flag.
     try std.testing.expectEqualStrings(
-        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o ProxyJump=admin@jump.test:2200 -p 2222 user@example.test",
+        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o ProxyJump=admin@jump.test:2200 -p 2222 user@example.test",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -776,7 +778,7 @@ test "windows pty command builds SSH interactive command lines" {
     );
 
     try std.testing.expectEqualStrings(
-        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -i \"C:/Users/user/.ssh/id_ed25519\" user@example.test",
+        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -i \"C:/Users/user/.ssh/id_ed25519\" user@example.test",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -788,7 +790,7 @@ test "windows pty command builds SSH interactive command lines" {
     // An interactive remote command gains the TERM_PROGRAM export so remote
     // Claude Code/Codex enable the Kitty keyboard protocol (#302).
     try std.testing.expectEqualStrings(
-        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 user@example.test \"export TERM_PROGRAM=ghostty; cd /srv && claude\"",
+        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 user@example.test \"export TERM_PROGRAM=ghostty; cd /srv && claude\"",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -801,7 +803,7 @@ test "windows pty command builds direct SSH control command lines" {
     var buf: [1024]u8 = undefined;
 
     try std.testing.expectEqualStrings(
-        "ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o BatchMode=yes -p 2222 user@example.test \"tmux -CC new -A -s wispterm-test\"",
+        "ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o BatchMode=yes -p 2222 user@example.test \"tmux -CC new -A -s wispterm-test\"",
         sshControlCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -811,7 +813,7 @@ test "windows pty command builds direct SSH control command lines" {
     );
 
     try std.testing.expectEqualStrings(
-        "ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 user@example.test \"tmux -CC new -A -s wispterm-test\"",
+        "ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 user@example.test \"tmux -CC new -A -s wispterm-test\"",
         sshControlCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -821,7 +823,7 @@ test "windows pty command builds direct SSH control command lines" {
     );
 
     try std.testing.expectEqualStrings(
-        "ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o BatchMode=yes -i \"C:/Users/user/.ssh/id_ed25519\" user@example.test \"tmux -CC new -A -s wispterm-test\"",
+        "ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o BatchMode=yes -i \"C:/Users/user/.ssh/id_ed25519\" user@example.test \"tmux -CC new -A -s wispterm-test\"",
         sshControlCommand(&buf, .{
             .user = "user",
             .host = "example.test",
