@@ -692,6 +692,13 @@ pub fn setFlipPresentEnabled(enabled: bool) void {
     g_flip_present_enabled = enabled;
 }
 
+/// Override the Present sync interval (0 = vsync off, 1 = on). Used by the
+/// in-app GPU benchmark to spin the main loop at max frame rate. Safe to call
+/// after window creation; the next `presentFrame`/`SwapBuffers` honors it.
+pub fn setPresentInterval(interval: c_int) void {
+    setSwapInterval(interval);
+}
+
 fn setSwapInterval(interval: c_int) void {
     g_present_interval = interval;
     if (!g_swap_interval_loaded) {

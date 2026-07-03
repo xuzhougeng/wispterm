@@ -332,6 +332,8 @@ test {
     _ = @import("benchmark/stats.zig");
     _ = @import("benchmark/options.zig");
     _ = @import("benchmark/report.zig");
+    _ = @import("benchmark/payload.zig");
+    _ = @import("benchmark/scenarios.zig");
     _ = @import("renderer/cell_geometry.zig");
     _ = @import("renderer/titlebar_layout.zig");
     _ = @import("assistant/conversation/layout.zig");

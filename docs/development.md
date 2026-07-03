@@ -157,10 +157,26 @@ lean fast suite) have their own step:
 zig build test-bench
 ```
 
-An in-app GPU-side benchmark (`wispterm --benchmark`, measuring per-frame render
-latency and FPS through the real renderer) is planned; the report schema in
-`src/benchmark/report.zig` already reserves the GPU-adapter / window / DPI /
-grid fields that mode will fill, so CLI and in-app reports stay comparable.
+An in-app GPU-side benchmark (`wispterm --benchmark`) measures per-frame render
+latency through the real renderer. It spawns a no-shell virtual surface, drives a
+synthetic VT stream from the UI thread with vsync off, and records the
+rebuild+draw+present pipeline time per frame as `latency_ns` (p50/p95/max), then
+writes the same JSON + Markdown report shape as the CLI. The renderer backend is
+fixed at build time (`-Dgpu-backend`), so a D3D11-vs-OpenGL comparison is two
+builds of the same machine:
+
+```powershell
+zig build -Dgpu-backend=opengl -Doptimize=ReleaseFast
+.\zig-out\bin\wispterm.exe --benchmark
+zig build -Dgpu-backend=d3d11  -Doptimize=ReleaseFast
+.\zig-out\bin\wispterm.exe --benchmark
+```
+
+Each run writes `benchmark-report-<timestamp>.{json,md}` to the config dir and
+prints the Markdown to stdout; diff the two reports' `scroll-flood` /
+`unicode-heavy` rows to see the per-backend render delta. The report carries the
+GPU adapter name + PCI ids, window/DPI/grid size, and `runner: in-app` so it is
+distinguishable from a CLI report.
 
 When publishing a desktop release, run `wispterm-bench --case terminal-stream
 --duration 1000` on the release machine and attach the Markdown report to the

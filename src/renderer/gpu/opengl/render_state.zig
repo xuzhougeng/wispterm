@@ -94,6 +94,16 @@ pub fn driverInfo() DriverInfo {
     };
 }
 
+/// GPU adapter identity for the benchmark report. OpenGL has no portable PCI-id
+/// query, so vendor/device stay 0 and the name is the GL renderer string (GL-
+/// owned pointer, valid while the context is current). Returns null when the GL
+/// table isn't loaded yet.
+pub fn adapterReport() ?types.AdapterReport {
+    const renderer = glString(c.GL_RENDERER);
+    if (renderer.len == 0) return null;
+    return .{ .name = renderer, .vendor_id = 0, .device_id = 0 };
+}
+
 pub fn swapDiagnostics() ?SwapDiagnostics {
     const get_integerv = Context.gl.GetIntegerv orelse return null;
     const is_enabled = Context.gl.IsEnabled orelse return null;

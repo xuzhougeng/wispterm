@@ -10,7 +10,7 @@ const options_mod = @import("options.zig");
 const TerminalStream = @import("TerminalStream.zig");
 const report = @import("report.zig");
 const env = @import("env.zig");
-const platform_dirs = @import("../platform/dirs.zig");
+const report_io = @import("report_io.zig");
 
 pub const CaseName = struct {
     name: []const u8,
@@ -67,7 +67,7 @@ pub fn run(allocator: std.mem.Allocator, raw_args: []const []const u8) !void {
     }
     try stdout.writeAll("\n");
 
-    try writeReport(allocator, results.items, stdout);
+    try writeReport(allocator, results.items);
 }
 
 fn runCase(
@@ -107,7 +107,6 @@ fn runCase(
 fn writeReport(
     allocator: std.mem.Allocator,
     results: []const report.ScenarioResult,
-    w: anytype,
 ) !void {
     const e = env.collect();
     const rep: report.Report = .{
@@ -126,42 +125,9 @@ fn writeReport(
     const md = try report.formatMarkdown(allocator, rep);
     defer allocator.free(md);
 
-    if (writeReportFiles(allocator, json, md)) |paths| {
-        try w.print("report written:\n  {s}\n  {s}\n\n", .{ paths.json_path, paths.md_path });
-        allocator.free(paths.json_path);
-        allocator.free(paths.md_path);
-    } else |_| {
-        try w.writeAll("report: could not write files to config dir; printing markdown only.\n\n");
-    }
-    // Always print the markdown so it can be pasted straight into a GitHub
-    // issue/discussion even when file writing failed.
-    try w.writeAll(md);
-}
-
-const ReportPaths = struct {
-    json_path: []u8,
-    md_path: []u8,
-};
-
-fn writeReportFiles(allocator: std.mem.Allocator, json: []const u8, md: []const u8) !ReportPaths {
-    const dir = try platform_dirs.configDir(allocator);
-    defer allocator.free(dir);
-    std.fs.cwd().makePath(dir) catch {};
-
-    const ts = std.time.milliTimestamp();
-    const json_name = try std.fmt.allocPrint(allocator, "benchmark-report-{d}.json", .{ts});
-    defer allocator.free(json_name);
-    const md_name = try std.fmt.allocPrint(allocator, "benchmark-report-{d}.md", .{ts});
-    defer allocator.free(md_name);
-
-    const json_path = try std.fs.path.join(allocator, &.{ dir, json_name });
-    errdefer allocator.free(json_path);
-    const md_path = try std.fs.path.join(allocator, &.{ dir, md_name });
-    errdefer allocator.free(md_path);
-
-    try std.fs.cwd().writeFile(.{ .sub_path = json_path, .data = json });
-    try std.fs.cwd().writeFile(.{ .sub_path = md_path, .data = md });
-    return .{ .json_path = json_path, .md_path = md_path };
+    // The CLI prints its own summary to `w` (stdout); file I/O is shared with
+    // the in-app driver via report_io. Emit files + markdown to stdout.
+    try report_io.emitReport(allocator, json, md);
 }
 
 fn listCases(w: anytype) !void {

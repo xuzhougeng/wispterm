@@ -21,6 +21,7 @@ const port_forwarding = @import("../port_forward/forwarding.zig");
 const ai_history_time = @import("../terminal_agents/sessions/time.zig");
 const agent_history = @import("../agent/history.zig");
 const platform_pty_command = @import("../platform/pty_command.zig");
+const Pty = @import("../platform/pty.zig").Pty;
 const active_tab_state = @import("active_tab.zig");
 const i18n = @import("../i18n.zig");
 
@@ -465,6 +466,78 @@ pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: 
 
     std.debug.print("New tab spawned (count={}), active: {}\n", .{ g_tab_count, active_tab_state.g_active_tab });
     return true;
+}
+
+/// Result of `spawnBenchmarkTab`: the active surface (borrowed — the tab's
+/// SplitTree owns it) and the virtual PTY controller the caller must keep open
+/// for the run and deinit when done.
+pub const BenchmarkSpawn = struct {
+    surface: *Surface,
+    controller: Pty.VirtualController,
+};
+
+/// Spawn a no-shell virtual surface as a new tab, for the in-app GPU benchmark.
+/// Mirrors `spawnTabWithCommandAndCwd` but uses `Pty.openVirtual` +
+/// `Surface.initVirtual` (no child process): the benchmark driver direct-feeds
+/// the terminal from the UI thread, so there is no shell. The returned
+/// `controller` is the write half of the virtual PTY and is owned by the caller.
+pub fn spawnBenchmarkTab(
+    allocator: std.mem.Allocator,
+    cols: u16,
+    rows: u16,
+    cursor_style: CursorStyle,
+    cursor_blink: bool,
+) ?BenchmarkSpawn {
+    if (g_tab_count >= MAX_TABS) return null;
+
+    var pair = Pty.openVirtual(.{ .ws_col = cols, .ws_row = rows }) catch return null;
+    // On `initVirtual` failure its errdefer deinits the adopted pty; we still
+    // own and must close the controller side (see tmux_bridge.make).
+    const surface = Surface.initVirtual(
+        allocator,
+        cols,
+        rows,
+        pair.pty,
+        g_scrollback_limit,
+        cursor_style,
+        cursor_blink,
+    ) catch {
+        pair.controller.deinit();
+        return null;
+    };
+    surface.attachRemoteClient(g_remote_client);
+
+    const tree = SplitTree.init(allocator, surface) catch {
+        surface.deinit(allocator);
+        pair.controller.deinit();
+        return null;
+    };
+    surface.unref(allocator); // tree owns the ref now
+
+    const t = allocator.create(TabState) catch {
+        var tree_mut = tree;
+        tree_mut.deinit();
+        pair.controller.deinit();
+        return null;
+    };
+    t.kind = .terminal;
+    t.tree = tree;
+    t.focused = .root;
+    t.ai_chat_session = null;
+    t.ai_history_session = null;
+    t.skill_center_session = null;
+    t.port_forwarding_session = null;
+    t.copilot_session = null;
+    t.tmux_window_id = null;
+    t.tmux_owner = null;
+    t.tmux_name_len = 0;
+    t.copilot_visible = false;
+
+    g_tabs[g_tab_count] = t;
+    active_tab_state.g_active_tab = g_tab_count;
+    g_tab_count += 1;
+
+    return .{ .surface = surface, .controller = pair.controller };
 }
 
 pub fn spawnAiChatTab(

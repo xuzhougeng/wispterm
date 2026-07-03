@@ -1290,7 +1290,8 @@ pub fn isSpecialCommand(flag: []const u8) bool {
         std.mem.eql(u8, flag, "h") or
         std.mem.eql(u8, flag, "version") or
         std.mem.eql(u8, flag, "v") or
-        std.mem.eql(u8, flag, "show-config-path");
+        std.mem.eql(u8, flag, "show-config-path") or
+        std.mem.eql(u8, flag, "benchmark");
 }
 
 /// Check if CLI args contain a specific command flag (e.g. --list-fonts).
@@ -1477,6 +1478,8 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --list-fonts                 List all available system fonts
         \\  --list-themes                List all available themes
         \\  --test-font-discovery        Test font discovery for common fonts
+        \\  --benchmark                  Run the in-app GPU render benchmark, write a
+        \\                               report, and exit (build per-backend with -Dgpu-backend)
         \\  --help, -h                   Show this help message
         \\
         \\Config priority: --config/--config-path, portable wispterm.conf next to the app, then the platform config directory
