@@ -64,10 +64,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\summarize-d3d11-envi
 ```
 
 The summarizer scans `zig-out\d3d11-env-smoke\` by default and writes
-`matrix-ledger.json` plus `matrix-ledger.md` under a timestamped
-`matrix-ledger-*` directory. Use `-InputRoot <path>` to summarize uploaded or
-downloaded artifacts from another machine, and use `-FailOnMissing` only in a
-closeout audit where every matrix class is expected to be present.
+`matrix-ledger.json`, `matrix-ledger.md`, `matrix-collection-plan.json`, and
+`matrix-collection-plan.md` under a timestamped `matrix-ledger-*` directory.
+The collection plan turns any non-recorded ledger class into a concrete
+collector command plus operator note; it does not create evidence, accept
+missing classes, or change renderer policy. Use `-InputRoot <path>` to
+summarize uploaded or downloaded artifacts from another machine, and use
+`-FailOnMissing` only in a closeout audit where every matrix class is expected
+to be present.
 
 ## JSON Contract
 
@@ -103,6 +107,12 @@ selects the best evidence per matrix class. Status values are:
 | `mismatch` | Evidence exists but detected facts do not match the requested class. |
 | `failing` | Evidence package exists but the smoke failed. |
 | `missing` | No evidence package exists for the class. |
+
+`matrix-collection-plan.md` lists each class whose status is not `recorded`.
+For automatically provable classes it includes a command with
+`-RequireMatrixClass`; for `hybrid-gpu` it omits that switch and records the
+operator-confirmation requirement because the single DXGI adapter diagnostic
+cannot prove hybrid topology by itself.
 
 ## Ledger
 
