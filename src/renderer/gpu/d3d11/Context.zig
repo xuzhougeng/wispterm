@@ -8,6 +8,7 @@
 const std = @import("std");
 const windows = std.os.windows;
 const core = @import("../../../platform/dxgi_core.zig");
+const fallback_marker = @import("fallback_marker.zig");
 const present_policy = @import("present_policy.zig");
 const render_diagnostics = @import("../../../render_diagnostics.zig");
 const shaders = @import("shaders.zig");
@@ -607,6 +608,20 @@ fn deviceRemovedReason(self: *const State) HRESULT {
 
 pub fn presentPolicyStatus() present_policy.Status {
     return if (state) |*self| self.policy.status() else present_policy.Status.healthy();
+}
+
+pub fn adapterFallbackIdentity(buf: []u8) ?[]const u8 {
+    if (state) |*self| {
+        if (!self.adapter.available) return null;
+        return fallback_marker.adapterIdentity(
+            buf,
+            self.adapter.vendor_id,
+            self.adapter.device_id,
+            self.adapter.luid_low,
+            self.adapter.luid_high,
+        ) catch null;
+    }
+    return null;
 }
 
 pub fn takeRecoveryRequest() ?present_policy.RecoveryRequest {

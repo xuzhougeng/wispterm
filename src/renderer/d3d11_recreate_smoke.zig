@@ -7,6 +7,7 @@
 
 const std = @import("std");
 
+const fallback_marker_smoke = @import("d3d11_fallback_marker_smoke.zig");
 const gpu = @import("gpu/gpu.zig");
 const render_diagnostics = @import("../render_diagnostics.zig");
 
@@ -41,6 +42,7 @@ fn enabled() bool {
 
 pub fn maybeRequest() void {
     if (comptime gpu.active != .d3d11) return;
+    fallback_marker_smoke.maybeRun();
     if (!enabled() or fired) return;
     fired = true;
     if (gpu.Context.requestDeviceRecreateForSmoke()) {

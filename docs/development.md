@@ -214,6 +214,20 @@ scoped by app version and adapter identity, and currently feeds only tests and
 future-auto dry-run decisions. Explicit `d3d11` must ignore a matching marker
 except for diagnostics; current Windows `auto` still resolves to OpenGL.
 
+To exercise the marker path without changing selection, run:
+
+```powershell
+zig build -Dgpu-backend=d3d11
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -FallbackMarkerSmoke
+```
+
+This sets `WISPTERM_D3D11_FALLBACK_MARKER_SMOKE=1`, writes a synthetic
+version+adapter-scoped `d3d11-fallback` marker into the smoke profile's isolated
+state file, verifies explicit `d3d11` still wins with a warning-class decision,
+verifies current Windows `auto` remains OpenGL, and verifies a future-auto
+dry-run would select OpenGL from the marker. It does not enable live failure
+writes or automatic fallback.
+
 ## macOS UI Smoke Tests
 
 macOS UI debugging is native-target first. Unless a task explicitly asks for

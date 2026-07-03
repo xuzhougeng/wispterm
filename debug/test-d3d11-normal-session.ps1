@@ -9,6 +9,7 @@ param(
     [int]$WindowHeight = 780,
     [switch]$RecreateSmoke,
     [switch]$RapidResizeSmoke,
+    [switch]$FallbackMarkerSmoke,
     [switch]$KeepOpen
 )
 
@@ -697,6 +698,8 @@ $appDataDir = Join-Path $OutDir "appdata"
 $diagnosticPath = Join-Path $appDataDir "wispterm\render-diagnostic.log"
 
 New-Item -ItemType Directory -Force -Path $appDataDir | Out-Null
+$statePath = Join-Path $appDataDir "wispterm\state"
+Remove-Item -LiteralPath $statePath -ErrorAction SilentlyContinue
 New-SmokeBackgroundImage $backgroundImagePath
 $previewFixtures = New-SmokePreviewFixtures $previewFixtureDir
 $aiProfilePath = New-SmokeAiProfile $appDataDir
@@ -718,6 +721,7 @@ $oldRenderDiagnostics = $env:WISPTERM_RENDER_DIAGNOSTICS
 $oldUiSmoke = $env:WISPTERM_D3D11_UI_SMOKE
 $oldOffscreenSmoke = $env:WISPTERM_D3D11_OFFSCREEN_SMOKE
 $oldRecreateSmoke = $env:WISPTERM_D3D11_RECREATE_SMOKE
+$oldFallbackMarkerSmoke = $env:WISPTERM_D3D11_FALLBACK_MARKER_SMOKE
 
 $env:APPDATA = $appDataDir
 $env:WISPTERM_RENDER_DIAGNOSTICS = "1"
@@ -727,6 +731,11 @@ if ($RecreateSmoke) {
     $env:WISPTERM_D3D11_RECREATE_SMOKE = "1"
 } else {
     Remove-Item Env:WISPTERM_D3D11_RECREATE_SMOKE -ErrorAction SilentlyContinue
+}
+if ($FallbackMarkerSmoke) {
+    $env:WISPTERM_D3D11_FALLBACK_MARKER_SMOKE = "1"
+} else {
+    Remove-Item Env:WISPTERM_D3D11_FALLBACK_MARKER_SMOKE -ErrorAction SilentlyContinue
 }
 
 $proc = $null
@@ -862,6 +871,7 @@ try {
     $hasD3D11RecreateSmokeRequest = $diagText -match "d3d11-recreate-smoke requested device recreate"
     $hasD3D11RecreateSucceeded = $diagText -match "gpu-backend=d3d11 recovery recreate attempt attempted=true succeeded=true"
     $hasD3D11ResourceRestore = $diagText -match "gpu-backend=d3d11 resource recreate restored"
+    $hasD3D11FallbackMarkerSmoke = $diagText -match "d3d11-fallback-marker-smoke .*readback_ok=true.*readback_matches=true.*explicit_d3d11_ignored=true.*current_auto_default_unchanged=true.*future_auto_opengl_marker=true.*automatic_fallback=false.*default_unchanged=true"
     $hasUiProbe = $diagText -match "d3d11-ui-smoke probe .* ok=true"
     $hasOffscreen = $diagText -match "d3d11-offscreen-smoke round-trip active"
     $d3d11ResizeEventCount = [regex]::Matches($diagText, "gpu-backend=d3d11 resized swapchain to").Count
@@ -871,6 +881,13 @@ try {
         ($hasD3D11RecoveryRequested -and $hasD3D11RecreateSmokeRequest -and $hasD3D11RecreateSucceeded -and $hasD3D11ResourceRestore)
     } else {
         (!$hasD3D11RecoveryRequested -and !$hasD3D11RecreateSmokeRequest -and !$hasD3D11RecreateSucceeded)
+    }
+    $stateText = if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw } else { "" }
+    $hasD3D11FallbackMarkerState = $stateText -match "d3d11-fallback = d3d11:v1;kind=fallback_candidate;.*reason=environment_blocked"
+    $fallbackMarkerExpectation = if ($FallbackMarkerSmoke) {
+        ($hasD3D11FallbackMarkerSmoke -and $hasD3D11FallbackMarkerState)
+    } else {
+        (!$hasD3D11FallbackMarkerSmoke)
     }
 
     $pass = [bool](
@@ -891,6 +908,7 @@ try {
         $hasD3D11InitDetails -and
         $hasD3D11PolicyHealthy -and
         $recreateExpectation -and
+        $fallbackMarkerExpectation -and
         $rapidResizeDiagnostic -and
         $hasUiProbe -and
         $hasOffscreen -and
@@ -1059,6 +1077,8 @@ try {
             d3d11_recreate_smoke_requested = [bool]$hasD3D11RecreateSmokeRequest
             d3d11_recreate_succeeded = [bool]$hasD3D11RecreateSucceeded
             d3d11_resource_restore = [bool]$hasD3D11ResourceRestore
+            d3d11_fallback_marker_smoke = [bool]$hasD3D11FallbackMarkerSmoke
+            d3d11_fallback_marker_state = [bool]$hasD3D11FallbackMarkerState
             ui_probe_ok = [bool]$hasUiProbe
             offscreen_round_trip = [bool]$hasOffscreen
             failure_lines = [bool]$hasFailures
@@ -1088,4 +1108,5 @@ try {
     $env:WISPTERM_D3D11_UI_SMOKE = $oldUiSmoke
     $env:WISPTERM_D3D11_OFFSCREEN_SMOKE = $oldOffscreenSmoke
     $env:WISPTERM_D3D11_RECREATE_SMOKE = $oldRecreateSmoke
+    $env:WISPTERM_D3D11_FALLBACK_MARKER_SMOKE = $oldFallbackMarkerSmoke
 }

@@ -108,6 +108,10 @@ The fallback marker policy is intentionally policy-only at this stage. It
 defines marker format, persistence, stale-version/adapter handling, explicit
 backend behavior, and the future-auto dry-run decision surface, but it does not
 write markers from live failures and does not change renderer selection.
+Add `-FallbackMarkerSmoke` to the normal-session smoke to write a synthetic
+marker in the isolated smoke profile and verify marker persistence plus the
+explicit/current-auto/future-auto decision surface without triggering automatic
+fallback.
 
 ## Ghostty Comparison
 
