@@ -149,7 +149,9 @@ pub fn run(ctx: *ToolContext, arguments_json: []const u8) ![]u8 {
     if (std.mem.eql(u8, action, "list")) return listText(ctx.allocator);
 
     if (std.mem.eql(u8, action, "add")) {
-        const name = tool_args.string(value, "name") orelse return ctx.allocator.dupe(u8, "add requires a \"name\".");
+        const name_raw = tool_args.string(value, "name") orelse return ctx.allocator.dupe(u8, "add requires a \"name\".");
+        const name = std.mem.trim(u8, name_raw, " \t");
+        if (name.len == 0) return ctx.allocator.dupe(u8, "add requires a non-empty \"name\".");
         const command = tool_args.string(value, "command") orelse return ctx.allocator.dupe(u8, "add requires a \"command\".");
         const enabled = tool_args.boolean(value, "enabled") orelse true;
         const argv = try parseArgsOwned(ctx.allocator, value);
@@ -271,6 +273,41 @@ test "listText reports empty config" {
     const dir_path = try setupTempConfig(a, &tmp);
     defer a.free(dir_path);
     defer dirs.setTestConfigDirOverride(null);
+
+    const listing = try listText(a);
+    defer a.free(listing);
+    try std.testing.expect(std.mem.indexOf(u8, listing, "No MCP servers") != null);
+}
+
+fn allowApprove(_: *anyopaque, _: []const u8, _: []const u8, _: []const u8) bool {
+    return true;
+}
+fn notCancelled(_: *anyopaque) bool {
+    return false;
+}
+
+test "run rejects a whitespace-only name on add and writes no server" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try setupTempConfig(a, &tmp);
+    defer a.free(dir_path);
+    defer dirs.setTestConfigDirOverride(null);
+
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .permission = .full },
+        .approve = allowApprove,
+        .cancelled = notCancelled,
+    };
+
+    const out = try run(&ctx, "{\"action\":\"add\",\"name\":\"   \",\"command\":\"x\"}");
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "non-empty") != null);
 
     const listing = try listText(a);
     defer a.free(listing);

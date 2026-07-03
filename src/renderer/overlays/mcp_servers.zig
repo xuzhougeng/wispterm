@@ -298,7 +298,7 @@ pub const State = struct {
     /// Adding past `MCP_SERVER_MAX` returns `error.Full` instead of
     /// overflowing `servers`.
     pub fn commitForm(self: *State) FormError!void {
-        const name = self.formField(.name);
+        const name = std.mem.trim(u8, self.formField(.name), " \t");
         if (name.len == 0) return error.EmptyName;
         const command = self.formField(.command);
         if (command.len == 0) return error.EmptyCommand;
@@ -557,6 +557,19 @@ test "form rejects empty name, empty command, and duplicate name" {
     s.setFormField(.name, "a");
     s.setFormField(.command, "y");
     try std.testing.expectError(error.DuplicateName, s.commitForm());
+}
+
+test "commitForm rejects a whitespace-only name and trims a padded one" {
+    var s: State = .{};
+    s.beginAdd();
+    s.setFormField(.name, "   ");
+    s.setFormField(.command, "x");
+    try std.testing.expectError(error.EmptyName, s.commitForm());
+    try std.testing.expectEqual(@as(usize, 0), s.count);
+
+    s.setFormField(.name, "  gh  ");
+    try s.commitForm();
+    try std.testing.expectEqualStrings("gh", s.serverName(0));
 }
 
 test "toggle and remove the selected server" {

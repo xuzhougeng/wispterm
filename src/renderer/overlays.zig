@@ -2636,7 +2636,7 @@ fn mcpStartProbeFromForm() AppWindow.UiEffect {
     st.form_error = null;
     st.probe.status = .running;
     st.probe.target_index = st.editing_index;
-    const name = st.formField(.name);
+    const name = std.mem.trim(u8, st.formField(.name), " \t");
     mcp_probe.start(allocator, command, args_buf[0..args_len], if (name.len > 0) name else null, mcpProbeDone, @ptrCast(st));
     return .repaint;
 }
