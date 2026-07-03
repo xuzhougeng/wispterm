@@ -164,6 +164,13 @@ pub fn main() !void {
         return;
     }
 
+    // In-app GPU render benchmark: needs a real window + GPU context, so it
+    // runs through the normal App/AppWindow startup with a flag that makes
+    // AppWindow substitute a virtual benchmark surface and drive the loop.
+    if (Config.hasCommand(allocator, "benchmark")) {
+        @import("benchmark/driver.zig").enabled = true;
+    }
+
     if (build_options.debug_console) {
         diag_log.init();
         diag_log.installCrashHandlers();

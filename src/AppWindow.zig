@@ -108,6 +108,8 @@ const appwindow_ui_screenshot = @import("appwindow/ui_screenshot.zig");
 const png_writer = @import("appwindow/png_writer.zig");
 const ui_effect = @import("appwindow/ui_effect.zig");
 pub const UiEffect = ui_effect.UiEffect;
+const bench_driver = @import("benchmark/driver.zig");
+const bench_report = @import("benchmark/report.zig");
 pub const background_image = @import("renderer/background_image.zig");
 pub const file_explorer = @import("file_explorer.zig");
 const file_explorer_renderer = @import("renderer/file_explorer_renderer.zig");
@@ -344,6 +346,10 @@ pub fn deinit(self: *AppWindow) void {
     // cleanup below: destroy closes every pane's virtual controller (EOF'ing the
     // Surfaces) without freeing the Surfaces, which the tab teardown then owns.
     tmux_controller.shutdownAll(self.allocator);
+
+    // In-app GPU benchmark: free the driver's run state (samples, payloads, and
+    // the benchmark surface's virtual PTY controller). No-op when not running.
+    bench_driver.deinit();
 
     // Clean up all tabs
     for (0..tab.g_tab_count) |ti| {
@@ -2204,6 +2210,34 @@ pub fn activeTab() ?*TabState {
 
 pub fn activeSurface() ?*Surface {
     return tab.activeSurface();
+}
+
+/// Gather GPU adapter + window/grid info and write the in-app benchmark report.
+/// Called once from the main loop when `bench_driver.finished()` turns true.
+fn finishBenchReport(win: *window_backend.Window) void {
+    var adapter_buf: [256]u8 = undefined;
+    const gpu_info: ?bench_report.GpuInfo = if (gpu.adapterReport(&adapter_buf)) |a|
+        .{
+            .backend = @tagName(gpu.active),
+            .adapter = a.name,
+            .vendor_id = a.vendor_id,
+            .device_id = a.device_id,
+        }
+    else
+        null;
+
+    const fb = window_backend.framebufferSize(win);
+    const window_info: ?bench_report.WindowInfo = .{
+        .width_px = @intCast(fb.width),
+        .height_px = @intCast(fb.height),
+        .grid_cols = @intCast(term_cols),
+        .grid_rows = @intCast(term_rows),
+        .dpi = window_backend.effectiveDpi(win),
+    };
+
+    bench_driver.finishAndWriteReport(@tagName(gpu.active), gpu_info, window_info) catch |err| {
+        std.debug.print("wispterm-benchmark: failed to write report: {}\n", .{err});
+    };
 }
 
 fn surfaceOnAltScreen(s: *const Surface) bool {
@@ -6712,42 +6746,62 @@ fn runMainLoop(self: *AppWindow) !void {
             null;
         g_initial_cwd_len = 0; // Clear after use
 
-        // Try to restore the previous session, but only:
-        //   - once per process (first window only),
-        //   - if config.restore-tabs-on-startup is true,
-        //   - if no CWD override was provided (CLI/spawn).
-        // TODO: also detect --command CLI override once a structured CLI
-        // arg parser exists (today CLI args are merged into Config keys
-        // and there is no positional/--command flag).
-        const restore_once = !g_session_restore_attempted.swap(true, .seq_cst);
-        const restore_enabled = if (g_app) |app| app.restore_tabs_on_startup else false;
-        const should_try_restore = restore_once and restore_enabled and initial_cwd == null;
-        const restored = should_try_restore and tab.restoreSessionFromFile(
-            allocator,
-            term_cols,
-            term_rows,
-            g_cursor_style,
-            g_cursor_blink,
-        );
+        if (bench_driver.isEnabled()) {
+            // In-app GPU benchmark: spawn a no-shell virtual surface and hand
+            // it (plus the virtual PTY controller) to the driver. Disable vsync
+            // on both present paths so the loop spins at the GPU's max rate.
+            // Session restore and the normal shell-tab plan are skipped — the
+            // benchmark owns the single virtual surface for its whole run.
+            const spawn = tab.spawnBenchmarkTab(allocator, term_cols, term_rows, g_cursor_style, g_cursor_blink) orelse {
+                std.debug.print("Failed to spawn benchmark surface\n", .{});
+                return error.SpawnFailed;
+            };
+            bench_driver.start(allocator, spawn.surface, term_cols, spawn.controller) catch {
+                std.debug.print("Failed to start benchmark driver\n", .{});
+                return error.SpawnFailed;
+            };
+            window_backend.setPresentInterval(0);
+            // Native D3D11 Present uses its own interval (OpenGL goes through
+            // window_backend above). Comptime-gated so non-D3D11 builds skip it.
+            if (gpu.active == .d3d11) gpu.Context.setPresentInterval(0);
+        } else {
+            // Try to restore the previous session, but only:
+            //   - once per process (first window only),
+            //   - if config.restore-tabs-on-startup is true,
+            //   - if no CWD override was provided (CLI/spawn).
+            // TODO: also detect --command CLI override once a structured CLI
+            // arg parser exists (today CLI args are merged into Config keys
+            // and there is no positional/--command flag).
+            const restore_once = !g_session_restore_attempted.swap(true, .seq_cst);
+            const restore_enabled = if (g_app) |app| app.restore_tabs_on_startup else false;
+            const should_try_restore = restore_once and restore_enabled and initial_cwd == null;
+            const restored = should_try_restore and tab.restoreSessionFromFile(
+                allocator,
+                term_cols,
+                term_rows,
+                g_cursor_style,
+                g_cursor_blink,
+            );
 
-        switch (startup_tabs.initialTabPlan(.{
-            .restored_session = restored,
-            .initial_cwd_present = initial_cwd != null,
-            .first_plain_window = restore_once,
-        })) {
-            .restored_session => {},
-            .single_terminal => {
-                if (!spawnTabWithCwd(allocator, initial_cwd)) {
-                    std.debug.print("Failed to spawn initial tab\n", .{});
-                    return error.SpawnFailed;
-                }
-            },
-            .agent_and_local_shell => {
-                if (!spawnDefaultAgentAndLocalShellTabs(allocator)) {
-                    std.debug.print("Failed to spawn default Agent and local shell tabs\n", .{});
-                    return error.SpawnFailed;
-                }
-            },
+            switch (startup_tabs.initialTabPlan(.{
+                .restored_session = restored,
+                .initial_cwd_present = initial_cwd != null,
+                .first_plain_window = restore_once,
+            })) {
+                .restored_session => {},
+                .single_terminal => {
+                    if (!spawnTabWithCwd(allocator, initial_cwd)) {
+                        std.debug.print("Failed to spawn initial tab\n", .{});
+                        return error.SpawnFailed;
+                    }
+                },
+                .agent_and_local_shell => {
+                    if (!spawnDefaultAgentAndLocalShellTabs(allocator)) {
+                        std.debug.print("Failed to spawn default Agent and local shell tabs\n", .{});
+                        return error.SpawnFailed;
+                    }
+                },
+            }
         }
 
         // Dev/automation hook: WISPTERM_AUTOCONNECT names an SSH profile to
@@ -6982,6 +7036,11 @@ fn runMainLoop(self: *AppWindow) !void {
             continue;
         }
         if (blink.due) g_gate_last_blink_render = gate_now;
+
+        // In-app GPU benchmark: capture the render-branch start timestamp. The
+        // matching frameEnd (after present + dirty-clear) records the sample and
+        // feeds the next VT chunk; see driver.zig for the measurement model.
+        if (bench_driver.isEnabled()) bench_driver.frameBegin();
 
         // A pending ui_screenshot is captured from this frame's framebuffer right
         // after endFrame. The Metal backend can't read a presented+released
@@ -7295,6 +7354,19 @@ fn runMainLoop(self: *AppWindow) !void {
         clearVisibleSurfaceDirty();
         g_force_rebuild = false;
         g_cells_valid = true;
+        if (bench_driver.isEnabled()) {
+            // Records this frame's pipeline sample, feeds the next VT chunk for
+            // the upcoming frame, and advances the scenario schedule. On the
+            // final frame of the last scenario, write the report and exit.
+            bench_driver.frameEnd() catch |err| {
+                std.debug.print("wispterm-benchmark: driver error: {}, aborting\n", .{err});
+                g_should_close = true;
+            };
+            if (bench_driver.finished()) {
+                finishBenchReport(win);
+                g_should_close = true;
+            }
+        }
         if (window_backend.takePresentFallbackEvent(win)) {
             // The DXGI present path was just latched off mid-session. While
             // it was broken the GPU may have dropped glyph-atlas uploads

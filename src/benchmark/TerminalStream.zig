@@ -98,31 +98,10 @@ fn step(ptr: *anyopaque) Benchmark.Error!void {
 
 /// Build a deterministic payload: mostly printable lines of width `cols` + CRLF,
 /// with one SGR sequence per line so the escape-sequence parser path is hit.
+/// Delegates to the shared `payload.zig` generator so the CPU CLI and the
+/// in-app GPU benchmark feed identical scroll-flood content.
 fn generatePayload(allocator: std.mem.Allocator, spec: Spec) ![]u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(allocator);
-
-    var written: usize = 0;
-    var color: u8 = 0;
-    while (written < spec.payload_bytes) {
-        // CSI SGR color set
-        const sgr = try std.fmt.allocPrint(allocator, "\x1b[3{d}m", .{color});
-        defer allocator.free(sgr);
-        try buf.appendSlice(allocator, sgr);
-        color = (color + 1) % 8;
-
-        const line_len = @min(spec.cols, spec.payload_bytes - written);
-        var i: usize = 0;
-        while (i < line_len) : (i += 1) {
-            // Cycle printable ASCII 0x21..0x7e.
-            const ch: u8 = 0x21 + @as(u8, @intCast((written + i) % 94));
-            try buf.append(allocator, ch);
-        }
-        try buf.appendSlice(allocator, "\r\n");
-        written += line_len + 2;
-    }
-
-    return try buf.toOwnedSlice(allocator);
+    return @import("payload.zig").generateScrollFlood(allocator, spec.cols, spec.payload_bytes);
 }
 
 test "TerminalStream: generatePayload produces requested order of bytes" {

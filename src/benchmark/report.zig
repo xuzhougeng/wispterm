@@ -141,7 +141,7 @@ pub fn formatMarkdown(allocator: std.mem.Allocator, r: Report) ![]u8 {
     try w.print("- **backend:** {s}\n", .{r.backend});
     try w.print("- **runner:** {s}\n", .{r.runner});
     if (r.gpu) |g| {
-        try w.print("- **gpu:** {s} — {s}", .{ g.backend, g.adapter });
+        try w.print("- **gpu:** {s} - {s}", .{ g.backend, g.adapter });
         if (g.vendor_id != 0) try w.print(" (vendor={d}, device={d})", .{ g.vendor_id, g.device_id });
         try w.writeAll("\n");
     }
@@ -150,17 +150,24 @@ pub fn formatMarkdown(allocator: std.mem.Allocator, r: Report) ![]u8 {
             win.width_px, win.height_px, win.dpi, win.grid_cols, win.grid_rows,
         });
     }
-    try w.writeAll("\n| scenario | unit | value | p50 | p95 | max | samples | duration_ms |\n");
-    try w.writeAll("|---|---|---|---|---|---|---|---|\n");
+    try w.writeAll("\n| scenario | unit | value | fps | p50 | p95 | max | samples | duration_ms |\n");
+    try w.writeAll("|---|---|---|---|---|---|---|---|---|\n");
     for (r.scenarios) |s| {
-        const p50 = if (s.unit == .latency_ns) try std.fmt.allocPrint(allocator, "{d} ns", .{s.p50_ns}) else try allocator.dupe(u8, "—");
+        const p50 = if (s.unit == .latency_ns) try std.fmt.allocPrint(allocator, "{d} ns", .{s.p50_ns}) else try allocator.dupe(u8, "-");
         defer allocator.free(p50);
-        const p95 = if (s.unit == .latency_ns) try std.fmt.allocPrint(allocator, "{d} ns", .{s.p95_ns}) else try allocator.dupe(u8, "—");
+        const p95 = if (s.unit == .latency_ns) try std.fmt.allocPrint(allocator, "{d} ns", .{s.p95_ns}) else try allocator.dupe(u8, "-");
         defer allocator.free(p95);
-        const mx = if (s.unit == .latency_ns) try std.fmt.allocPrint(allocator, "{d} ns", .{s.max_ns}) else try allocator.dupe(u8, "—");
+        const mx = if (s.unit == .latency_ns) try std.fmt.allocPrint(allocator, "{d} ns", .{s.max_ns}) else try allocator.dupe(u8, "-");
         defer allocator.free(mx);
-        try w.print("| {s} | {s} | {d:.2} | {s} | {s} | {s} | {d} | {d} |\n", .{
-            s.name, s.unit.name(), s.value, p50, p95, mx, s.samples, s.duration_ms,
+        // FPS is only meaningful for latency scenarios, where `value` is the
+        // mean frame ns; throughput scenarios already report a rate in `value`.
+        const fps = if (s.unit == .latency_ns and s.value > 0)
+            try std.fmt.allocPrint(allocator, "{d:.1}", .{1_000_000_000.0 / s.value})
+        else
+            try allocator.dupe(u8, "-");
+        defer allocator.free(fps);
+        try w.print("| {s} | {s} | {d:.2} | {s} | {s} | {s} | {s} | {d} | {d} |\n", .{
+            s.name, s.unit.name(), s.value, fps, p50, p95, mx, s.samples, s.duration_ms,
         });
     }
 

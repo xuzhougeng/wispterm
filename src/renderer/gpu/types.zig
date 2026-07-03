@@ -78,6 +78,15 @@ pub const DriverInfo = struct {
     shading_language: []const u8,
 };
 
+/// GPU adapter identity for benchmark reports: a human-readable name plus the
+/// PCI vendor/device ids when the backend exposes them (D3D11 via DXGI; OpenGL
+/// leaves the ids at 0 since GL has no portable PCI-id query).
+pub const AdapterReport = struct {
+    name: []const u8,
+    vendor_id: u32 = 0,
+    device_id: u32 = 0,
+};
+
 pub const BlendSnapshot = struct {
     enabled: bool,
     src_rgb: BlendFactor,

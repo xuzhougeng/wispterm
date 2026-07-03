@@ -19,6 +19,7 @@ pub const Viewport = types.Viewport;
 pub const Scissor = types.Scissor;
 pub const ClearColor = types.ClearColor;
 pub const DriverInfo = types.DriverInfo;
+pub const AdapterReport = types.AdapterReport;
 pub const BlendSnapshot = types.BlendSnapshot;
 pub const SwapDiagnostics = types.SwapDiagnostics;
 pub const active: Backend = Backend.resolve(builtin.os.tag, build_options.gpu_backend);
@@ -49,6 +50,17 @@ pub const shaders = impl.shaders; // backend GLSL sources (for cell pipelines)
 /// renderer files until they route through the primitives (A3); removed in A6.
 pub inline fn glTable() *impl.GlTable {
     return &Context.gl;
+}
+
+/// Active GPU adapter identity for the benchmark report. `buf` backs the D3D11
+/// description string (UTF-16→UTF-8); OpenGL returns a GL-owned pointer and
+/// ignores `buf`. Returns null before the device/context is initialized.
+pub fn adapterReport(buf: []u8) ?AdapterReport {
+    return switch (active) {
+        .d3d11 => Context.adapterReport(buf),
+        .opengl => state.adapterReport(),
+        .metal => null,
+    };
 }
 
 // Reserved Ghostty-shaped primitive slots (bodies land in A3/A4):

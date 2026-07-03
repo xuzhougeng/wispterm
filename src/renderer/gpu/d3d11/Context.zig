@@ -12,6 +12,7 @@ const fallback_marker = @import("fallback_marker.zig");
 const present_policy = @import("present_policy.zig");
 const render_diagnostics = @import("../../../render_diagnostics.zig");
 const shaders = @import("shaders.zig");
+const types = @import("../types.zig");
 
 const HWND = windows.HWND;
 const HMODULE = windows.HMODULE;
@@ -116,6 +117,31 @@ pub const DeviceRecreateResult = struct {
         };
     }
 };
+
+/// DXGI Present sync interval (0 = tear off, 1 = vsync). Defaults to vsync on;
+/// the in-app GPU benchmark sets it to 0 so the main loop spins at the GPU's
+/// max frame rate instead of being capped at the refresh rate.
+var present_interval: u32 = 1;
+
+/// Set the Present sync interval. Called by the benchmark startup to disable
+/// vsync; normal app sessions leave the default (1).
+pub fn setPresentInterval(interval: u32) void {
+    present_interval = interval;
+}
+
+/// Active adapter identity for the benchmark report. `buf` backs the UTF-8 name
+/// (the adapter description is stored UTF-16); the returned `name` borrows it,
+/// so `buf` must outlive the result. Returns null before the device is created.
+pub fn adapterReport(buf: []u8) ?types.AdapterReport {
+    const s = state orelse return null;
+    if (!s.adapter.available) return null;
+    const name = s.adapter.descriptionUtf8(buf);
+    return .{
+        .name = name,
+        .vendor_id = s.adapter.vendor_id,
+        .device_id = s.adapter.device_id,
+    };
+}
 
 const State = struct {
     hwnd: HWND,
@@ -665,7 +691,7 @@ pub fn present() PresentError!void {
         .skip, .resize_then_present, .wait_for_recreate, .fallback_candidate => return,
     }
     const present_fn = core.comCall(self.swapchain, core.slot.DXGISwapChain_Present, *const fn (*anyopaque, u32, u32) callconv(.winapi) HRESULT);
-    const hr = present_fn(self.swapchain, 1, 0);
+    const hr = present_fn(self.swapchain, present_interval, 0);
     if (hr < 0) {
         const status = self.policy.noteDxgiFailure(.present, hr);
         logDxgiFailure(self, "present", hr, status);
