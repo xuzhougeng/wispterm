@@ -335,6 +335,7 @@ fn runAgentRequest(request: *ChatRequest) !ApiResult {
         try transcript.append(request.allocator, assistant_msg);
         assistant_msg_owned = false;
 
+        var mcp_specs_dirty = false;
         for (result.tool_calls.?) |call| {
             if (ai_chat.requestCancelled(request)) return error.Canceled;
             const progress = try std.fmt.allocPrint(request.allocator, "running {s} {s}", .{ call.name, call.arguments });
@@ -347,6 +348,7 @@ fn runAgentRequest(request: *ChatRequest) !ApiResult {
             if (std.mem.eql(u8, call.name, "skill_info")) {
                 ai_chat.appendReplayableToolMessage(request.session, call.id, call.name, tool_result) catch {};
             }
+            if (std.mem.eql(u8, call.name, "mcp_activate")) mcp_specs_dirty = true;
 
             var tool_msg = try requestMessageWithClonedFields(request.allocator, .tool, tool_result, null, call.id, null, null);
             var tool_msg_owned = true;
@@ -354,6 +356,7 @@ fn runAgentRequest(request: *ChatRequest) !ApiResult {
             try transcript.append(request.allocator, tool_msg);
             tool_msg_owned = false;
         }
+        if (mcp_specs_dirty) ai_chat.refreshRequestMcpTools(request);
         result.deinit(request.allocator);
     }
 }

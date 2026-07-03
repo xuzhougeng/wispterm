@@ -13,6 +13,7 @@ const ai_chat_protocol = @import("../assistant/conversation/protocol.zig");
 const ai_chat_types = @import("../assistant/conversation/types.zig");
 const platform_dirs = @import("../platform/dirs.zig");
 const atomic_file = @import("../platform/atomic_file.zig");
+const mcp_catalog = @import("mcp_catalog.zig");
 
 const McpToolSpec = ai_chat_protocol.McpToolSpec;
 const McpTool = ai_chat_types.McpTool;
@@ -203,6 +204,7 @@ pub fn saveConfigFile(allocator: std.mem.Allocator, servers: []const ServerConfi
     const json = try writeServersConfig(allocator, servers);
     defer allocator.free(json);
     try atomic_file.writeFileReplaceSafe(path, json);
+    mcp_catalog.bumpGeneration();
 }
 
 /// Absolute path to the MCP config file (`<config-dir>/mcp.json`). Owned.
@@ -510,6 +512,23 @@ threadlocal var g_cache_specs_owned: bool = false;
 threadlocal var g_cache_tools: []McpTool = &.{};
 threadlocal var g_cache_tools_owned: bool = false;
 
+pub const CachedServer = struct {
+    name: []u8,
+    discovered: bool,
+    spec_off: usize,
+    spec_len: usize,
+};
+
+threadlocal var g_cache_servers: []CachedServer = &.{};
+threadlocal var g_cache_servers_owned: bool = false;
+threadlocal var g_cache_seen_gen: u64 = 0;
+
+/// Per-server grouping of the cached specs/tools (borrowed, same lifetime as
+/// cachedSpecs). Order follows mcp.json; disabled servers are absent.
+pub fn cachedServers() []const CachedServer {
+    return g_cache_servers;
+}
+
 /// MCP tools to advertise to the model (borrowed; valid until the next reload).
 pub fn cachedSpecs() []const McpToolSpec {
     return g_cache_specs;
@@ -533,36 +552,214 @@ fn freeCache(allocator: std.mem.Allocator) void {
         g_cache_tools = &.{};
         g_cache_tools_owned = false;
     }
+    if (g_cache_servers_owned) {
+        for (g_cache_servers) |s| allocator.free(s.name);
+        allocator.free(g_cache_servers);
+        g_cache_servers = &.{};
+        g_cache_servers_owned = false;
+    }
 }
 
-fn loadSnapshots(allocator: std.mem.Allocator) !Snapshots {
-    const path = try platform_dirs.pathInConfigDir(allocator, "mcp.json");
-    defer allocator.free(path);
-    const bytes = std.fs.cwd().readFileAlloc(allocator, path, MAX_MCP_CONFIG_BYTES) catch {
-        // No config file (or unreadable) → no MCP tools. Not an error.
-        return .{ .specs = &.{}, .tools = &.{} };
+// ---------------------------------------------------------------------------
+// Activation: which servers' tool schemas are advertised to the model.
+// ponytail: app-global (process lifetime), not per chat session — tools can't
+// reach the Session object, and sharing activation across sessions is fine.
+// Fixed-size name slots; server names longer than 64 bytes can't be activated.
+// ---------------------------------------------------------------------------
+
+const MAX_ACTIVATED = 32;
+const MAX_ACT_NAME = 64;
+var g_act_mutex: std.Thread.Mutex = .{};
+var g_act_names: [MAX_ACTIVATED][MAX_ACT_NAME]u8 = undefined;
+var g_act_lens: [MAX_ACTIVATED]usize = [_]usize{0} ** MAX_ACTIVATED;
+var g_act_count: usize = 0;
+
+/// Mark a server's tools as advertised. Idempotent. False when the slot table
+/// is full or the name doesn't fit.
+pub fn activateServer(name: []const u8) bool {
+    if (name.len == 0 or name.len > MAX_ACT_NAME) return false;
+    g_act_mutex.lock();
+    defer g_act_mutex.unlock();
+    for (0..g_act_count) |i| {
+        if (std.mem.eql(u8, g_act_names[i][0..g_act_lens[i]], name)) return true;
+    }
+    if (g_act_count >= MAX_ACTIVATED) return false;
+    @memcpy(g_act_names[g_act_count][0..name.len], name);
+    g_act_lens[g_act_count] = name.len;
+    g_act_count += 1;
+    return true;
+}
+
+pub fn isActivated(name: []const u8) bool {
+    g_act_mutex.lock();
+    defer g_act_mutex.unlock();
+    for (0..g_act_count) |i| {
+        if (std.mem.eql(u8, g_act_names[i][0..g_act_lens[i]], name)) return true;
+    }
+    return false;
+}
+
+pub fn resetActivationForTest() void {
+    g_act_mutex.lock();
+    defer g_act_mutex.unlock();
+    g_act_count = 0;
+}
+
+/// Owned deep copies of the specs belonging to ACTIVATED servers only — what a
+/// request advertises. Caller frees each spec's three strings + the slice
+/// (session's freeOwnedMcpToolSpecs shape).
+pub fn cloneActivatedSpecs(allocator: std.mem.Allocator) ![]McpToolSpec {
+    ensureCacheFresh(allocator);
+    var out: std.ArrayListUnmanaged(McpToolSpec) = .empty;
+    errdefer {
+        freeSpecItems(allocator, out.items);
+        out.deinit(allocator);
+    }
+    for (g_cache_servers) |srv| {
+        if (!isActivated(srv.name)) continue;
+        for (g_cache_specs[srv.spec_off..][0..srv.spec_len]) |s| {
+            const n = try allocator.dupe(u8, s.name);
+            errdefer allocator.free(n);
+            const d = try allocator.dupe(u8, s.description);
+            errdefer allocator.free(d);
+            const p = try allocator.dupe(u8, s.properties_json);
+            errdefer allocator.free(p);
+            try out.append(allocator, .{ .name = n, .description = d, .properties_json = p });
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+const DIGEST_MAX_TOOL_NAMES = 8;
+
+/// System-prompt digest of the INACTIVE servers (the model's map of what it
+/// can mcp_activate). Null when every configured server is already activated
+/// (or none are configured).
+pub fn inactiveDigest(allocator: std.mem.Allocator) !?[]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var listed: usize = 0;
+    for (g_cache_servers) |srv| {
+        if (isActivated(srv.name)) continue;
+        if (listed == 0) {
+            try out.appendSlice(allocator, "Inactive MCP servers — call mcp_activate with the server name before using their tools:\n");
+        }
+        if (srv.discovered) {
+            try out.print(allocator, "- {s} ({d} tools): ", .{ srv.name, srv.spec_len });
+            const n = @min(srv.spec_len, DIGEST_MAX_TOOL_NAMES);
+            for (g_cache_specs[srv.spec_off..][0..n], 0..) |s, i| {
+                if (i > 0) try out.appendSlice(allocator, ", ");
+                try out.appendSlice(allocator, s.name);
+            }
+            if (srv.spec_len > DIGEST_MAX_TOOL_NAMES) try out.appendSlice(allocator, ", ...");
+            try out.append(allocator, '\n');
+        } else {
+            try out.print(allocator, "- {s} (not discovered yet; mcp_activate connects to it and lists its tools)\n", .{srv.name});
+        }
+        listed += 1;
+    }
+    if (listed == 0) {
+        out.deinit(allocator);
+        return null;
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+const CatalogSnapshots = struct {
+    snap: Snapshots,
+    servers: []CachedServer,
+};
+
+/// Build the cache from mcp.json + the disk catalog. Spawns NOTHING — a
+/// server without a valid (hash-matched) catalog entry appears with
+/// discovered=false and zero tools until it is probed or activated.
+fn loadSnapshotsFromCatalog(allocator: std.mem.Allocator) !CatalogSnapshots {
+    const configs = try loadConfigFile(allocator);
+    defer freeServersConfig(allocator, configs);
+    var catalog = mcp_catalog.load(allocator);
+    defer catalog.deinit(allocator);
+
+    var specs: std.ArrayListUnmanaged(McpToolSpec) = .empty;
+    var tools: std.ArrayListUnmanaged(McpTool) = .empty;
+    var servers: std.ArrayListUnmanaged(CachedServer) = .empty;
+    errdefer {
+        freeSpecItems(allocator, specs.items);
+        specs.deinit(allocator);
+        freeToolItems(allocator, tools.items);
+        tools.deinit(allocator);
+        for (servers.items) |s| allocator.free(s.name);
+        servers.deinit(allocator);
+    }
+
+    for (configs) |server| {
+        if (!server.enabled) continue;
+        const hash = mcp_catalog.configHash(server.command, server.args);
+        const entry = catalog.find(server.name);
+        const valid = entry != null and entry.?.config_hash == hash;
+        const off = specs.items.len;
+
+        if (valid) {
+            for (entry.?.tools) |t| {
+                if (ai_chat_protocol.builtinToolNameReserved(t.name)) continue;
+                const spec_name = try allocator.dupe(u8, t.name);
+                errdefer allocator.free(spec_name);
+                const spec_desc = try allocator.dupe(u8, t.description);
+                errdefer allocator.free(spec_desc);
+                const props = try allocator.dupe(u8, t.properties_json);
+                errdefer allocator.free(props);
+                try specs.append(allocator, .{ .name = spec_name, .description = spec_desc, .properties_json = props });
+
+                const t_name = try allocator.dupe(u8, t.name);
+                errdefer allocator.free(t_name);
+                const t_desc = try allocator.dupe(u8, t.description);
+                errdefer allocator.free(t_desc);
+                const t_cmd = try allocator.dupe(u8, server.command);
+                errdefer allocator.free(t_cmd);
+                const t_args = try dupeStringList(allocator, server.args);
+                errdefer freeStringList(allocator, t_args);
+                try tools.append(allocator, .{ .function_name = t_name, .description = t_desc, .server_command = t_cmd, .server_args = t_args });
+            }
+        }
+        const s_name = try allocator.dupe(u8, server.name);
+        errdefer allocator.free(s_name);
+        try servers.append(allocator, .{
+            .name = s_name,
+            .discovered = valid,
+            .spec_off = off,
+            .spec_len = specs.items.len - off,
+        });
+    }
+    return .{
+        .snap = .{ .specs = try specs.toOwnedSlice(allocator), .tools = try tools.toOwnedSlice(allocator) },
+        .servers = try servers.toOwnedSlice(allocator),
     };
-    defer allocator.free(bytes);
-
-    const servers = try parseServersConfig(allocator, bytes);
-    defer freeServersConfig(allocator, servers);
-    return discover(allocator, servers);
 }
 
-/// Re-read <configDir>/mcp.json, run discovery, and swap the cache. Never
-/// fails: on any error the cache is left empty. Call at startup and whenever
-/// the config changes. ponytail: discovery is synchronous here.
+/// Re-read <configDir>/mcp.json + mcp_catalog.json and swap the cache. Never
+/// fails: on any error the cache is left empty. Spawns no servers (discovery
+/// moved to probe/activation — see mcp_catalog.zig).
 pub fn reloadCache(allocator: std.mem.Allocator) void {
+    const gen = mcp_catalog.generation();
     freeCache(allocator);
-    const snap = loadSnapshots(allocator) catch |err| {
+    const loaded = loadSnapshotsFromCatalog(allocator) catch |err| {
         log.warn("reload failed: {s}", .{@errorName(err)});
         return;
     };
-    g_cache_specs = snap.specs;
-    g_cache_specs_owned = snap.specs.len != 0;
-    g_cache_tools = snap.tools;
-    g_cache_tools_owned = snap.tools.len != 0;
-    log.info("ready: {d} tool(s) from mcp.json", .{g_cache_tools.len});
+    g_cache_specs = loaded.snap.specs;
+    g_cache_specs_owned = loaded.snap.specs.len != 0;
+    g_cache_tools = loaded.snap.tools;
+    g_cache_tools_owned = loaded.snap.tools.len != 0;
+    g_cache_servers = loaded.servers;
+    g_cache_servers_owned = loaded.servers.len != 0;
+    g_cache_seen_gen = gen;
+    log.info("ready: {d} tool(s) across {d} server(s) from catalog", .{ g_cache_tools.len, g_cache_servers.len });
+}
+
+/// Reload this thread's cache iff the catalog/config changed since it was
+/// built (or it was never built on this thread). Cheap: one atomic load.
+pub fn ensureCacheFresh(allocator: std.mem.Allocator) void {
+    if (g_cache_seen_gen == mcp_catalog.generation()) return;
+    reloadCache(allocator);
 }
 
 test "discovered tools compose into an advertised request" {
@@ -623,4 +820,168 @@ test "cache stores discovered tools and frees them on the next reload" {
     reloadCacheFromServersForTest(a, &.{});
     try std.testing.expectEqual(@as(usize, 0), cachedSpecs().len);
     try std.testing.expectEqual(@as(usize, 0), cachedTools().len);
+}
+
+test "reloadCache builds specs from the disk catalog without spawning" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(dir_path);
+    platform_dirs.setTestConfigDirOverride(dir_path);
+    defer platform_dirs.setTestConfigDirOverride(null);
+
+    // 配一个根本不存在的命令——若 reloadCache 还会 spawn,这个测试拿不到工具
+    var args0 = [_][]u8{@constCast("--x")};
+    const servers = [_]ServerConfig{
+        .{ .name = @constCast("cached"), .command = @constCast("/nonexistent/bin"), .args = args0[0..], .enabled = true },
+        .{ .name = @constCast("fresh"), .command = @constCast("/nonexistent/bin2"), .args = &.{}, .enabled = true },
+        .{ .name = @constCast("off"), .command = @constCast("/nonexistent/bin3"), .args = &.{}, .enabled = false },
+    };
+    try saveConfigFile(a, servers[0..]);
+
+    // 只有 "cached" 有匹配 hash 的目录条目
+    const one_arg = [_][]const u8{"--x"};
+    const specs = [_]McpToolSpec{.{ .name = "greet", .description = "Greet", .properties_json = "{}" }};
+    try mcp_catalog.upsertServer(a, "cached", mcp_catalog.configHash("/nonexistent/bin", one_arg[0..]), 1, specs[0..]);
+
+    reloadCache(a);
+    defer reloadCacheFromServersForTest(a, &.{}); // 释放缓存
+
+    try std.testing.expectEqual(@as(usize, 1), cachedSpecs().len);
+    try std.testing.expectEqualStrings("greet", cachedSpecs()[0].name);
+    try std.testing.expectEqual(@as(usize, 1), cachedTools().len);
+    try std.testing.expectEqualStrings("/nonexistent/bin", cachedTools()[0].server_command);
+
+    const srvs = cachedServers();
+    try std.testing.expectEqual(@as(usize, 2), srvs.len); // disabled 的不进目录
+    try std.testing.expectEqualStrings("cached", srvs[0].name);
+    try std.testing.expect(srvs[0].discovered);
+    try std.testing.expectEqual(@as(usize, 1), srvs[0].spec_len);
+    try std.testing.expectEqualStrings("fresh", srvs[1].name);
+    try std.testing.expect(!srvs[1].discovered);
+    try std.testing.expectEqual(@as(usize, 0), srvs[1].spec_len);
+}
+
+test "reloadCache treats a hash-mismatched catalog entry as undiscovered" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(dir_path);
+    platform_dirs.setTestConfigDirOverride(dir_path);
+    defer platform_dirs.setTestConfigDirOverride(null);
+
+    const servers = [_]ServerConfig{.{ .name = @constCast("s"), .command = @constCast("/bin/new"), .args = &.{}, .enabled = true }};
+    try saveConfigFile(a, servers[0..]);
+    const specs = [_]McpToolSpec{.{ .name = "old", .description = "", .properties_json = "{}" }};
+    try mcp_catalog.upsertServer(a, "s", 999999, 1, specs[0..]); // 错的 hash
+
+    reloadCache(a);
+    defer reloadCacheFromServersForTest(a, &.{});
+    try std.testing.expectEqual(@as(usize, 0), cachedSpecs().len);
+    try std.testing.expect(!cachedServers()[0].discovered);
+}
+
+test "ensureCacheFresh reloads after a generation bump" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(dir_path);
+    platform_dirs.setTestConfigDirOverride(dir_path);
+    defer platform_dirs.setTestConfigDirOverride(null);
+
+    const servers = [_]ServerConfig{.{ .name = @constCast("s"), .command = @constCast("/bin/x"), .args = &.{}, .enabled = true }};
+    try saveConfigFile(a, servers[0..]);
+    reloadCache(a);
+    defer reloadCacheFromServersForTest(a, &.{});
+    try std.testing.expectEqual(@as(usize, 0), cachedSpecs().len);
+
+    const specs = [_]McpToolSpec{.{ .name = "t", .description = "", .properties_json = "{}" }};
+    const no_args = [_][]const u8{};
+    try mcp_catalog.upsertServer(a, "s", mcp_catalog.configHash("/bin/x", no_args[0..]), 1, specs[0..]); // bumps generation
+    ensureCacheFresh(a);
+    try std.testing.expectEqual(@as(usize, 1), cachedSpecs().len);
+}
+
+test "activation filters cloneActivatedSpecs and inactiveDigest" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(dir_path);
+    platform_dirs.setTestConfigDirOverride(dir_path);
+    defer platform_dirs.setTestConfigDirOverride(null);
+    resetActivationForTest();
+    defer resetActivationForTest();
+
+    const servers = [_]ServerConfig{
+        .{ .name = @constCast("alpha"), .command = @constCast("/bin/a"), .args = &.{}, .enabled = true },
+        .{ .name = @constCast("beta"), .command = @constCast("/bin/b"), .args = &.{}, .enabled = true },
+    };
+    try saveConfigFile(a, servers[0..]);
+    const no_args = [_][]const u8{};
+    const sa = [_]McpToolSpec{.{ .name = "a_tool", .description = "A", .properties_json = "{}" }};
+    const sb = [_]McpToolSpec{.{ .name = "b_tool", .description = "B", .properties_json = "{}" }};
+    try mcp_catalog.upsertServer(a, "alpha", mcp_catalog.configHash("/bin/a", no_args[0..]), 1, sa[0..]);
+    try mcp_catalog.upsertServer(a, "beta", mcp_catalog.configHash("/bin/b", no_args[0..]), 1, sb[0..]);
+    reloadCache(a);
+    defer reloadCacheFromServersForTest(a, &.{});
+
+    // 未激活:specs 空,摘要两行都在
+    const none = try cloneActivatedSpecs(a);
+    defer a.free(none);
+    try std.testing.expectEqual(@as(usize, 0), none.len);
+    const digest1 = (try inactiveDigest(a)).?;
+    defer a.free(digest1);
+    try std.testing.expect(std.mem.indexOf(u8, digest1, "alpha") != null);
+    try std.testing.expect(std.mem.indexOf(u8, digest1, "b_tool") != null);
+    try std.testing.expect(std.mem.indexOf(u8, digest1, "mcp_activate") != null);
+
+    // 激活 alpha:只克隆 alpha 的;摘要只剩 beta
+    try std.testing.expect(activateServer("alpha"));
+    try std.testing.expect(isActivated("alpha"));
+    try std.testing.expect(activateServer("alpha")); // 幂等
+    const only_a = try cloneActivatedSpecs(a);
+    defer {
+        for (only_a) |s| {
+            a.free(s.name);
+            a.free(s.description);
+            a.free(s.properties_json);
+        }
+        a.free(only_a);
+    }
+    try std.testing.expectEqual(@as(usize, 1), only_a.len);
+    try std.testing.expectEqualStrings("a_tool", only_a[0].name);
+    const digest2 = (try inactiveDigest(a)).?;
+    defer a.free(digest2);
+    try std.testing.expect(std.mem.indexOf(u8, digest2, "alpha") == null);
+    try std.testing.expect(std.mem.indexOf(u8, digest2, "beta") != null);
+
+    // 全部激活 → null
+    _ = activateServer("beta");
+    try std.testing.expect(try inactiveDigest(a) == null);
+}
+
+test "inactiveDigest marks an undiscovered server" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(dir_path);
+    platform_dirs.setTestConfigDirOverride(dir_path);
+    defer platform_dirs.setTestConfigDirOverride(null);
+    resetActivationForTest();
+    defer resetActivationForTest();
+
+    const servers = [_]ServerConfig{.{ .name = @constCast("mystery"), .command = @constCast("/bin/m"), .args = &.{}, .enabled = true }};
+    try saveConfigFile(a, servers[0..]);
+    reloadCache(a);
+    defer reloadCacheFromServersForTest(a, &.{});
+
+    const digest = (try inactiveDigest(a)).?;
+    defer a.free(digest);
+    try std.testing.expect(std.mem.indexOf(u8, digest, "mystery") != null);
+    try std.testing.expect(std.mem.indexOf(u8, digest, "not discovered yet") != null);
 }
