@@ -16,6 +16,7 @@ param(
     [switch]$WindowStateSmoke,
     [switch]$FullscreenStartupSmoke,
     [switch]$FallbackMarkerSmoke,
+    [switch]$AutoDryRunSmoke,
     [switch]$KeepOpen
 )
 
@@ -46,11 +47,14 @@ if ($SoakMinutes -lt 0.0) {
     throw "-SoakMinutes must be zero or greater."
 }
 
-if ($Backend -eq "opengl" -and ($RecreateSmoke -or $RecreateFailureSmoke -or $FallbackMarkerSmoke -or $WindowStateSmoke -or $FullscreenStartupSmoke -or $SoakMinutes -gt 0.0)) {
-    throw "-RecreateSmoke, -RecreateFailureSmoke, -FallbackMarkerSmoke, -WindowStateSmoke, -FullscreenStartupSmoke, and -SoakMinutes require -Backend d3d11."
+if ($Backend -eq "opengl" -and ($RecreateSmoke -or $RecreateFailureSmoke -or $FallbackMarkerSmoke -or $AutoDryRunSmoke -or $WindowStateSmoke -or $FullscreenStartupSmoke -or $SoakMinutes -gt 0.0)) {
+    throw "-RecreateSmoke, -RecreateFailureSmoke, -FallbackMarkerSmoke, -AutoDryRunSmoke, -WindowStateSmoke, -FullscreenStartupSmoke, and -SoakMinutes require -Backend d3d11."
 }
-if ($FullscreenStartupSmoke -and ($RecreateSmoke -or $RecreateFailureSmoke -or $RapidResizeSmoke -or $WindowStateSmoke -or $FallbackMarkerSmoke)) {
+if ($FullscreenStartupSmoke -and ($RecreateSmoke -or $RecreateFailureSmoke -or $RapidResizeSmoke -or $WindowStateSmoke -or $FallbackMarkerSmoke -or $AutoDryRunSmoke)) {
     throw "-FullscreenStartupSmoke must run by itself."
+}
+if ($AutoDryRunSmoke -and $RecreateFailureSmoke) {
+    throw "-AutoDryRunSmoke cannot be combined with -RecreateFailureSmoke."
 }
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
@@ -983,6 +987,7 @@ $oldOffscreenSmoke = $env:WISPTERM_D3D11_OFFSCREEN_SMOKE
 $oldRecreateSmoke = $env:WISPTERM_D3D11_RECREATE_SMOKE
 $oldRecreateFailureSmoke = $env:WISPTERM_D3D11_RECREATE_FAILURE_SMOKE
 $oldFallbackMarkerSmoke = $env:WISPTERM_D3D11_FALLBACK_MARKER_SMOKE
+$oldAutoDryRunSmoke = $env:WISPTERM_D3D11_AUTO_DRY_RUN_SMOKE
 
 $env:APPDATA = $appDataDir
 $env:WISPTERM_RENDER_DIAGNOSTICS = "1"
@@ -1008,6 +1013,11 @@ if ($isD3D11Backend -and $FallbackMarkerSmoke) {
     $env:WISPTERM_D3D11_FALLBACK_MARKER_SMOKE = "1"
 } else {
     Remove-Item Env:WISPTERM_D3D11_FALLBACK_MARKER_SMOKE -ErrorAction SilentlyContinue
+}
+if ($isD3D11Backend -and $AutoDryRunSmoke) {
+    $env:WISPTERM_D3D11_AUTO_DRY_RUN_SMOKE = "1"
+} else {
+    Remove-Item Env:WISPTERM_D3D11_AUTO_DRY_RUN_SMOKE -ErrorAction SilentlyContinue
 }
 
 $proc = $null
@@ -1398,6 +1408,7 @@ try {
     $hasD3D11RecreateSucceeded = $diagText -match "gpu-backend=d3d11 recovery recreate attempt attempted=true succeeded=true"
     $hasD3D11ResourceRestore = $diagText -match "gpu-backend=d3d11 resource recreate restored"
     $hasD3D11FallbackMarkerSmoke = $diagText -match "d3d11-fallback-marker-smoke .*readback_ok=true.*readback_matches=true.*explicit_d3d11_ignored=true.*current_auto_default_unchanged=true.*future_auto_opengl_marker=true.*automatic_fallback=false.*default_unchanged=true"
+    $hasD3D11AutoDryRunSmoke = $diagText -match "d3d11-auto-dry-run-smoke .*current_auto_opengl=true.*future_auto_d3d11=true.*future_auto_marker_opengl=true.*explicit_d3d11_ignored_marker=true.*explicit_opengl=true.*stale_marker_ignored=true.*automatic_fallback=false.*default_unchanged=true"
     $hasUiProbe = $diagText -match "d3d11-ui-smoke probe .* ok=true"
     $hasOffscreen = $diagText -match "d3d11-offscreen-smoke round-trip active"
     $d3d11ResizeEventCount = [regex]::Matches($diagText, "gpu-backend=d3d11 resized swapchain to").Count
@@ -1416,6 +1427,11 @@ try {
         ($hasD3D11FallbackMarkerSmoke -and $hasD3D11FallbackMarkerState)
     } else {
         (!$hasD3D11FallbackMarkerSmoke -and !$hasD3D11FallbackMarkerState)
+    }
+    $autoDryRunExpectation = if ($isD3D11Backend -and $AutoDryRunSmoke) {
+        $hasD3D11AutoDryRunSmoke
+    } else {
+        !$hasD3D11AutoDryRunSmoke
     }
     $backendExpectation = if ($isD3D11Backend) {
         ($hasD3D11Present -and $hasD3D11InitDetails -and $hasD3D11Environment -and $hasWindowsEnvironment -and $hasD3D11PolicyHealthy)
@@ -1447,6 +1463,7 @@ try {
         $backendExpectation -and
         $recreateExpectation -and
         $fallbackMarkerExpectation -and
+        $autoDryRunExpectation -and
         $rapidResizeDiagnostic -and
         $windowStateDiagnostic -and
         $soakDiagnostic -and
@@ -1687,6 +1704,7 @@ try {
             d3d11_resource_restore = [bool]$hasD3D11ResourceRestore
             d3d11_fallback_marker_smoke = [bool]$hasD3D11FallbackMarkerSmoke
             d3d11_fallback_marker_state = [bool]$hasD3D11FallbackMarkerState
+            d3d11_auto_dry_run_smoke = [bool]$hasD3D11AutoDryRunSmoke
             ui_probe_ok = [bool]$hasUiProbe
             offscreen_round_trip = [bool]$hasOffscreen
             failure_lines = [bool]$hasFailures
@@ -1718,4 +1736,5 @@ try {
     $env:WISPTERM_D3D11_RECREATE_SMOKE = $oldRecreateSmoke
     $env:WISPTERM_D3D11_RECREATE_FAILURE_SMOKE = $oldRecreateFailureSmoke
     $env:WISPTERM_D3D11_FALLBACK_MARKER_SMOKE = $oldFallbackMarkerSmoke
+    $env:WISPTERM_D3D11_AUTO_DRY_RUN_SMOKE = $oldAutoDryRunSmoke
 }

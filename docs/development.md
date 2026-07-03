@@ -347,6 +347,21 @@ verifies current Windows `auto` remains OpenGL, and verifies a future-auto
 dry-run would select OpenGL from the marker. It does not enable live failure
 writes or automatic fallback.
 
+To record the future-auto selector dry-run surface without writing a marker,
+run:
+
+```powershell
+zig build -Dgpu-backend=d3d11
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -AutoDryRunSmoke
+```
+
+This sets `WISPTERM_D3D11_AUTO_DRY_RUN_SMOKE=1` and verifies diagnostics for
+current Windows `auto` staying OpenGL, future Windows `auto` selecting D3D11
+when eligible, future-auto selecting OpenGL from a matching marker, explicit
+`d3d11` ignoring a matching marker with warning semantics, explicit `opengl`
+remaining OpenGL, and stale markers being ignored. It does not change the
+Windows default backend, write a fallback marker, or trigger automatic fallback.
+
 To prove the Windows OpenGL fallback path still runs the same normal-session UI
 subset on the native-render branch, build the default backend and run:
 

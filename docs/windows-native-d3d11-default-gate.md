@@ -37,6 +37,7 @@ unavailable environment is missing evidence, not a passing result.
 | Device recreate success | `-RecreateSmoke` records exactly one successful recreate/restore path. |
 | Device recreate failure | `-RecreateFailureSmoke` escalates exactly once to a fallback candidate and writes a marker. |
 | Fallback marker policy | `-FallbackMarkerSmoke` proves explicit D3D11 still wins, current auto stays OpenGL, and future-auto would select OpenGL from a matching marker. |
+| Future-auto dry-run | `-AutoDryRunSmoke` proves current auto, future eligible D3D11, matching-marker OpenGL, explicit D3D11, explicit OpenGL, and stale-marker selector outcomes. |
 | OpenGL fallback | `zig build` plus `-Backend opengl` proves the compatibility renderer still runs the normal-session UI subset. |
 | Rapid resize | `-RapidResizeSmoke` proves nonblank frames, resize diagnostics, and no resize/present failures. |
 | Window state | `-WindowStateSmoke` proves maximize, restore, minimize, and restore-from-minimize. |
@@ -103,6 +104,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-se
 powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -RecreateSmoke
 powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -RecreateFailureSmoke
 powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -FallbackMarkerSmoke
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -AutoDryRunSmoke
 powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -RapidResizeSmoke
 powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -WindowStateSmoke
 powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -FullscreenStartupSmoke

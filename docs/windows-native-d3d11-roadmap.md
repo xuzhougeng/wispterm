@@ -172,6 +172,13 @@ marker in the isolated smoke profile and verify marker persistence plus the
 explicit/current-auto/future-auto decision surface without triggering automatic
 fallback.
 
+Add `-AutoDryRunSmoke` to the normal-session smoke to verify the future-auto
+selector explanation surface without writing a marker. It must prove current
+Windows `auto` still selects OpenGL, future Windows `auto` would select D3D11
+when eligible, a matching marker would make future-auto select OpenGL, explicit
+`d3d11` ignores the marker with warning semantics, explicit `opengl` remains
+OpenGL, and stale markers are ignored.
+
 Add `-RecreateFailureSmoke` to the same smoke to exercise the failed-recreate
 escalation path. This mode is intentionally a diagnostics/state-file proof: it
 does not attempt same-process OpenGL fallback, does not change Windows `auto`,
