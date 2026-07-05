@@ -27,7 +27,7 @@ const impl = switch (backendForOs(builtin.os.tag)) {
 };
 
 fn runtimeFlavor(webview_enabled: bool, has_compat_payload: bool) release_package.Flavor {
-    if (!webview_enabled) return .without_embedded_browser_payload;
+    _ = webview_enabled;
     if (has_compat_payload) return .compat;
     return .baseline;
 }
@@ -106,8 +106,9 @@ test "platform update package maps non-Windows targets to non-Windows packages" 
     try std.testing.expectEqual(release_package.Platform.unsupported, defaultPackageForOs(.freebsd).platform);
 }
 
-test "platform update package keeps Windows portable flavor logic in platform layer" {
-    try std.testing.expectEqual(release_package.Flavor.without_embedded_browser_payload, runtimeFlavor(false, true));
+test "platform update package maps Windows runtime payloads after no-WebView retirement" {
+    try std.testing.expectEqual(release_package.Flavor.baseline, runtimeFlavor(false, false));
+    try std.testing.expectEqual(release_package.Flavor.compat, runtimeFlavor(false, true));
     try std.testing.expectEqual(release_package.Flavor.compat, runtimeFlavor(true, true));
     try std.testing.expectEqual(release_package.Flavor.baseline, runtimeFlavor(true, false));
     try std.testing.expect(release_package.Package.init(.windows, .compat).requiresEmbeddedBrowserPayload());
@@ -120,9 +121,6 @@ test "platform update package builds Windows portable asset names" {
 
     const compat = try assetNameForScenario("v0.28.0", .compat, &buf);
     try std.testing.expectEqualStrings("wispterm-windows-portable-compat-v0.28.0.zip", compat);
-
-    const no_embedded_browser = try assetNameForScenario("v0.28.0", .without_embedded_browser_payload, &buf);
-    try std.testing.expectEqualStrings("wispterm-windows-portable-no-webview-v0.28.0.zip", no_embedded_browser);
 }
 
 test "platform update package matches exact target asset names only" {

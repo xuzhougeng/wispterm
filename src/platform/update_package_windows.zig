@@ -41,10 +41,6 @@ fn assetNameParts(package: release_package.Package) ?AssetNameParts {
             .prefix = "wispterm-windows-portable-compat-",
             .suffix = ".zip",
         },
-        .without_embedded_browser_payload => .{
-            .prefix = "wispterm-windows-portable-no-webview-",
-            .suffix = ".zip",
-        },
     };
 }
 
@@ -66,7 +62,7 @@ pub fn embeddedBrowserPayloadPath() []const u8 {
 }
 
 fn runtimeFlavor(webview_enabled: bool, has_compat_payload: bool) release_package.Flavor {
-    if (!webview_enabled) return .without_embedded_browser_payload;
+    _ = webview_enabled;
     if (has_compat_payload) return .compat;
     return .baseline;
 }

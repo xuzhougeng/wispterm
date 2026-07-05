@@ -426,17 +426,14 @@ test "update_check: copy result fails when asset buffers are too small" {
     try std.testing.expectEqual(@as(u64, 0), copied.asset_size);
 }
 
-test "update_check: selects portable asset for runtime flavor" {
+test "update_check: selects supported Windows portable assets" {
     const tag_name = "v0.28.0";
     var portable_name_buf: [asset_name_buffer_len]u8 = undefined;
-    var required_extra_name_buf: [asset_name_buffer_len]u8 = undefined;
-    var no_embedded_browser_name_buf: [asset_name_buffer_len]u8 = undefined;
+    var compat_name_buf: [asset_name_buffer_len]u8 = undefined;
     const portable_package = platform_update_package.packageForScenario(.baseline);
-    const required_extra_package = platform_update_package.packageForScenario(.compat);
-    const no_embedded_browser_package = platform_update_package.packageForScenario(.without_embedded_browser_payload);
+    const compat_package = platform_update_package.packageForScenario(.compat);
     const portable_name = try platform_update_package.assetName(tag_name, portable_package, &portable_name_buf);
-    const required_extra_name = try platform_update_package.assetName(tag_name, required_extra_package, &required_extra_name_buf);
-    const no_embedded_browser_name = try platform_update_package.assetName(tag_name, no_embedded_browser_package, &no_embedded_browser_name_buf);
+    const compat_name = try platform_update_package.assetName(tag_name, compat_package, &compat_name_buf);
 
     const json = try std.fmt.allocPrint(std.testing.allocator,
         \\{{
@@ -446,16 +443,14 @@ test "update_check: selects portable asset for runtime flavor" {
         \\  "prerelease":false,
         \\  "assets":[
         \\    {{"name":"{s}","browser_download_url":"https://example.test/portable.zip","size":11}},
-        \\    {{"name":"{s}","browser_download_url":"https://example.test/required-extra.zip","size":22}},
-        \\    {{"name":"{s}","browser_download_url":"https://example.test/no-embedded-browser.zip","size":33}}
+        \\    {{"name":"{s}","browser_download_url":"https://example.test/compat.zip","size":22}}
         \\  ]
         \\}}
     , .{
         tag_name,
         tag_name,
         portable_name,
-        required_extra_name,
-        no_embedded_browser_name,
+        compat_name,
     });
     defer std.testing.allocator.free(json);
 
@@ -467,11 +462,10 @@ test "update_check: selects portable asset for runtime flavor" {
     try std.testing.expectEqualStrings("https://example.test/portable.zip", normal.download_url);
     try std.testing.expectEqual(@as(u64, 11), normal.size);
 
-    const required_extra = selectReleaseAsset(release, required_extra_package) orelse return error.ExpectedAsset;
-    try std.testing.expectEqualStrings(required_extra_name, required_extra.name);
-
-    const no_embedded_browser = selectReleaseAsset(release, no_embedded_browser_package) orelse return error.ExpectedAsset;
-    try std.testing.expectEqualStrings(no_embedded_browser_name, no_embedded_browser.name);
+    const compat = selectReleaseAsset(release, compat_package) orelse return error.ExpectedAsset;
+    try std.testing.expectEqualStrings(compat_name, compat.name);
+    try std.testing.expectEqualStrings("https://example.test/compat.zip", compat.download_url);
+    try std.testing.expectEqual(@as(u64, 22), compat.size);
 }
 
 test "update_check: selects macOS DMG asset for macOS package" {

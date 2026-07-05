@@ -12,7 +12,6 @@ pub const Flavor = enum {
     /// Full-featured package for older Windows machines: ships the embedded
     /// browser loader plus a modern bundled console host.
     compat,
-    without_embedded_browser_payload,
 };
 
 pub const Package = struct {
