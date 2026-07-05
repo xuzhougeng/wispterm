@@ -6,7 +6,7 @@ param(
     [switch]$SkipBuild,
     [switch]$SkipInstaller,
     [switch]$SkipCompatBundle,
-    [switch]$SkipNoWebViewBundle,
+    [switch]$SkipNativeD3D11Bundle,
     [switch]$DebugConsole,
     [string]$Optimize = 'ReleaseFast'
 )
@@ -185,20 +185,20 @@ if ($DebugConsole) {
     exit 0
 }
 
-$noWebViewInstallDir = Join-Path $repoRoot 'zig-out-no-webview'
+$nativeD3D11InstallDir = Join-Path $repoRoot 'zig-out-native-d3d11'
 
 if (-not $SkipBuild) {
     Push-Location $repoRoot
     try {
-        & zig build -Doptimize=ReleaseFast
+        & zig build -Doptimize=ReleaseFast -Dgpu-backend=opengl
         if ($LASTEXITCODE -ne 0) {
-            throw 'zig build -Doptimize=ReleaseFast failed.'
+            throw 'zig build -Doptimize=ReleaseFast -Dgpu-backend=opengl failed.'
         }
-        if (-not $SkipNoWebViewBundle) {
-            Remove-Item -Path $noWebViewInstallDir -Recurse -Force -ErrorAction SilentlyContinue
-            & zig build -Doptimize=ReleaseFast -Dwebview=false -p $noWebViewInstallDir
+        if (-not $SkipNativeD3D11Bundle) {
+            Remove-Item -Path $nativeD3D11InstallDir -Recurse -Force -ErrorAction SilentlyContinue
+            & zig build -Doptimize=ReleaseFast -Dgpu-backend=d3d11 -p $nativeD3D11InstallDir
             if ($LASTEXITCODE -ne 0) {
-                throw 'zig build -Doptimize=ReleaseFast -Dwebview=false failed.'
+                throw 'zig build -Doptimize=ReleaseFast -Dgpu-backend=d3d11 failed.'
             }
         }
     } finally {
@@ -210,14 +210,14 @@ $binaryPath = Join-Path $repoRoot 'zig-out\bin\wispterm.exe'
 if (-not (Test-Path $binaryPath)) {
     throw "Expected release binary was not found: $binaryPath"
 }
-$noWebViewBinaryPath = Join-Path $noWebViewInstallDir 'bin\wispterm.exe'
-if (-not $SkipNoWebViewBundle -and -not (Test-Path $noWebViewBinaryPath)) {
-    throw "Expected no-WebView release binary was not found: $noWebViewBinaryPath"
+$nativeD3D11BinaryPath = Join-Path $nativeD3D11InstallDir 'bin\wispterm.exe'
+if (-not $SkipNativeD3D11Bundle -and -not (Test-Path $nativeD3D11BinaryPath)) {
+    throw "Expected native D3D11 release binary was not found: $nativeD3D11BinaryPath"
 }
 
 $portableDir = Join-Path $resolvedOutputDir 'portable'
 $portableCompatDir = Join-Path $resolvedOutputDir 'portable-compat'
-$portableNoWebViewDir = Join-Path $resolvedOutputDir 'portable-no-webview'
+$portableNativeD3D11Dir = Join-Path $resolvedOutputDir 'portable-native-d3d11'
 $installerDir = Join-Path $resolvedOutputDir 'installer'
 $stagingDir = Join-Path $installerDir 'staging'
 $setupExe = Join-Path $installerDir 'wispterm-setup.exe'
@@ -231,14 +231,14 @@ if (-not $SkipCompatBundle) {
     $conPtyPair = Get-ConPtyPair -RepoRoot $repoRoot -Version $ConPtyVersion
 }
 
-Remove-Item -Path $portableDir, $portableCompatDir, $portableNoWebViewDir, $installerDir -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path $portableDir, $portableCompatDir, $portableNativeD3D11Dir, $installerDir -Recurse -Force -ErrorAction SilentlyContinue
 
 Copy-PortablePayload -BinaryPath $binaryPath -TargetDir $portableDir -ReleaseVersion $releaseVersion
 if ($webView2LoaderPath) {
     Copy-PortablePayload -BinaryPath $binaryPath -TargetDir $portableCompatDir -ReleaseVersion $releaseVersion -WebView2LoaderPath $webView2LoaderPath -ConPtyPair $conPtyPair
 }
-if (-not $SkipNoWebViewBundle) {
-    Copy-PortablePayload -BinaryPath $noWebViewBinaryPath -TargetDir $portableNoWebViewDir -ReleaseVersion $releaseVersion
+if (-not $SkipNativeD3D11Bundle) {
+    Copy-PortablePayload -BinaryPath $nativeD3D11BinaryPath -TargetDir $portableNativeD3D11Dir -ReleaseVersion $releaseVersion
 }
 
 if ($SkipInstaller) {
@@ -246,8 +246,8 @@ if ($SkipInstaller) {
     if ($webView2LoaderPath) {
         Write-Host "Portable compat build: $(Join-Path $portableCompatDir 'wispterm.exe')"
     }
-    if (-not $SkipNoWebViewBundle) {
-        Write-Host "Portable no-WebView build: $(Join-Path $portableNoWebViewDir 'wispterm.exe')"
+    if (-not $SkipNativeD3D11Bundle) {
+        Write-Host "Portable native D3D11 build: $(Join-Path $portableNativeD3D11Dir 'wispterm.exe')"
     }
     Write-Host 'Installer build skipped. Unsigned IExpress installers are prone to Windows Defender false positives.'
     exit 0
@@ -339,7 +339,7 @@ Write-Host "Portable build: $(Join-Path $portableDir 'wispterm.exe')"
 if ($webView2LoaderPath) {
     Write-Host "Portable compat build: $(Join-Path $portableCompatDir 'wispterm.exe')"
 }
-if (-not $SkipNoWebViewBundle) {
-    Write-Host "Portable no-WebView build: $(Join-Path $portableNoWebViewDir 'wispterm.exe')"
+if (-not $SkipNativeD3D11Bundle) {
+    Write-Host "Portable native D3D11 build: $(Join-Path $portableNativeD3D11Dir 'wispterm.exe')"
 }
 Write-Host "Installer build: $setupExe"
