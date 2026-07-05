@@ -201,7 +201,7 @@ test "report: JSON includes shared scalars and omits null gpu/window" {
         .{ .name = "terminal-stream", .unit = .throughput, .value = 56.2, .samples = 900, .duration_ms = 1000 },
     };
     const r: Report = .{
-        .app_version = "1.31.0",
+        .app_version = "1.32.0",
         .os = "windows",
         .cpu_arch = "x86_64",
         .logical_cores = 8,
@@ -212,7 +212,7 @@ test "report: JSON includes shared scalars and omits null gpu/window" {
     };
     const json = try formatJson(allocator, r);
     defer allocator.free(json);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"app_version\":\"1.31.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"app_version\":\"1.32.0\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"logical_cores\":8") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"backend\":\"opengl\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"runner\":\"cli\"") != null);
@@ -228,7 +228,7 @@ test "report: JSON includes gpu/window when filled and latency percentiles" {
         .{ .name = "scroll_flood", .unit = .latency_ns, .value = 1_000_000, .p50_ns = 900_000, .p95_ns = 1_800_000, .max_ns = 3_000_000, .samples = 600, .duration_ms = 10_000 },
     };
     const r: Report = .{
-        .app_version = "1.31.0",
+        .app_version = "1.32.0",
         .os = "macos",
         .cpu_arch = "aarch64",
         .logical_cores = 10,
@@ -253,7 +253,7 @@ test "report: Markdown renders header, env, and scenario table" {
         .{ .name = "scroll_flood", .unit = .latency_ns, .value = 1_000_000, .p50_ns = 900_000, .p95_ns = 1_800_000, .max_ns = 3_000_000, .samples = 600, .duration_ms = 10_000 },
     };
     const r: Report = .{
-        .app_version = "1.31.0",
+        .app_version = "1.32.0",
         .os = "windows",
         .cpu_arch = "x86_64",
         .logical_cores = 8,

@@ -101,6 +101,22 @@ New-Item -ItemType Directory -Force "$env:APPDATA\wispterm" | Out-Null
 Add-Content -Path "$env:APPDATA\wispterm\config" -Value "wispterm-d3d-present = false"
 ```
 
+## Which Windows Package Should I Download?
+
+Use `wispterm-windows-portable-*.zip` by default. It uses the OpenGL renderer
+and is the recommended Windows package.
+
+Use `wispterm-windows-portable-compat-*.zip` on older Windows 10 machines or
+when you want the embedded browser loader and bundled modern ConPTY next to the
+exe.
+
+Use `wispterm-windows-portable-native-d3d11-*.zip` only when you want to test
+the Windows native D3D11 renderer and send feedback. If it opens a black window,
+crashes, misses UI, fails resize, or behaves badly over RDP, VM, hybrid GPU, or
+mixed-DPI monitor setups, switch back to the default OpenGL package. Include a
+diagnostic report plus GPU/driver, Windows version, RDP/VM status, hybrid-GPU
+status, and monitor/DPI topology when reporting the issue.
+
 ## Why Does WispTerm Remote Mirror the Local Terminal Size on Phones?
 
 WispTerm Remote mirrors the local WispTerm window because the desktop app is the

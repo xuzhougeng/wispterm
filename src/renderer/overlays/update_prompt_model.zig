@@ -25,7 +25,7 @@ pub fn updatePromptActionForResult(result: update_check.CheckResult) UpdatePromp
 
 test "overlays: downloaded maps to install_update on macOS only" {
     const expected: UpdatePromptAction = if (builtin.os.tag == .macos) .install_update else .none;
-    try std.testing.expectEqual(expected, updatePromptActionForResult(.{ .state = .downloaded, .latest_version = "v1.31.0" }));
+    try std.testing.expectEqual(expected, updatePromptActionForResult(.{ .state = .downloaded, .latest_version = "v1.32.0" }));
 }
 
 test "overlays: update prompt action selection prefers downloadable asset" {

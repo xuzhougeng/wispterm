@@ -53,7 +53,7 @@ English | [简体中文](README.zh-CN.md)
 ## Versions
 
 The desktop app version is the repository root version in `build.zig.zon`
-(currently `1.31.0`) and is what `wispterm --version`, release notes, desktop
+(currently `1.32.0`) and is what `wispterm --version`, release notes, desktop
 packages, and the command center `Version` entry use.
 
 The WispTerm Remote web console/relay under `remote/` has an independent npm/web
@@ -265,7 +265,7 @@ MIT
 
 ## Citation
 
-Xu, Z.-G. (2026). *WispTerm* (Version 1.31.0) [Computer software]. Zenodo.
+Xu, Z.-G. (2026). *WispTerm* (Version 1.32.0) [Computer software]. Zenodo.
 https://doi.org/10.5281/zenodo.20660542
 
 Copyable acknowledgment template:
@@ -275,6 +275,6 @@ We used WispTerm as part of our computational environment for life sciences data
 analysis, remote computing workflows, reproducible command-line processing, and
 the organization of related literature and analysis code.
 
-Xu, Z.-G. (2026). WispTerm (Version 1.31.0) [Computer software]. Zenodo.
+Xu, Z.-G. (2026). WispTerm (Version 1.32.0) [Computer software]. Zenodo.
 https://doi.org/10.5281/zenodo.20660542
 ```

@@ -531,9 +531,9 @@ OpenSSH error so regressions can be diagnosed without guessing.
 
 WispTerm supports three portable Windows packages plus the local installer build:
 
-- `portable` - lightweight portable build, run directly without installation
-- `portable-compat` - full-featured portable build for older Windows 10 machines: `WebView2Loader.dll` for the embedded browser plus a bundled modern ConPTY (`conpty.dll` + `OpenConsole.exe`) so TUI apps like Codex get mouse scrolling and scrollbars on old inbox conhosts
-- `portable-no-webview` - portable build compiled with embedded WebView2 disabled
+- `portable` - default OpenGL portable build, run directly without installation
+- `portable-compat` - OpenGL portable build for older Windows 10 machines: `WebView2Loader.dll` for the embedded browser plus a bundled modern ConPTY (`conpty.dll` + `OpenConsole.exe`) so TUI apps like Codex get mouse scrolling and scrollbars on old inbox conhosts
+- `portable-native-d3d11` - Windows native D3D11 feedback build; use the default `portable` package if it shows rendering issues
 - `wispterm-setup.exe` - installer build, installs to the current user's profile and creates a Start menu shortcut
 
 Build the artifacts with:
@@ -554,9 +554,9 @@ zig-out\dist\portable-compat\conpty.dll
 zig-out\dist\portable-compat\OpenConsole.exe
 zig-out\dist\portable-compat\version.txt
 zig-out\dist\portable-compat\plugins\...
-zig-out\dist\portable-no-webview\wispterm.exe
-zig-out\dist\portable-no-webview\version.txt
-zig-out\dist\portable-no-webview\plugins\...
+zig-out\dist\portable-native-d3d11\wispterm.exe
+zig-out\dist\portable-native-d3d11\version.txt
+zig-out\dist\portable-native-d3d11\plugins\...
 zig-out\dist\installer\wispterm-setup.exe
 ```
 
@@ -598,7 +598,7 @@ Several GitHub Actions workflows publish release assets whenever a tag matching
 
 - `wispterm-windows-portable-vX.Y.Z.zip`
 - `wispterm-windows-portable-compat-vX.Y.Z.zip`
-- `wispterm-windows-portable-no-webview-vX.Y.Z.zip`
+- `wispterm-windows-portable-native-d3d11-vX.Y.Z.zip`
 - `wispterm-windows-debug-vX.Y.Z.zip`
 
 When WispTerm detects a newer release on Windows, it downloads the matching
@@ -606,13 +606,15 @@ portable zip to the Downloads folder and reveals it in Explorer; unzip it over
 your existing install to update.
 
 The unsigned IExpress installer is not published for now because Windows
-Defender can quarantine it as a false positive. Use the portable zip release
-asset; the `portable-compat` zip when using the embedded browser panel or on
-older Windows 10 machines (its bundled ConPTY restores TUI mouse support); or
-the `portable-no-webview` zip when embedded WebView2 should be disabled. The
-bundled ConPTY is preferred automatically when its files sit next to
-`wispterm.exe`; set `windows-conpty = system` in the config to force the OS
-inbox ConPTY.
+Defender can quarantine it as a false positive. Use the default portable zip
+release asset; the `portable-compat` zip when using the embedded browser panel
+or on older Windows 10 machines (its bundled ConPTY restores TUI mouse support);
+or the `portable-native-d3d11` zip when intentionally testing the Windows native
+D3D11 renderer. If the native D3D11 package shows a black window, crash, missing
+UI, resize failure, RDP issue, or multi-monitor/DPI issue, switch back to the
+default portable package and include diagnostics in the bug report. The bundled
+ConPTY is preferred automatically when its files sit next to `wispterm.exe`; set
+`windows-conpty = system` in the config to force the OS inbox ConPTY.
 
 **macOS assets** (per tagged release):
 
