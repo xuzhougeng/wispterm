@@ -6475,6 +6475,16 @@ fn runMainLoop(self: *AppWindow) !void {
             try gpu.Context.initForWindow(window_backend.nativeHandle(&backend_window), fb.width, fb.height);
         },
     }
+    // Free the D3D11 handle registries (heap-allocated per window thread) when
+    // this window unwinds. Declared before the pipeline/texture-owning defers
+    // below so it runs after all of them (defers are LIFO); their deinits still
+    // see a live registry to release COM objects through.
+    defer if (comptime gpu.active == .d3d11) {
+        gpu.Pipeline.releaseRegistry();
+        gpu.Texture.releaseRegistry();
+        gpu.Buffer.releaseRegistry();
+        gpu.vertex.releaseRegistry();
+    };
 
     // Initialize FreeType
     const ft_lib = freetype.Library.init() catch |err| {

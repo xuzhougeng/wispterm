@@ -1,7 +1,6 @@
 //! Transitional gl_init mirror for the D3D11 backend.
 
 const c = @import("c.zig");
-const Pipeline = @import("Pipeline.zig");
 
 pub const BackendHooks = struct {
     fillQuad: *const fn (x: f32, y: f32, w: f32, h: f32, color: [3]f32) void,
@@ -25,10 +24,6 @@ pub threadlocal var shader_program: c.GLuint = 1;
 pub threadlocal var simple_color_shader: c.GLuint = 1;
 pub threadlocal var g_draw_call_count: u32 = 0;
 pub threadlocal var g_bg_opacity: f32 = 1.0;
-
-pub fn compileShader(shader_type: c.GLenum, source: [*c]const u8) ?c.GLuint {
-    return Pipeline.compileShader(shader_type, source);
-}
 
 pub fn initShaders() bool {
     return true;

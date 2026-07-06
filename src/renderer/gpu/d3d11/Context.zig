@@ -530,11 +530,21 @@ fn createPhase2Pipeline(self: *State) InitError!void {
     self.pixel_shader = ps;
 }
 
+/// D3DCompile entry point, loaded once per thread. The compiler module stays
+/// resident on purpose: pipelines are recompiled on device recreate, and the
+/// DLL image is file-backed/shared — the waste was re-LoadLibraryW'ing it for
+/// every one of the ~18 startup compiles (refcount grew, never released).
+threadlocal var g_d3dcompile: ?D3DCompileFn = null;
+
 pub fn compileShaderBlob(source: []const u8, entrypoint: [*:0]const u8, target: [*:0]const u8) ShaderError!*anyopaque {
-    const compiler = LoadLibraryW(std.unicode.utf8ToUtf16LeStringLiteral("d3dcompiler_47.dll")) orelse
-        return error.ShaderCompilerUnavailable;
-    const compile: D3DCompileFn = @ptrCast(GetProcAddress(compiler, "D3DCompile") orelse
-        return error.ShaderCompilerUnavailable);
+    const compile = g_d3dcompile orelse blk: {
+        const compiler = LoadLibraryW(std.unicode.utf8ToUtf16LeStringLiteral("d3dcompiler_47.dll")) orelse
+            return error.ShaderCompilerUnavailable;
+        const f: D3DCompileFn = @ptrCast(GetProcAddress(compiler, "D3DCompile") orelse
+            return error.ShaderCompilerUnavailable);
+        g_d3dcompile = f;
+        break :blk f;
+    };
 
     var code: ?*anyopaque = null;
     var errors: ?*anyopaque = null;
