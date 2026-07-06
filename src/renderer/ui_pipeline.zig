@@ -39,7 +39,20 @@ const batching_supported = gpu.active == .opengl;
 threadlocal var batch: Pipeline = .{ .program = 0, .vao = 0 };
 threadlocal var batch_instances: Buffer = .{ .handle = 0, .target = 0 };
 threadlocal var batch_quad: Buffer = .{ .handle = 0, .target = 0 };
-threadlocal var batcher: ui_batch.Batcher = .{};
+// GL-only UI glyph batcher, heap-allocated on first use (~180 KB — kept out
+// of the TLS template, which Windows commits privately for every thread; on
+// non-GL backends it never allocates at all).
+threadlocal var g_batcher: ?*ui_batch.Batcher = null;
+
+fn batcher() *ui_batch.Batcher {
+    if (g_batcher == null) {
+        const b = std.heap.page_allocator.create(ui_batch.Batcher) catch
+            @panic("out of memory allocating UI batcher");
+        b.* = .{};
+        g_batcher = b;
+    }
+    return g_batcher.?;
+}
 /// Shadow of the text pipeline's projection (set in setProjection); the batch
 /// draw applies it at flush time. Flushes happen before any projection change,
 /// so pending instances always use the projection they were issued under.
@@ -67,11 +80,11 @@ const GlSink = struct {
 /// Submit any pending batched UI draws. Registered into the gpu hooks; also
 /// called directly by frame tails that present without an endFrame (resize).
 pub fn flushBatch() void {
-    batcher.flush(GlSink{});
+    batcher().flush(GlSink{});
 }
 
 fn pipelineUseHook(program: gpu.ProgramHandle) void {
-    if (ui_batch.shouldFlushOnPipelineUse(batcher.pending(), program, batch.program)) flushBatch();
+    if (ui_batch.shouldFlushOnPipelineUse(batcher().pending(), program, batch.program)) flushBatch();
 }
 
 fn drawCallTick() void {
@@ -163,7 +176,10 @@ pub fn deinit() void {
     if (comptime batching_supported) {
         gpu.state.pre_change_hook = null;
         Pipeline.pre_use_hook = null;
-        batcher.count = 0;
+        if (g_batcher) |b| {
+            std.heap.page_allocator.destroy(b);
+            g_batcher = null;
+        }
         batch.deinit();
         batch_instances.deinit();
         batch_quad.deinit();
@@ -242,7 +258,7 @@ pub fn fillQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha: f32) 
     const b = color[2] * alpha + bg[2] * (1 - alpha);
     if (comptime batching_supported) {
         if (batch.program != 0) {
-            batcher.push(solid.handle, .{
+            batcher().push(solid.handle, .{
                 .x = x,
                 .y = y,
                 .w = w,
@@ -272,7 +288,7 @@ pub fn fillQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha: f32) 
 pub fn drawGlyph(rect: Rect, uv: Uv, tex: Texture, color: [3]f32) void {
     if (comptime batching_supported) {
         if (batch.program != 0) {
-            batcher.push(tex.handle, .{
+            batcher().push(tex.handle, .{
                 .x = rect.x,
                 .y = rect.y,
                 .w = rect.w,

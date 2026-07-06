@@ -117,9 +117,31 @@ pub threadlocal var g_history_selected: ?usize = null;
 pub threadlocal var g_root_path: [260]u8 = undefined;
 pub threadlocal var g_root_path_len: usize = 0;
 
-// Flat list of currently visible entries (rebuilt on expand/collapse/rescan)
-pub threadlocal var g_entries: [MAX_ENTRIES]FlatEntry = undefined;
+// Flat list of currently visible entries (rebuilt on expand/collapse/rescan).
+// Heap-allocated on first use: as a direct `threadlocal` array this was
+// ~1.6 MB in the TLS template, which Windows commits privately for EVERY
+// thread — see renderer/gpu/d3d11/vertex.zig for the same pattern. Contents
+// start undefined, matching the old `= undefined` initializer.
+threadlocal var g_entries_storage: ?*[MAX_ENTRIES]FlatEntry = null;
 pub threadlocal var g_entry_count: usize = 0;
+
+pub fn entries() *[MAX_ENTRIES]FlatEntry {
+    if (g_entries_storage == null) {
+        g_entries_storage = std.heap.page_allocator.create([MAX_ENTRIES]FlatEntry) catch
+            @panic("out of memory allocating file explorer entries");
+    }
+    return g_entries_storage.?;
+}
+
+/// Free this thread's entries storage (window-thread teardown). A later
+/// accidental use safely reallocates fresh storage instead of dangling.
+fn releaseEntriesStorage() void {
+    if (g_entries_storage) |e| {
+        std.heap.page_allocator.destroy(e);
+        g_entries_storage = null;
+    }
+    g_entry_count = 0;
+}
 
 const AsyncListKind = enum { rescan, expand };
 
@@ -290,13 +312,13 @@ pub fn selectEntry(idx: usize) ?EntryView {
 }
 
 pub fn toggleDirectoryAt(idx: usize) bool {
-    if (idx >= g_entry_count or !g_entries[idx].is_dir) return false;
+    if (idx >= g_entry_count or !entries()[idx].is_dir) return false;
     toggleExpand(idx);
     return true;
 }
 
 fn entryViewAssumeValid(idx: usize) EntryView {
-    const entry = &g_entries[idx];
+    const entry = &entries()[idx];
     return .{
         .index = idx,
         .name = entry.name_buf[0..entry.name_len],
@@ -656,7 +678,7 @@ pub fn tickAsync() bool {
         setTransferStatus(.failed, if (job.resolve_root) "SSH pwd failed" else "SSH list failed");
         if (job.kind == .expand) {
             if (findEntryByPath(job.path_buf[0..job.path_len])) |idx| {
-                g_entries[idx].expanded = false;
+                entries()[idx].expanded = false;
             }
         }
         return true;
@@ -679,7 +701,7 @@ pub fn tickAsync() bool {
         .expand => {
             const path = job.path_buf[0..job.path_len];
             const idx = findEntryByPath(path) orelse return true;
-            if (!g_entries[idx].expanded) return true;
+            if (!entries()[idx].expanded) return true;
             _ = insertBackendChildren(idx + 1, job.entries[0..job.count], job.depth, path, '/');
         },
     }
@@ -756,7 +778,7 @@ pub fn refresh() void {
     g_refresh_keep_path_len = 0;
     if (g_selected) |sel| {
         if (sel < g_entry_count) {
-            const p = g_entries[sel].path_buf[0..g_entries[sel].path_len];
+            const p = entries()[sel].path_buf[0..entries()[sel].path_len];
             const n: u16 = @intCast(@min(p.len, g_refresh_keep_path.len));
             @memcpy(g_refresh_keep_path[0..n], p[0..n]);
             g_refresh_keep_path_len = n;
@@ -807,19 +829,19 @@ fn loadBackendEntries(
     const perf = ui_perf.begin("file_explorer.load_backend_entries");
     defer perf.end();
 
-    const capacity = g_entries.len - g_entry_count;
+    const capacity = entries().len - g_entry_count;
     if (capacity == 0) return .ok;
 
     const allocator = std.heap.page_allocator;
-    const entries = allocator.alloc(file_backend.Entry, capacity) catch return .open_failed;
-    defer allocator.free(entries);
+    const backend_entries = allocator.alloc(file_backend.Entry, capacity) catch return .open_failed;
+    defer allocator.free(backend_entries);
 
-    const result = file_backend.list(allocator, backend, path, entries);
+    const result = file_backend.list(allocator, backend, path, backend_entries);
     if (result.status != .ok) return result.status;
 
-    for (entries[0..result.count]) |*entry| {
-        if (g_entry_count >= g_entries.len) break;
-        if (copyBackendEntry(&g_entries[g_entry_count], entry, depth, parent_path, sep)) {
+    for (backend_entries[0..result.count]) |*entry| {
+        if (g_entry_count >= entries().len) break;
+        if (copyBackendEntry(&entries()[g_entry_count], entry, depth, parent_path, sep)) {
             g_entry_count += 1;
         }
     }
@@ -872,9 +894,9 @@ fn pathEndsWithSeparator(path: []const u8, sep: u8) bool {
 
 pub fn toggleExpand(idx: usize) void {
     if (idx >= g_entry_count) return;
-    if (!g_entries[idx].is_dir) return;
+    if (!entries()[idx].is_dir) return;
 
-    if (g_entries[idx].expanded) {
+    if (entries()[idx].expanded) {
         collapse(idx);
     } else {
         if (g_mode == .remote and g_has_ssh_conn) {
@@ -888,7 +910,7 @@ pub fn toggleExpand(idx: usize) void {
 }
 
 fn expandRemote(idx: usize) void {
-    const entry = &g_entries[idx];
+    const entry = &entries()[idx];
     entry.expanded = true;
     const path = entry.path_buf[0..entry.path_len];
     if (startAsyncList(.expand, path, entry.depth + 1, false) == .blocked) {
@@ -898,13 +920,13 @@ fn expandRemote(idx: usize) void {
 }
 
 fn expandWithBackend(idx: usize, backend: file_backend.Backend, sep: u8) void {
-    const entry = &g_entries[idx];
+    const entry = &entries()[idx];
     entry.expanded = true;
 
     const path = entry.path_buf[0..entry.path_len];
     const child_depth = entry.depth + 1;
     const insert_pos = idx + 1;
-    const max_new = g_entries.len - g_entry_count;
+    const max_new = entries().len - g_entry_count;
     if (max_new == 0) return;
 
     const allocator = std.heap.page_allocator;
@@ -940,10 +962,10 @@ fn insertBackendChildren(
     sep: u8,
 ) usize {
     if (backend_entries.len == 0) return 0;
-    if (g_entry_count >= g_entries.len) return 0;
+    if (g_entry_count >= entries().len) return 0;
 
     const allocator = std.heap.page_allocator;
-    const max_new = g_entries.len - g_entry_count;
+    const max_new = entries().len - g_entry_count;
     const flat_children = allocator.alloc(FlatEntry, @min(backend_entries.len, max_new)) catch {
         return 0;
     };
@@ -962,19 +984,19 @@ fn insertBackendChildren(
     if (insert_pos < g_entry_count) {
         std.mem.copyBackwards(
             FlatEntry,
-            g_entries[insert_pos + filled .. g_entry_count + filled],
-            g_entries[insert_pos..g_entry_count],
+            entries()[insert_pos + filled .. g_entry_count + filled],
+            entries()[insert_pos..g_entry_count],
         );
     }
 
-    @memcpy(g_entries[insert_pos .. insert_pos + filled], flat_children[0..filled]);
+    @memcpy(entries()[insert_pos .. insert_pos + filled], flat_children[0..filled]);
     g_entry_count += filled;
     return filled;
 }
 
 fn findEntryByPath(path: []const u8) ?usize {
     for (0..g_entry_count) |idx| {
-        const entry_path = g_entries[idx].path_buf[0..g_entries[idx].path_len];
+        const entry_path = entries()[idx].path_buf[0..entries()[idx].path_len];
         if (std.mem.eql(u8, entry_path, path)) return idx;
     }
     return null;
@@ -986,9 +1008,9 @@ fn startAsyncList(kind: AsyncListKind, path: []const u8, depth: u16, resolve_roo
     if (g_async_job != null) return queueAsyncList(kind, path, depth, resolve_root);
 
     const allocator = std.heap.page_allocator;
-    const entries = allocator.alloc(file_backend.Entry, MAX_ENTRIES) catch return .blocked;
+    const backend_entries = allocator.alloc(file_backend.Entry, MAX_ENTRIES) catch return .blocked;
     const job = allocator.create(AsyncListJob) catch {
-        allocator.free(entries);
+        allocator.free(backend_entries);
         return .blocked;
     };
 
@@ -999,12 +1021,12 @@ fn startAsyncList(kind: AsyncListKind, path: []const u8, depth: u16, resolve_roo
         .path_len = path.len,
         .depth = depth,
         .resolve_root = resolve_root,
-        .entries = entries,
+        .entries = backend_entries,
     };
     @memcpy(job.path_buf[0..path.len], path);
 
     const thread = std.Thread.spawn(.{}, asyncListThread, .{job}) catch {
-        allocator.free(entries);
+        allocator.free(backend_entries);
         allocator.destroy(job);
         return .blocked;
     };
@@ -1390,6 +1412,7 @@ pub fn deinit() void {
     g_pending_async_list = null;
     g_loading = false;
     clearHistoryRows();
+    releaseEntriesStorage();
 }
 
 fn setLoading(msg: []const u8) void {
@@ -1407,13 +1430,13 @@ fn expandWsl(idx: usize) void {
 }
 
 fn collapse(idx: usize) void {
-    var entry = &g_entries[idx];
+    var entry = &entries()[idx];
     entry.expanded = false;
 
     // Remove all entries after idx with depth > entry.depth
     const base_depth = entry.depth;
     var end = idx + 1;
-    while (end < g_entry_count and g_entries[end].depth > base_depth) {
+    while (end < g_entry_count and entries()[end].depth > base_depth) {
         end += 1;
     }
 
@@ -1424,7 +1447,7 @@ fn collapse(idx: usize) void {
     const remaining = g_entry_count - end;
     var k: usize = 0;
     while (k < remaining) : (k += 1) {
-        g_entries[idx + 1 + k] = g_entries[end + k];
+        entries()[idx + 1 + k] = entries()[end + k];
     }
     g_entry_count -= remove_count;
 
@@ -1474,7 +1497,7 @@ pub fn startRename() void {
     const sel = g_selected orelse return;
     if (sel >= g_entry_count) return;
     g_op_mode = .rename;
-    const entry = &g_entries[sel];
+    const entry = &entries()[sel];
     @memcpy(g_input_buf[0..entry.name_len], entry.name_buf[0..entry.name_len]);
     g_input_len = entry.name_len;
 }
@@ -1516,7 +1539,7 @@ fn commitRename() void {
     if (sel >= g_entry_count) return;
     if (g_input_len == 0) return;
 
-    const entry = &g_entries[sel];
+    const entry = &entries()[sel];
     const old_path = entry.path_buf[0..entry.path_len];
     const new_name = g_input_buf[0..g_input_len];
 
@@ -1567,7 +1590,7 @@ fn commitDelete() void {
     const sel = g_selected orelse return;
     if (sel >= g_entry_count) return;
 
-    const entry = &g_entries[sel];
+    const entry = &entries()[sel];
     const path = entry.path_buf[0..entry.path_len];
 
     const cwd = std.fs.cwd();
@@ -1583,7 +1606,7 @@ fn commitDelete() void {
 fn getSelectedParentPath() []const u8 {
     if (g_selected) |sel| {
         if (sel < g_entry_count) {
-            const entry = &g_entries[sel];
+            const entry = &entries()[sel];
             if (entry.is_dir and entry.expanded) {
                 return entry.path_buf[0..entry.path_len];
             }
@@ -1643,7 +1666,7 @@ pub fn handleAction(act: Action) void {
             // (toggleExpand also guards is_dir, so the inner check just avoids
             // the call, preserving the original conditional shape).
             if (g_selected) |sel| {
-                if (sel < g_entry_count and g_entries[sel].is_dir) {
+                if (sel < g_entry_count and entries()[sel].is_dir) {
                     toggleExpand(sel);
                 }
             }
@@ -1739,7 +1762,7 @@ pub fn downloadSelected(local_dir: []const u8) void {
     const sel = g_selected orelse return;
     if (sel >= g_entry_count) return;
 
-    const entry = &g_entries[sel];
+    const entry = &entries()[sel];
 
     const name = entry.name_buf[0..entry.name_len];
     if (!isSafeDownloadEntryName(name)) {
@@ -2109,13 +2132,13 @@ test "file_explorer: download refuses remote entry names that can escape the des
     g_ssh_conn = .{};
     g_selected = 0;
     g_entry_count = 1;
-    g_entries[0] = .{};
+    entries()[0] = .{};
     const evil_name = "..\\..\\evil";
-    @memcpy(g_entries[0].name_buf[0..evil_name.len], evil_name);
-    g_entries[0].name_len = evil_name.len;
+    @memcpy(entries()[0].name_buf[0..evil_name.len], evil_name);
+    entries()[0].name_len = evil_name.len;
     const evil_path = "/srv/..\\..\\evil";
-    @memcpy(g_entries[0].path_buf[0..evil_path.len], evil_path);
-    g_entries[0].path_len = evil_path.len;
+    @memcpy(entries()[0].path_buf[0..evil_path.len], evil_path);
+    entries()[0].path_len = evil_path.len;
 
     downloadSelected("/tmp/wispterm-test-downloads");
 
@@ -2383,23 +2406,23 @@ test "file_explorer: handleAction toggle collapses an expanded directory and no-
     g_panel_mode = .files;
     g_mode = .local;
     g_entry_count = 3;
-    g_entries[0] = .{ .is_dir = true, .expanded = true, .depth = 0 };
+    entries()[0] = .{ .is_dir = true, .expanded = true, .depth = 0 };
     // One synthetic child of entry 0, so collapse has something to remove.
-    g_entries[1] = .{ .is_dir = false, .expanded = false, .depth = 1 };
-    g_entries[2] = .{ .is_dir = false, .expanded = false, .depth = 0 };
+    entries()[1] = .{ .is_dir = false, .expanded = false, .depth = 1 };
+    entries()[2] = .{ .is_dir = false, .expanded = false, .depth = 0 };
 
     // Selected directory (expanded): Enter toggles it to collapsed and drops
     // the child row.
     g_selected = 0;
     handleAction(.toggle_selected_expand);
-    try std.testing.expect(!g_entries[0].expanded);
+    try std.testing.expect(!entries()[0].expanded);
     try std.testing.expectEqual(@as(usize, 2), g_entry_count);
 
     // Selected file: Enter is a no-op (entry untouched).
-    g_entries[1] = .{ .is_dir = false, .expanded = false, .depth = 0 };
+    entries()[1] = .{ .is_dir = false, .expanded = false, .depth = 0 };
     g_selected = 1;
     handleAction(.toggle_selected_expand);
-    try std.testing.expect(!g_entries[1].expanded);
+    try std.testing.expect(!entries()[1].expanded);
     try std.testing.expectEqual(@as(usize, 2), g_entry_count);
 
     // No selection: Enter is a no-op (no crash).
@@ -2587,8 +2610,8 @@ test "file_explorer: unchanged terminal target preserves file state" {
 }
 
 fn setFlatEntryPathForTest(idx: usize, path: []const u8) void {
-    @memcpy(g_entries[idx].path_buf[0..path.len], path);
-    g_entries[idx].path_len = @intCast(path.len);
+    @memcpy(entries()[idx].path_buf[0..path.len], path);
+    entries()[idx].path_len = @intCast(path.len);
 }
 
 test "file_explorer: refresh restore re-selects entry by path" {

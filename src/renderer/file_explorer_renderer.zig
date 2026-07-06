@@ -228,7 +228,7 @@ fn renderFiles(
             .visible => |row| row,
         };
 
-        const entry = &file_explorer.g_entries[i];
+        const entry = &file_explorer.entries()[i];
         const indent = @as(f32, @floatFromInt(entry.depth)) * file_explorer.INDENT_WIDTH;
 
         // Hover detection

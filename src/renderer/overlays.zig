@@ -108,54 +108,77 @@ pub const copilotEdgeHandleSetTarget = copilot_edge_handle.setProximityTarget;
 pub const copilotEdgeHandleSetHovered = copilot_edge_handle.setHovered;
 pub const copilotEdgeHandleStartShimmer = copilot_edge_handle.startShimmer;
 
-threadlocal var g_overlay_state: overlay_state.OverlayState = .{};
+// Heap-allocated on first use: as a direct `threadlocal` struct this was the
+// single largest entry in the TLS template (~2.3 MB), which Windows commits
+// privately for EVERY thread — see renderer/gpu/d3d11/vertex.zig for the
+// same pattern. Only window/render threads ever touch overlay state.
+threadlocal var g_overlay_state: ?*overlay_state.OverlayState = null;
+
+fn overlayState() *overlay_state.OverlayState {
+    if (g_overlay_state == null) {
+        const s = std.heap.page_allocator.create(overlay_state.OverlayState) catch
+            @panic("out of memory allocating overlay state");
+        s.* = .{};
+        g_overlay_state = s;
+    }
+    return g_overlay_state.?;
+}
+
+/// Free this thread's overlay state storage (window-thread teardown). A later
+/// accidental use safely reallocates fresh state instead of dangling.
+pub fn releaseThreadState() void {
+    if (g_overlay_state) |s| {
+        std.heap.page_allocator.destroy(s);
+        g_overlay_state = null;
+    }
+}
 
 fn settingsState() *settings_page.State {
-    return &g_overlay_state.settings;
+    return &overlayState().settings;
 }
 
 fn toastState() *toasts.State {
-    return &g_overlay_state.toasts;
+    return &overlayState().toasts;
 }
 
 fn confirmState() *confirm_modals.State {
-    return &g_overlay_state.confirms;
+    return &overlayState().confirms;
 }
 
 fn sshState() *ssh_profiles.State {
-    return &g_overlay_state.ssh;
+    return &overlayState().ssh;
 }
 
 fn mcpState() *mcp_servers.State {
-    return &g_overlay_state.mcp;
+    return &overlayState().mcp;
 }
 
 fn assistantProfiles() *assistant_profiles.State {
-    return &g_overlay_state.assistant_profiles;
+    return &overlayState().assistant_profiles;
 }
 
 fn feishuForm() *overlay_state.FeishuFormState {
-    return &g_overlay_state.feishu;
+    return &overlayState().feishu;
 }
 
 fn feishuConfig() *feishu_config.State {
-    return &g_overlay_state.feishu.config;
+    return &overlayState().feishu.config;
 }
 
 fn quickAiForm() *overlay_state.QuickAiFormState {
-    return &g_overlay_state.quick_ai;
+    return &overlayState().quick_ai;
 }
 
 fn quickAi() *quick_ai_config.State {
-    return &g_overlay_state.quick_ai.config;
+    return &overlayState().quick_ai.config;
 }
 
 fn launcherState() *session_launcher.State {
-    return &g_overlay_state.session;
+    return &overlayState().session;
 }
 
 fn commandPaletteState() *command_palette_state.State {
-    return &g_overlay_state.command_palette;
+    return &overlayState().command_palette;
 }
 
 fn switchModelTarget() ?*AppWindow.ai_chat.Session {
@@ -270,10 +293,10 @@ const PaletteItem = union(enum) {
 
 // User-defined snippets: `<config-dir>/snippets/*.md`, parsed by command_registry
 // (frontmatter name=title, description=detail, body=text sent to the active PTY).
-// State lives in g_overlay_state.snippets; reloaded each time the palette opens
+// State lives in overlayState().snippets; reloaded each time the palette opens
 // (see commandPaletteOpenWithMode).
 fn snippetsState() *overlay_state.SnippetState {
-    return &g_overlay_state.snippets;
+    return &overlayState().snippets;
 }
 
 fn loadSnippets() void {
@@ -2312,14 +2335,14 @@ threadlocal var g_ai_history_source_visible: bool = false;
 // Feishu credential form rides on the session-launcher overlay plumbing
 // (render/input/hit-test are all gated by sessionLauncherVisible()); openFeishuConfigForm
 // sets g_session_launcher_visible so those gates fire, then feishuForm().visible
-// short-circuits the launcher branches. State lives in g_overlay_state.feishu (not a new
+// short-circuits the launcher branches. State lives in overlayState().feishu (not a new
 // top-level global — see global_state_guard; not in command_center_state — Task 2 scope).
 // Launcher transient state (AI history source selection + switch-model target)
-// now lives in `g_overlay_state.session` (session_launcher.State), reached
+// now lives in `overlayState().session` (session_launcher.State), reached
 // through `launcherState()` / `switchModelTarget()` / `setSwitchModelTarget()`.
-// SSH list/form state now lives in `g_overlay_state.ssh` (ssh_profiles.State),
+// SSH list/form state now lives in `overlayState().ssh` (ssh_profiles.State),
 // reached through `sshState()`.
-// AI list/form state now lives in `g_overlay_state.assistant_profiles` (assistant_profiles.State),
+// AI list/form state now lives in `overlayState().assistant_profiles` (assistant_profiles.State),
 // reached through `assistantProfiles()`.
 
 pub const RemoteAgentOpenResult = enum {
@@ -6897,49 +6920,49 @@ test "overlays: settings page state is owned by OverlayState" {
     settingsPageOpen();
     defer settingsPageClose();
 
-    try std.testing.expect(g_overlay_state.settings.visible);
+    try std.testing.expect(overlayState().settings.visible);
     try std.testing.expect(settingsPageVisible());
 }
 
 test "overlays: status toast state is owned by OverlayState" {
-    const saved = g_overlay_state.toasts.copy;
-    defer g_overlay_state.toasts.copy = saved;
+    const saved = overlayState().toasts.copy;
+    defer overlayState().toasts.copy = saved;
 
     showStatusToast("hello");
 
-    try std.testing.expectEqualStrings("hello", g_overlay_state.toasts.copy.text().?);
+    try std.testing.expectEqualStrings("hello", overlayState().toasts.copy.text().?);
 }
 
 test "overlays: transfer toast state is owned by OverlayState" {
-    const saved = g_overlay_state.toasts.transfer;
-    defer g_overlay_state.toasts.transfer = saved;
+    const saved = overlayState().toasts.transfer;
+    defer overlayState().toasts.transfer = saved;
 
     showTransferToast(.download, .in_progress, "file.txt");
 
-    try std.testing.expect(g_overlay_state.toasts.transfer.sticky);
-    try std.testing.expect(g_overlay_state.toasts.transfer.clickable);
+    try std.testing.expect(overlayState().toasts.transfer.sticky);
+    try std.testing.expect(overlayState().toasts.transfer.clickable);
 }
 
 test "overlays: sticky transfer toast does not keep render gate active forever" {
-    const saved_copy = g_overlay_state.toasts.copy;
-    const saved_transfer = g_overlay_state.toasts.transfer;
-    const saved_update = g_overlay_state.toasts.update;
+    const saved_copy = overlayState().toasts.copy;
+    const saved_transfer = overlayState().toasts.transfer;
+    const saved_update = overlayState().toasts.update;
     const saved_close_shortcut = close_confirm_state.deadline();
     const saved_remote_key_copied = g_remote_key_copied_until_ms;
     const saved_resize = resize.g_split_resize_overlay_until;
     const saved_debug_fps = g_debug_fps;
     defer {
-        g_overlay_state.toasts.copy = saved_copy;
-        g_overlay_state.toasts.transfer = saved_transfer;
-        g_overlay_state.toasts.update = saved_update;
+        overlayState().toasts.copy = saved_copy;
+        overlayState().toasts.transfer = saved_transfer;
+        overlayState().toasts.update = saved_update;
         close_confirm_state.setDeadline(saved_close_shortcut);
         g_remote_key_copied_until_ms = saved_remote_key_copied;
         resize.g_split_resize_overlay_until = saved_resize;
         g_debug_fps = saved_debug_fps;
     }
 
-    g_overlay_state.toasts.copy = .{};
-    g_overlay_state.toasts.update = .{};
+    overlayState().toasts.copy = .{};
+    overlayState().toasts.update = .{};
     close_confirm_state.clear();
     g_remote_key_copied_until_ms = 0;
     resize.g_split_resize_overlay_until = 0;
@@ -6947,8 +6970,8 @@ test "overlays: sticky transfer toast does not keep render gate active forever" 
 
     showTransferToast(.download, .in_progress, "file.txt");
 
-    const after_deadline = g_overlay_state.toasts.transfer.until_ms + 1;
-    try std.testing.expect(g_overlay_state.toasts.transfer.active(after_deadline));
+    const after_deadline = overlayState().toasts.transfer.until_ms + 1;
+    try std.testing.expect(overlayState().toasts.transfer.active(after_deadline));
     try std.testing.expect(!anyOverlayActive(after_deadline));
 }
 
@@ -7230,8 +7253,8 @@ test "overlays: short-window overlay boxes stay within the window" {
 }
 
 test "overlays: active download toast can be clicked for interruption" {
-    const saved = g_overlay_state.toasts.transfer;
-    defer g_overlay_state.toasts.transfer = saved;
+    const saved = overlayState().toasts.transfer;
+    defer overlayState().toasts.transfer = saved;
 
     showTransferToast(.download, .in_progress, "file.txt - 1.5 MB/s");
     try std.testing.expect(transferToastHitTestForTest(780, 534, 800, 600));
@@ -7271,13 +7294,13 @@ test "overlays: restore defaults confirm state is owned by OverlayState" {
     restoreDefaultsConfirmOpen();
     defer restoreDefaultsConfirmClose();
 
-    try std.testing.expect(g_overlay_state.confirms.restore_defaults_visible);
+    try std.testing.expect(overlayState().confirms.restore_defaults_visible);
     try std.testing.expect(restoreDefaultsConfirmVisible());
 }
 
 test "overlays: stored prompt URL does not affect latest release command URL" {
-    const saved = g_overlay_state.toasts.update;
-    defer g_overlay_state.toasts.update = saved;
+    const saved = overlayState().toasts.update;
+    defer overlayState().toasts.update = saved;
 
     showSshCwdFallbackPrompt();
 
@@ -7509,7 +7532,7 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     const saved_settings_visible = settingsState().visible;
     const saved_whats_new = g_whats_new_visible;
     const saved_integration_prompt = g_integration_prompt_visible;
-    const saved_confirms = g_overlay_state.confirms;
+    const saved_confirms = overlayState().confirms;
     const saved_session = g_session_launcher_visible;
     const saved_ssh_list = g_ssh_list_visible;
     const saved_ssh_form = g_ssh_form_visible;
@@ -7521,7 +7544,7 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
         settingsState().visible = saved_settings_visible;
         g_whats_new_visible = saved_whats_new;
         g_integration_prompt_visible = saved_integration_prompt;
-        g_overlay_state.confirms = saved_confirms;
+        overlayState().confirms = saved_confirms;
         g_session_launcher_visible = saved_session;
         g_ssh_list_visible = saved_ssh_list;
         g_ssh_form_visible = saved_ssh_form;
@@ -7535,7 +7558,7 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     settingsState().visible = false;
     g_whats_new_visible = false;
     g_integration_prompt_visible = false;
-    g_overlay_state.confirms = .{};
+    overlayState().confirms = .{};
     g_session_launcher_visible = false;
     g_ssh_list_visible = false;
     g_ssh_form_visible = false;
@@ -7593,20 +7616,20 @@ test "overlays: integration prompt opens scrolls and closes" {
 
 test "overlays: successful integration prompt copy closes modal and shows toast" {
     const saved_visible = g_integration_prompt_visible;
-    const saved_toast = g_overlay_state.toasts.copy;
+    const saved_toast = overlayState().toasts.copy;
     defer {
         g_integration_prompt_visible = saved_visible;
-        g_overlay_state.toasts.copy = saved_toast;
+        overlayState().toasts.copy = saved_toast;
     }
 
     g_integration_prompt_visible = true;
-    g_overlay_state.toasts.copy = .{};
+    overlayState().toasts.copy = .{};
 
     integrationPromptCopySucceeded();
 
     try std.testing.expect(!integrationPromptVisible());
-    try std.testing.expectEqualStrings("Integration prompt copied", g_overlay_state.toasts.copy.text().?);
-    try std.testing.expect(g_overlay_state.toasts.copy.until_ms > 0);
+    try std.testing.expectEqualStrings("Integration prompt copied", overlayState().toasts.copy.text().?);
+    try std.testing.expect(overlayState().toasts.copy.until_ms > 0);
 }
 
 fn showVersionToast() void {
