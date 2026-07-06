@@ -15,6 +15,64 @@ const RowSpace = enum {
     screen,
 };
 
+/// Web-console variant of `allocTerminalSnapshot`: wraps the plain-text dump
+/// with the escape sequences that mirror the host VT's input-affecting mode
+/// state (alternate screen, mouse tracking, bracketed paste, ...). Without
+/// them a remote xterm never learns that a full-screen TUI (issue #502:
+/// Claude Code) enabled mouse tracking before the client connected, so its
+/// wheel scrolls an empty local scrollback instead of reaching the app the
+/// way the desktop does. Plain-text consumers (agent tools, ctl, Jupyter
+/// detection) must keep using `allocTerminalSnapshot`.
+pub fn allocTerminalSnapshotWithModes(
+    allocator: std.mem.Allocator,
+    terminal: *const ghostty_vt.Terminal,
+    max_history_rows: usize,
+) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    // Must precede the content so it lands in the same screen as on the host.
+    if (terminal.screens.active_key == .alternate)
+        try out.appendSlice(allocator, "\x1b[?1049h");
+
+    const text = try allocTerminalSnapshot(allocator, terminal, max_history_rows);
+    defer allocator.free(text);
+    try out.appendSlice(allocator, text);
+
+    try appendInputModes(allocator, &out, terminal);
+    return out.toOwnedSlice(allocator);
+}
+
+/// Emit only deviations from xterm defaults so a mode-less shell snapshot
+/// stays escape-free.
+fn appendInputModes(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    terminal: *const ghostty_vt.Terminal,
+) !void {
+    const modes = &terminal.modes;
+    if (modes.get(.cursor_keys)) try out.appendSlice(allocator, "\x1b[?1h");
+    if (!modes.get(.cursor_visible)) try out.appendSlice(allocator, "\x1b[?25l");
+    if (modes.get(.focus_event)) try out.appendSlice(allocator, "\x1b[?1004h");
+    if (modes.get(.bracketed_paste)) try out.appendSlice(allocator, "\x1b[?2004h");
+    // No ?1007 (alternate scroll): xterm.js doesn't implement it — on the alt
+    // buffer it always converts wheel to arrow keys, which is what we want.
+    switch (terminal.flags.mouse_event) {
+        .none => return,
+        .x10 => try out.appendSlice(allocator, "\x1b[?9h"),
+        .normal => try out.appendSlice(allocator, "\x1b[?1000h"),
+        .button => try out.appendSlice(allocator, "\x1b[?1002h"),
+        .any => try out.appendSlice(allocator, "\x1b[?1003h"),
+    }
+    switch (terminal.flags.mouse_format) {
+        .x10 => {},
+        .utf8 => try out.appendSlice(allocator, "\x1b[?1005h"),
+        .sgr => try out.appendSlice(allocator, "\x1b[?1006h"),
+        .urxvt => try out.appendSlice(allocator, "\x1b[?1015h"),
+        .sgr_pixels => try out.appendSlice(allocator, "\x1b[?1016h"),
+    }
+}
+
 pub fn allocTerminalSnapshot(
     allocator: std.mem.Allocator,
     terminal: *const ghostty_vt.Terminal,
@@ -173,6 +231,50 @@ test "agent snapshot caps history to the most recent rows but keeps the active s
 
     try std.testing.expect(std.mem.indexOf(u8, snapshot, "row1\r\n") == null);
     try std.testing.expect(std.mem.indexOf(u8, snapshot, "row13") != null);
+}
+
+test "web snapshot mirrors alt-screen and mouse-tracking modes (issue #502)" {
+    var terminal = try ghostty_vt.Terminal.init(std.testing.allocator, .{
+        .cols = 20,
+        .rows = 4,
+        .max_scrollback = 1024,
+    });
+    defer terminal.deinit(std.testing.allocator);
+
+    var stream = terminal.vtStream();
+    defer stream.deinit();
+    // The modes Claude Code sets at startup, captured from a live PTY.
+    stream.nextSlice("\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[?1004h\x1b[?2004hTUI FRAME");
+
+    const snapshot = try allocTerminalSnapshotWithModes(std.testing.allocator, &terminal, 1024);
+    defer std.testing.allocator.free(snapshot);
+
+    // Alt-screen switch must precede the content so it lands in the alt buffer.
+    try std.testing.expect(std.mem.startsWith(u8, snapshot, "\x1b[?1049h"));
+    const content_at = std.mem.indexOf(u8, snapshot, "TUI FRAME").?;
+    for ([_][]const u8{ "\x1b[?1003h", "\x1b[?1006h", "\x1b[?1004h", "\x1b[?2004h" }) |mode| {
+        try std.testing.expect(std.mem.indexOfPos(u8, snapshot, content_at, mode) != null);
+    }
+}
+
+test "web snapshot of a plain shell stays escape-free and keeps scrollback" {
+    var terminal = try ghostty_vt.Terminal.init(std.testing.allocator, .{
+        .cols = 16,
+        .rows = 3,
+        .max_scrollback = 1024,
+    });
+    defer terminal.deinit(std.testing.allocator);
+
+    var stream = terminal.vtStream();
+    defer stream.deinit();
+    stream.nextSlice("line1\r\nline2\r\nline3\r\nline4\r\nline5");
+
+    const snapshot = try allocTerminalSnapshotWithModes(std.testing.allocator, &terminal, 1024);
+    defer std.testing.allocator.free(snapshot);
+
+    try std.testing.expect(std.mem.indexOfScalar(u8, snapshot, 0x1b) == null);
+    try std.testing.expect(std.mem.indexOf(u8, snapshot, "line1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snapshot, "line5") != null);
 }
 
 test "soft-wrapped line is joined into one logical line (no \\r\\n mid-wrap)" {
