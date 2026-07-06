@@ -9,11 +9,20 @@
 //!   - direct2d-zig: https://github.com/marler8997/direct2d-zig
 
 const std = @import("std");
+const builtin = @import("builtin");
+const build_options = @import("build_options");
 const windows = std.os.windows;
 const platform_input = @import("../platform/input_events.zig");
 const platform_window = @import("../platform/window.zig");
 const render_diagnostics = @import("../render_diagnostics.zig");
 const dx_present = @import("win32_dx_present.zig");
+const gpu_backend = @import("../renderer/gpu/backend.zig");
+
+/// Whether this build's renderer runs on a WGL/OpenGL context. The native
+/// D3D11 backend must never touch WGL: creating any GL context loads the
+/// vendor's GL ICD (nvoglv64 + nvgpucomp64 on NVIDIA) and pins hundreds of
+/// MB of driver-private memory the backend never uses.
+const needs_gl = gpu_backend.Backend.resolve(builtin.os.tag, build_options.gpu_backend) != .d3d11;
 
 // ============================================================================
 // Win32 API types
@@ -701,6 +710,8 @@ pub fn setPresentInterval(interval: c_int) void {
 
 fn setSwapInterval(interval: c_int) void {
     g_present_interval = interval;
+    // No GL context in the D3D11 build; its interval goes through gpu.Context.
+    if (comptime !needs_gl) return;
     if (!g_swap_interval_loaded) {
         g_swap_interval_loaded = true;
         if (wglGetProcAddress("wglSwapIntervalEXT")) |p| {
@@ -848,7 +859,8 @@ pub const CaptionButton = platform_window.CaptionButton;
 pub const Window = struct {
     hwnd: HWND,
     hdc: HDC,
-    hglrc: HGLRC,
+    /// Null in the native D3D11 build (no WGL context exists at all).
+    hglrc: ?HGLRC = null,
     /// DXGI flip-model presenter; null = legacy GDI SwapBuffers path (either
     /// disabled by config or unavailable/failed on this machine).
     dx: ?dx_present.Presenter = null,
@@ -970,16 +982,7 @@ pub const Window = struct {
         const physical_height = scaleFrom96(height, initial_dpi);
 
         // --- Step 1: Register window classes ---
-        const dummy_class = std.unicode.utf8ToUtf16LeStringLiteral("WispTermDummyClass");
         const real_class = std.unicode.utf8ToUtf16LeStringLiteral("WispTermWindowClass");
-
-        const dummy_wc = WNDCLASSEXW{
-            .style = CS_OWNDC,
-            .lpfnWndProc = DefWindowProcW,
-            .hInstance = hInstance,
-            .lpszClassName = dummy_class,
-        };
-        _ = RegisterClassExW(&dummy_wc);
 
         // Load application icon from embedded resource (resource ID 1, set in wispterm.rc).
         // MAKEINTRESOURCE(1) = 1, IMAGE_ICON = 1, LR_SHARED = 0x8000
@@ -1001,30 +1004,8 @@ pub const Window = struct {
             // May already be registered from a previous call — that's OK
         }
 
-        // --- Step 2: Create dummy window + legacy context to load WGL extensions ---
-        const dummy_hwnd = CreateWindowExW(
-            0,
-            dummy_class,
-            std.unicode.utf8ToUtf16LeStringLiteral(""),
-            0, // not visible
-            0,
-            0,
-            1,
-            1,
-            null,
-            null,
-            hInstance,
-            null,
-        ) orelse {
-            std.debug.print("Win32: Failed to create dummy window\n", .{});
-            return error.CreateWindowFailed;
-        };
-
-        const dummy_hdc = GetDC(dummy_hwnd) orelse {
-            _ = DestroyWindow(dummy_hwnd);
-            return error.GetDCFailed;
-        };
-
+        // --- Step 2: Create dummy window + legacy context to load WGL extensions
+        // (GL hosts only — see `needs_gl`) ---
         const pfd = PIXELFORMATDESCRIPTOR{
             .dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER,
             .iPixelType = PFD_TYPE_RGBA,
@@ -1033,36 +1014,70 @@ pub const Window = struct {
             .cStencilBits = 8,
             .iLayerType = PFD_MAIN_PLANE,
         };
+        var createContextAttribs: ?*const fn (HDC, ?HGLRC, ?[*]const i32) callconv(.winapi) ?HGLRC = null;
+        var wglChoosePixelFormatARB_ptr: ?*const anyopaque = null;
+        if (comptime needs_gl) {
+            const dummy_class = std.unicode.utf8ToUtf16LeStringLiteral("WispTermDummyClass");
+            const dummy_wc = WNDCLASSEXW{
+                .style = CS_OWNDC,
+                .lpfnWndProc = DefWindowProcW,
+                .hInstance = hInstance,
+                .lpszClassName = dummy_class,
+            };
+            _ = RegisterClassExW(&dummy_wc);
 
-        const dummy_pf = ChoosePixelFormat(dummy_hdc, &pfd);
-        if (dummy_pf == 0) {
+            const dummy_hwnd = CreateWindowExW(
+                0,
+                dummy_class,
+                std.unicode.utf8ToUtf16LeStringLiteral(""),
+                0, // not visible
+                0,
+                0,
+                1,
+                1,
+                null,
+                null,
+                hInstance,
+                null,
+            ) orelse {
+                std.debug.print("Win32: Failed to create dummy window\n", .{});
+                return error.CreateWindowFailed;
+            };
+
+            const dummy_hdc = GetDC(dummy_hwnd) orelse {
+                _ = DestroyWindow(dummy_hwnd);
+                return error.GetDCFailed;
+            };
+
+            const dummy_pf = ChoosePixelFormat(dummy_hdc, &pfd);
+            if (dummy_pf == 0) {
+                _ = DestroyWindow(dummy_hwnd);
+                return error.ChoosePixelFormatFailed;
+            }
+            _ = SetPixelFormat(dummy_hdc, dummy_pf, &pfd);
+
+            const dummy_gl = wglCreateContext(dummy_hdc) orelse {
+                _ = DestroyWindow(dummy_hwnd);
+                return error.WGLCreateContextFailed;
+            };
+            _ = wglMakeCurrent(dummy_hdc, dummy_gl);
+
+            // Load the modern context creation function
+            const wglCreateContextAttribsARB_ptr = wglGetProcAddress("wglCreateContextAttribsARB");
+            wglChoosePixelFormatARB_ptr = wglGetProcAddress("wglChoosePixelFormatARB");
+
+            // Clean up dummy resources
+            _ = wglMakeCurrent(dummy_hdc, null);
+            _ = wglDeleteContext(dummy_gl);
             _ = DestroyWindow(dummy_hwnd);
-            return error.ChoosePixelFormatFailed;
+
+            if (wglCreateContextAttribsARB_ptr == null) {
+                std.debug.print("Win32: wglCreateContextAttribsARB not available\n", .{});
+                return error.WGLExtensionNotAvailable;
+            }
+
+            createContextAttribs = @ptrCast(wglCreateContextAttribsARB_ptr.?);
         }
-        _ = SetPixelFormat(dummy_hdc, dummy_pf, &pfd);
-
-        const dummy_gl = wglCreateContext(dummy_hdc) orelse {
-            _ = DestroyWindow(dummy_hwnd);
-            return error.WGLCreateContextFailed;
-        };
-        _ = wglMakeCurrent(dummy_hdc, dummy_gl);
-
-        // Load the modern context creation function
-        const wglCreateContextAttribsARB_ptr = wglGetProcAddress("wglCreateContextAttribsARB");
-        const wglChoosePixelFormatARB_ptr = wglGetProcAddress("wglChoosePixelFormatARB");
-
-        // Clean up dummy resources
-        _ = wglMakeCurrent(dummy_hdc, null);
-        _ = wglDeleteContext(dummy_gl);
-        _ = DestroyWindow(dummy_hwnd);
-
-        if (wglCreateContextAttribsARB_ptr == null) {
-            std.debug.print("Win32: wglCreateContextAttribsARB not available\n", .{});
-            return error.WGLExtensionNotAvailable;
-        }
-
-        const createContextAttribs: *const fn (HDC, ?HGLRC, ?[*]const i32) callconv(.winapi) ?HGLRC =
-            @ptrCast(wglCreateContextAttribsARB_ptr.?);
 
         // --- Step 3: Create the real window ---
         const hwnd = CreateWindowExW(
@@ -1115,84 +1130,88 @@ pub const Window = struct {
             return error.GetDCFailed;
         };
 
-        // Set pixel format on the real window
-        // If we have wglChoosePixelFormatARB, use it for better format selection
-        var pixel_format: i32 = 0;
-        if (wglChoosePixelFormatARB_ptr) |choose_ptr| {
-            const choosePixelFormat: *const fn (
-                HDC,
-                [*]const i32,
-                ?[*]const f32,
-                u32,
-                *i32,
-                *u32,
-            ) callconv(.winapi) BOOL = @ptrCast(choose_ptr);
+        var hglrc: ?HGLRC = null;
+        if (comptime needs_gl) {
+            // Set pixel format on the real window
+            // If we have wglChoosePixelFormatARB, use it for better format selection
+            var pixel_format: i32 = 0;
+            if (wglChoosePixelFormatARB_ptr) |choose_ptr| {
+                const choosePixelFormat: *const fn (
+                    HDC,
+                    [*]const i32,
+                    ?[*]const f32,
+                    u32,
+                    *i32,
+                    *u32,
+                ) callconv(.winapi) BOOL = @ptrCast(choose_ptr);
 
-            const WGL_DRAW_TO_WINDOW_ARB: i32 = 0x2001;
-            const WGL_SUPPORT_OPENGL_ARB: i32 = 0x2010;
-            const WGL_DOUBLE_BUFFER_ARB: i32 = 0x2011;
-            const WGL_PIXEL_TYPE_ARB: i32 = 0x2013;
-            const WGL_TYPE_RGBA_ARB: i32 = 0x202B;
-            const WGL_COLOR_BITS_ARB: i32 = 0x2014;
-            const WGL_DEPTH_BITS_ARB: i32 = 0x2022;
-            const WGL_STENCIL_BITS_ARB: i32 = 0x2023;
+                const WGL_DRAW_TO_WINDOW_ARB: i32 = 0x2001;
+                const WGL_SUPPORT_OPENGL_ARB: i32 = 0x2010;
+                const WGL_DOUBLE_BUFFER_ARB: i32 = 0x2011;
+                const WGL_PIXEL_TYPE_ARB: i32 = 0x2013;
+                const WGL_TYPE_RGBA_ARB: i32 = 0x202B;
+                const WGL_COLOR_BITS_ARB: i32 = 0x2014;
+                const WGL_DEPTH_BITS_ARB: i32 = 0x2022;
+                const WGL_STENCIL_BITS_ARB: i32 = 0x2023;
 
-            const attribs = [_]i32{
-                WGL_DRAW_TO_WINDOW_ARB, 1,
-                WGL_SUPPORT_OPENGL_ARB, 1,
-                WGL_DOUBLE_BUFFER_ARB,  1,
-                WGL_PIXEL_TYPE_ARB,     WGL_TYPE_RGBA_ARB,
-                WGL_COLOR_BITS_ARB,     32,
-                WGL_DEPTH_BITS_ARB,     24,
-                WGL_STENCIL_BITS_ARB,   8,
+                const attribs = [_]i32{
+                    WGL_DRAW_TO_WINDOW_ARB, 1,
+                    WGL_SUPPORT_OPENGL_ARB, 1,
+                    WGL_DOUBLE_BUFFER_ARB,  1,
+                    WGL_PIXEL_TYPE_ARB,     WGL_TYPE_RGBA_ARB,
+                    WGL_COLOR_BITS_ARB,     32,
+                    WGL_DEPTH_BITS_ARB,     24,
+                    WGL_STENCIL_BITS_ARB,   8,
+                    0, // terminator
+                };
+                var num_formats: u32 = 0;
+                _ = choosePixelFormat(hdc, &attribs, null, 1, &pixel_format, &num_formats);
+            }
+
+            if (pixel_format == 0) {
+                // Fallback to basic ChoosePixelFormat
+                pixel_format = ChoosePixelFormat(hdc, &pfd);
+            }
+
+            if (pixel_format == 0) {
+                _ = DestroyWindow(hwnd);
+                return error.ChoosePixelFormatFailed;
+            }
+            if (SetPixelFormat(hdc, pixel_format, &pfd) == 0) {
+                _ = DestroyWindow(hwnd);
+                return error.SetPixelFormatFailed;
+            }
+
+            // --- Step 4: Create OpenGL 3.3 core profile context ---
+            const WGL_CONTEXT_MAJOR_VERSION_ARB: i32 = 0x2091;
+            const WGL_CONTEXT_MINOR_VERSION_ARB: i32 = 0x2092;
+            const WGL_CONTEXT_PROFILE_MASK_ARB: i32 = 0x9126;
+            const WGL_CONTEXT_CORE_PROFILE_BIT_ARB: i32 = 0x00000001;
+
+            const ctx_attribs = [_]i32{
+                WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
+                WGL_CONTEXT_MINOR_VERSION_ARB, 3,
+                WGL_CONTEXT_PROFILE_MASK_ARB,  WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
                 0, // terminator
             };
-            var num_formats: u32 = 0;
-            _ = choosePixelFormat(hdc, &attribs, null, 1, &pixel_format, &num_formats);
+
+            const ctx = createContextAttribs.?(hdc, null, &ctx_attribs) orelse {
+                std.debug.print("Win32: Failed to create OpenGL 3.3 core context\n", .{});
+                _ = DestroyWindow(hwnd);
+                return error.WGLCreateContextFailed;
+            };
+
+            if (wglMakeCurrent(hdc, ctx) == 0) {
+                _ = wglDeleteContext(ctx);
+                _ = DestroyWindow(hwnd);
+                return error.WGLMakeCurrentFailed;
+            }
+            hglrc = ctx;
+
+            // Vsync on for steady-state rendering; the modal resize loop drops it to 0
+            // (see WM_ENTERSIZEMOVE) so border-drag paints don't block on vblank.
+            setSwapInterval(1);
         }
-
-        if (pixel_format == 0) {
-            // Fallback to basic ChoosePixelFormat
-            pixel_format = ChoosePixelFormat(hdc, &pfd);
-        }
-
-        if (pixel_format == 0) {
-            _ = DestroyWindow(hwnd);
-            return error.ChoosePixelFormatFailed;
-        }
-        if (SetPixelFormat(hdc, pixel_format, &pfd) == 0) {
-            _ = DestroyWindow(hwnd);
-            return error.SetPixelFormatFailed;
-        }
-
-        // --- Step 4: Create OpenGL 3.3 core profile context ---
-        const WGL_CONTEXT_MAJOR_VERSION_ARB: i32 = 0x2091;
-        const WGL_CONTEXT_MINOR_VERSION_ARB: i32 = 0x2092;
-        const WGL_CONTEXT_PROFILE_MASK_ARB: i32 = 0x9126;
-        const WGL_CONTEXT_CORE_PROFILE_BIT_ARB: i32 = 0x00000001;
-
-        const ctx_attribs = [_]i32{
-            WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
-            WGL_CONTEXT_MINOR_VERSION_ARB, 3,
-            WGL_CONTEXT_PROFILE_MASK_ARB,  WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
-            0, // terminator
-        };
-
-        const hglrc = createContextAttribs(hdc, null, &ctx_attribs) orelse {
-            std.debug.print("Win32: Failed to create OpenGL 3.3 core context\n", .{});
-            _ = DestroyWindow(hwnd);
-            return error.WGLCreateContextFailed;
-        };
-
-        if (wglMakeCurrent(hdc, hglrc) == 0) {
-            _ = wglDeleteContext(hglrc);
-            _ = DestroyWindow(hwnd);
-            return error.WGLMakeCurrentFailed;
-        }
-
-        // Vsync on for steady-state rendering; the modal resize loop drops it to 0
-        // (see WM_ENTERSIZEMOVE) so border-drag paints don't block on vblank.
-        setSwapInterval(1);
 
         // Get actual client area size
         var rect: RECT = undefined;
@@ -1208,21 +1227,25 @@ pub const Window = struct {
         // what produced the cross-DPI / resize artifacts of #46/#47/#88 on
         // Intel Arc and AMD iGPU drivers. Requires the GL context current.
         // The GL vendor pins the D3D device to the GPU the context runs on.
-        const gl_vendor: []const u8 = if (glGetString(GL_VENDOR)) |v| std.mem.span(v) else "";
-        const dx: ?dx_present.Presenter = if (g_flip_present_enabled)
-            dx_present.Presenter.init(hwnd, rect.right - rect.left, rect.bottom - rect.top, gl_vendor) catch |err| blk: {
-                render_diagnostics.log("dx-present unavailable ({s}, GL vendor \"{s}\") — using GDI SwapBuffers", .{ @errorName(err), gl_vendor });
-                std.debug.print("Win32: DXGI flip present unavailable ({s}), using SwapBuffers\n", .{@errorName(err)});
-                break :blk null;
+        // GL hosts only: the native D3D11 backend presents through its own
+        // swapchain (gpu.Context), never through this interop presenter.
+        var dx: ?dx_present.Presenter = null;
+        if (comptime needs_gl) {
+            if (g_flip_present_enabled) {
+                const gl_vendor: []const u8 = if (glGetString(GL_VENDOR)) |v| std.mem.span(v) else "";
+                dx = dx_present.Presenter.init(hwnd, rect.right - rect.left, rect.bottom - rect.top, gl_vendor) catch |err| blk: {
+                    render_diagnostics.log("dx-present unavailable ({s}, GL vendor \"{s}\") — using GDI SwapBuffers", .{ @errorName(err), gl_vendor });
+                    std.debug.print("Win32: DXGI flip present unavailable ({s}), using SwapBuffers\n", .{@errorName(err)});
+                    break :blk null;
+                };
+                if (dx != null) {
+                    render_diagnostics.log(
+                        "dx-present active: flip-model swapchain {}x{} (GL vendor \"{s}\")",
+                        .{ rect.right - rect.left, rect.bottom - rect.top, gl_vendor },
+                    );
+                    std.debug.print("Win32: presenting via DXGI flip-model swapchain\n", .{});
+                }
             }
-        else
-            null;
-        if (dx != null) {
-            render_diagnostics.log(
-                "dx-present active: flip-model swapchain {}x{} (GL vendor \"{s}\")",
-                .{ rect.right - rect.left, rect.bottom - rect.top, gl_vendor },
-            );
-            std.debug.print("Win32: presenting via DXGI flip-model swapchain\n", .{});
         }
 
         var window = Window{
@@ -1263,8 +1286,10 @@ pub const Window = struct {
             dx.deinit();
             self.dx = null;
         }
-        _ = wglMakeCurrent(self.hdc, null);
-        _ = wglDeleteContext(self.hglrc);
+        if (comptime needs_gl) {
+            _ = wglMakeCurrent(self.hdc, null);
+            if (self.hglrc) |ctx| _ = wglDeleteContext(ctx);
+        }
         _ = DestroyWindow(self.hwnd);
     }
 
