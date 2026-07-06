@@ -1267,8 +1267,10 @@ fn createAppModuleWithRootAndTestShard(
     }
 
     // OpenGL backend (Windows + Linux): the glad loader needs its include path
-    // and C source compiled in. macOS uses Metal and skips this.
-    if (target.result.os.tag == .windows or target.result.os.tag == .linux) {
+    // and C source compiled in. macOS uses Metal and skips this; the native
+    // D3D11 flavor never touches GL, so it skips glad and opengl32 entirely.
+    const links_opengl = !std.mem.eql(u8, gpu_backend, "d3d11");
+    if (links_opengl and (target.result.os.tag == .windows or target.result.os.tag == .linux)) {
         app_mod.addIncludePath(b.path("vendor/glad/include"));
         app_mod.addCSourceFile(.{
             .file = b.path("vendor/glad/src/gl.c"),
@@ -1279,8 +1281,10 @@ fn createAppModuleWithRootAndTestShard(
     // Windows links the system OpenGL (opengl32); Linux gets its GL context and
     // function loader from SDL3 (linked via systemLibrariesFor above), so it
     // needs no separate GL system library.
-    if (platform.opengl_system_library) |library| {
-        app_mod.linkSystemLibrary(library, .{});
+    if (links_opengl) {
+        if (platform.opengl_system_library) |library| {
+            app_mod.linkSystemLibrary(library, .{});
+        }
     }
 
     if (target.result.os.tag == .linux) {
