@@ -41,18 +41,42 @@ const Entry = struct {
     }
 };
 
-threadlocal var next_handle: c.GLuint = 1;
-threadlocal var live: [max_textures]bool = @splat(false);
-threadlocal var table: [max_textures]Entry = @splat(.{});
+const Registry = struct {
+    next_handle: c.GLuint = 1,
+    live: [max_textures]bool = @splat(false),
+    table: [max_textures]Entry = @splat(.{}),
+};
+
+// Heap-allocated on first use so the table stays out of the TLS template
+// (Windows commits the full template per thread; see vertex.zig).
+threadlocal var registry: ?*Registry = null;
+
+fn ensureRegistry() ?*Registry {
+    if (registry == null) {
+        const r = std.heap.page_allocator.create(Registry) catch return null;
+        r.* = .{};
+        registry = r;
+    }
+    return registry;
+}
+
+/// Free this thread's registry storage (window-thread teardown).
+pub fn releaseRegistry() void {
+    if (registry) |r| {
+        std.heap.page_allocator.destroy(r);
+        registry = null;
+    }
+}
 
 fn allocHandle() c.GLuint {
+    const r = ensureRegistry() orelse return 0;
     for (0..max_textures - 1) |_| {
-        const h = next_handle;
-        next_handle +%= 1;
-        if (next_handle == 0 or next_handle >= max_textures) next_handle = 1;
-        if (!live[h]) {
-            live[h] = true;
-            table[h] = .{};
+        const h = r.next_handle;
+        r.next_handle +%= 1;
+        if (r.next_handle == 0 or r.next_handle >= max_textures) r.next_handle = 1;
+        if (!r.live[h]) {
+            r.live[h] = true;
+            r.table[h] = .{};
             return h;
         }
     }
@@ -60,8 +84,9 @@ fn allocHandle() c.GLuint {
 }
 
 fn entry(handle: c.GLuint) ?*Entry {
-    if (handle == 0 or handle >= max_textures or !live[handle]) return null;
-    return &table[handle];
+    const r = registry orelse return null;
+    if (handle == 0 or handle >= max_textures or !r.live[handle]) return null;
+    return &r.table[handle];
 }
 
 pub fn invalid() Texture {
@@ -365,7 +390,7 @@ pub fn unbindShaderResourceSlots(first_slot: u32, count: u32) void {
 pub fn destroy(self: *Texture) void {
     if (entry(self.handle)) |e| {
         e.release();
-        live[self.handle] = false;
+        registry.?.live[self.handle] = false;
     }
     self.handle = 0;
 }

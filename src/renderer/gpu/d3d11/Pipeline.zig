@@ -50,18 +50,42 @@ const Entry = struct {
     }
 };
 
-threadlocal var next_program: types.ProgramHandle = 1;
-threadlocal var live: [max_programs]bool = @splat(false);
-threadlocal var table: [max_programs]Entry = @splat(.{});
+const Registry = struct {
+    next_program: types.ProgramHandle = 1,
+    live: [max_programs]bool = @splat(false),
+    table: [max_programs]Entry = @splat(.{}),
+};
+
+// Heap-allocated on first use so the table stays out of the TLS template
+// (Windows commits the full template per thread; see vertex.zig).
+threadlocal var registry: ?*Registry = null;
+
+fn ensureRegistry() ?*Registry {
+    if (registry == null) {
+        const r = std.heap.page_allocator.create(Registry) catch return null;
+        r.* = .{};
+        registry = r;
+    }
+    return registry;
+}
+
+/// Free this thread's registry storage (window-thread teardown).
+pub fn releaseRegistry() void {
+    if (registry) |r| {
+        std.heap.page_allocator.destroy(r);
+        registry = null;
+    }
+}
 
 fn allocProgram() types.ProgramHandle {
+    const r = ensureRegistry() orelse return 0;
     for (0..max_programs - 1) |_| {
-        const h = next_program;
-        next_program +%= 1;
-        if (next_program == 0 or next_program >= max_programs) next_program = 1;
-        if (!live[h]) {
-            live[h] = true;
-            table[h] = .{};
+        const h = r.next_program;
+        r.next_program +%= 1;
+        if (r.next_program == 0 or r.next_program >= max_programs) r.next_program = 1;
+        if (!r.live[h]) {
+            r.live[h] = true;
+            r.table[h] = .{};
             return h;
         }
     }
@@ -69,24 +93,9 @@ fn allocProgram() types.ProgramHandle {
 }
 
 fn entry(handle: types.ProgramHandle) ?*Entry {
-    if (handle == 0 or handle >= max_programs or !live[handle]) return null;
-    return &table[handle];
-}
-
-pub fn compileShader(shader_type: c.GLenum, source: [*c]const u8) ?c.GLuint {
-    const target: [*:0]const u8 = switch (shader_type) {
-        c.GL_VERTEX_SHADER => "vs_4_0",
-        c.GL_FRAGMENT_SHADER => "ps_4_0",
-        else => return null,
-    };
-    const entrypoint: [*:0]const u8 = switch (shader_type) {
-        c.GL_VERTEX_SHADER => "vs_main",
-        c.GL_FRAGMENT_SHADER => "ps_main",
-        else => return null,
-    };
-    const blob = Context.compileShaderBlob(std.mem.span(source), entrypoint, target) catch return null;
-    core.comRelease(blob);
-    return 1;
+    const r = registry orelse return null;
+    if (handle == 0 or handle >= max_programs or !r.live[handle]) return null;
+    return &r.table[handle];
 }
 
 pub fn init(vs_src: [*c]const u8, fs_src: [*c]const u8, vao: types.VertexArrayHandle) Pipeline {
@@ -112,25 +121,25 @@ pub fn init(vs_src: [*c]const u8, fs_src: [*c]const u8, vao: types.VertexArrayHa
     if (create_vs(device, Context.blobPointer(vs_blob), Context.blobSize(vs_blob), null, &e.vertex_shader) < 0 or e.vertex_shader == null) {
         std.debug.print("D3D11 vertex shader creation failed\n", .{});
         e.release();
-        live[handle] = false;
+        registry.?.live[handle] = false;
         return .{ .program = 0, .vao = vao };
     }
     if (create_ps(device, Context.blobPointer(ps_blob), Context.blobSize(ps_blob), null, &e.pixel_shader) < 0 or e.pixel_shader == null) {
         std.debug.print("D3D11 pixel shader creation failed\n", .{});
         e.release();
-        live[handle] = false;
+        registry.?.live[handle] = false;
         return .{ .program = 0, .vao = vao };
     }
     if (!createInputLayout(device, e, vao, vs_blob)) {
         std.debug.print("D3D11 input layout creation failed\n", .{});
         e.release();
-        live[handle] = false;
+        registry.?.live[handle] = false;
         return .{ .program = 0, .vao = vao };
     }
     if (!createConstantBuffer(device, e)) {
         std.debug.print("D3D11 constant buffer creation failed\n", .{});
         e.release();
-        live[handle] = false;
+        registry.?.live[handle] = false;
         return .{ .program = 0, .vao = vao };
     }
     e.vao = vao;
@@ -386,7 +395,7 @@ pub fn drawPhase2Quad() void {
 pub fn deinit(self: *Pipeline) void {
     if (entry(self.program)) |e| {
         e.release();
-        live[self.program] = false;
+        registry.?.live[self.program] = false;
     }
     if (self.vao != 0) vertex.deleteVertexArray(self.vao);
     self.* = .{ .program = 0, .vao = 0 };
