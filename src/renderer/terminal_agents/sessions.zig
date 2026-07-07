@@ -234,7 +234,7 @@ pub fn interactionHitTest(
     }
 
     const visible_count = session.visibleCount();
-    if (visible_count > 0) {
+    if (session.selectedVisible() != null) {
         const resume_top = resumeButtonTop(top, cell_h);
         if (rectContains(mx, my, layout.detail_x + PAD_X, resume_top, RESUME_BUTTON_W, buttonHeight(cell_h))) {
             return .@"resume";
@@ -539,16 +539,21 @@ fn renderDetail(
 
     const action_top = detailActionTop(top, draw.cell_h);
     const action_h = buttonHeight(draw.cell_h);
-    const action_w = @min(ACTION_BUTTON_W, @max(1.0, layout.detail_w - PAD_X * 2));
-    const action_x = layout.detail_x + PAD_X;
-    const action_labels = [_][]const u8{ "Download Raw", "Export Markdown", "Attach to Copilot" };
-    for (action_labels, 0..) |label, i| {
-        const row_top = action_top + @as(f32, @floatFromInt(i)) * (action_h + ACTION_BUTTON_GAP);
-        draw.fillQuadAlpha(action_x, yFromTop(window_height, row_top, action_h), action_w, action_h, panel_strong, 0.72);
-        _ = draw.renderTextLimited(label, action_x + 12, yTextFromTop(draw, window_height, row_top + BUTTON_PAD_Y), accent, action_w - 24);
+    if (detailActionWidth(layout)) |action_w| {
+        const action_x = layout.detail_x + PAD_X;
+        const action_labels = [_][]const u8{ "Download Raw", "Export Markdown", "Attach to Copilot" };
+        for (action_labels, 0..) |label, i| {
+            const row_top = action_top + @as(f32, @floatFromInt(i)) * (action_h + ACTION_BUTTON_GAP);
+            draw.fillQuadAlpha(action_x, yFromTop(window_height, row_top, action_h), action_w, action_h, panel_strong, 0.72);
+            if (action_w > 24) {
+                _ = draw.renderTextLimited(label, action_x + 12, yTextFromTop(draw, window_height, row_top + BUTTON_PAD_Y), accent, action_w - 24);
+            }
+        }
+        y = action_top + (action_h + ACTION_BUTTON_GAP) * 3 + 12;
+    } else {
+        y = resume_top + buttonHeight(draw.cell_h) + 12;
     }
 
-    y = action_top + (action_h + ACTION_BUTTON_GAP) * 3 + 12;
     draw.fillQuadAlpha(layout.detail_x + PAD_X, yFromTop(window_height, y, 1), layout.detail_w - PAD_X * 2, 1, line, 0.78);
     y += 14;
 
@@ -813,10 +818,16 @@ fn detailActionTop(top: f32, cell_h: f32) f32 {
     return resumeButtonTop(top, cell_h) + buttonHeight(cell_h) + 10;
 }
 
+fn detailActionWidth(layout: Layout) ?f32 {
+    const inner = layout.detail_w - PAD_X * 2;
+    if (inner <= 0) return null;
+    return @min(ACTION_BUTTON_W, inner);
+}
+
 fn detailActionHit(layout: Layout, top: f32, cell_h: f32, mx: f32, my: f32) Hit {
     const left = layout.detail_x + PAD_X;
     const h = buttonHeight(cell_h);
-    const w = @min(ACTION_BUTTON_W, @max(1.0, layout.detail_w - PAD_X * 2));
+    const w = detailActionWidth(layout) orelse return .none;
     const y0 = detailActionTop(top, cell_h);
     if (rectContains(mx, my, left, y0, w, h)) return .download_raw;
     if (rectContains(mx, my, left, y0 + h + ACTION_BUTTON_GAP, w, h)) return .export_markdown;
@@ -912,9 +923,14 @@ test "terminal agent sessions renderer: zero width layout has no columns" {
 
 test "terminal agent sessions renderer: interaction hit test maps buttons and row offset" {
     const FakeSession = struct {
+        const Selected = struct {};
         date_offset: usize = 0,
         fn visibleCount(_: @This()) usize {
             return 8;
+        }
+
+        fn selectedVisible(_: @This()) ?Selected {
+            return .{};
         }
 
         fn listWindowStart(_: @This(), _: usize) usize {
@@ -960,6 +976,61 @@ test "terminal agent sessions renderer: interaction hit test maps buttons and ro
     try std.testing.expectEqual(
         Hit.search,
         interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.list_x + 8, top + 4),
+    );
+}
+
+test "terminal agent sessions renderer: detail button hits require selected visible session" {
+    const FakeSession = struct {
+        const Selected = struct {};
+        date_offset: usize = 0,
+        fn visibleCount(_: @This()) usize {
+            return 8;
+        }
+
+        fn selectedVisible(_: @This()) ?Selected {
+            return null;
+        }
+
+        fn listWindowStart(_: @This(), _: usize) usize {
+            return 0;
+        }
+
+        fn buildDateBuckets(_: @This(), buf: []types.DateBucket) []types.DateBucket {
+            return buf[0..0];
+        }
+    };
+
+    const session = FakeSession{};
+    const layout = computeLayout(0, 1000);
+    const cell_h: f32 = 16;
+    const top: f32 = 40;
+    const action_top = detailActionTop(top, cell_h);
+
+    try std.testing.expectEqual(
+        Hit.none,
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.detail_x + PAD_X + 4, resumeButtonTop(top, cell_h) + 2),
+    );
+    try std.testing.expectEqual(
+        Hit.none,
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.detail_x + PAD_X + 4, action_top + 2),
+    );
+}
+
+test "terminal agent sessions renderer: detail action hit ignores non-positive inner width" {
+    const layout = Layout{
+        .left_x = 0,
+        .left_w = 0,
+        .list_x = 0,
+        .list_w = 0,
+        .detail_x = 100,
+        .detail_w = PAD_X * 2,
+    };
+    const cell_h: f32 = 16;
+    const top: f32 = 40;
+
+    try std.testing.expectEqual(
+        Hit.none,
+        detailActionHit(layout, top, cell_h, layout.detail_x + PAD_X + 0.5, detailActionTop(top, cell_h) + 2),
     );
 }
 
@@ -1052,6 +1123,9 @@ test "terminal agent sessions renderer: interaction hit test maps category rows"
         fn visibleCount(_: @This()) usize {
             return 0;
         }
+        fn selectedVisible(_: @This()) ?void {
+            return null;
+        }
         fn listWindowStart(_: @This(), _: usize) usize {
             return 0;
         }
@@ -1102,6 +1176,9 @@ test "terminal agent sessions renderer: interaction hit test maps date rows" {
         date_offset: usize = 0,
         fn visibleCount(_: @This()) usize {
             return 0;
+        }
+        fn selectedVisible(_: @This()) ?void {
+            return null;
         }
         fn listWindowStart(_: @This(), _: usize) usize {
             return 0;

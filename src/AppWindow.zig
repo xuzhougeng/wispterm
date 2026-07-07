@@ -3123,6 +3123,10 @@ pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
             markUiDirty();
             return true;
         },
+        .download_raw, .export_markdown, .attach_copilot => {
+            markUiDirty();
+            return true;
+        },
         .category => |cat| {
             session.setCategory(cat);
             session.ensureSelectionVisible(visible_rows);
