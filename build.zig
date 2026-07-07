@@ -684,6 +684,24 @@ pub fn build(b: *std.Build) void {
     const filetool_step = b.step("wispterm-filetool", "Build the standalone remote-side file edit helper");
     filetool_step.dependOn(&b.addInstallArtifact(filetool_exe, .{}).step);
 
+    // ponytail: root_source_file is a thin forwarder at the src/ module
+    // boundary — memory_digest/scan_main.zig itself reaches into
+    // ../platform and ../terminal_agents (via run.zig), so it can't be the
+    // module root directly (Zig 0.15 forbids imports outside the root's
+    // directory). See src/wispterm_memory_digest_main.zig.
+    const memory_digest_mod = b.createModule(.{
+        .root_source_file = b.path("src/wispterm_memory_digest_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const memory_digest_exe = b.addExecutable(.{
+        .name = "wispterm-memory-digest",
+        .root_module = memory_digest_mod,
+    });
+    if (platform.supports_gui_subsystem) memory_digest_exe.subsystem = .Console;
+    const memory_digest_step = b.step("memory-digest", "Build the dev memory-digest scanner CLI (not bundled with the app)");
+    memory_digest_step.dependOn(&b.addInstallArtifact(memory_digest_exe, .{}).step);
+
     // Standalone CPU benchmark CLI. Mirrors Ghostty's `zig build -Demit-bench`:
     // a separate artifact that links ghostty-vt for the TerminalStream case.
     // Built only on explicit request (`-Demit-bench` or `zig build bench`).

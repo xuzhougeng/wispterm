@@ -232,6 +232,10 @@ pub fn agentHistoryDirFromEnvForOs(
     return pathInConfigDirFromEnvForOs(allocator, os_tag, env, "agent-history");
 }
 
+pub fn memoryDir(allocator: std.mem.Allocator) ![]const u8 {
+    return pathInConfigDir(allocator, "memory");
+}
+
 pub fn aiHistoryCachePath(allocator: std.mem.Allocator) ![]const u8 {
     return pathInConfigDir(allocator, "ai_history_cache.json");
 }
