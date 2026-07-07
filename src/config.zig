@@ -464,6 +464,26 @@ language: i18n.LanguageSetting = .auto,
 /// Show the Copilot discovery hint to new users. Set to false to suppress permanently.
 @"copilot-hint": bool = true,
 
+// ============================================================================
+// Memory Digest (scheduler)
+// ============================================================================
+
+/// Master on/off switch for the periodic long-term memory digest job.
+@"memory-digest-enabled": bool = false,
+
+/// Name of the saved AI profile the memory digest job runs on. Empty = unset.
+@"memory-digest-profile": []const u8 = "",
+
+/// Time of day (HH:MM, local time) the digest job runs after. Format
+/// validation happens in the scheduler, not here.
+@"memory-digest-run-after": []const u8 = "04:00",
+
+/// How many days of history to backfill when the digest first runs.
+@"memory-digest-backfill-days": u32 = 7,
+
+/// Maximum characters included in a single digest pass.
+@"memory-digest-max-chars": u32 = 2000,
+
 /// Load an additional config file. Can be repeated. Relative paths are
 /// resolved relative to the file containing the directive. Prefix with
 /// `?` to make optional (missing file is silently ignored).
@@ -1090,6 +1110,28 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         } else {
             log.warn("invalid copilot-hint: {s}", .{value});
         }
+    } else if (std.mem.eql(u8, key, "memory-digest-enabled")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"memory-digest-enabled" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"memory-digest-enabled" = false;
+        } else {
+            log.warn("invalid memory-digest-enabled: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "memory-digest-profile")) {
+        self.@"memory-digest-profile" = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "memory-digest-run-after")) {
+        self.@"memory-digest-run-after" = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "memory-digest-backfill-days")) {
+        self.@"memory-digest-backfill-days" = std.fmt.parseInt(u32, value, 10) catch {
+            log.warn("invalid memory-digest-backfill-days: {s}", .{value});
+            return;
+        };
+    } else if (std.mem.eql(u8, key, "memory-digest-max-chars")) {
+        self.@"memory-digest-max-chars" = std.fmt.parseInt(u32, value, 10) catch {
+            log.warn("invalid memory-digest-max-chars: {s}", .{value});
+            return;
+        };
     } else if (std.mem.eql(u8, key, "config-file")) {
         self.loadConfigFileDirective(allocator, value, base_dir);
     } else if (std.mem.eql(u8, key, "background")) {
@@ -2430,4 +2472,62 @@ test "config: wispterm-debug-render parses from a config line" {
     try std.testing.expect(cfg.@"wispterm-debug-render");
     cfg.applyKeyValue(allocator, "wispterm-debug-render", "false", ".");
     try std.testing.expect(!cfg.@"wispterm-debug-render");
+}
+
+test "config: memory-digest-enabled parses true/false" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+
+    try std.testing.expectEqual(false, cfg.@"memory-digest-enabled");
+    cfg.applyKeyValue(allocator, "memory-digest-enabled", "true", ".");
+    try std.testing.expectEqual(true, cfg.@"memory-digest-enabled");
+    cfg.applyKeyValue(allocator, "memory-digest-enabled", "false", ".");
+    try std.testing.expectEqual(false, cfg.@"memory-digest-enabled");
+    // Invalid value leaves the previous state untouched (still false).
+    cfg.applyKeyValue(allocator, "memory-digest-enabled", "maybe", ".");
+    try std.testing.expectEqual(false, cfg.@"memory-digest-enabled");
+}
+
+test "config: memory-digest-profile parses" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{};
+    defer cfg.deinit(allocator);
+    try std.testing.expectEqualStrings("", cfg.@"memory-digest-profile");
+    cfg.applyKeyValue(allocator, "memory-digest-profile", "night-owl", ".");
+    try std.testing.expectEqualStrings("night-owl", cfg.@"memory-digest-profile");
+}
+
+test "config: memory-digest-run-after parses" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{};
+    defer cfg.deinit(allocator);
+    // Default matches the scheduler's implicit fallback; format validation
+    // happens in the scheduler, not here.
+    try std.testing.expectEqualStrings("04:00", cfg.@"memory-digest-run-after");
+    cfg.applyKeyValue(allocator, "memory-digest-run-after", "23:30", ".");
+    try std.testing.expectEqualStrings("23:30", cfg.@"memory-digest-run-after");
+}
+
+test "config: memory-digest-backfill-days parses and rejects invalid" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{};
+    defer cfg.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 7), cfg.@"memory-digest-backfill-days");
+    cfg.applyKeyValue(allocator, "memory-digest-backfill-days", "14", ".");
+    try std.testing.expectEqual(@as(u32, 14), cfg.@"memory-digest-backfill-days");
+    // Invalid value leaves the previous state untouched (still 14).
+    cfg.applyKeyValue(allocator, "memory-digest-backfill-days", "not-a-number", ".");
+    try std.testing.expectEqual(@as(u32, 14), cfg.@"memory-digest-backfill-days");
+}
+
+test "config: memory-digest-max-chars parses and rejects invalid" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{};
+    defer cfg.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 2000), cfg.@"memory-digest-max-chars");
+    cfg.applyKeyValue(allocator, "memory-digest-max-chars", "4096", ".");
+    try std.testing.expectEqual(@as(u32, 4096), cfg.@"memory-digest-max-chars");
+    // Invalid value leaves the previous state untouched (still 4096).
+    cfg.applyKeyValue(allocator, "memory-digest-max-chars", "nope", ".");
+    try std.testing.expectEqual(@as(u32, 4096), cfg.@"memory-digest-max-chars");
 }
