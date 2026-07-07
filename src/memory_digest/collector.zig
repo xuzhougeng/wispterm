@@ -104,33 +104,57 @@ fn collectJsonlFile(ctx: *Ctx, provider: types.DigestProvider, path: []const u8,
     };
     defer ctx.gpa.free(bytes);
 
+    try ingestJsonlBytes(ctx.gpa, ctx.alloc, ctx.list, ctx.cur, provider, SOURCE_LOCAL, path, stat.size, stat.mtime, bytes, start);
+}
+
+/// Shared "bytes -> CollectedSession" pipeline for claude/codex jsonl
+/// transcripts (spec §6/M3): parse metadata, drop subagent sessions, parse
+/// the transcript, slice to only-new messages against `start`, and either
+/// emit a CollectedSession into `list` or stamp the cursor for skip paths
+/// (subagent / no-new-messages). Used by both local (collectJsonlFile) and
+/// remote (remote.zig collectRemote) collection so their skip/emit semantics
+/// stay identical. Does NOT advance the cursor for emitted sessions — that
+/// remains run.zig's job (see emit()'s comment).
+pub fn ingestJsonlBytes(
+    gpa: std.mem.Allocator,
+    alloc: std.mem.Allocator, // output arena
+    list: *std.ArrayListUnmanaged(types.CollectedSession),
+    cur: *cursors_mod.Set,
+    provider: types.DigestProvider,
+    source_id: []const u8,
+    path: []const u8,
+    size: u64,
+    mtime_ns: i128,
+    bytes: []const u8,
+    start: u32,
+) !void {
     const meta = switch (provider) {
-        .claude => try provider_claude.parseMetadata(ctx.gpa, path, bytes),
-        .codex => try provider_codex.parseMetadata(ctx.gpa, path, bytes),
+        .claude => try provider_claude.parseMetadata(gpa, path, bytes),
+        .codex => try provider_codex.parseMetadata(gpa, path, bytes),
         else => unreachable,
     };
     defer switch (provider) {
-        .claude => provider_claude.freeMetadata(ctx.gpa, meta),
-        .codex => provider_codex.freeMetadata(ctx.gpa, meta),
+        .claude => provider_claude.freeMetadata(gpa, meta),
+        .codex => provider_codex.freeMetadata(gpa, meta),
         else => unreachable,
     };
     if (ai_types.isSubagentSession(meta)) {
-        try ctx.cur.update(SOURCE_LOCAL, provider, path, stat.size, stat.mtime, 0);
+        try cur.update(source_id, provider, path, size, mtime_ns, 0);
         return;
     }
 
     const transcript = switch (provider) {
-        .claude => try provider_claude.parseTranscript(ctx.gpa, bytes),
-        .codex => try provider_codex.parseTranscript(ctx.gpa, bytes),
+        .claude => try provider_claude.parseTranscript(gpa, bytes),
+        .codex => try provider_codex.parseTranscript(gpa, bytes),
         else => unreachable,
     };
     defer switch (provider) {
-        .claude => provider_claude.freeTranscript(ctx.gpa, transcript),
-        .codex => provider_codex.freeTranscript(ctx.gpa, transcript),
+        .claude => provider_claude.freeTranscript(gpa, transcript),
+        .codex => provider_codex.freeTranscript(gpa, transcript),
         else => unreachable,
     };
 
-    try emit(ctx, provider, path, stat, .{
+    try emit(alloc, list, cur, provider, source_id, path, size, mtime_ns, .{
         .session_id = meta.session_id,
         .title = meta.title,
         .project_path = meta.project_dir,
@@ -159,7 +183,7 @@ fn collectWispterm(ctx: *Ctx, root: []const u8) !void {
             try ctx.cur.update(SOURCE_LOCAL, .wispterm, path, stat.size, stat.mtime, 0);
             continue;
         };
-        try emit(ctx, .wispterm, path, stat, .{
+        try emit(ctx.alloc, ctx.list, ctx.cur, .wispterm, SOURCE_LOCAL, path, stat.size, stat.mtime, .{
             .session_id = sess.session_id,
             .title = sess.title,
             .project_path = "", // no cwd on disk until spec §10/M4
@@ -177,37 +201,49 @@ const EmitMeta = struct {
     ended_at_ms: i64,
 };
 
-fn emit(ctx: *Ctx, provider: types.DigestProvider, path: []const u8, stat: std.fs.File.Stat, meta: EmitMeta, transcript: []const ai_types.TranscriptMessage, start: u32) !void {
+fn emit(
+    alloc: std.mem.Allocator, // output arena
+    list: *std.ArrayListUnmanaged(types.CollectedSession),
+    cur: *cursors_mod.Set,
+    provider: types.DigestProvider,
+    source_id: []const u8,
+    path: []const u8,
+    size: u64,
+    mtime_ns: i128,
+    meta: EmitMeta,
+    transcript: []const ai_types.TranscriptMessage,
+    start: u32,
+) !void {
     const total: u32 = @intCast(transcript.len);
     // Rewritten/truncated file: message count went backwards → reprocess all.
     // ponytail: a revived old session floods once with its full history;
     // acceptable until per-message day slicing lands in M2.
     const from: u32 = if (total < start) 0 else start;
     if (from >= total) {
-        try ctx.cur.update(SOURCE_LOCAL, provider, path, stat.size, stat.mtime, total);
+        try cur.update(source_id, provider, path, size, mtime_ns, total);
         return;
     }
     const fresh = transcript[from..];
-    const new_messages = try ctx.alloc.alloc(ai_types.TranscriptMessage, fresh.len);
+    const new_messages = try alloc.alloc(ai_types.TranscriptMessage, fresh.len);
     for (fresh, 0..) |m, i| new_messages[i] = .{
         .role = m.role,
         .kind = m.kind,
-        .content = try ctx.alloc.dupe(u8, m.content),
+        .content = try alloc.dupe(u8, m.content),
         .timestamp_ms = m.timestamp_ms,
     };
-    try ctx.list.append(ctx.alloc, .{
+    try list.append(alloc, .{
         .provider = provider,
-        .source_id = SOURCE_LOCAL,
-        .session_id = try ctx.alloc.dupe(u8, meta.session_id),
-        .title = try ctx.alloc.dupe(u8, meta.title),
-        .project_path = try ctx.alloc.dupe(u8, meta.project_path),
+        .source_id = source_id,
+        .session_id = try alloc.dupe(u8, meta.session_id),
+        .title = try alloc.dupe(u8, meta.title),
+        .project_path = try alloc.dupe(u8, meta.project_path),
         .started_at_ms = meta.started_at_ms,
         .ended_at_ms = meta.ended_at_ms,
         .total_messages = total,
         .new_messages = new_messages,
         .source_file = path,
-        .file_size = stat.size,
-        .file_mtime_ns = stat.mtime,
+        .file_size = size,
+        .file_mtime_ns = mtime_ns,
     });
     // Cursor advancement for produced sessions now belongs to run.zig, so a
     // single session's processing failure can withhold just its cursor
