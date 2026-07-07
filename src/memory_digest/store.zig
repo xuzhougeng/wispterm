@@ -190,6 +190,50 @@ pub fn upsertProject(gpa: std.mem.Allocator, memory_root: []const u8, slug: []co
     try writeJson(gpa, path, proj);
 }
 
+/// Same read/extend/write shape as `upsertProject`, but for a remote session
+/// (spec M3 Task 3): `alias` (typically "{source_id}:{project_path}") is
+/// appended to `aliases` instead of `paths`, since a remote host's raw path
+/// has no meaning as a local filesystem path on this machine.
+pub fn upsertProjectAlias(gpa: std.mem.Allocator, memory_root: []const u8, slug: []const u8, alias: []const u8, date: []const u8) !void {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const dir = try projectDir(arena, memory_root, slug);
+    try std.fs.cwd().makePath(dir);
+    const path = try std.fs.path.join(arena, &.{ dir, "project.json" });
+
+    var proj: Project = .{
+        .slug = slug,
+        .name = slug,
+        .first_seen = date,
+        .last_active = date,
+    };
+    if (std.fs.cwd().readFileAlloc(arena, path, 16 * 1024 * 1024)) |bytes| {
+        if (std.json.parseFromSlice(Project, arena, bytes, .{
+            .ignore_unknown_fields = true,
+        })) |parsed| {
+            proj = parsed.value; // arena-owned; no deinit needed
+        } else |_| {}
+    } else |_| {}
+
+    if (alias.len != 0) {
+        const already = for (proj.aliases) |a| {
+            if (std.mem.eql(u8, a, alias)) break true;
+        } else false;
+        if (!already) {
+            var aliases = try arena.alloc([]const u8, proj.aliases.len + 1);
+            @memcpy(aliases[0..proj.aliases.len], proj.aliases);
+            aliases[proj.aliases.len] = alias;
+            proj.aliases = aliases;
+        }
+    }
+    if (std.mem.order(u8, date, proj.last_active) == .gt) proj.last_active = date;
+    if (std.mem.order(u8, date, proj.first_seen) == .lt) proj.first_seen = date;
+
+    try writeJson(gpa, path, proj);
+}
+
 pub const SourceStatus = struct {
     source_id: []const u8,
     status: []const u8 = "ok", // "ok" | "skipped" | "failed"
@@ -471,6 +515,41 @@ test "memory_digest_store: upsertProject creates then extends paths and active r
         defer parsed.deinit();
         try std.testing.expectEqual(@as(usize, 2), parsed.value.paths.len);
         try std.testing.expectEqualStrings("2026-07-01", parsed.value.first_seen);
+        try std.testing.expectEqualStrings("2026-07-07", parsed.value.last_active);
+    }
+}
+
+test "memory_digest_store: upsertProjectAlias creates then dedupes aliases, extends active range" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    try upsertProjectAlias(allocator, root, "phantty", "ssh:hk:/root/phantty", "2026-07-05");
+    {
+        const bytes = try tmp.dir.readFileAlloc(allocator, "projects/phantty/project.json", 1 << 20);
+        defer allocator.free(bytes);
+        const parsed = try std.json.parseFromSlice(Project, allocator, bytes, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        try std.testing.expectEqual(@as(usize, 0), parsed.value.paths.len);
+        try std.testing.expectEqual(@as(usize, 1), parsed.value.aliases.len);
+        try std.testing.expectEqualStrings("ssh:hk:/root/phantty", parsed.value.aliases[0]);
+        try std.testing.expectEqualStrings("2026-07-05", parsed.value.first_seen);
+    }
+
+    // New alias + later date -> aliases grows, last_active advances.
+    try upsertProjectAlias(allocator, root, "phantty", "ssh:box2:/home/me/phantty", "2026-07-07");
+    // Same alias again -> not duplicated.
+    try upsertProjectAlias(allocator, root, "phantty", "ssh:hk:/root/phantty", "2026-07-06");
+    {
+        const bytes = try tmp.dir.readFileAlloc(allocator, "projects/phantty/project.json", 1 << 20);
+        defer allocator.free(bytes);
+        const parsed = try std.json.parseFromSlice(Project, allocator, bytes, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        try std.testing.expectEqual(@as(usize, 0), parsed.value.paths.len);
+        try std.testing.expectEqual(@as(usize, 2), parsed.value.aliases.len);
+        try std.testing.expectEqualStrings("2026-07-05", parsed.value.first_seen);
         try std.testing.expectEqualStrings("2026-07-07", parsed.value.last_active);
     }
 }

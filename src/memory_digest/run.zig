@@ -11,8 +11,17 @@ const cursors_mod = @import("cursors.zig");
 const digest = @import("digest.zig");
 const dirs = @import("../platform/dirs.zig");
 const llm = @import("llm.zig");
+const remote = @import("remote.zig");
 const store = @import("store.zig");
 const types = @import("types.zig");
+
+/// One WSL/SSH remote source to collect from alongside local roots (spec §6,
+/// M3). `source_id` becomes CollectedSession.source_id and thus flows into
+/// cursors, summaryKey and daily/aliases.
+pub const RemoteSource = struct {
+    source_id: []const u8,
+    host: remote.ExecHost,
+};
 
 pub const Options = struct {
     roots: collector.LocalRoots,
@@ -26,6 +35,9 @@ pub const Options = struct {
     completer: ?llm.Completer = null,
     model_label: []const u8 = "",
     max_chars_per_message: usize = 2000,
+    /// WSL/SSH sources to collect from in addition to local roots (spec §6,
+    /// M3). Empty by default — M1/M2 behavior is local-only.
+    remote_sources: []const RemoteSource = &.{},
 };
 
 pub const Summary = struct {
@@ -101,17 +113,15 @@ pub fn defaultLocalRoots(gpa: std.mem.Allocator) !OwnedLocalRoots {
     };
 }
 
-/// Appends a RunRecord for this run (spec M3 Task 1). Only one source
-/// ("local") is tracked so far; M3 Task 3 expands sources[] to real
-/// multi-source status. A write failure here must never change runOnce's
-/// own result, so it's logged and swallowed.
+/// Appends a RunRecord for this run (spec M3 Task 1/3), with real per-source
+/// status in `sources`. A write failure here must never change runOnce's own
+/// result, so it's logged and swallowed.
 fn recordRun(
     gpa: std.mem.Allocator,
     memory_root: []const u8,
     started_at: i64,
     status: []const u8,
-    detail: []const u8,
-    sessions_collected: usize,
+    sources: []const store.SourceStatus,
     sessions_summarized: usize,
     sessions_failed: usize,
     llm_calls: usize,
@@ -120,12 +130,7 @@ fn recordRun(
         .started_at = started_at,
         .finished_at = std.time.milliTimestamp(),
         .status = status,
-        .sources = &.{.{
-            .source_id = "local",
-            .status = status,
-            .detail = detail,
-            .sessions_collected = @intCast(sessions_collected),
-        }},
+        .sources = sources,
         .sessions_summarized = @intCast(sessions_summarized),
         .sessions_failed = @intCast(sessions_failed),
         .llm_calls = @intCast(llm_calls),
@@ -133,6 +138,61 @@ fn recordRun(
     store.appendRunRecord(gpa, memory_root, rec) catch |err| {
         std.log.warn("memory_digest: appendRunRecord failed: {s}", .{@errorName(err)});
     };
+}
+
+/// Collects local sessions plus every configured remote source into `out`,
+/// building a SourceStatus per source (spec §13: one source's failure must
+/// not abort the others). `out`'s slices are allocated from `arena`, which
+/// must outlive `out` (mirrors collector.collectLocal's own arena-ownership
+/// contract) — the local collector's own Result.arena is only a scratch
+/// allocator here, appended into `arena` via a copy of the CollectedSession
+/// values themselves (their string/slice fields still point into
+/// `local.arena`, so `local` is returned for the caller to keep alive
+/// alongside `arena`, not deinited here).
+fn collectAllSources(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    opts: Options,
+    out: *std.ArrayListUnmanaged(types.CollectedSession),
+    cur: *cursors_mod.Set,
+    min_mtime_ns: i128,
+) !struct { local: collector.Result, sources: []const store.SourceStatus } {
+    var sources: std.ArrayListUnmanaged(store.SourceStatus) = .empty;
+
+    const local = try collector.collectLocal(gpa, opts.roots, cur, min_mtime_ns);
+    try out.appendSlice(arena, local.sessions);
+    try sources.append(arena, .{
+        .source_id = "local",
+        .status = "ok",
+        .sessions_collected = @intCast(local.sessions.len),
+    });
+
+    for (opts.remote_sources) |rs| {
+        const before = out.items.len;
+        if (remote.collectRemote(gpa, arena, out, rs.source_id, rs.host, cur, min_mtime_ns, .{})) |_| {
+            try sources.append(arena, .{
+                .source_id = rs.source_id,
+                .status = "ok",
+                .sessions_collected = @intCast(out.items.len - before),
+            });
+        } else |err| {
+            std.log.warn("memory_digest: source '{s}' failed: {s}", .{ rs.source_id, @errorName(err) });
+            try sources.append(arena, .{
+                .source_id = rs.source_id,
+                .status = "failed",
+                .detail = @errorName(err),
+            });
+        }
+    }
+
+    return .{ .local = local, .sources = sources.items };
+}
+
+fn anySourceFailed(sources: []const store.SourceStatus) bool {
+    for (sources) |s| {
+        if (std.mem.eql(u8, s.status, "failed")) return true;
+    }
+    return false;
 }
 
 pub fn runOnce(gpa: std.mem.Allocator, opts: Options) !Summary {
@@ -154,18 +214,21 @@ pub fn runOnce(gpa: std.mem.Allocator, opts: Options) !Summary {
     else
         @as(i128, opts.now_ms) * 1_000_000 - @as(i128, opts.backfill_days) * 86_400_000_000_000;
 
-    var collected = try collector.collectLocal(gpa, opts.roots, &cur, min_mtime_ns);
-    defer collected.deinit();
+    var collected_sessions: std.ArrayListUnmanaged(types.CollectedSession) = .empty;
+    var collect_result = try collectAllSources(gpa, arena, opts, &collected_sessions, &cur, min_mtime_ns);
+    defer collect_result.local.deinit();
+    const sources = collect_result.sources;
+    const overall_status: []const u8 = if (anySourceFailed(sources)) "partial" else "ok";
 
     if (opts.completer) |completer| {
         var counting: CountingCompleter = .{ .inner = completer };
-        if (runOnceWithLlm(gpa, arena, opts, counting.completer(), &collected, &cur, cursors_path)) |summary| {
-            recordRun(gpa, opts.memory_root, started_at, "ok", "", collected.sessions.len, summary.sessions_summarized, summary.sessions_failed, counting.count);
+        if (runOnceWithLlm(gpa, arena, opts, counting.completer(), collected_sessions.items, &cur, cursors_path)) |summary| {
+            recordRun(gpa, opts.memory_root, started_at, overall_status, sources, summary.sessions_summarized, summary.sessions_failed, counting.count);
             var s = summary;
             s.llm_calls = counting.count;
             return s;
         } else |err| {
-            recordRun(gpa, opts.memory_root, started_at, "failed", @errorName(err), collected.sessions.len, 0, 0, counting.count);
+            recordRun(gpa, opts.memory_root, started_at, "failed", sources, 0, 0, counting.count);
             return err;
         }
     }
@@ -174,7 +237,7 @@ pub fn runOnce(gpa: std.mem.Allocator, opts: Options) !Summary {
     // emit()-time advancement) — a real artifact-write failure below still
     // returns an error before saveToPath, so the cursor file itself never
     // moves.
-    for (collected.sessions) |s| {
+    for (collected_sessions.items) |s| {
         try advanceCursor(&cur, s);
     }
 
@@ -182,7 +245,7 @@ pub fn runOnce(gpa: std.mem.Allocator, opts: Options) !Summary {
     // ponytail: whole-session bucketing; per-message day slicing is an M2
     // concern together with the LLM stage (spec §11).
     var day_keys: std.ArrayListUnmanaged(u32) = .empty;
-    for (collected.sessions) |s| {
+    for (collected_sessions.items) |s| {
         const key = ai_types.dateKeyFromMs(lastActivityMs(s, opts.now_ms), opts.tz_offset_seconds);
         if (std.mem.indexOfScalar(u32, day_keys.items, key) == null) {
             try day_keys.append(arena, key);
@@ -191,7 +254,7 @@ pub fn runOnce(gpa: std.mem.Allocator, opts: Options) !Summary {
 
     for (day_keys.items) |key| {
         var entries: std.ArrayListUnmanaged(store.DailySession) = .empty;
-        for (collected.sessions) |s| {
+        for (collected_sessions.items) |s| {
             if (ai_types.dateKeyFromMs(lastActivityMs(s, opts.now_ms), opts.tz_offset_seconds) != key) continue;
             var slug_buf: [64]u8 = undefined;
             try entries.append(arena, .{
@@ -216,16 +279,40 @@ pub fn runOnce(gpa: std.mem.Allocator, opts: Options) !Summary {
     try writeIndexFromDisk(gpa, arena, opts.memory_root, opts.now_ms);
     try cur.saveToPath(gpa, cursors_path);
 
-    recordRun(gpa, opts.memory_root, started_at, "ok", "", collected.sessions.len, 0, 0, 0);
+    recordRun(gpa, opts.memory_root, started_at, overall_status, sources, 0, 0, 0);
     return .{
-        .sessions_collected = collected.sessions.len,
+        .sessions_collected = collected_sessions.items.len,
         .days_written = day_keys.items.len,
     };
 }
 
-/// Builds the "provider:session_id" key SummaryStore/old_summary lookups use.
-fn summaryKey(arena: std.mem.Allocator, provider: types.DigestProvider, session_id: []const u8) ![]const u8 {
+/// Builds the "{source_id}|{provider}:{session_id}" key SummaryStore uses
+/// (spec M3 Task 3) — the `|` separator can't appear in a source_id (source
+/// ids are "local", "wsl:<distro>" or "ssh:<profile>", never containing it).
+fn summaryKey(arena: std.mem.Allocator, source_id: []const u8, provider: types.DigestProvider, session_id: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{s}|{s}:{s}", .{ source_id, @tagName(provider), session_id });
+}
+
+/// Pre-M3 key shape, kept only as a one-cycle migration fallback for local
+/// sessions (see findOldSummary below). Delete once every local summary has
+/// been rewritten under the new key (one run cycle after M3 ships).
+fn legacySummaryKey(arena: std.mem.Allocator, provider: types.DigestProvider, session_id: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "{s}:{s}", .{ @tagName(provider), session_id });
+}
+
+/// Looks up the old summary for a session under the new key, falling back to
+/// the pre-M3 "provider:session_id" key for local sessions only (remote
+/// sessions never had summaries under the old scheme, so no fallback there).
+/// ponytail: migration bridge — delete the fallback branch one run cycle
+/// after M3 ships, once every local summary has been rewritten under the new
+/// key.
+fn findOldSummary(arena: std.mem.Allocator, summaries: *store.SummaryStore, source_id: []const u8, provider: types.DigestProvider, session_id: []const u8, new_key: []const u8) !?[]const u8 {
+    if (summaries.find(new_key)) |rec| return rec.summary;
+    if (std.mem.eql(u8, source_id, "local")) {
+        const legacy_key = try legacySummaryKey(arena, provider, session_id);
+        if (summaries.find(legacy_key)) |rec| return rec.summary;
+    }
+    return null;
 }
 
 /// Map+reduce path (spec §8/§9/§13): summarize each collected session (only
@@ -238,7 +325,7 @@ fn runOnceWithLlm(
     arena: std.mem.Allocator,
     opts: Options,
     completer: llm.Completer,
-    collected: *collector.Result,
+    collected: []const types.CollectedSession,
     cur: *cursors_mod.Set,
     cursors_path: []const u8,
 ) !Summary {
@@ -252,18 +339,20 @@ fn runOnceWithLlm(
 
     // Per-session map stage. Only sessions that summarize successfully
     // advance their cursor and get a daily entry; the rest are silently
-    // retried on the next run (spec §13). `summarized_dates`/`summarized_paths`
-    // track each entry's day bucket and project_path in lockstep with
-    // `summarized` (store.DailySession has no room for either).
+    // retried on the next run (spec §13). `summarized_dates`/`summarized_paths`/
+    // `summarized_source_ids` track each entry's day bucket, project_path and
+    // source_id in lockstep with `summarized` (store.DailySession has no room
+    // for any of them).
     var summarized: std.ArrayListUnmanaged(store.DailySession) = .empty;
     var summarized_dates: std.ArrayListUnmanaged([]const u8) = .empty;
     var summarized_paths: std.ArrayListUnmanaged([]const u8) = .empty;
+    var summarized_source_ids: std.ArrayListUnmanaged([]const u8) = .empty;
     var sessions_summarized: usize = 0;
     var sessions_failed: usize = 0;
 
-    for (collected.sessions) |s| {
-        const key = try summaryKey(arena, s.provider, s.session_id);
-        const old_summary = if (summaries.find(key)) |rec| rec.summary else null;
+    for (collected) |s| {
+        const key = try summaryKey(arena, s.source_id, s.provider, s.session_id);
+        const old_summary = try findOldSummary(arena, &summaries, s.source_id, s.provider, s.session_id, key);
 
         const result = digest.summarizeSession(arena, gpa, completer, s, old_summary, map_opts) catch |err| {
             std.log.warn("memory_digest: map failed for {s} ({s}): {s}", .{ @tagName(s.provider), s.session_id, @errorName(err) });
@@ -302,6 +391,7 @@ fn runOnceWithLlm(
         });
         try summarized_dates.append(arena, date);
         try summarized_paths.append(arena, s.project_path);
+        try summarized_source_ids.append(arena, s.source_id);
     }
 
     // Map results are persisted before reduce runs at all (spec §13): a
@@ -372,10 +462,21 @@ fn runOnceWithLlm(
                 continue;
             }
             try store.upsertTimelineEntry(gpa, opts.memory_root, tl.slug, tl.entry);
-            const project_path = for (summarized.items, 0..) |sm, i| {
-                if (std.mem.eql(u8, sm.project, tl.slug)) break summarized_paths.items[i];
-            } else "";
-            try store.upsertProject(gpa, opts.memory_root, tl.slug, project_path, dr.date);
+            const idx = for (summarized.items, 0..) |sm, i| {
+                if (std.mem.eql(u8, sm.project, tl.slug)) break i;
+            } else null;
+            const project_path = if (idx) |i| summarized_paths.items[i] else "";
+            const source_id = if (idx) |i| summarized_source_ids.items[i] else "local";
+            if (std.mem.eql(u8, source_id, "local")) {
+                try store.upsertProject(gpa, opts.memory_root, tl.slug, project_path, dr.date);
+            } else {
+                // Remote sessions (spec M3 Task 3): the raw project_path is a
+                // remote-host path with no meaning on this machine, so it is
+                // recorded as an alias ("{source_id}:{project_path}") instead
+                // of a local `paths[]` entry.
+                const alias = try std.fmt.allocPrint(arena, "{s}:{s}", .{ source_id, project_path });
+                try store.upsertProjectAlias(gpa, opts.memory_root, tl.slug, alias, dr.date);
+            }
         }
     }
 
@@ -383,7 +484,7 @@ fn runOnceWithLlm(
     try cur.saveToPath(gpa, cursors_path);
 
     return .{
-        .sessions_collected = collected.sessions.len,
+        .sessions_collected = collected.len,
         .days_written = day_keys.items.len,
         .sessions_summarized = sessions_summarized,
         .sessions_failed = sessions_failed,
@@ -846,7 +947,7 @@ test "memory_digest_run: llm path writes summaries, projects, highlights and tim
 
     const summaries = try tmp.dir.readFileAlloc(allocator, "memory/state/session_summaries.json", 1 << 20);
     defer allocator.free(summaries);
-    try std.testing.expect(std.mem.indexOf(u8, summaries, "\"claude:claude-abc\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, summaries, "\"local|claude:claude-abc\"") != null);
 
     const map_calls_after_first = stub.map_calls;
     const reduce_calls_after_first = stub.reduce_calls;
@@ -960,7 +1061,7 @@ test "memory_digest_run: reduce failure returns error but keeps summaries and wi
 
     const summaries = try tmp.dir.readFileAlloc(allocator, "memory/state/session_summaries.json", 1 << 20);
     defer allocator.free(summaries);
-    try std.testing.expect(std.mem.indexOf(u8, summaries, "\"claude:claude-abc\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, summaries, "\"local|claude:claude-abc\"") != null);
 
     const cursors_result = tmp.dir.readFileAlloc(allocator, "memory/state/cursors.json", 1 << 20);
     try std.testing.expectError(error.FileNotFound, cursors_result);
@@ -1117,8 +1218,8 @@ test "memory_digest_run: one day's reduce failure blocks writes for every day in
     // at the map stage before reduce ran).
     const summaries = try tmp.dir.readFileAlloc(allocator, "memory/state/session_summaries.json", 1 << 20);
     defer allocator.free(summaries);
-    try std.testing.expect(std.mem.indexOf(u8, summaries, "\"claude:claude-abc\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, summaries, "\"claude:claude-day2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, summaries, "\"local|claude:claude-abc\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, summaries, "\"local|claude:claude-day2\"") != null);
 
     // Cursors were not saved.
     const cursors_result = tmp.dir.readFileAlloc(allocator, "memory/state/cursors.json", 1 << 20);
@@ -1147,4 +1248,230 @@ test "memory_digest_run: one day's reduce failure blocks writes for every day in
     const daily2 = try tmp.dir.readFileAlloc(allocator, "memory/daily/2026-06-01.json", 1 << 20);
     defer allocator.free(daily2);
     try std.testing.expect(std.mem.indexOf(u8, daily2, "\"message_count_new\": 2") != null);
+}
+
+// ---- Multi-source orchestration, summaryKey migration, alias (Task 3) ----
+
+const REMOTE_CLAUDE_JSONL =
+    \\{"sessionId":"remote-abc","cwd":"/root/project","timestamp":"2026-05-31T10:00:00.000Z","type":"user","message":{"role":"user","content":"remote work"}}
+    \\{"sessionId":"remote-abc","cwd":"/root/project","timestamp":"2026-05-31T10:01:00.000Z","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}
+    \\
+;
+
+/// A minimal fake `remote.ExecHost`: serves a fixed HOME + `find`/`cat`
+/// output for the claude root, or fails the very first `printf %s "$HOME"`
+/// call if `fail_home` is set (simulating an unreachable SSH box, spec §13).
+const FakeRemoteHost = struct {
+    fail_home: bool = false,
+    find_output: []const u8 = "",
+    cat_content: []const u8 = "",
+
+    fn exec(ctx: *anyopaque, gpa: std.mem.Allocator, command: []const u8) anyerror![]u8 {
+        const self: *FakeRemoteHost = @ptrCast(@alignCast(ctx));
+        if (std.mem.eql(u8, command, "printf %s \"$HOME\"")) {
+            if (self.fail_home) return error.ExecFailed;
+            return gpa.dupe(u8, "/root");
+        }
+        if (std.mem.startsWith(u8, command, "find ")) {
+            if (std.mem.indexOf(u8, command, "/.claude/projects") != null) return gpa.dupe(u8, self.find_output);
+            return gpa.dupe(u8, "");
+        }
+        if (std.mem.startsWith(u8, command, "cat ")) return gpa.dupe(u8, self.cat_content);
+        return error.UnknownCommand;
+    }
+
+    fn execHost(self: *FakeRemoteHost) remote.ExecHost {
+        return .{ .ctx = @ptrCast(self), .exec = exec };
+    }
+};
+
+test "memory_digest_run: multi-source orchestration records ok/failed per source, failed source doesn't block others" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    try writeFixtures(tmp); // local: claude-abc
+
+    const claude_root = try std.fs.path.join(allocator, &.{ root, "claude" });
+    defer allocator.free(claude_root);
+    const memory_root = try std.fs.path.join(allocator, &.{ root, "memory" });
+    defer allocator.free(memory_root);
+
+    var good_host = FakeRemoteHost{
+        .find_output = "1780300860.0\t200\t/root/.claude/projects/proj/remote-abc.jsonl\n",
+        .cat_content = REMOTE_CLAUDE_JSONL,
+    };
+    var bad_host = FakeRemoteHost{ .fail_home = true };
+
+    var stub = RoutingStub{ .map_response = MAP_JSON, .reduce_response = REDUCE_JSON };
+    const opts: Options = .{
+        .roots = .{ .claude_projects_dir = claude_root },
+        .memory_root = memory_root,
+        .now_ms = 1783500000000,
+        .tz_offset_seconds = 8 * 3600,
+        .backfill_days = 0,
+        .completer = stub.completer(),
+        .model_label = "test-model",
+        .remote_sources = &.{
+            .{ .source_id = "ssh:good", .host = good_host.execHost() },
+            .{ .source_id = "ssh:bad", .host = bad_host.execHost() },
+        },
+    };
+
+    // Must return normally (no error) despite one remote source failing.
+    const summary = try runOnce(allocator, opts);
+    try std.testing.expectEqual(@as(usize, 2), summary.sessions_summarized); // local + ssh:good
+
+    const runs = try tmp.dir.readFileAlloc(allocator, "memory/state/runs.json", 1 << 20);
+    defer allocator.free(runs);
+    const RunsShape = struct {
+        runs: []const struct {
+            status: []const u8 = "",
+            sources: []const struct {
+                source_id: []const u8 = "",
+                status: []const u8 = "",
+                detail: []const u8 = "",
+                sessions_collected: u32 = 0,
+            } = &.{},
+        } = &.{},
+    };
+    const parsed = try std.json.parseFromSlice(RunsShape, allocator, runs, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    const rec = parsed.value.runs[parsed.value.runs.len - 1];
+    try std.testing.expectEqualStrings("partial", rec.status);
+
+    var saw_local_ok = false;
+    var saw_good_ok = false;
+    var saw_bad_failed = false;
+    for (rec.sources) |s| {
+        if (std.mem.eql(u8, s.source_id, "local") and std.mem.eql(u8, s.status, "ok") and s.sessions_collected == 1) saw_local_ok = true;
+        if (std.mem.eql(u8, s.source_id, "ssh:good") and std.mem.eql(u8, s.status, "ok") and s.sessions_collected == 1) saw_good_ok = true;
+        if (std.mem.eql(u8, s.source_id, "ssh:bad") and std.mem.eql(u8, s.status, "failed") and std.mem.eql(u8, s.detail, "RemoteHomeFailed")) saw_bad_failed = true;
+    }
+    try std.testing.expect(saw_local_ok);
+    try std.testing.expect(saw_good_ok);
+    try std.testing.expect(saw_bad_failed);
+
+    // The successful remote source's session made it into the daily file.
+    const daily = try tmp.dir.readFileAlloc(allocator, "memory/daily/2026-05-31.json", 1 << 20);
+    defer allocator.free(daily);
+    try std.testing.expect(std.mem.indexOf(u8, daily, "\"remote-abc\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, daily, "\"source_id\": \"ssh:good\"") != null);
+}
+
+test "memory_digest_run: summaryKey migration - local falls back to legacy key, remote does not" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    try writeFixtures(tmp); // local: claude-abc
+
+    const claude_root = try std.fs.path.join(allocator, &.{ root, "claude" });
+    defer allocator.free(claude_root);
+    const memory_root = try std.fs.path.join(allocator, &.{ root, "memory" });
+    defer allocator.free(memory_root);
+
+    // Pre-seed session_summaries.json with the pre-M3 key shape for the
+    // local session, as if a previous run (before this feature existed) had
+    // already summarized it.
+    {
+        const state_dir = try std.fs.path.join(allocator, &.{ memory_root, "state" });
+        defer allocator.free(state_dir);
+        try std.fs.cwd().makePath(state_dir);
+        const path = try std.fs.path.join(allocator, &.{ state_dir, "session_summaries.json" });
+        defer allocator.free(path);
+        try std.fs.cwd().writeFile(.{ .sub_path = path, .data = 
+            \\{"schema_version":1,"records":[{"key":"claude:claude-abc","date":"2026-05-30","summary":"legacy summary","topics":[],"outcome":"completed","artifacts":[]}]}
+        });
+    }
+
+    // The stub's map response echoes back whatever old_summary it was given
+    // (via digest.summarizeSession's rolling-update prompt, which embeds the
+    // old summary text) so the test can assert the legacy record was found:
+    // simpler is to just assert the record got rewritten under the NEW key
+    // and the run succeeds without needing the LLM to see the old summary.
+    var stub = RoutingStub{ .map_response = MAP_JSON, .reduce_response = REDUCE_JSON };
+    const opts: Options = .{
+        .roots = .{ .claude_projects_dir = claude_root },
+        .memory_root = memory_root,
+        .now_ms = 1783500000000,
+        .tz_offset_seconds = 8 * 3600,
+        .backfill_days = 0,
+        .completer = stub.completer(),
+        .model_label = "test-model",
+    };
+    _ = try runOnce(allocator, opts);
+
+    const summaries = try tmp.dir.readFileAlloc(allocator, "memory/state/session_summaries.json", 1 << 20);
+    defer allocator.free(summaries);
+    // New key present after this run.
+    try std.testing.expect(std.mem.indexOf(u8, summaries, "\"local|claude:claude-abc\"") != null);
+}
+
+test "memory_digest_run: findOldSummary falls back to legacy key for local only" {
+    const allocator = std.testing.allocator;
+    var summaries = store.SummaryStore.init(allocator);
+    defer summaries.deinit();
+    try summaries.put(.{ .key = "claude:claude-abc", .date = "2026-05-30", .summary = "legacy local summary" });
+    try summaries.put(.{ .key = "codex:remote-def", .date = "2026-05-30", .summary = "legacy-shaped but this is a remote session" });
+
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Local session: new key misses, legacy key hits.
+    const new_key_local = try summaryKey(arena, "local", .claude, "claude-abc");
+    const found_local = try findOldSummary(arena, &summaries, "local", .claude, "claude-abc", new_key_local);
+    try std.testing.expectEqualStrings("legacy local summary", found_local.?);
+
+    // Remote session with a session_id that happens to collide with a
+    // legacy-shaped key: must NOT fall back (source_id != "local").
+    const new_key_remote = try summaryKey(arena, "ssh:box", .codex, "remote-def");
+    const found_remote = try findOldSummary(arena, &summaries, "ssh:box", .codex, "remote-def", new_key_remote);
+    try std.testing.expect(found_remote == null);
+}
+
+test "memory_digest_run: remote session produces a project alias, not a path" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    const memory_root = try std.fs.path.join(allocator, &.{ root, "memory" });
+    defer allocator.free(memory_root);
+
+    var good_host = FakeRemoteHost{
+        .find_output = "1780300860.0\t200\t/root/.claude/projects/proj/remote-abc.jsonl\n",
+        .cat_content = REMOTE_CLAUDE_JSONL,
+    };
+
+    // REDUCE_JSON's timeline slug is "project" (matches types.projectSlug of
+    // "/root/project", REMOTE_CLAUDE_JSONL's cwd) and CLAUDE_JSONL's local
+    // cwd "/home/me/project" slugs the same way, so route only the remote
+    // source (no local root configured here — remote-only run).
+    var stub = RoutingStub{ .map_response = MAP_JSON, .reduce_response = REDUCE_JSON };
+    const opts: Options = .{
+        .roots = .{},
+        .memory_root = memory_root,
+        .now_ms = 1783500000000,
+        .tz_offset_seconds = 8 * 3600,
+        .backfill_days = 0,
+        .completer = stub.completer(),
+        .model_label = "test-model",
+        .remote_sources = &.{
+            .{ .source_id = "ssh:box", .host = good_host.execHost() },
+        },
+    };
+    _ = try runOnce(allocator, opts);
+
+    const project = try tmp.dir.readFileAlloc(allocator, "memory/projects/project/project.json", 1 << 20);
+    defer allocator.free(project);
+    const parsed = try std.json.parseFromSlice(store.Project, allocator, project, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.paths.len);
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.aliases.len);
+    try std.testing.expectEqualStrings("ssh:box:/root/project", parsed.value.aliases[0]);
 }

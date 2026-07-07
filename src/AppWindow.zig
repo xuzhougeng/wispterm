@@ -4754,6 +4754,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
         .enabled = cfg.@"memory-digest-enabled",
         .profile_name = cfg.@"memory-digest-profile",
         .run_after = cfg.@"memory-digest-run-after",
+        .scan_remote = cfg.@"memory-digest-scan-remote",
         .backfill_days = cfg.@"memory-digest-backfill-days",
         .max_chars = cfg.@"memory-digest-max-chars",
     });

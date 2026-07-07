@@ -286,7 +286,7 @@ memory/
 | `memory-digest-enabled` | `false` | 总开关（首版默认关，稳定后再默认开） |
 | `memory-digest-profile` | 空（用第一个 ai profile） | 归纳用的 AI profile 名 |
 | `memory-digest-run-after` | `04:00` | 每日运行时点下限 |
-| `memory-digest-scan-remote` | `true` | 是否扫描 WSL/SSH 源（M3） |
+| `memory-digest-scan-remote` | `false` | 是否扫描 WSL/SSH 源（M3，首版默认关，opt-in） |
 | `memory-digest-backfill-days` | `7` | 首次/断档回填上限 |
 | `memory-digest-max-chars` | `2000` | 单条消息截断 |
 

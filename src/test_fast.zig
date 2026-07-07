@@ -310,6 +310,7 @@ test {
     _ = @import("memory_digest/digest.zig");
     _ = @import("memory_digest/scheduler.zig");
     _ = @import("memory_digest/remote.zig");
+    _ = @import("memory_digest/sources.zig");
     _ = @import("skill/scan.zig");
     _ = @import("skill/install.zig");
     _ = @import("ssh/error.zig");

@@ -14,6 +14,7 @@ const llm = @import("llm.zig");
 const profile_codec = @import("../renderer/overlays/profile_codec.zig");
 const profile_store = @import("../assistant/profile/store.zig");
 const run_mod = @import("run.zig");
+const sources_mod = @import("sources.zig");
 const time_mod = @import("../terminal_agents/sessions/time.zig");
 const window_backend = @import("../platform/window_backend.zig");
 
@@ -43,6 +44,7 @@ pub const Settings = struct {
     enabled: bool = false,
     profile_name: []const u8 = "", // borrowed; updateSettings dupes it
     run_after: []const u8 = "04:00",
+    scan_remote: bool = false,
     backfill_days: u32 = 7,
     max_chars: u32 = 2000,
 };
@@ -71,6 +73,7 @@ pub fn updateSettings(s: Settings) void {
         .enabled = s.enabled,
         .profile_name = alloc.dupe(u8, s.profile_name) catch "",
         .run_after = alloc.dupe(u8, s.run_after) catch "04:00",
+        .scan_remote = s.scan_remote,
         .backfill_days = s.backfill_days,
         .max_chars = s.max_chars,
     };
@@ -116,6 +119,7 @@ pub fn tick(gpa: std.mem.Allocator) void {
         .max_chars = g_settings.max_chars,
         .now_ms = now_ms,
         .tz_offset_seconds = tz_offset_seconds,
+        .scan_remote = g_settings.scan_remote,
     };
     g_thread = std.Thread.spawn(.{}, runThreadMain, .{ gpa, params }) catch {
         gpa.free(params.profile_name);
@@ -188,6 +192,7 @@ const ThreadParams = struct {
     max_chars: u32,
     now_ms: i64,
     tz_offset_seconds: i32,
+    scan_remote: bool = false,
 };
 
 fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
@@ -235,6 +240,19 @@ fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
     };
     defer gpa.free(memory_root);
 
+    var remote_sources: []const run_mod.RemoteSource = &.{};
+    if (params.scan_remote) {
+        const ssh_sources = sources_mod.loadSshSources(gpa, arena) catch |err| blk: {
+            std.log.warn("memory_digest: scheduler failed to load ssh sources: {s}", .{@errorName(err)});
+            break :blk &.{};
+        };
+        const wsl_sources = sources_mod.loadWslSources(arena) catch |err| blk: {
+            std.log.warn("memory_digest: scheduler failed to load wsl sources: {s}", .{@errorName(err)});
+            break :blk &.{};
+        };
+        remote_sources = std.mem.concat(arena, run_mod.RemoteSource, &.{ ssh_sources, wsl_sources }) catch &.{};
+    }
+
     const summary = run_mod.runOnce(gpa, .{
         .roots = local_roots.roots(),
         .memory_root = memory_root,
@@ -244,6 +262,7 @@ fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
         .max_chars_per_message = params.max_chars,
         .completer = client.completer(),
         .model_label = cfg.model,
+        .remote_sources = remote_sources,
     }) catch |err| {
         // ponytail: no saveLastRun here — the 60s tick throttle naturally
         // retries later today. M3's runs.json will own richer retry/backoff

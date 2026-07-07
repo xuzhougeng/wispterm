@@ -478,6 +478,10 @@ language: i18n.LanguageSetting = .auto,
 /// validation happens in the scheduler, not here.
 @"memory-digest-run-after": []const u8 = "04:00",
 
+/// Whether to scan WSL/SSH remote sources in addition to local history.
+/// Off by default — first version of remote scanning is opt-in.
+@"memory-digest-scan-remote": bool = false,
+
 /// How many days of history to backfill when the digest first runs.
 @"memory-digest-backfill-days": u32 = 7,
 
@@ -1122,6 +1126,14 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         self.@"memory-digest-profile" = self.dupeString(allocator, value) orelse return;
     } else if (std.mem.eql(u8, key, "memory-digest-run-after")) {
         self.@"memory-digest-run-after" = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "memory-digest-scan-remote")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"memory-digest-scan-remote" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"memory-digest-scan-remote" = false;
+        } else {
+            log.warn("invalid memory-digest-scan-remote: {s}", .{value});
+        }
     } else if (std.mem.eql(u8, key, "memory-digest-backfill-days")) {
         self.@"memory-digest-backfill-days" = std.fmt.parseInt(u32, value, 10) catch {
             log.warn("invalid memory-digest-backfill-days: {s}", .{value});
@@ -2506,6 +2518,20 @@ test "config: memory-digest-run-after parses" {
     try std.testing.expectEqualStrings("04:00", cfg.@"memory-digest-run-after");
     cfg.applyKeyValue(allocator, "memory-digest-run-after", "23:30", ".");
     try std.testing.expectEqualStrings("23:30", cfg.@"memory-digest-run-after");
+}
+
+test "config: memory-digest-scan-remote parses true/false and defaults off" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{};
+    defer cfg.deinit(allocator);
+    try std.testing.expectEqual(false, cfg.@"memory-digest-scan-remote");
+    cfg.applyKeyValue(allocator, "memory-digest-scan-remote", "true", ".");
+    try std.testing.expectEqual(true, cfg.@"memory-digest-scan-remote");
+    cfg.applyKeyValue(allocator, "memory-digest-scan-remote", "false", ".");
+    try std.testing.expectEqual(false, cfg.@"memory-digest-scan-remote");
+
+    cfg.applyKeyValue(allocator, "memory-digest-scan-remote", "maybe", ".");
+    try std.testing.expectEqual(false, cfg.@"memory-digest-scan-remote");
 }
 
 test "config: memory-digest-backfill-days parses and rejects invalid" {

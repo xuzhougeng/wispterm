@@ -78,7 +78,7 @@ fn collectProvider(
     provider: types.DigestProvider,
     root: []const u8,
 ) !u32 {
-    var cmd_buf: [1200]u8 = undefined;
+    var cmd_buf: [2048]u8 = undefined;
     const find_cmd = try ai_session.providerFindCommand(digestToAiProvider(provider), root, &cmd_buf);
     const find_out = try host.exec(host.ctx, gpa, find_cmd);
     defer gpa.free(find_out);
@@ -98,7 +98,7 @@ fn collectProvider(
         if (cand.mtime_ns < min_mtime_ns) continue; // backfill window (spec §6), no cursor created
         const start = cur.pendingFrom(source_id, provider, cand.path, cand.size, cand.mtime_ns) orelse continue;
 
-        var cmd_buf2: [1200]u8 = undefined;
+        var cmd_buf2: [2048]u8 = undefined;
         const cat_cmd = ai_session.remoteCatCommand(cand.path, &cmd_buf2) catch continue;
         const bytes = host.exec(host.ctx, gpa, cat_cmd) catch continue; // transient: retry next run, cursor untouched
         defer gpa.free(bytes);

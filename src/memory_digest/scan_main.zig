@@ -9,10 +9,12 @@ const llm = @import("llm.zig");
 const profile_codec = @import("../renderer/overlays/profile_codec.zig");
 const profile_store = @import("../assistant/profile/store.zig");
 const run_mod = @import("run.zig");
+const sources_mod = @import("sources.zig");
 
 const Args = struct {
     profile_name: []const u8 = "",
     raw: bool = false,
+    remote: bool = false,
 };
 
 fn parseArgs(argv: []const [:0]u8) Args {
@@ -21,6 +23,8 @@ fn parseArgs(argv: []const [:0]u8) Args {
     while (i < argv.len) : (i += 1) {
         if (std.mem.eql(u8, argv[i], "--raw")) {
             args.raw = true;
+        } else if (std.mem.eql(u8, argv[i], "--remote")) {
+            args.remote = true;
         } else if (std.mem.eql(u8, argv[i], "--profile") and i + 1 < argv.len) {
             i += 1;
             args.profile_name = argv[i];
@@ -70,6 +74,13 @@ pub fn main() !void {
         std.debug.print("memory-digest: no AI profiles configured, running raw (no LLM summaries)\n", .{});
     }
 
+    var remote_sources: []const run_mod.RemoteSource = &.{};
+    if (args.remote) {
+        const ssh_sources = try sources_mod.loadSshSources(gpa, arena_state.allocator());
+        const wsl_sources = try sources_mod.loadWslSources(arena_state.allocator());
+        remote_sources = try std.mem.concat(arena_state.allocator(), run_mod.RemoteSource, &.{ ssh_sources, wsl_sources });
+    }
+
     const summary = try run_mod.runOnce(gpa, .{
         .roots = local_roots.roots(),
         .memory_root = memory_root,
@@ -79,6 +90,7 @@ pub fn main() !void {
         .tz_offset_seconds = 8 * 3600,
         .completer = completer,
         .model_label = model_label,
+        .remote_sources = remote_sources,
     });
     std.debug.print(
         "memory-digest: {d} sessions with new messages, {d} daily files written, {d} summarized, {d} failed, under {s}\n",
