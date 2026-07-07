@@ -58,12 +58,64 @@ pub fn allocCopilotContext(
         best_start = start;
     }
 
+    if (best_start == messages.len) {
+        if (try allocMarkdownExportWithNewestTail(allocator, meta, messages, max_bytes)) |markdown| {
+            return .{ .markdown = markdown, .truncated = true };
+        }
+        return .{ .markdown = try allocBoundedTruncationFallback(allocator, max_bytes), .truncated = true };
+    }
+
     const markdown = try allocMarkdownExportWithNotice(allocator, meta, messages[best_start..], true);
     if (markdown.len > max_bytes) {
         allocator.free(markdown);
         return .{ .markdown = try allocBoundedTruncationFallback(allocator, max_bytes), .truncated = true };
     }
     return .{ .markdown = markdown, .truncated = true };
+}
+
+fn allocMarkdownExportWithNewestTail(
+    allocator: std.mem.Allocator,
+    meta: types.SessionMeta,
+    messages: []const types.TranscriptMessage,
+    max_bytes: usize,
+) !?[]u8 {
+    const msg = newestNonEmptyMessage(messages) orelse return null;
+    const body = std.mem.trim(u8, msg.content, " \t\r\n");
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    try appendHeader(allocator, &out, meta);
+    try out.appendSlice(allocator, "_Transcript truncated; showing the most recent messages._\n\n");
+    try out.writer(allocator).print("## {s}\n\n", .{roleHeading(msg.role)});
+
+    if (out.items.len >= max_bytes) {
+        out.deinit(allocator);
+        return null;
+    }
+    const room = max_bytes - out.items.len;
+    if (room <= 2) {
+        out.deinit(allocator);
+        return null;
+    }
+
+    const tail_len = @min(body.len, room - 2);
+    if (tail_len == 0) {
+        out.deinit(allocator);
+        return null;
+    }
+    try out.appendSlice(allocator, body[body.len - tail_len ..]);
+    try out.appendSlice(allocator, "\n\n");
+    return try out.toOwnedSlice(allocator);
+}
+
+fn newestNonEmptyMessage(messages: []const types.TranscriptMessage) ?types.TranscriptMessage {
+    var i = messages.len;
+    while (i > 0) {
+        i -= 1;
+        if (std.mem.trim(u8, messages[i].content, " \t\r\n").len != 0) return messages[i];
+    }
+    return null;
 }
 
 fn allocBoundedTruncationFallback(allocator: std.mem.Allocator, max_bytes: usize) ![]u8 {
@@ -155,16 +207,27 @@ fn roleHeading(role: types.MessageRole) []const u8 {
 
 pub fn rawDownloadFilename(meta: types.SessionMeta, out: []u8) []const u8 {
     const provider = sanitizedProviderLabel(meta.provider);
-    const base = std.fs.path.basename(meta.source_path);
+    const base = portableBasename(meta.source_path);
     var n: usize = 0;
     var last_dash = false;
     appendSanitizedFilenamePart(provider, out, &n, &last_dash);
     appendSanitizedFilenamePart("-", out, &n, &last_dash);
-    appendSanitizedFilenamePart(meta.session_id, out, &n, &last_dash);
+    const remaining = out.len -| n;
+    const base_reserve = @min(remaining, base.len + @as(usize, 1));
+    const session_budget = remaining - base_reserve;
+    appendSanitizedFilenamePartBounded(meta.session_id, out, &n, &last_dash, session_budget);
     appendSanitizedFilenamePart("-", out, &n, &last_dash);
     appendSanitizedFilenamePart(base, out, &n, &last_dash);
     while (n > 0 and out[n - 1] == '-') n -= 1;
     return out[0..n];
+}
+
+fn portableBasename(path: []const u8) []const u8 {
+    var start: usize = 0;
+    for (path, 0..) |ch, i| {
+        if (ch == '/' or ch == '\\') start = i + 1;
+    }
+    return path[start..];
 }
 
 fn sanitizedProviderLabel(provider: types.ProviderId) []const u8 {
@@ -176,13 +239,19 @@ fn sanitizedProviderLabel(provider: types.ProviderId) []const u8 {
 }
 
 fn appendSanitizedFilenamePart(raw: []const u8, out: []u8, n: *usize, last_dash: *bool) void {
+    appendSanitizedFilenamePartBounded(raw, out, n, last_dash, std.math.maxInt(usize));
+}
+
+fn appendSanitizedFilenamePartBounded(raw: []const u8, out: []u8, n: *usize, last_dash: *bool, max_added: usize) void {
+    var added: usize = 0;
     for (raw) |ch| {
-        if (n.* >= out.len) break;
+        if (n.* >= out.len or added >= max_added) break;
         const ok = std.ascii.isAlphanumeric(ch) or ch == '.' or ch == '_' or ch == '-';
         const next = if (ok) std.ascii.toLower(ch) else '-';
         if (next == '-' and last_dash.*) continue;
         out[n.*] = next;
         n.* += 1;
+        added += 1;
         last_dash.* = next == '-';
     }
 }
@@ -327,6 +396,29 @@ test "ai history copilot context stays bounded when metadata alone is too large"
     try std.testing.expect(result.markdown.len <= 32);
 }
 
+test "ai history copilot context keeps tail of oversized latest message" {
+    const allocator = std.testing.allocator;
+    const meta = types.SessionMeta{
+        .provider = .codex,
+        .session_id = "sess-tail",
+        .title = "Tail",
+        .source_path = "/home/me/.codex/sessions/tail.jsonl",
+        .resume_kind = .codex_resume,
+    };
+    const messages = [_]types.TranscriptMessage{
+        .{ .role = .user, .content = "older prompt" },
+        .{ .role = .assistant, .content = ("oversized body " ** 24) ++ "LATEST_TAIL_MARKER" },
+    };
+
+    var result = try allocCopilotContext(allocator, meta, &messages, 240);
+    defer result.deinit(allocator);
+
+    try std.testing.expect(result.truncated);
+    try std.testing.expect(result.markdown.len <= 240);
+    try std.testing.expect(std.mem.indexOf(u8, result.markdown, "LATEST_TAIL_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.markdown, "older prompt") == null);
+}
+
 test "ai history raw download filename sanitizes provider session and basename" {
     var buf: [160]u8 = undefined;
     const meta = types.SessionMeta{
@@ -339,6 +431,20 @@ test "ai history raw download filename sanitizes provider session and basename" 
 
     const name = rawDownloadFilename(meta, &buf);
     try std.testing.expectEqualStrings("claude-code-session-bad-id-original-file.jsonl", name);
+}
+
+test "ai history raw download filename treats windows separators as basename" {
+    var buf: [160]u8 = undefined;
+    const meta = types.SessionMeta{
+        .provider = .claude,
+        .session_id = "session",
+        .title = "Ignored",
+        .source_path = "C:\\Users\\me\\.claude\\projects\\original file.jsonl",
+        .resume_kind = .claude_resume,
+    };
+
+    const name = rawDownloadFilename(meta, &buf);
+    try std.testing.expectEqualStrings("claude-code-session-original-file.jsonl", name);
 }
 
 test "ai history raw download filename preserves long session and basename" {
@@ -354,5 +460,21 @@ test "ai history raw download filename preserves long session and basename" {
     const name = rawDownloadFilename(meta, &buf);
     try std.testing.expect(std.mem.startsWith(u8, name, "reasonix-session-"));
     try std.testing.expect(std.mem.indexOf(u8, name, "tail-original") != null);
+    try std.testing.expect(std.mem.endsWith(u8, name, ".jsonl"));
+}
+
+test "ai history raw download filename reserves basename in integration buffer" {
+    var buf: [180]u8 = undefined;
+    const meta = types.SessionMeta{
+        .provider = .reasonix,
+        .session_id = "session-" ++ ("A" ** 220),
+        .title = "Ignored",
+        .source_path = "/home/me/.reasonix/sessions/original file.jsonl",
+        .resume_kind = .reasonix_resume,
+    };
+
+    const name = rawDownloadFilename(meta, &buf);
+    try std.testing.expect(std.mem.startsWith(u8, name, "reasonix-session-"));
+    try std.testing.expect(std.mem.indexOf(u8, name, "original-file") != null);
     try std.testing.expect(std.mem.endsWith(u8, name, ".jsonl"));
 }
