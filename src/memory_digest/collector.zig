@@ -206,8 +206,13 @@ fn emit(ctx: *Ctx, provider: types.DigestProvider, path: []const u8, stat: std.f
         .total_messages = total,
         .new_messages = new_messages,
         .source_file = path,
+        .file_size = stat.size,
+        .file_mtime_ns = stat.mtime,
     });
-    try ctx.cur.update(SOURCE_LOCAL, provider, path, stat.size, stat.mtime, total);
+    // Cursor advancement for produced sessions now belongs to run.zig, so a
+    // single session's processing failure can withhold just its cursor
+    // (spec §6/§13). Skip paths above (subagent/no-new/oversize/corrupt)
+    // still stamp here unchanged.
 }
 
 const CLAUDE_JSONL =
@@ -269,6 +274,17 @@ test "memory_digest_collector: first run collects all three providers, second ru
     defer first.deinit();
     try std.testing.expectEqual(@as(usize, 3), first.sessions.len);
 
+    // emit() no longer advances the cursor for produced sessions — that is
+    // now run.zig's job. Confirm the stamp is still the pre-collection one.
+    for (first.sessions) |s| {
+        try std.testing.expect(cur.pendingFrom(SOURCE_LOCAL, s.provider, s.source_file, s.file_size, s.file_mtime_ns) != null);
+    }
+
+    // Simulate run.zig's post-processing cursor advancement.
+    for (first.sessions) |s| {
+        try cur.update(SOURCE_LOCAL, s.provider, s.source_file, s.file_size, s.file_mtime_ns, s.total_messages);
+    }
+
     var again = try collectLocal(allocator, roots, &cur, 0);
     defer again.deinit();
     try std.testing.expectEqual(@as(usize, 0), again.sessions.len);
@@ -291,6 +307,13 @@ test "memory_digest_collector: appended lines yield only new messages" {
     var first = try collectLocal(allocator, roots, &cur, 0);
     defer first.deinit();
     try std.testing.expectEqual(@as(usize, 2), first.sessions[0].new_messages.len);
+
+    // Cursor not yet advanced by collectLocal itself (that's run.zig's job).
+    try std.testing.expect(cur.pendingFrom(SOURCE_LOCAL, first.sessions[0].provider, first.sessions[0].source_file, first.sessions[0].file_size, first.sessions[0].file_mtime_ns) != null);
+
+    for (first.sessions) |s| {
+        try cur.update(SOURCE_LOCAL, s.provider, s.source_file, s.file_size, s.file_mtime_ns, s.total_messages);
+    }
 
     const appended = try std.mem.concat(allocator, u8, &.{ CLAUDE_JSONL, CLAUDE_EXTRA_LINE });
     defer allocator.free(appended);

@@ -26,6 +26,10 @@ pub const CollectedSession = struct {
     total_messages: u32,
     new_messages: []ai_types.TranscriptMessage,
     source_file: []const u8,
+    /// Cursor stamp (file size/mtime at collection time), used by run.zig to
+    /// advance the cursor for this session after it has been processed.
+    file_size: u64 = 0,
+    file_mtime_ns: i128 = 0,
 };
 
 pub const UNASSIGNED_SLUG = "unassigned";

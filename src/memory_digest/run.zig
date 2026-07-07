@@ -42,6 +42,14 @@ pub fn runOnce(gpa: std.mem.Allocator, opts: Options) !Summary {
     var collected = try collector.collectLocal(gpa, opts.roots, &cur, min_mtime_ns);
     defer collected.deinit();
 
+    // M1: cursor advancement is unconditional here (equivalent to the old
+    // emit()-time advancement) — a real artifact-write failure below still
+    // returns an error before saveToPath, so the cursor file itself never
+    // moves. Task 7 makes this per-session conditional on LLM success.
+    for (collected.sessions) |s| {
+        try advanceCursor(&cur, s);
+    }
+
     // Bucket sessions by the local day of their last new activity.
     // ponytail: whole-session bucketing; per-message day slicing is an M2
     // concern together with the LLM stage (spec §11).
@@ -158,6 +166,10 @@ fn mergeDailyWithExisting(
         if (!used[i]) try merged.append(arena, n);
     }
     return merged.items;
+}
+
+fn advanceCursor(cur: *cursors_mod.Set, s: types.CollectedSession) !void {
+    try cur.update(s.source_id, s.provider, s.source_file, s.file_size, s.file_mtime_ns, s.total_messages);
 }
 
 fn lastActivityMs(s: types.CollectedSession, fallback_ms: i64) i64 {
