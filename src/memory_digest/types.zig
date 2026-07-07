@@ -45,14 +45,41 @@ pub fn projectSlug(path: []const u8, buf: []u8) []const u8 {
         trimmed;
     if (base.len == 0) return UNASSIGNED_SLUG;
     const n = @min(base.len, buf.len);
-    for (base[0..n], 0..) |c, i| {
+    var out_len: usize = 0;
+    var last_was_dash = false;
+    for (base[0..n]) |c| {
         const lower = std.ascii.toLower(c);
-        buf[i] = if (std.ascii.isAlphanumeric(lower) or lower == '.' or lower == '_' or lower == '-')
+        const ch = if (std.ascii.isAlphanumeric(lower) or lower == '.' or lower == '_' or lower == '-')
             lower
         else
             '-';
+        if (ch == '-') {
+            if (!last_was_dash and out_len < buf.len) {
+                buf[out_len] = ch;
+                out_len += 1;
+                last_was_dash = true;
+            }
+        } else {
+            if (out_len < buf.len) {
+                buf[out_len] = ch;
+                out_len += 1;
+            }
+            last_was_dash = false;
+        }
     }
-    return buf[0..n];
+    // Trim trailing dash
+    if (out_len > 0 and buf[out_len - 1] == '-') {
+        out_len -= 1;
+    }
+    // Trim leading dash and shift content left
+    var start: usize = 0;
+    if (out_len > 0 and buf[0] == '-') {
+        start = 1;
+        std.mem.copyForwards(u8, buf[0 .. out_len - 1], buf[1..out_len]);
+        out_len -= 1;
+    }
+    if (out_len == 0) return UNASSIGNED_SLUG;
+    return buf[0..out_len];
 }
 
 test "memory_digest_types: slug takes last component lowercased" {
@@ -68,7 +95,9 @@ test "memory_digest_types: slug handles windows paths and trailing separators" {
 
 test "memory_digest_types: slug maps unsafe chars and empty to unassigned" {
     var buf: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("my-dir-1-", projectSlug("/tmp/My Dir(1)", &buf));
+    try std.testing.expectEqualStrings("my-dir-1", projectSlug("/tmp/My Dir(1)", &buf));
+    try std.testing.expectEqualStrings("a-b", projectSlug("/tmp/a  b", &buf));
+    try std.testing.expectEqualStrings("unassigned", projectSlug("/tmp/!!!", &buf));
     try std.testing.expectEqualStrings("unassigned", projectSlug("", &buf));
     try std.testing.expectEqualStrings("unassigned", projectSlug("///", &buf));
 }
