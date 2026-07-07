@@ -857,12 +857,24 @@ test "memory_digest_run: llm path writes summaries, projects, highlights and tim
     try std.testing.expectEqual(map_calls_after_first, stub.map_calls);
     try std.testing.expectEqual(reduce_calls_after_first, stub.reduce_calls);
 
-    // Verify runs.json was written with "ok" status and llm_calls > 0
+    // Verify runs.json was written with "ok" status and llm_calls > 0.
+    // Both runOnce calls above append a record; the second legitimately has
+    // llm_calls == 0, so parse and require at least one record with > 0.
     const runs = try tmp.dir.readFileAlloc(allocator, "memory/state/runs.json", 1 << 20);
     defer allocator.free(runs);
     try std.testing.expect(std.mem.indexOf(u8, runs, "\"status\": \"ok\"") != null);
-    // Verify llm_calls is present and > 0 by checking for non-zero value
-    try std.testing.expect(std.mem.indexOf(u8, runs, "\"llm_calls\": ") != null);
+    const RunsShape = struct {
+        runs: []const struct { llm_calls: u32 = 0 } = &.{},
+    };
+    const parsed_runs = try std.json.parseFromSlice(RunsShape, allocator, runs, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed_runs.deinit();
+    var saw_llm_calls = false;
+    for (parsed_runs.value.runs) |r| {
+        if (r.llm_calls > 0) saw_llm_calls = true;
+    }
+    try std.testing.expect(saw_llm_calls);
 }
 
 test "memory_digest_run: map failure withholds cursor and daily entry, other sessions unaffected" {
