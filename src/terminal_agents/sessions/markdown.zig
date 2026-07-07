@@ -59,7 +59,19 @@ pub fn allocCopilotContext(
     }
 
     const markdown = try allocMarkdownExportWithNotice(allocator, meta, messages[best_start..], true);
+    if (markdown.len > max_bytes) {
+        allocator.free(markdown);
+        return .{ .markdown = try allocBoundedTruncationFallback(allocator, max_bytes), .truncated = true };
+    }
     return .{ .markdown = markdown, .truncated = true };
+}
+
+fn allocBoundedTruncationFallback(allocator: std.mem.Allocator, max_bytes: usize) ![]u8 {
+    const notice = "_Transcript truncated._\n";
+    const len = @min(max_bytes, notice.len);
+    const out = try allocator.alloc(u8, len);
+    @memcpy(out, notice[0..len]);
+    return out;
 }
 
 fn allocMarkdownExportWithNotice(
@@ -144,9 +156,15 @@ fn roleHeading(role: types.MessageRole) []const u8 {
 pub fn rawDownloadFilename(meta: types.SessionMeta, out: []u8) []const u8 {
     const provider = sanitizedProviderLabel(meta.provider);
     const base = std.fs.path.basename(meta.source_path);
-    var tmp: [256]u8 = undefined;
-    const raw = std.fmt.bufPrint(&tmp, "{s}-{s}-{s}", .{ provider, meta.session_id, base }) catch provider;
-    return sanitizeFilename(raw, out);
+    var n: usize = 0;
+    var last_dash = false;
+    appendSanitizedFilenamePart(provider, out, &n, &last_dash);
+    appendSanitizedFilenamePart("-", out, &n, &last_dash);
+    appendSanitizedFilenamePart(meta.session_id, out, &n, &last_dash);
+    appendSanitizedFilenamePart("-", out, &n, &last_dash);
+    appendSanitizedFilenamePart(base, out, &n, &last_dash);
+    while (n > 0 and out[n - 1] == '-') n -= 1;
+    return out[0..n];
 }
 
 fn sanitizedProviderLabel(provider: types.ProviderId) []const u8 {
@@ -157,21 +175,16 @@ fn sanitizedProviderLabel(provider: types.ProviderId) []const u8 {
     };
 }
 
-fn sanitizeFilename(raw: []const u8, out: []u8) []const u8 {
-    if (out.len == 0) return "";
-    var n: usize = 0;
-    var last_dash = false;
+fn appendSanitizedFilenamePart(raw: []const u8, out: []u8, n: *usize, last_dash: *bool) void {
     for (raw) |ch| {
-        if (n >= out.len) break;
+        if (n.* >= out.len) break;
         const ok = std.ascii.isAlphanumeric(ch) or ch == '.' or ch == '_' or ch == '-';
         const next = if (ok) std.ascii.toLower(ch) else '-';
-        if (next == '-' and last_dash) continue;
-        out[n] = next;
-        n += 1;
-        last_dash = next == '-';
+        if (next == '-' and last_dash.*) continue;
+        out[n.*] = next;
+        n.* += 1;
+        last_dash.* = next == '-';
     }
-    while (n > 0 and out[n - 1] == '-') n -= 1;
-    return out[0..n];
 }
 
 test "ai history markdown export includes metadata and role sections" {
@@ -294,6 +307,26 @@ test "ai history copilot context truncates oversized transcripts from the front"
     try std.testing.expect(std.mem.indexOf(u8, result.markdown, "old prompt that should drop") == null);
 }
 
+test "ai history copilot context stays bounded when metadata alone is too large" {
+    const allocator = std.testing.allocator;
+    const meta = types.SessionMeta{
+        .provider = .reasonix,
+        .session_id = "sess-" ++ ("x" ** 140),
+        .title = "Long " ++ ("y" ** 140),
+        .source_path = "/home/me/.reasonix/sessions/" ++ ("z" ** 140) ++ ".jsonl",
+        .resume_kind = .reasonix_resume,
+    };
+    const messages = [_]types.TranscriptMessage{
+        .{ .role = .assistant, .content = "recent answer" },
+    };
+
+    var result = try allocCopilotContext(allocator, meta, &messages, 32);
+    defer result.deinit(allocator);
+
+    try std.testing.expect(result.truncated);
+    try std.testing.expect(result.markdown.len <= 32);
+}
+
 test "ai history raw download filename sanitizes provider session and basename" {
     var buf: [160]u8 = undefined;
     const meta = types.SessionMeta{
@@ -306,4 +339,20 @@ test "ai history raw download filename sanitizes provider session and basename" 
 
     const name = rawDownloadFilename(meta, &buf);
     try std.testing.expectEqualStrings("claude-code-session-bad-id-original-file.jsonl", name);
+}
+
+test "ai history raw download filename preserves long session and basename" {
+    var buf: [512]u8 = undefined;
+    const meta = types.SessionMeta{
+        .provider = .reasonix,
+        .session_id = "session:" ++ ("A" ** 220) ++ "/tail",
+        .title = "Ignored",
+        .source_path = "/home/me/.reasonix/sessions/original " ++ ("B" ** 80) ++ ".jsonl",
+        .resume_kind = .reasonix_resume,
+    };
+
+    const name = rawDownloadFilename(meta, &buf);
+    try std.testing.expect(std.mem.startsWith(u8, name, "reasonix-session-"));
+    try std.testing.expect(std.mem.indexOf(u8, name, "tail-original") != null);
+    try std.testing.expect(std.mem.endsWith(u8, name, ".jsonl"));
 }
