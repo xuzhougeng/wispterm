@@ -820,7 +820,7 @@ fn detailActionTop(top: f32, cell_h: f32) f32 {
 
 fn detailActionWidth(layout: Layout) ?f32 {
     const inner = layout.detail_w - PAD_X * 2;
-    if (inner <= 0) return null;
+    if (inner <= 24) return null;
     return @min(ACTION_BUTTON_W, inner);
 }
 
@@ -1016,7 +1016,7 @@ test "terminal agent sessions renderer: detail button hits require selected visi
     );
 }
 
-test "terminal agent sessions renderer: detail action hit ignores non-positive inner width" {
+test "terminal agent sessions renderer: detail action hit ignores too-narrow inner width" {
     const layout = Layout{
         .left_x = 0,
         .left_w = 0,
@@ -1031,6 +1031,19 @@ test "terminal agent sessions renderer: detail action hit ignores non-positive i
     try std.testing.expectEqual(
         Hit.none,
         detailActionHit(layout, top, cell_h, layout.detail_x + PAD_X + 0.5, detailActionTop(top, cell_h) + 2),
+    );
+
+    const tiny_layout = Layout{
+        .left_x = 0,
+        .left_w = 0,
+        .list_x = 0,
+        .list_w = 0,
+        .detail_x = 100,
+        .detail_w = PAD_X * 2 + 1,
+    };
+    try std.testing.expectEqual(
+        Hit.none,
+        detailActionHit(tiny_layout, top, cell_h, tiny_layout.detail_x + PAD_X + 0.5, detailActionTop(top, cell_h) + 2),
     );
 }
 
