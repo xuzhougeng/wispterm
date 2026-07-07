@@ -55,7 +55,7 @@ pub fn allocCopilotContext(
         const fits = candidate.len <= max_bytes;
         allocator.free(candidate);
         if (!fits) break;
-        best_start = start;
+        if (messagesContainNonEmpty(messages[start..])) best_start = start;
     }
 
     if (best_start == messages.len) {
@@ -116,6 +116,13 @@ fn newestNonEmptyMessage(messages: []const types.TranscriptMessage) ?types.Trans
         if (std.mem.trim(u8, messages[i].content, " \t\r\n").len != 0) return messages[i];
     }
     return null;
+}
+
+fn messagesContainNonEmpty(messages: []const types.TranscriptMessage) bool {
+    for (messages) |msg| {
+        if (std.mem.trim(u8, msg.content, " \t\r\n").len != 0) return true;
+    }
+    return false;
 }
 
 fn allocBoundedTruncationFallback(allocator: std.mem.Allocator, max_bytes: usize) ![]u8 {
@@ -417,6 +424,30 @@ test "ai history copilot context keeps tail of oversized latest message" {
     try std.testing.expect(result.markdown.len <= 240);
     try std.testing.expect(std.mem.indexOf(u8, result.markdown, "LATEST_TAIL_MARKER") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.markdown, "older prompt") == null);
+}
+
+test "ai history copilot context ignores trailing empty messages for newest tail" {
+    const allocator = std.testing.allocator;
+    const meta = types.SessionMeta{
+        .provider = .codex,
+        .session_id = "sess-empty-tail",
+        .title = "Tail with empties",
+        .source_path = "/home/me/.codex/sessions/empty-tail.jsonl",
+        .resume_kind = .codex_resume,
+    };
+    const messages = [_]types.TranscriptMessage{
+        .{ .role = .assistant, .content = ("oversized body " ** 24) ++ "EMPTY_SUFFIX_TAIL_MARKER" },
+        .{ .role = .system, .content = " \t\n" },
+        .{ .role = .tool, .content = "" },
+    };
+
+    var result = try allocCopilotContext(allocator, meta, &messages, 260);
+    defer result.deinit(allocator);
+
+    try std.testing.expect(result.truncated);
+    try std.testing.expect(result.markdown.len <= 260);
+    try std.testing.expect(std.mem.indexOf(u8, result.markdown, "EMPTY_SUFFIX_TAIL_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.markdown, "_No transcript messages._") == null);
 }
 
 test "ai history raw download filename sanitizes provider session and basename" {
