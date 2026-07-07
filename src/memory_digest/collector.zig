@@ -186,7 +186,7 @@ fn collectWispterm(ctx: *Ctx, root: []const u8) !void {
         try emit(ctx.alloc, ctx.list, ctx.cur, .wispterm, SOURCE_LOCAL, path, stat.size, stat.mtime, .{
             .session_id = sess.session_id,
             .title = sess.title,
-            .project_path = "", // no cwd on disk until spec §10/M4
+            .project_path = sess.cwd,
             .started_at_ms = sess.created_at_ms,
             .ended_at_ms = sess.updated_at_ms,
         }, sess.messages, start);
@@ -270,7 +270,8 @@ const CODEX_JSONL =
 
 const WISPTERM_JSON =
     \\{"session_id":"session-1-1","title":"Copilot","api_key":"sk-SECRET","created_at":1782311875112,"updated_at":1782311885976,
-    \\ "messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"}]}
+    \\ "cwd":"/home/me/wisp-project",
+    \\ "messages":[{"role":"user","content":"hi","ts":1782311875200},{"role":"assistant","content":"hello","ts":1782311885900}]}
 ;
 
 fn writeTestFile(dir: std.fs.Dir, sub: []const u8, name: []const u8, content: []const u8) !void {
@@ -309,6 +310,12 @@ test "memory_digest_collector: first run collects all three providers, second ru
     var first = try collectLocal(allocator, roots, &cur, 0);
     defer first.deinit();
     try std.testing.expectEqual(@as(usize, 3), first.sessions.len);
+
+    for (first.sessions) |s| {
+        if (s.provider == .wispterm) {
+            try std.testing.expectEqualStrings("/home/me/wisp-project", s.project_path);
+        }
+    }
 
     // emit() no longer advances the cursor for produced sessions — that is
     // now run.zig's job. Confirm the stamp is still the pre-collection one.

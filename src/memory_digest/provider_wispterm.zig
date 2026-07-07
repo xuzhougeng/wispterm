@@ -10,6 +10,7 @@ pub const MAX_SESSION_BYTES = 32 * 1024 * 1024; // mirrors agent/history.zig
 const RawMessage = struct {
     role: []const u8 = "user",
     content: []const u8 = "",
+    ts: i64 = 0,
 };
 
 const RawSession = struct {
@@ -17,6 +18,7 @@ const RawSession = struct {
     title: []const u8 = "",
     created_at: i64 = 0,
     updated_at: i64 = 0,
+    cwd: []const u8 = "",
     messages: []const RawMessage = &.{},
 };
 
@@ -25,6 +27,7 @@ pub const Session = struct {
     title: []const u8,
     created_at_ms: i64,
     updated_at_ms: i64,
+    cwd: []const u8,
     messages: []ai_types.TranscriptMessage,
 };
 
@@ -43,9 +46,10 @@ pub fn parse(alloc: std.mem.Allocator, bytes: []const u8) !Session {
             .role = if (is_tool) .tool else if (std.mem.eql(u8, m.role, "assistant")) .assistant else .user,
             .kind = if (is_tool) .tool_result else .normal,
             .content = try alloc.dupe(u8, m.content),
-            // ponytail: no per-message timestamp on disk until spec §10/M4
-            // lands; messages inherit the session's updated_at.
-            .timestamp_ms = raw.updated_at,
+            // Real per-message timestamp when present (spec §10/M4); falls
+            // back to the session's updated_at for records written before
+            // this field existed.
+            .timestamp_ms = if (m.ts > 0) m.ts else raw.updated_at,
         };
     }
     return .{
@@ -53,6 +57,7 @@ pub fn parse(alloc: std.mem.Allocator, bytes: []const u8) !Session {
         .title = try alloc.dupe(u8, raw.title),
         .created_at_ms = raw.created_at,
         .updated_at_ms = raw.updated_at,
+        .cwd = try alloc.dupe(u8, raw.cwd),
         .messages = messages,
     };
 }
@@ -80,6 +85,26 @@ test "memory_digest_provider_wispterm: parses session and ignores secrets" {
     try std.testing.expectEqual(ai_types.MessageRole.tool, sess.messages[2].role);
     try std.testing.expectEqual(ai_types.MessageKind.tool_result, sess.messages[2].kind);
     try std.testing.expectEqual(@as(i64, 1782311885976), sess.messages[0].timestamp_ms);
+}
+
+test "memory_digest_provider_wispterm: uses cwd and per-message ts when present" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const json =
+        \\{"session_id":"session-2","title":"Copilot","created_at":100,"updated_at":900,
+        \\ "cwd":"/home/me/project",
+        \\ "messages":[
+        \\   {"role":"user","content":"hi","ts":200},
+        \\   {"role":"assistant","content":"hello","ts":300},
+        \\   {"role":"tool","content":"ls output","ts":0}
+        \\ ]}
+    ;
+    const sess = try parse(arena.allocator(), json);
+    try std.testing.expectEqualStrings("/home/me/project", sess.cwd);
+    try std.testing.expectEqual(@as(i64, 200), sess.messages[0].timestamp_ms);
+    try std.testing.expectEqual(@as(i64, 300), sess.messages[1].timestamp_ms);
+    // ts==0 (unset) falls back to the session updated_at.
+    try std.testing.expectEqual(@as(i64, 900), sess.messages[2].timestamp_ms);
 }
 
 test "memory_digest_provider_wispterm: empty and unknown fields tolerated" {

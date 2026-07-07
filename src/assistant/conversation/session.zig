@@ -106,6 +106,10 @@ pub const Message = struct {
     is_context_summary: bool = false,
     reasoning_collapsed: bool = true,
     reasoning_auto_expand: bool = false,
+    /// Wall-clock time this message was appended (milliTimestamp). Set at
+    /// append time, not at history-serialization time, so it reflects the
+    /// real moment the turn happened.
+    ts_ms: i64 = 0,
 
     pub fn deinit(self: Message, allocator: std.mem.Allocator) void {
         allocator.free(self.content);
@@ -1236,6 +1240,7 @@ pub const Session = struct {
                     .tool => .tool,
                 },
                 .content = try allocator.dupe(u8, msg.content),
+                .ts_ms = msg.ts,
             };
             errdefer cloned_msg.deinit(allocator);
 
@@ -2374,6 +2379,7 @@ pub const Session = struct {
             .persist_to_history = false,
             .content_collapsed = false,
             .content_auto_expand = false,
+            .ts_ms = std.time.milliTimestamp(),
         });
         self.scroll_px = 1_000_000;
     }
@@ -2596,7 +2602,7 @@ pub const Session = struct {
         // Hand any pasted images to this user turn. They are re-sent on every
         // subsequent request for the life of the session (multi-turn vision).
         const user_images = self.takePendingImages();
-        self.messages.append(self.allocator, .{ .role = .user, .content = prompt, .model_context = prompt_model_context, .images = user_images }) catch {
+        self.messages.append(self.allocator, .{ .role = .user, .content = prompt, .model_context = prompt_model_context, .images = user_images, .ts_ms = std.time.milliTimestamp() }) catch {
             if (skill_preload_content) |content| self.allocator.free(content);
             self.allocator.free(prompt);
             if (prompt_model_context) |ctx| self.allocator.free(ctx);
@@ -2641,6 +2647,7 @@ pub const Session = struct {
                 .replay_to_model = true,
                 .content_collapsed = true,
                 .content_auto_expand = false,
+                .ts_ms = std.time.milliTimestamp(),
             }) catch {
                 self.allocator.free(tool_name);
                 self.allocator.free(tool_call_id);
@@ -4264,6 +4271,7 @@ pub const Session = struct {
             record_msg.tool_call_id = if (msg.tool_call_id) |id| try allocator.dupe(u8, id) else null;
             record_msg.tool_name = if (msg.tool_name) |name| try allocator.dupe(u8, name) else null;
             record_msg.replay_to_model = msg.replay_to_model;
+            record_msg.ts = msg.ts_ms;
 
             messages[initialized] = record_msg;
             initialized += 1;
@@ -4285,6 +4293,8 @@ pub const Session = struct {
         errdefer allocator.free(system_prompt);
         const reasoning_effort = try allocator.dupe(u8, self.reasoningEffort());
         errdefer allocator.free(reasoning_effort);
+        const cwd = try allocator.dupe(u8, self.effectiveWorkingDirLocked() orelse "");
+        errdefer allocator.free(cwd);
 
         return .{
             .session_id = session_id,
@@ -4304,6 +4314,7 @@ pub const Session = struct {
             .title_is_custom = self.title_is_custom,
             .created_at = self.created_at_ms,
             .updated_at = self.updated_at_ms,
+            .cwd = cwd,
             .messages = messages,
         };
     }
@@ -5039,6 +5050,7 @@ pub fn appendAssistantResult(session: *Session, result: ApiResult, started_ms: i
         .usage_footer = usage_footer,
         .reasoning_collapsed = reasoning_visible,
         .reasoning_auto_expand = false,
+        .ts_ms = std.time.milliTimestamp(),
     }) catch {
         allocator.free(content);
         if (reasoning_copy) |r| allocator.free(r);
@@ -5160,6 +5172,7 @@ pub fn appendProgressMessage(session: *Session, text: []const u8) !void {
         .persist_to_history = false,
         .content_collapsed = false,
         .content_auto_expand = true,
+        .ts_ms = std.time.milliTimestamp(),
     });
     session.scroll_px = 1_000_000;
     session.setStatusLocked("Running tools...");
@@ -5191,6 +5204,7 @@ pub fn appendReplayableToolMessage(
         .replay_to_model = true,
         .content_collapsed = true,
         .content_auto_expand = false,
+        .ts_ms = std.time.milliTimestamp(),
     };
     content_owned = false;
     id_owned = false;
@@ -5230,6 +5244,7 @@ pub fn beginAssistantStream(session: *Session) !usize {
         .reasoning = null,
         .reasoning_collapsed = false,
         .reasoning_auto_expand = true,
+        .ts_ms = std.time.milliTimestamp(),
     });
     session.scroll_px = 1_000_000;
     session.setStatusLocked("Streaming...");

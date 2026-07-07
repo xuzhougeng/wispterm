@@ -20,6 +20,9 @@ pub const MessageRecord = struct {
     tool_call_id: ?[]const u8 = null,
     tool_name: ?[]const u8 = null,
     replay_to_model: bool = false,
+    /// Wall-clock time the message was appended in-memory (milliTimestamp).
+    /// Defaults to 0 for records written before this field existed.
+    ts: i64 = 0,
 };
 
 pub const SessionRecord = struct {
@@ -42,6 +45,9 @@ pub const SessionRecord = struct {
     title_is_custom: bool = false,
     created_at: i64,
     updated_at: i64,
+    /// Working directory captured when the record was serialized. Empty for
+    /// records written before this field existed.
+    cwd: []const u8 = "",
     messages: []MessageRecord,
 };
 
@@ -272,6 +278,9 @@ pub fn cloneRecord(allocator: std.mem.Allocator, input: anytype) !SessionRecord 
     errdefer allocator.free(system_prompt);
     const reasoning_effort = try allocator.dupe(u8, input.reasoning_effort);
     errdefer allocator.free(reasoning_effort);
+    const cwd_input = if (@hasField(@TypeOf(input), "cwd")) input.cwd else "";
+    const cwd = try allocator.dupe(u8, cwd_input);
+    errdefer allocator.free(cwd);
 
     const messages = try cloneMessages(allocator, input.messages);
     errdefer {
@@ -297,6 +306,7 @@ pub fn cloneRecord(allocator: std.mem.Allocator, input: anytype) !SessionRecord 
         .title_is_custom = if (@hasField(@TypeOf(input), "title_is_custom")) input.title_is_custom else false,
         .created_at = input.created_at,
         .updated_at = input.updated_at,
+        .cwd = cwd,
         .messages = messages,
     };
 }
@@ -310,6 +320,7 @@ pub fn freeOwnedRecord(allocator: std.mem.Allocator, record: *SessionRecord) voi
     allocator.free(record.protocol);
     allocator.free(record.system_prompt);
     allocator.free(record.reasoning_effort);
+    allocator.free(record.cwd);
     for (record.messages) |*message| freeOwnedMessage(allocator, message);
     allocator.free(record.messages);
     record.* = undefined;
@@ -347,6 +358,7 @@ pub fn cloneMessage(allocator: std.mem.Allocator, input: anytype) !MessageRecord
         .tool_call_id = tool_call_id,
         .tool_name = tool_name,
         .replay_to_model = if (@hasField(@TypeOf(input), "replay_to_model")) input.replay_to_model else false,
+        .ts = if (@hasField(@TypeOf(input), "ts")) input.ts else 0,
     };
 }
 
@@ -1319,6 +1331,57 @@ test "agent_history: single record JSON round-trips" {
     try std.testing.expect(rec.copilot);
     try std.testing.expectEqual(@as(usize, 2), rec.messages.len);
     try std.testing.expectEqualStrings("yo", rec.messages[1].content);
+}
+
+test "agent_history: cwd and message ts round-trip through JSON" {
+    const allocator = std.testing.allocator;
+    var store = Store.init(allocator);
+    defer store.deinit();
+
+    try store.upsertRecord(.{
+        .session_id = "s-cwd",
+        .title = "Title",
+        .base_url = "https://api.example.com",
+        .api_key = "k",
+        .model = "m1",
+        .system_prompt = "sys",
+        .thinking_enabled = true,
+        .reasoning_effort = "high",
+        .stream = false,
+        .agent_enabled = true,
+        .created_at = 7,
+        .updated_at = 9,
+        .cwd = "/home/me/project",
+        .messages = &[_]MessageRecord{
+            .{ .role = .user, .content = "hi", .ts = 1000 },
+            .{ .role = .assistant, .content = "yo", .ts = 2000 },
+        },
+    });
+
+    const json = try store.toJsonString(allocator);
+    defer allocator.free(json);
+    var parsed = try Store.fromJsonString(allocator, json);
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.records.items.len);
+    try std.testing.expectEqualStrings("/home/me/project", parsed.records.items[0].cwd);
+    try std.testing.expectEqual(@as(i64, 1000), parsed.records.items[0].messages[0].ts);
+    try std.testing.expectEqual(@as(i64, 2000), parsed.records.items[0].messages[1].ts);
+}
+
+test "agent_history: old record without cwd/ts fields defaults to empty/zero" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"records":[{"session_id":"old","title":"T","base_url":"u","api_key":"k",
+        \\"model":"m","system_prompt":"s","thinking_enabled":false,"reasoning_effort":"low",
+        \\"stream":true,"agent_enabled":true,"created_at":1,"updated_at":2,
+        \\"messages":[{"role":"user","content":"hi"}]}]}
+    ;
+    var store = try Store.fromJsonString(allocator, json);
+    defer store.deinit();
+    try std.testing.expectEqual(@as(usize, 1), store.records.items.len);
+    try std.testing.expectEqualStrings("", store.records.items[0].cwd);
+    try std.testing.expectEqual(@as(i64, 0), store.records.items[0].messages[0].ts);
 }
 
 test "agent_history: buildRowsFromEntries sorts desc and filters copilot" {
