@@ -88,10 +88,16 @@ pub const Role = ai_chat_protocol.Role;
 pub const Message = struct {
     role: Role,
     content: []u8,
+    /// Allocated capacity for content when the slice has spare room. Zero
+    /// means the allocation is exactly `content.len`.
+    content_capacity: usize = 0,
     /// Model-only context appended when building API requests. This is not
     /// rendered, exported, or persisted in history.
     model_context: ?[]u8 = null,
     reasoning: ?[]u8 = null,
+    /// Allocated capacity for reasoning when the slice has spare room. Zero
+    /// means the allocation is exactly `reasoning.len`.
+    reasoning_capacity: usize = 0,
     usage_footer: ?[]u8 = null,
     tool_call_id: ?[]u8 = null,
     tool_name: ?[]u8 = null,
@@ -119,9 +125,9 @@ pub const Message = struct {
     }
 
     pub fn deinit(self: Message, allocator: std.mem.Allocator) void {
-        allocator.free(self.content);
+        allocator.free(self.contentAllocation());
         if (self.model_context) |ctx| allocator.free(ctx);
-        if (self.reasoning) |reasoning| allocator.free(reasoning);
+        if (self.reasoning) |reasoning| allocator.free(self.reasoningAllocation(reasoning));
         if (self.usage_footer) |footer| allocator.free(footer);
         if (self.tool_call_id) |id| allocator.free(id);
         if (self.tool_name) |name| allocator.free(name);
@@ -129,6 +135,14 @@ pub const Message = struct {
             for (images) |img| img.deinit(allocator);
             allocator.free(images);
         }
+    }
+
+    fn contentAllocation(self: Message) []u8 {
+        return self.content.ptr[0..@max(self.content.len, self.content_capacity)];
+    }
+
+    fn reasoningAllocation(self: Message, reasoning: []u8) []u8 {
+        return reasoning.ptr[0..@max(reasoning.len, self.reasoning_capacity)];
     }
 };
 
@@ -5297,6 +5311,60 @@ pub fn beginAssistantStream(session: *Session) !usize {
     return session.messages.items.len - 1;
 }
 
+fn growStreamCapacity(current_capacity: usize, required_capacity: usize) usize {
+    var capacity = if (current_capacity > 0) current_capacity else @as(usize, 64);
+    while (capacity < required_capacity) {
+        if (capacity > std.math.maxInt(usize) / 2) return required_capacity;
+        capacity *= 2;
+    }
+    return capacity;
+}
+
+fn appendOwnedBytes(
+    allocator: std.mem.Allocator,
+    bytes: *[]u8,
+    capacity: *usize,
+    delta: []const u8,
+) !void {
+    if (delta.len == 0) return;
+
+    const old_len = bytes.*.len;
+    const new_len = try std.math.add(usize, old_len, delta.len);
+    const current_capacity = if (capacity.* > 0) capacity.* else old_len;
+    if (new_len > current_capacity) {
+        const new_capacity = growStreamCapacity(current_capacity, new_len);
+        const grown = if (current_capacity == 0)
+            try allocator.alloc(u8, new_capacity)
+        else
+            try allocator.realloc(bytes.*.ptr[0..current_capacity], new_capacity);
+        bytes.* = grown[0..new_len];
+        capacity.* = new_capacity;
+    } else {
+        bytes.* = bytes.*.ptr[0..new_len];
+    }
+    @memcpy(bytes.*[old_len..new_len], delta);
+}
+
+fn appendOptionalOwnedBytes(
+    allocator: std.mem.Allocator,
+    bytes: *?[]u8,
+    capacity: *usize,
+    delta: []const u8,
+) !void {
+    if (bytes.*) |old_bytes| {
+        var updated = old_bytes;
+        try appendOwnedBytes(allocator, &updated, capacity, delta);
+        bytes.* = updated;
+        return;
+    }
+
+    const new_capacity = growStreamCapacity(0, delta.len);
+    const allocated = try allocator.alloc(u8, new_capacity);
+    @memcpy(allocated[0..delta.len], delta);
+    bytes.* = allocated[0..delta.len];
+    capacity.* = new_capacity;
+}
+
 fn appendAssistantStreamDelta(session: *Session, message_idx: usize, content_delta: []const u8, reasoning_delta: []const u8) !void {
     if (content_delta.len == 0 and reasoning_delta.len == 0) return;
     const allocator = session.allocator;
@@ -5313,19 +5381,10 @@ fn appendAssistantStreamDelta(session: *Session, message_idx: usize, content_del
 
     var msg = &session.messages.items[message_idx];
     if (content_delta.len > 0) {
-        const old_len = msg.content.len;
-        msg.content = try allocator.realloc(msg.content, old_len + content_delta.len);
-        @memcpy(msg.content[old_len..], content_delta);
+        try appendOwnedBytes(allocator, &msg.content, &msg.content_capacity, content_delta);
     }
     if (reasoning_delta.len > 0) {
-        if (msg.reasoning) |old_reasoning| {
-            const old_len = old_reasoning.len;
-            const resized = try allocator.realloc(old_reasoning, old_len + reasoning_delta.len);
-            @memcpy(resized[old_len..], reasoning_delta);
-            msg.reasoning = resized;
-        } else {
-            msg.reasoning = try allocator.dupe(u8, reasoning_delta);
-        }
+        try appendOptionalOwnedBytes(allocator, &msg.reasoning, &msg.reasoning_capacity, reasoning_delta);
     }
     session.scroll_px = 1_000_000;
     session.setStatusLocked("Streaming...");
@@ -5357,8 +5416,7 @@ pub fn finishAssistantStream(session: *Session, message_idx: usize, started_ms: 
     if (message_idx < session.messages.items.len) {
         const msg = &session.messages.items[message_idx];
         if (msg.content.len == 0 and msg.reasoning == null) {
-            msg.content = session.allocator.realloc(msg.content, "No response".len) catch msg.content;
-            if (msg.content.len == "No response".len) @memcpy(msg.content, "No response");
+            appendOwnedBytes(session.allocator, &msg.content, &msg.content_capacity, "No response") catch {};
         }
         if (allocUsageFooter(session.allocator, started_ms, first_token_ms, usage) catch null) |footer| {
             if (msg.usage_footer) |old_footer| session.allocator.free(old_footer);
@@ -9074,6 +9132,29 @@ test "failSummaryResult keeps raw history and points to resume" {
     try std.testing.expectEqualStrings("u1", session.messages.items[0].content);
     try std.testing.expectEqualStrings("a1", session.messages.items[1].content);
     try std.testing.expect(std.mem.indexOf(u8, session.status(), "/resume") != null);
+}
+
+test "assistant stream deltas grow with spare capacity" {
+    const allocator = std.testing.allocator;
+    var session = try Session.init(allocator, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer session.deinit();
+
+    const message_idx = try beginAssistantStream(session);
+    for (0..100) |_| {
+        try appendAssistantStreamDelta(session, message_idx, "x", "");
+    }
+    for (0..20) |_| {
+        try appendAssistantStreamDelta(session, message_idx, "", "r");
+    }
+
+    const msg = session.messages.items[message_idx];
+    try std.testing.expectEqual(@as(usize, 100), msg.content.len);
+    try std.testing.expect(std.mem.allEqual(u8, msg.content, 'x'));
+    try std.testing.expect(msg.content_capacity > msg.content.len);
+    try std.testing.expect(msg.reasoning != null);
+    try std.testing.expectEqual(@as(usize, 20), msg.reasoning.?.len);
+    try std.testing.expect(std.mem.allEqual(u8, msg.reasoning.?, 'r'));
+    try std.testing.expect(msg.reasoning_capacity > msg.reasoning.?.len);
 }
 
 const AskRunner = struct {

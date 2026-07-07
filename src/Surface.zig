@@ -1515,7 +1515,10 @@ pub fn feedVtWithWispTermImageFallback(self: *Surface, data: []const u8) void {
                         self.wispterm_image_osc_state = .image_overflow;
                     } else if (self.wispterm_image_osc_buf.items.len == WISPTERM_IMAGE_OSC_PREFIX.len) {
                         self.wispterm_image_osc_buf.clearRetainingCapacity();
-                        self.wispterm_image_osc_state = .image_osc;
+                        self.wispterm_image_osc_state = if (self.reserveWispTermImageOscPayload())
+                            .image_osc
+                        else
+                            .image_overflow;
                     }
                     passthrough_start = i + 1;
                 } else if (matched == WISPTERM_PRIVATE_OSC_SHARED.len and byte == '8') {
@@ -1700,6 +1703,11 @@ pub fn feedVtWithWispTermImageFallback(self: *Surface, data: []const u8) void {
 fn appendWispTermImageOscByte(self: *Surface, byte: u8) bool {
     if (self.wispterm_image_osc_buf.items.len >= WISPTERM_IMAGE_OSC_MAX) return false;
     self.wispterm_image_osc_buf.append(self.allocator, byte) catch return false;
+    return true;
+}
+
+fn reserveWispTermImageOscPayload(self: *Surface) bool {
+    self.wispterm_image_osc_buf.ensureTotalCapacity(self.allocator, WISPTERM_IMAGE_OSC_MAX) catch return false;
     return true;
 }
 
