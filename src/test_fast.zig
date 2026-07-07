@@ -306,6 +306,7 @@ test {
     _ = @import("memory_digest/collector.zig");
     _ = @import("memory_digest/run.zig");
     _ = @import("memory_digest/redact.zig");
+    _ = @import("memory_digest/llm.zig");
     _ = @import("skill/scan.zig");
     _ = @import("skill/install.zig");
     _ = @import("ssh/error.zig");
