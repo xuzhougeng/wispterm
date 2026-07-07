@@ -14,6 +14,7 @@ const BUTTON_PAD_Y: f32 = 4;
 const BUTTON_EXTRA_H: f32 = 10;
 const RESUME_BUTTON_W: f32 = 104;
 const ACTION_BUTTON_W: f32 = 148;
+const ACTION_BUTTON_MIN_W: f32 = 96;
 const ACTION_BUTTON_GAP: f32 = 8;
 /// Width of the "r Retry" affordance sharing the Status value line (right-aligned).
 const RETRY_LABEL_W: f32 = 70;
@@ -820,7 +821,7 @@ fn detailActionTop(top: f32, cell_h: f32) f32 {
 
 fn detailActionWidth(layout: Layout) ?f32 {
     const inner = layout.detail_w - PAD_X * 2;
-    if (inner <= 24) return null;
+    if (inner < ACTION_BUTTON_MIN_W) return null;
     return @min(ACTION_BUTTON_W, inner);
 }
 
@@ -1044,6 +1045,32 @@ test "terminal agent sessions renderer: detail action hit ignores too-narrow inn
     try std.testing.expectEqual(
         Hit.none,
         detailActionHit(tiny_layout, top, cell_h, tiny_layout.detail_x + PAD_X + 0.5, detailActionTop(top, cell_h) + 2),
+    );
+
+    const one_px_label_layout = Layout{
+        .left_x = 0,
+        .left_w = 0,
+        .list_x = 0,
+        .list_w = 0,
+        .detail_x = 100,
+        .detail_w = PAD_X * 2 + 25,
+    };
+    try std.testing.expectEqual(
+        Hit.none,
+        detailActionHit(one_px_label_layout, top, cell_h, one_px_label_layout.detail_x + PAD_X + 0.5, detailActionTop(top, cell_h) + 2),
+    );
+
+    const normal_layout = Layout{
+        .left_x = 0,
+        .left_w = 0,
+        .list_x = 0,
+        .list_w = 0,
+        .detail_x = 100,
+        .detail_w = PAD_X * 2 + ACTION_BUTTON_W,
+    };
+    try std.testing.expectEqual(
+        Hit.download_raw,
+        detailActionHit(normal_layout, top, cell_h, normal_layout.detail_x + PAD_X + 0.5, detailActionTop(top, cell_h) + 2),
     );
 }
 
