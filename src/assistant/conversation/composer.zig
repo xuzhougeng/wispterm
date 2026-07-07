@@ -177,6 +177,7 @@ pub const SlashCommand = enum {
     permission,
     cwd,
     export_markdown,
+    copy_transcript,
     distill,
     loop,
     watch,
@@ -257,6 +258,10 @@ pub const slash_command_entries = [_]SlashCommandEntry{
     .{
         .suggestion = .{ .command = "/export", .description = "export conversation as Markdown" },
         .action = .export_markdown,
+    },
+    .{
+        .suggestion = .{ .command = "/copy", .description = "copy conversation to clipboard (add full for tool detail)" },
+        .action = .copy_transcript,
     },
     .{
         .suggestion = .{ .command = "/distill", .description = "distill this conversation into a reusable skill" },

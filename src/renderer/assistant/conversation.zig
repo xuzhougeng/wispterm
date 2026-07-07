@@ -66,6 +66,8 @@ const DETAIL_PAD_X: f32 = 14;
 const DETAIL_PAD_Y: f32 = 10;
 const DETAIL_ARROW_W: f32 = 12;
 const DETAIL_RULE_W: f32 = 3;
+/// Gap between an expanded activity group's header row and its first card.
+const GROUP_HEADER_GAP: f32 = 6;
 const TABLE_CELL_PAD_X: f32 = 10;
 const TABLE_MIN_COL_W: f32 = 56;
 const SUGGESTION_ROW_H: f32 = 28;
@@ -89,6 +91,9 @@ pub const HitTarget = union(enum) {
     /// source (a byte range of the message), not the whole message.
     copy_span: CopySpan,
     toggle_tool: usize,
+    /// Click on an activity group's header row: toggle the whole run of tool
+    /// cards between one summary row and individual cards.
+    toggle_tool_group: usize,
     toggle_reasoning: usize,
     /// Click on the Nth (zero-based) visible option of a pending ask_user card.
     question_option: usize,
@@ -360,17 +365,7 @@ pub fn render(
     const content_x = transcript_viewport.content_x;
     const viewport_bottom_top_px = transcript_viewport.viewport_bottom_top_px;
 
-    var content_h: f32 = 0;
-    for (session.messages.items) |msg| {
-        content_h += messageBlockHeight(msg, content_w);
-        if (msg.reasoning) |reasoning| {
-            if (reasoning.len > 0) content_h += reasoningCardHeight(msg, content_w);
-        }
-        if (msg.usage_footer) |footer| {
-            if (footer.len > 0) content_h += usageFooterHeight(footer, content_w);
-        }
-        content_h += BUBBLE_GAP;
-    }
+    const content_h = transcriptContentHeight(session.messages.items, content_w);
     const max_scroll = @max(0.0, content_h - transcript_h);
     session.scroll_px = @min(session.scroll_px, max_scroll);
 
@@ -387,10 +382,19 @@ pub fn render(
     var cursor_top = transcript_top + gravity_offset - session.scroll_px;
 
     for (session.messages.items, 0..) |msg, message_index| {
-        const block_h = messageBlockHeight(msg, content_w);
+        const block_h = messageBlockHeight(session.messages.items, message_index, content_w);
         if (rendersAsCard(msg)) {
             if (sectionVisible(cursor_top, block_h, transcript_top, viewport_bottom_top_px)) {
-                renderToolCard(msg, content_x, cursor_top, content_w, block_h, window_height, transcript_selected);
+                switch (toolGroupPosition(session.messages.items, message_index)) {
+                    .hidden => {},
+                    .header => renderToolGroupHeader(session.messages.items, message_index, content_x, cursor_top, content_w, window_height, transcript_selected),
+                    .expanded_first => {
+                        renderToolGroupHeader(session.messages.items, message_index, content_x, cursor_top, content_w, window_height, transcript_selected);
+                        const card_top = cursor_top + detailHeaderHeight() + GROUP_HEADER_GAP;
+                        renderToolCard(msg, content_x, card_top, content_w, toolCardHeight(msg, content_w), window_height, transcript_selected);
+                    },
+                    .none, .expanded_member => renderToolCard(msg, content_x, cursor_top, content_w, block_h, window_height, transcript_selected),
+                }
             }
         } else if (sectionVisible(cursor_top, block_h, transcript_top, viewport_bottom_top_px)) {
             const selection_range = if (session.transcript_selection) |selection|
@@ -421,7 +425,7 @@ pub fn render(
             }
         }
 
-        cursor_top += BUBBLE_GAP;
+        cursor_top += blockGapAfter(session.messages.items, message_index);
     }
 
     ui_pipeline.endClip();
@@ -487,30 +491,38 @@ pub fn interactionHitTest(
         }
     }
 
-    var content_h: f32 = 0;
-    for (session.messages.items) |msg| {
-        content_h += messageBlockHeight(msg, content_w);
-        if (msg.reasoning) |reasoning| {
-            if (reasoning.len > 0) content_h += reasoningCardHeight(msg, content_w);
-        }
-        if (msg.usage_footer) |footer| {
-            if (footer.len > 0) content_h += usageFooterHeight(footer, content_w);
-        }
-        content_h += BUBBLE_GAP;
-    }
+    const content_h = transcriptContentHeight(session.messages.items, content_w);
 
     const scroll_px = @min(session.scroll_px, @max(0.0, content_h - transcript_h));
     const gravity_offset = @max(0.0, transcript_h - content_h);
     var cursor_top = transcript_top + gravity_offset - scroll_px;
 
     for (session.messages.items, 0..) |msg, message_index| {
-        const block_h = messageBlockHeight(msg, content_w);
+        const block_h = messageBlockHeight(session.messages.items, message_index, content_w);
         if (rendersAsCard(msg)) {
             if (sectionVisible(cursor_top, block_h, transcript_top, viewport_bottom_top_px)) {
-                const copy_rect = detailCopyButtonRect(content_x, cursor_top, content_w);
-                if (pointInRect(px, py, copy_rect)) return .{ .copy_message = message_index };
-                const header_rect = detailHeaderRect(content_x, cursor_top, content_w);
-                if (pointInRect(px, py, header_rect)) return .{ .toggle_tool = message_index };
+                switch (toolGroupPosition(session.messages.items, message_index)) {
+                    .hidden => {},
+                    .header => {
+                        const header_rect = detailHeaderRect(content_x, cursor_top, content_w);
+                        if (pointInRect(px, py, header_rect)) return .{ .toggle_tool_group = message_index };
+                    },
+                    .expanded_first => {
+                        const group_rect = detailHeaderRect(content_x, cursor_top, content_w);
+                        if (pointInRect(px, py, group_rect)) return .{ .toggle_tool_group = message_index };
+                        const card_top = cursor_top + detailHeaderHeight() + GROUP_HEADER_GAP;
+                        const copy_rect = detailCopyButtonRect(content_x, card_top, content_w);
+                        if (pointInRect(px, py, copy_rect)) return .{ .copy_message = message_index };
+                        const header_rect = detailHeaderRect(content_x, card_top, content_w);
+                        if (pointInRect(px, py, header_rect)) return .{ .toggle_tool = message_index };
+                    },
+                    .none, .expanded_member => {
+                        const copy_rect = detailCopyButtonRect(content_x, cursor_top, content_w);
+                        if (pointInRect(px, py, copy_rect)) return .{ .copy_message = message_index };
+                        const header_rect = detailHeaderRect(content_x, cursor_top, content_w);
+                        if (pointInRect(px, py, header_rect)) return .{ .toggle_tool = message_index };
+                    },
+                }
             }
         } else if (sectionVisible(cursor_top, block_h, transcript_top, viewport_bottom_top_px)) {
             const rect = copyButtonRect(msg.role, content_x, cursor_top, content_w);
@@ -540,7 +552,7 @@ pub fn interactionHitTest(
         if (msg.usage_footer) |footer| {
             if (footer.len > 0) cursor_top += usageFooterHeight(footer, content_w);
         }
-        cursor_top += BUBBLE_GAP;
+        cursor_top += blockGapAfter(session.messages.items, message_index);
     }
 
     return null;
@@ -575,17 +587,7 @@ pub fn transcriptTextHitTest(
     const content_w = w - LINE_PAD_X * 2;
     const content_x = x + LINE_PAD_X;
 
-    var content_h: f32 = 0;
-    for (session.messages.items) |msg| {
-        content_h += messageBlockHeight(msg, content_w);
-        if (msg.reasoning) |reasoning| {
-            if (reasoning.len > 0) content_h += reasoningCardHeight(msg, content_w);
-        }
-        if (msg.usage_footer) |footer| {
-            if (footer.len > 0) content_h += usageFooterHeight(footer, content_w);
-        }
-        content_h += BUBBLE_GAP;
-    }
+    const content_h = transcriptContentHeight(session.messages.items, content_w);
 
     const scroll_px = @min(session.scroll_px, @max(0.0, content_h - transcript_h));
     const gravity_offset = @max(0.0, transcript_h - content_h);
@@ -594,7 +596,7 @@ pub fn transcriptTextHitTest(
     var cursor_top = transcript_top + gravity_offset - scroll_px;
 
     for (session.messages.items, 0..) |msg, message_index| {
-        const block_h = messageBlockHeight(msg, content_w);
+        const block_h = messageBlockHeight(session.messages.items, message_index, content_w);
         if (msg.role == .assistant and sectionVisible(cursor_top, block_h, transcript_top, viewport_bottom_top_px)) {
             const bubble = bubbleGeometry(msg.role, content_x, content_w);
             const body_x = bubble.x + BUBBLE_PAD_X;
@@ -617,7 +619,7 @@ pub fn transcriptTextHitTest(
         if (msg.usage_footer) |footer| {
             if (footer.len > 0) cursor_top += usageFooterHeight(footer, content_w);
         }
-        cursor_top += BUBBLE_GAP;
+        cursor_top += blockGapAfter(session.messages.items, message_index);
     }
 
     return null;
@@ -845,17 +847,7 @@ fn transcriptLayoutLocked(
     const transcript_viewport = ai_chat_layout.transcriptViewport(frame, window_height, input_h, approval_h + question_h, LINE_PAD_X, 18);
     const content_w = transcript_viewport.content_w;
 
-    var content_h: f32 = 0;
-    for (session.messages.items) |msg| {
-        content_h += messageBlockHeight(msg, content_w);
-        if (msg.reasoning) |reasoning| {
-            if (reasoning.len > 0) content_h += reasoningCardHeight(msg, content_w);
-        }
-        if (msg.usage_footer) |footer| {
-            if (footer.len > 0) content_h += usageFooterHeight(footer, content_w);
-        }
-        content_h += BUBBLE_GAP;
-    }
+    const content_h = transcriptContentHeight(session.messages.items, content_w);
 
     return .{
         .x = x,
@@ -918,9 +910,65 @@ fn rendersAsCard(msg: ai_chat.Message) bool {
     return msg.role == .tool or msg.is_context_summary;
 }
 
-fn messageBlockHeight(msg: ai_chat.Message, max_w: f32) f32 {
-    if (rendersAsCard(msg)) return toolCardHeight(msg, max_w);
+/// Where a card message sits relative to its activity group: runs of two or
+/// more adjacent groupable tool messages render as one collapsible group so a
+/// long agent run costs one header row instead of one per step (issue #507).
+const GroupPosition = enum {
+    /// Not grouped: a bubble, a context summary, a live (auto-expanded) card,
+    /// or a lone tool card.
+    none,
+    /// First message of a collapsed run: renders the single group header row.
+    header,
+    /// Non-first message of a collapsed run: renders nothing.
+    hidden,
+    /// First message of an expanded run: group header row plus its own card.
+    expanded_first,
+    /// Non-first message of an expanded run: its own card, as ungrouped.
+    expanded_member,
+};
+
+fn toolGroupPosition(msgs: []const ai_chat.Message, index: usize) GroupPosition {
+    if (!msgs[index].groupableTool()) return .none;
+    const start = ai_chat.toolRunStart(msgs, index);
+    const in_run = index > start or (index + 1 < msgs.len and msgs[index + 1].groupableTool());
+    if (!in_run) return .none;
+    const collapsed = msgs[start].tool_group_collapsed;
+    if (index == start) return if (collapsed) .header else .expanded_first;
+    return if (collapsed) .hidden else .expanded_member;
+}
+
+fn messageBlockHeight(msgs: []const ai_chat.Message, index: usize, max_w: f32) f32 {
+    const msg = msgs[index];
+    if (rendersAsCard(msg)) {
+        return switch (toolGroupPosition(msgs, index)) {
+            .header => detailHeaderHeight(),
+            .hidden => 0,
+            .expanded_first => detailHeaderHeight() + GROUP_HEADER_GAP + toolCardHeight(msg, max_w),
+            .none, .expanded_member => toolCardHeight(msg, max_w),
+        };
+    }
     return bubbleHeight(msg.role, msg.content, max_w);
+}
+
+/// Gap below a message block. Hidden group members contribute no gap, so a
+/// collapsed group costs exactly one header row plus one BUBBLE_GAP.
+fn blockGapAfter(msgs: []const ai_chat.Message, index: usize) f32 {
+    return if (toolGroupPosition(msgs, index) == .hidden) 0 else BUBBLE_GAP;
+}
+
+fn transcriptContentHeight(msgs: []const ai_chat.Message, content_w: f32) f32 {
+    var content_h: f32 = 0;
+    for (msgs, 0..) |msg, i| {
+        content_h += messageBlockHeight(msgs, i, content_w);
+        if (msg.reasoning) |reasoning| {
+            if (reasoning.len > 0) content_h += reasoningCardHeight(msg, content_w);
+        }
+        if (msg.usage_footer) |footer| {
+            if (footer.len > 0) content_h += usageFooterHeight(footer, content_w);
+        }
+        content_h += blockGapAfter(msgs, i);
+    }
+    return content_h;
 }
 
 fn bubbleHeight(role: ai_chat.Role, text: []const u8, max_w: f32) f32 {
@@ -1034,6 +1082,43 @@ fn renderMessageBubble(
     } else {
         renderWrappedSelection(text, 0, body_x, body_top, body_w, lineHeight(), selection_range, window_height, window_height);
         _ = renderWrappedText(text, body_x, body_top, body_w, lineHeight(), fg, window_height, window_height);
+    }
+}
+
+/// One-row summary header for an activity group (a run of tool cards):
+/// "> N steps  <latest step preview>" when collapsed, "v N steps" expanded.
+fn renderToolGroupHeader(msgs: []const ai_chat.Message, start: usize, x: f32, top_px: f32, w: f32, window_height: f32, selected: bool) void {
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const accent = AppWindow.g_theme.cursor_color;
+    const h = detailHeaderHeight();
+    const y = window_height - top_px - h;
+    const header_bg = if (selected) mixColor(bg, accent, 0.28) else mixColor(bg, fg, 0.08);
+
+    var end = start;
+    while (end < msgs.len and msgs[end].groupableTool()) end += 1;
+    const collapsed = msgs[start].tool_group_collapsed;
+
+    ui_pipeline.fillQuadAlpha(x, y, w, h, header_bg, 0.98);
+    ui_pipeline.fillQuadAlpha(x, y, DETAIL_RULE_W, h, accent, if (selected) 0.78 else 0.52);
+
+    const arrow_x = x + DETAIL_PAD_X;
+    const text_y = y + @round((h - font.g_titlebar_cell_height) / 2);
+    _ = titlebar.renderTextLimited(if (collapsed) ">" else "v", arrow_x, text_y, mixColor(fg, accent, 0.16), DETAIL_ARROW_W);
+
+    var title_buf: [32]u8 = undefined;
+    const title = std.fmt.bufPrint(&title_buf, "{d} steps", .{end - start}) catch "steps";
+    var text_x = arrow_x + DETAIL_ARROW_W + 6;
+    const text_limit = x + w - DETAIL_PAD_X;
+    text_x = titlebar.renderTextLimited(title, text_x, text_y, mixColor(fg, accent, 0.18), @max(24.0, text_limit - text_x)) + 10;
+    if (collapsed and text_x + 12 < text_limit) {
+        const meta = toolSectionMeta(msgs[end - 1].content);
+        if (meta.name.len > 0 and text_x + 10 < text_limit) {
+            text_x = titlebar.renderTextLimited(meta.name, text_x, text_y, mixColor(fg, accent, 0.32), @max(24.0, text_limit - text_x)) + 10;
+        }
+        if (meta.preview.len > 0 and text_x + 12 < text_limit) {
+            _ = titlebar.renderTextLimited(meta.preview, text_x, text_y, mixColor(bg, fg, 0.58), @max(24.0, text_limit - text_x));
+        }
     }
 }
 

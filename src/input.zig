@@ -5732,6 +5732,10 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                                     chat.toggleToolMessageCollapsed(message_index);
                                     requestInputRepaint();
                                 },
+                                .toggle_tool_group => |message_index| {
+                                    chat.toggleToolGroupCollapsed(message_index);
+                                    requestInputRepaint();
+                                },
                                 .toggle_reasoning => |message_index| {
                                     chat.toggleReasoningCollapsed(message_index);
                                     requestInputRepaint();
@@ -5864,6 +5868,10 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                         .copy_span => |s| copyAiChatSpanToClipboard(chat, s.message_index, s.start, s.end),
                         .toggle_tool => |message_index| {
                             chat.toggleToolMessageCollapsed(message_index);
+                            requestInputRepaint();
+                        },
+                        .toggle_tool_group => |message_index| {
+                            chat.toggleToolGroupCollapsed(message_index);
                             requestInputRepaint();
                         },
                         .toggle_reasoning => |message_index| {

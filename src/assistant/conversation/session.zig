@@ -106,6 +106,17 @@ pub const Message = struct {
     is_context_summary: bool = false,
     reasoning_collapsed: bool = true,
     reasoning_auto_expand: bool = false,
+    /// Collapsed state of the activity group this message starts. Only read on
+    /// the first message of a run of groupable tool messages (see
+    /// `groupableTool`); the whole run renders as one header row while true.
+    tool_group_collapsed: bool = true,
+
+    /// True when this message can merge into an activity group with adjacent
+    /// tool messages: a real tool card that is not a context summary and not
+    /// live (auto-expanded messages render individually while a request runs).
+    pub fn groupableTool(self: Message) bool {
+        return self.role == .tool and !self.is_context_summary and !self.content_auto_expand;
+    }
 
     pub fn deinit(self: Message, allocator: std.mem.Allocator) void {
         allocator.free(self.content);
@@ -120,6 +131,14 @@ pub const Message = struct {
         }
     }
 };
+
+/// First index of the run of groupable tool messages containing `index`.
+/// The renderer and the group toggle both anchor group state here.
+pub fn toolRunStart(msgs: []const Message, index: usize) usize {
+    var start = index;
+    while (start > 0 and msgs[start - 1].groupableTool()) start -= 1;
+    return start;
+}
 
 pub const MarkdownExportMode = enum {
     full,
@@ -370,6 +389,7 @@ const DeferredAction = union(enum) {
     copilot_conversation_picker,
     model_switch_picker,
     export_markdown: MarkdownExportMode,
+    copy_transcript: MarkdownExportMode,
 };
 
 /// Result of running a built-in command under the lock: the (optional) history
@@ -393,7 +413,9 @@ fn fireDeferredAction(session: *Session, action: DeferredAction) void {
         .model_switch_picker => if (g_model_switch_trigger) |t| t(session),
         // Targets the session that submitted `/export` (copilot sidebar OR a tab),
         // not the active tab — they can differ.
-        .export_markdown => |mode| if (g_markdown_export_trigger) |t| t(session, mode),
+        .export_markdown => |mode| if (g_transcript_sink_triggers.export_markdown) |t| t(session, mode),
+        // Targets the session that submitted `/copy` (copilot sidebar OR a tab).
+        .copy_transcript => |mode| if (g_transcript_sink_triggers.copy) |t| t(session, mode),
     }
 }
 
@@ -406,7 +428,13 @@ var g_default_working_dir_len: usize = 0;
 var g_session_id_counter = std.atomic.Value(u64).init(1);
 var g_session_resume_trigger: ?*const fn () void = null;
 var g_copilot_picker_trigger: ?*const fn () void = null;
-var g_markdown_export_trigger: ?*const fn (*Session, MarkdownExportMode) void = null;
+/// Sinks for the rendered conversation Markdown: `/export` writes a file,
+/// `/copy` writes the clipboard. One struct to respect the g_* global ceiling.
+const TranscriptSinkTriggers = struct {
+    export_markdown: ?*const fn (*Session, MarkdownExportMode) void = null,
+    copy: ?*const fn (*Session, MarkdownExportMode) void = null,
+};
+var g_transcript_sink_triggers: TranscriptSinkTriggers = .{};
 var g_model_switch_trigger: ?*const fn (*Session) void = null;
 threadlocal var g_dynamic_tool_specs: []ai_chat_protocol.DynamicToolSpec = &.{};
 threadlocal var g_dynamic_tool_specs_owned: bool = false;
@@ -473,7 +501,14 @@ pub fn setModelSwitchTrigger(cb: ?*const fn (*Session) void) void {
 /// Markdown. Fired AFTER the session mutex unlocks, because the export reads the
 /// session under the SAME mutex (`allocMarkdownExport`) and would otherwise deadlock.
 pub fn setMarkdownExportTrigger(cb: ?*const fn (*Session, MarkdownExportMode) void) void {
-    g_markdown_export_trigger = cb;
+    g_transcript_sink_triggers.export_markdown = cb;
+}
+
+/// Wire the callback that `/copy [full|clean]` fires to put the conversation
+/// Markdown on the clipboard. Fired AFTER the session mutex unlocks, because
+/// the copy reads the session under the SAME mutex (`allocMarkdownExport`).
+pub fn setTranscriptCopyTrigger(cb: ?*const fn (*Session, MarkdownExportMode) void) void {
+    g_transcript_sink_triggers.copy = cb;
 }
 threadlocal var g_tool_host: ?ToolHost = null;
 
@@ -857,6 +892,9 @@ fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8
         // .model_switch suppresses output and defers to the picker / by-name path;
         // this path is never reached, but the arm is required for exhaustiveness.
         .model_switch => allocator.dupe(u8, ""),
+        // .copy_transcript suppresses output (the copied Markdown must not
+        // include its own progress message); this path is never reached.
+        .copy_transcript => allocator.dupe(u8, ""),
     };
 }
 
@@ -2107,6 +2145,18 @@ pub const Session = struct {
         return allocator.dupe(u8, content[s..e]);
     }
 
+    /// Toggle the collapsed state of the activity group containing
+    /// `message_index`. The state lives on the run's first message; membership
+    /// is derived per frame, so appended messages join the group automatically.
+    pub fn toggleToolGroupCollapsed(self: *Session, message_index: usize) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const msgs = self.messages.items;
+        if (message_index >= msgs.len or !msgs[message_index].groupableTool()) return;
+        const start = toolRunStart(msgs, message_index);
+        self.messages.items[start].tool_group_collapsed = !msgs[start].tool_group_collapsed;
+    }
+
     pub fn toggleToolMessageCollapsed(self: *Session, message_index: usize) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -2847,6 +2897,16 @@ pub const Session = struct {
                 .resume_picker,
             .export_markdown => result.deferred = .{
                 .export_markdown = if (std.mem.eql(u8, std.mem.trim(u8, arg, " \t\r\n"), "full")) .full else .clean,
+            },
+            .copy_transcript => {
+                // Suppress the transcript message: it would be appended before
+                // the deferred copy fires and pollute the copied Markdown.
+                result.deferred = .{
+                    .copy_transcript = if (std.mem.eql(u8, std.mem.trim(u8, arg, " \t\r\n"), "full")) .full else .clean,
+                };
+                self.clearSubmittedInputLocked();
+                if (!self.request_inflight) self.setStatusLocked("Ready");
+                result.suppress_output = true;
             },
             .loop => self.runLoopCommandLocked(.loop, arg, &result),
             .watch => self.runLoopCommandLocked(.watch, arg, &result),
@@ -5531,9 +5591,9 @@ test "ai chat slash command suggestions show and filter from input" {
     try std.testing.expectEqual(slash_command_entries.len, session.slashCommandSuggestionCount());
     try std.testing.expectEqualStrings("/skills", session.slashCommandSuggestionAt(0).?.command);
 
-    // "/c" filters to /commands, /clear, /cwd.
+    // "/c" filters to /commands, /clear, /cwd, /copy.
     session.appendInputText("c");
-    try std.testing.expectEqual(@as(usize, 3), session.slashCommandSuggestionCount());
+    try std.testing.expectEqual(@as(usize, 4), session.slashCommandSuggestionCount());
     try std.testing.expectEqualStrings("/commands", session.slashCommandSuggestionAt(0).?.command);
 }
 
@@ -5712,6 +5772,61 @@ var test_export_session: ?*Session = null;
 fn testExportHook(session: *Session, mode: MarkdownExportMode) void {
     test_export_session = session;
     test_export_mode = mode;
+}
+
+test "/copy via submit fires the transcript copy trigger with parsed mode" {
+    const a = std.testing.allocator;
+    setTranscriptCopyTrigger(testExportHook);
+    defer setTranscriptCopyTrigger(null);
+    var session = try Session.init(a, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer session.deinit();
+    test_export_mode = null;
+    test_export_session = null;
+    session.appendInputText("/copy full");
+    session.submit();
+    try std.testing.expectEqual(session, test_export_session.?);
+    try std.testing.expectEqual(MarkdownExportMode.full, test_export_mode.?);
+    // Suppressed output: /copy must not append a transcript message, or the
+    // copied Markdown would include it.
+    try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
+
+    test_export_mode = null;
+    test_export_session = null;
+    session.appendInputText("/copy");
+    session.submit();
+    try std.testing.expectEqual(MarkdownExportMode.clean, test_export_mode.?);
+}
+
+test "toolGroupCollapsed: toggle from any member flips the run's first message" {
+    const a = std.testing.allocator;
+    var session = try Session.init(a, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer session.deinit();
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
+    try session.messages.append(a, .{ .role = .tool, .content = try a.dupe(u8, "running exec one"), .content_collapsed = true });
+    try session.messages.append(a, .{ .role = .tool, .content = try a.dupe(u8, "running exec two"), .content_collapsed = true });
+    try session.messages.append(a, .{ .role = .tool, .content = try a.dupe(u8, "running exec three"), .content_collapsed = true });
+
+    // Default: the run is collapsed into a group anchored at index 1.
+    try std.testing.expect(session.messages.items[1].tool_group_collapsed);
+    try std.testing.expectEqual(@as(usize, 1), toolRunStart(session.messages.items, 3));
+
+    // Toggling via a non-first member expands the group at its start.
+    session.toggleToolGroupCollapsed(3);
+    try std.testing.expect(!session.messages.items[1].tool_group_collapsed);
+    session.toggleToolGroupCollapsed(1);
+    try std.testing.expect(session.messages.items[1].tool_group_collapsed);
+
+    // Non-groupable targets are ignored: user bubbles and live (auto-expanded)
+    // tool cards never anchor or toggle a group.
+    session.toggleToolGroupCollapsed(0);
+    try std.testing.expect(session.messages.items[1].tool_group_collapsed);
+    session.messages.items[2].content_auto_expand = true;
+    session.toggleToolGroupCollapsed(2);
+    try std.testing.expect(session.messages.items[1].tool_group_collapsed);
+    try std.testing.expect(session.messages.items[2].tool_group_collapsed);
+
+    // A live card splits the run: index 3 now anchors its own (length-1) run.
+    try std.testing.expectEqual(@as(usize, 3), toolRunStart(session.messages.items, 3));
 }
 
 test "/export via submit fires the export trigger with submitting session and parsed mode" {

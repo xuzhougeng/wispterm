@@ -175,6 +175,12 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
             exportAiChatMarkdown(session, mode);
         }
     }.cb);
+    // `/copy [full|clean]` puts the same Markdown on the clipboard instead.
+    ai_chat.setTranscriptCopyTrigger(struct {
+        fn cb(session: *ai_chat.Session, mode: ai_chat.MarkdownExportMode) void {
+            copyAiChatMarkdown(session, mode);
+        }
+    }.cb);
     // `/model [name]` switches the active session's profile (and summarizes the
     // prior context with the new model). Empty pending name => open the picker.
     ai_chat.setModelSwitchTrigger(struct {
@@ -3256,6 +3262,24 @@ fn exportAiChatMarkdown(session: *ai_chat.Session, mode: ai_chat.MarkdownExportM
         overlays.showStatusToast("Exported Markdown");
     }
     std.debug.print("Exported AI chat Markdown to {s}\n", .{path});
+}
+
+fn copyAiChatMarkdown(session: *ai_chat.Session, mode: ai_chat.MarkdownExportMode) void {
+    const allocator = g_allocator orelse return;
+
+    const markdown = session.allocMarkdownExport(allocator, mode) catch |err| {
+        log.warn("failed to render AI chat Markdown for copy: {}", .{err});
+        overlays.showStatusToast("Copy failed");
+        return;
+    };
+    defer allocator.free(markdown);
+
+    if (input.copyTextToClipboard(markdown)) {
+        overlays.showCopyToast(markdown.len);
+        g_force_rebuild = true;
+    } else {
+        overlays.showStatusToast("Copy failed");
+    }
 }
 
 pub fn currentTitlebarHeight() f32 {
