@@ -299,6 +299,7 @@ test {
     _ = @import("terminal_agents/sessions/provider_reasonix.zig");
     _ = @import("terminal_agents/sessions/source.zig");
     _ = @import("terminal_agents/sessions/cache.zig");
+    _ = @import("terminal_agents/sessions/markdown.zig");
     _ = @import("memory_digest/types.zig");
     _ = @import("memory_digest/provider_wispterm.zig");
     _ = @import("memory_digest/cursors.zig");
