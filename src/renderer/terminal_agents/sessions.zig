@@ -13,6 +13,8 @@ const SMALL_GAP: f32 = 6;
 const BUTTON_PAD_Y: f32 = 4;
 const BUTTON_EXTRA_H: f32 = 10;
 const RESUME_BUTTON_W: f32 = 104;
+const ACTION_BUTTON_W: f32 = 148;
+const ACTION_BUTTON_GAP: f32 = 8;
 /// Width of the "r Retry" affordance sharing the Status value line (right-aligned).
 const RETRY_LABEL_W: f32 = 70;
 const MAX_DATE_BUCKETS: usize = 256;
@@ -32,6 +34,9 @@ pub const Hit = union(enum) {
     none,
     refresh,
     @"resume",
+    download_raw,
+    export_markdown,
+    attach_copilot,
     search,
     category: types.CategoryFilter,
     date: ?types.DateKey,
@@ -234,6 +239,8 @@ pub fn interactionHitTest(
         if (rectContains(mx, my, layout.detail_x + PAD_X, resume_top, RESUME_BUTTON_W, buttonHeight(cell_h))) {
             return .@"resume";
         }
+        const action_hit = detailActionHit(layout, top, cell_h, mx, my);
+        if (action_hit != .none) return action_hit;
     }
 
     // The Search box spans the filter strip at the top of the list column; clicking
@@ -530,7 +537,18 @@ fn renderDetail(
     draw.fillQuadAlpha(layout.detail_x + PAD_X, yFromTop(window_height, resume_top, buttonHeight(draw.cell_h)), RESUME_BUTTON_W, buttonHeight(draw.cell_h), panel_strong, 0.72);
     _ = draw.renderTextLimited(if (can_resume) "Resume" else "Resume unavailable", layout.detail_x + PAD_X + 12, yTextFromTop(draw, window_height, y), if (can_resume) accent else muted, RESUME_BUTTON_W - 24);
 
-    y += draw.cell_h + 20;
+    const action_top = detailActionTop(top, draw.cell_h);
+    const action_h = buttonHeight(draw.cell_h);
+    const action_w = @min(ACTION_BUTTON_W, @max(1.0, layout.detail_w - PAD_X * 2));
+    const action_x = layout.detail_x + PAD_X;
+    const action_labels = [_][]const u8{ "Download Raw", "Export Markdown", "Attach to Copilot" };
+    for (action_labels, 0..) |label, i| {
+        const row_top = action_top + @as(f32, @floatFromInt(i)) * (action_h + ACTION_BUTTON_GAP);
+        draw.fillQuadAlpha(action_x, yFromTop(window_height, row_top, action_h), action_w, action_h, panel_strong, 0.72);
+        _ = draw.renderTextLimited(label, action_x + 12, yTextFromTop(draw, window_height, row_top + BUTTON_PAD_Y), accent, action_w - 24);
+    }
+
+    y = action_top + (action_h + ACTION_BUTTON_GAP) * 3 + 12;
     draw.fillQuadAlpha(layout.detail_x + PAD_X, yFromTop(window_height, y, 1), layout.detail_w - PAD_X * 2, 1, line, 0.78);
     y += 14;
 
@@ -791,6 +809,21 @@ fn resumeButtonTop(top: f32, cell_h: f32) f32 {
         (cell_h + 16) - BUTTON_PAD_Y;
 }
 
+fn detailActionTop(top: f32, cell_h: f32) f32 {
+    return resumeButtonTop(top, cell_h) + buttonHeight(cell_h) + 10;
+}
+
+fn detailActionHit(layout: Layout, top: f32, cell_h: f32, mx: f32, my: f32) Hit {
+    const left = layout.detail_x + PAD_X;
+    const h = buttonHeight(cell_h);
+    const w = @min(ACTION_BUTTON_W, @max(1.0, layout.detail_w - PAD_X * 2));
+    const y0 = detailActionTop(top, cell_h);
+    if (rectContains(mx, my, left, y0, w, h)) return .download_raw;
+    if (rectContains(mx, my, left, y0 + h + ACTION_BUTTON_GAP, w, h)) return .export_markdown;
+    if (rectContains(mx, my, left, y0 + (h + ACTION_BUTTON_GAP) * 2, w, h)) return .attach_copilot;
+    return .none;
+}
+
 /// How many DATE rows (including the pinned "All dates" row) fit between
 /// `date_rows_top` and the bottom of the left column, reserving the footer.
 pub fn dateVisibleCapacity(window_height: f32, date_rows_top: f32, cell_h: f32) usize {
@@ -906,6 +939,19 @@ test "terminal agent sessions renderer: interaction hit test maps buttons and ro
     try std.testing.expectEqual(
         Hit.@"resume",
         interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.detail_x + PAD_X + 4, resumeButtonTop(top, cell_h) + 2),
+    );
+    const action_top = detailActionTop(top, cell_h);
+    try std.testing.expectEqual(
+        Hit.download_raw,
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.detail_x + PAD_X + 4, action_top + 2),
+    );
+    try std.testing.expectEqual(
+        Hit.export_markdown,
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.detail_x + PAD_X + 4, action_top + buttonHeight(cell_h) + ACTION_BUTTON_GAP + 2),
+    );
+    try std.testing.expectEqual(
+        Hit.attach_copilot,
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.detail_x + PAD_X + 4, action_top + (buttonHeight(cell_h) + ACTION_BUTTON_GAP) * 2 + 2),
     );
     const row_hit = interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.list_x + 8, top + FILTER_H + ROW_H + 2);
     try std.testing.expectEqual(@as(usize, 4), row_hit.row);
