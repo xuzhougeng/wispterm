@@ -575,12 +575,20 @@ pub fn spawnAiChatTab(
         return false;
     };
     session.setMaxTokens(max_tokens);
-    installAiChatHistoryHook(session);
 
-    const t = allocator.create(TabState) catch {
+    if (!spawnAiChatSession(allocator, session)) {
         session.deinit();
         return false;
-    };
+    }
+    std.debug.print("New AI Chat tab spawned (count={}), active: {}\n", .{ g_tab_count, active_tab_state.g_active_tab });
+    return true;
+}
+
+pub fn spawnAiChatSession(allocator: std.mem.Allocator, session: *ai_chat.Session) bool {
+    if (g_tab_count >= MAX_TABS) return false;
+    installAiChatHistoryHook(session);
+
+    const t = allocator.create(TabState) catch return false;
     t.kind = .ai_chat;
     t.tree = .empty;
     t.focused = .root;
@@ -600,8 +608,6 @@ pub fn spawnAiChatTab(
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
     g_tab_count += 1;
-
-    std.debug.print("New AI Chat tab spawned (count={}), active: {}\n", .{ g_tab_count, active_tab_state.g_active_tab });
     return true;
 }
 
@@ -613,32 +619,11 @@ pub fn spawnAiChatTabFromHistoryRecord(allocator: std.mem.Allocator, record: age
         std.debug.print("Failed to restore AI Chat session from history\n", .{});
         return false;
     };
-    installAiChatHistoryHook(session);
 
-    const t = allocator.create(TabState) catch {
+    if (!spawnAiChatSession(allocator, session)) {
         session.deinit();
         return false;
-    };
-    t.kind = .ai_chat;
-    t.tree = .empty;
-    t.focused = .root;
-    t.ai_chat_session = session;
-    t.ai_history_session = null;
-    t.skill_center_session = null;
-    t.port_forwarding_session = null;
-    t.copilot_session = null;
-    // allocator.create returns undefined memory and struct-default values are
-    // NOT applied to field-by-field init, so these must be set explicitly or
-    // getTitle reads a garbage tmux_name_len (Phase 3c-2 fields).
-    t.tmux_window_id = null;
-    t.tmux_owner = null;
-    t.tmux_name_len = 0;
-    t.copilot_visible = false;
-
-    g_tabs[g_tab_count] = t;
-    active_tab_state.g_active_tab = g_tab_count;
-    g_tab_count += 1;
-
+    }
     std.debug.print("Restored AI Chat tab from history (count={}), active: {}\n", .{ g_tab_count, active_tab_state.g_active_tab });
     return true;
 }
@@ -2075,6 +2060,27 @@ test "tab: restoreTab skips an ai tab when no restore hook is installed" {
         .ai_session_id = "sess-xyz",
     };
     try std.testing.expect(!restoreTab(std.testing.allocator, &snap, 80, 24, .block, false));
+}
+
+test "tab: spawnAiChatSession creates active ai chat tab from owned session" {
+    const allocator = std.testing.allocator;
+    resetTestTabGlobals();
+    defer {
+        for (0..g_tab_count) |idx| {
+            if (g_tabs[idx]) |tab_state| {
+                tab_state.deinit(allocator);
+                allocator.destroy(tab_state);
+                g_tabs[idx] = null;
+            }
+        }
+        resetTestTabGlobals();
+    }
+
+    const session = try ai_chat.Session.init(allocator, "Copilot", "https://example.test", "k", "model", "system", "disabled", "low", "false", "true");
+    try std.testing.expect(spawnAiChatSession(allocator, session));
+    try std.testing.expectEqual(@as(usize, 1), g_tab_count);
+    try std.testing.expect(activeAiChat() != null);
+    try std.testing.expectEqualStrings("Copilot", activeAiChat().?.title());
 }
 
 test "tab: restoreTab routes ai_history through the restore hook" {
