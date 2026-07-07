@@ -102,6 +102,15 @@ fn freeLines(gpa: std.mem.Allocator, lines: [][]u8) void {
     gpa.free(lines);
 }
 
+/// Snap a byte offset backward to the nearest UTF-8 sequence start so a
+/// slice ending (or starting) there never splits a codepoint.
+fn snapToCharBoundary(text: []const u8, offset: usize) usize {
+    var o = offset;
+    // 0b10xxxxxx are continuation bytes; walk back to a lead byte.
+    while (o > 0 and o < text.len and (text[o] & 0b1100_0000) == 0b1000_0000) o -= 1;
+    return o;
+}
+
 /// If `text` is over `max_chars`, keeps the head 2/3 and tail 1/3 around a
 /// `\n…[截断]…\n` marker; otherwise dupes `text` unchanged.
 fn truncateMiddle(gpa: std.mem.Allocator, text: []const u8, max_chars: usize) ![]u8 {
@@ -109,10 +118,12 @@ fn truncateMiddle(gpa: std.mem.Allocator, text: []const u8, max_chars: usize) ![
     const marker = "\n…[截断]…\n";
     const head_len = (max_chars * 2) / 3;
     const tail_len = max_chars - head_len;
+    const head_end = snapToCharBoundary(text, head_len);
+    const tail_start = snapToCharBoundary(text, text.len - tail_len);
     return std.fmt.allocPrint(gpa, "{s}{s}{s}", .{
-        text[0..head_len],
+        text[0..head_end],
         marker,
-        text[text.len - tail_len ..],
+        text[tail_start..],
     });
 }
 
@@ -412,4 +423,35 @@ test "memory_digest_digest: secrets are redacted before reaching the completer" 
     const sent = stub.last_user_text[0..stub.last_user_len];
     try std.testing.expect(std.mem.indexOf(u8, sent, "sk-abc12345678") == null);
     try std.testing.expect(std.mem.indexOf(u8, sent, redact.MASK) != null);
+}
+
+test "memory_digest_digest: UTF-8 truncation snaps to char boundaries" {
+    var stub = StubCompleter{ .responses = &.{
+        "{\"summary\":\"s\",\"topics\":[],\"outcome\":\"unknown\",\"artifacts\":[]}",
+    } };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const gpa = std.testing.allocator;
+    // Build a 3000-char message of '中' (each '中' is 3 bytes in UTF-8: E4 B8 AD)
+    // Total = 3000 * 3 = 9000 bytes
+    const big = try gpa.alloc(u8, 9000);
+    defer gpa.free(big);
+    var i: usize = 0;
+    while (i < 9000) : (i += 3) {
+        big[i] = 0xE4;
+        big[i + 1] = 0xB8;
+        big[i + 2] = 0xAD;
+    }
+
+    var messages = [_]ai_types.TranscriptMessage{
+        .{ .role = .user, .content = big },
+    };
+    _ = try summarizeSession(arena.allocator(), gpa, stub.completer(), testSession(&messages), null, .{ .max_chars_per_message = 2000 });
+
+    const sent = stub.last_user_text[0..stub.last_user_len];
+    // Verify the result is valid UTF-8
+    try std.testing.expect(std.unicode.utf8ValidateSlice(sent) == true);
+    // Verify the truncation marker is present
+    try std.testing.expect(std.mem.indexOf(u8, sent, "…[截断]…") != null);
 }
