@@ -121,7 +121,7 @@ fn appendLayoutJson(host: Host, allocator: std.mem.Allocator, out: *std.ArrayLis
             try out.appendSlice(allocator, ",\"cursorY\":");
             try out.print(allocator, "{d}", .{cursor_y});
             try out.appendSlice(allocator, ",\"snapshot\":\"");
-            const snapshot = surface_snapshots.buildRemoteSurfaceSnapshot(allocator, entry.surface, remote_snapshot.default_max_history_rows) catch null;
+            const snapshot = surface_snapshots.buildRemoteSurfaceSnapshotWithModes(allocator, entry.surface, remote_snapshot.default_max_history_rows) catch null;
             defer if (snapshot) |text| allocator.free(text);
             if (snapshot) |text| try remote.appendJsonString(out, allocator, text);
             try out.append(allocator, '"');
