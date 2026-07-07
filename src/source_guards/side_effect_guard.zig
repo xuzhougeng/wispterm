@@ -19,12 +19,11 @@ const Frozen = struct {
     ceiling: usize,
 };
 
-// Verified against the post-round-1 tree: every direct-write ceiling here
-// already equals the current actual (AppWindow 57, input 81, overlays 12,
-// assistant/conversation/session.zig 0), so there is no slack to ratchet away
-// this round.
+// Ratchet ceilings for watched files (AppWindow 56, input 81, overlays 12,
+// assistant/conversation/session.zig 0). Lower a ceiling only when direct
+// writes are removed.
 const monoliths = [_]Frozen{
-    .{ .name = "AppWindow.zig", .source = @embedFile("../AppWindow.zig"), .ceiling = 57 },
+    .{ .name = "AppWindow.zig", .source = @embedFile("../AppWindow.zig"), .ceiling = 56 },
     .{ .name = "input.zig", .source = @embedFile("../input.zig"), .ceiling = 81 },
     .{ .name = "renderer/overlays.zig", .source = @embedFile("../renderer/overlays.zig"), .ceiling = 12 },
     .{ .name = "assistant/conversation/session.zig", .source = @embedFile("../assistant/conversation/session.zig"), .ceiling = 0 },

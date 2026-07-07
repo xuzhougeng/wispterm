@@ -50,6 +50,7 @@ pub const ai_chat = @import("assistant/conversation/session.zig");
 const ai_chat_types = @import("assistant/conversation/types.zig");
 const ai_history_cache = @import("terminal_agents/sessions/cache.zig");
 const ai_history_resume = @import("terminal_agents/sessions/resume.zig");
+const ai_history_markdown = @import("terminal_agents/sessions/markdown.zig");
 const ai_loop_store = @import("assistant/loop/store.zig");
 const ai_history_types = @import("terminal_agents/sessions/types.zig");
 const ai_history_session = @import("terminal_agents/sessions/session.zig");
@@ -3082,6 +3083,64 @@ fn startAiHistoryTranscript(allocator: std.mem.Allocator, session: *ai_history_s
     });
 }
 
+fn selectedAiHistoryMetaForAction(allocator: std.mem.Allocator, session: *ai_history_session.Session) ?ai_history_types.SessionMeta {
+    return session.selectedMetadataClone(allocator);
+}
+
+fn loadAiHistoryTranscriptForAction(
+    allocator: std.mem.Allocator,
+    session: *ai_history_session.Session,
+    meta: ai_history_types.SessionMeta,
+) ?[]ai_history_types.TranscriptMessage {
+    session.mutex.lock();
+    if (session.transcript_state == .ready and session.transcript_provider != null and session.transcript_provider.? == meta.provider) {
+        const cloned = cloneAiHistoryTranscriptMessages(allocator, session.transcript) catch null;
+        session.mutex.unlock();
+        return cloned;
+    }
+    session.mutex.unlock();
+
+    const target = aiHistoryTargetSnapshot(session.source.target) orelse return null;
+    const messages: []ai_history_types.TranscriptMessage = switch (target) {
+        .local => ai_history_session.loadLocalTranscript(allocator, meta) catch return null,
+        .wsl => blk: {
+            var host_state = ai_history_session.WslScannerHost{};
+            const host = host_state.scannerHost();
+            break :blk host.loadTranscript(host.ctx, allocator, meta) catch return null;
+        },
+        .ssh => |conn| blk: {
+            var host_state = ai_history_session.SshScannerHost{ .conn = conn };
+            const host = host_state.scannerHost();
+            break :blk host.loadTranscript(host.ctx, allocator, meta) catch return null;
+        },
+    };
+
+    const preview_copy = cloneAiHistoryTranscriptMessages(allocator, messages) catch null;
+    if (preview_copy) |copy| session.replaceTranscriptFromMessages(meta.provider, copy);
+    return messages;
+}
+
+fn cloneAiHistoryTranscriptMessages(
+    allocator: std.mem.Allocator,
+    messages: []const ai_history_types.TranscriptMessage,
+) ![]ai_history_types.TranscriptMessage {
+    const cloned = try allocator.alloc(ai_history_types.TranscriptMessage, messages.len);
+    var initialized: usize = 0;
+    errdefer {
+        while (initialized > 0) {
+            initialized -= 1;
+            allocator.free(cloned[initialized].content);
+        }
+        allocator.free(cloned);
+    }
+    for (messages) |msg| {
+        cloned[initialized] = msg;
+        cloned[initialized].content = try allocator.dupe(u8, msg.content);
+        initialized += 1;
+    }
+    return cloned;
+}
+
 pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
     const session = activeAiHistory() orelse return false;
     const win = g_window orelse return true;
@@ -3123,8 +3182,16 @@ pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
             markUiDirty();
             return true;
         },
-        .download_raw, .export_markdown, .attach_copilot => {
-            markUiDirty();
+        .download_raw => {
+            _ = aiHistoryDownloadSelectedRaw();
+            return true;
+        },
+        .export_markdown => {
+            _ = aiHistoryExportSelectedMarkdown();
+            return true;
+        },
+        .attach_copilot => {
+            _ = aiHistoryAttachSelectedToCopilot();
             return true;
         },
         .category => |cat| {
@@ -3224,6 +3291,153 @@ fn localHomeForAiHistory(allocator: std.mem.Allocator) ![]u8 {
     return error.NoHomeDirectory;
 }
 
+fn showAiHistoryActionToast(message: []const u8) bool {
+    overlays.showStatusToast(message);
+    markUiDirty();
+    return true;
+}
+
+fn showNoAiHistorySelectionForAction() bool {
+    return showAiHistoryActionToast("No AI History session selected");
+}
+
+pub fn aiHistoryDownloadSelectedRaw() bool {
+    const allocator = g_allocator orelse return false;
+    const session = activeAiHistory() orelse return showNoAiHistorySelectionForAction();
+    const meta = selectedAiHistoryMetaForAction(allocator, session) orelse return showNoAiHistorySelectionForAction();
+    defer ai_history_session.freeMetadata(allocator, meta);
+
+    const path = chooseAiHistoryRawDownloadPath(allocator, meta) catch |err| {
+        log.warn("failed to choose AI history raw download path for {s}: {}", .{ meta.session_id, err });
+        return showAiHistoryActionToast("Raw download failed");
+    } orelse {
+        markUiDirty();
+        return true;
+    };
+    defer allocator.free(path);
+
+    var filename_buf: [180]u8 = undefined;
+    const filename = ai_history_markdown.rawDownloadFilename(meta, &filename_buf);
+
+    switch (session.source.target) {
+        .local => {
+            const bytes = readLocalAiHistoryRaw(allocator, meta.source_path) catch |err| {
+                log.warn("failed to read local AI history raw file {s}: {}", .{ meta.source_path, err });
+                return showAiHistoryActionToast("Raw download failed");
+            };
+            defer allocator.free(bytes);
+            return writeAiHistoryRawDownload(path, bytes);
+        },
+        .wsl => {
+            const bytes = readWslAiHistoryRaw(allocator, meta.source_path) catch |err| {
+                log.warn("failed to read WSL AI history raw file {s}: {}", .{ meta.source_path, err });
+                return showAiHistoryActionToast("Raw download failed");
+            };
+            defer allocator.free(bytes);
+            return writeAiHistoryRawDownload(path, bytes);
+        },
+        .ssh => |ssh| {
+            const conn = overlays.aiHistorySshConnection(ssh.profile_name) orelse {
+                return showAiHistoryActionToast("Raw download failed");
+            };
+            if (!file_explorer.downloadRemotePathToPath(meta.source_path, path, filename, &conn, false)) {
+                return showAiHistoryActionToast("Raw download failed");
+            }
+            markUiDirty();
+            return true;
+        },
+    }
+}
+
+fn writeAiHistoryRawDownload(path: []const u8, bytes: []const u8) bool {
+    writeFilePath(path, bytes) catch |err| {
+        log.warn("failed to write AI history raw download {s}: {}", .{ path, err });
+        return showAiHistoryActionToast("Raw download failed");
+    };
+    if (input.copyTextToClipboard(path)) {
+        return showAiHistoryActionToast("Downloaded raw file; path copied");
+    }
+    return showAiHistoryActionToast("Downloaded raw file");
+}
+
+pub fn aiHistoryExportSelectedMarkdown() bool {
+    const allocator = g_allocator orelse return false;
+    const session = activeAiHistory() orelse return showNoAiHistorySelectionForAction();
+    const meta = selectedAiHistoryMetaForAction(allocator, session) orelse return showNoAiHistorySelectionForAction();
+    defer ai_history_session.freeMetadata(allocator, meta);
+
+    const messages = loadAiHistoryTranscriptForAction(allocator, session, meta) orelse {
+        return showAiHistoryActionToast("Markdown export failed");
+    };
+    defer ai_history_session.freeTranscript(allocator, meta.provider, messages);
+
+    const markdown = ai_history_markdown.allocMarkdownExport(allocator, meta, messages, .{}) catch |err| {
+        log.warn("failed to render AI history Markdown export for {s}: {}", .{ meta.session_id, err });
+        return showAiHistoryActionToast("Markdown export failed");
+    };
+    defer allocator.free(markdown);
+
+    const path = chooseAiHistoryMarkdownExportPath(allocator, meta) catch |err| {
+        log.warn("failed to choose AI history Markdown export path for {s}: {}", .{ meta.session_id, err });
+        return showAiHistoryActionToast("Markdown export failed");
+    } orelse {
+        markUiDirty();
+        return true;
+    };
+    defer allocator.free(path);
+
+    writeFilePath(path, markdown) catch |err| {
+        log.warn("failed to write AI history Markdown export {s}: {}", .{ path, err });
+        return showAiHistoryActionToast("Markdown export failed");
+    };
+
+    if (input.copyTextToClipboard(path)) {
+        return showAiHistoryActionToast("Exported AI History Markdown; path copied");
+    }
+    return showAiHistoryActionToast("Exported AI History Markdown");
+}
+
+pub fn aiHistoryAttachSelectedToCopilot() bool {
+    const allocator = g_allocator orelse return false;
+    const session = activeAiHistory() orelse return showNoAiHistorySelectionForAction();
+    const meta = selectedAiHistoryMetaForAction(allocator, session) orelse return showNoAiHistorySelectionForAction();
+    defer ai_history_session.freeMetadata(allocator, meta);
+
+    const messages = loadAiHistoryTranscriptForAction(allocator, session, meta) orelse {
+        return showAiHistoryActionToast("Attach failed");
+    };
+    defer ai_history_session.freeTranscript(allocator, meta.provider, messages);
+
+    var context = ai_history_markdown.allocCopilotContext(allocator, meta, messages, 48 * 1024) catch |err| {
+        log.warn("failed to render AI history Copilot context for {s}: {}", .{ meta.session_id, err });
+        return showAiHistoryActionToast("Attach failed");
+    };
+    defer context.deinit(allocator);
+
+    const target = ensureAiHistoryCopilotTarget() orelse {
+        return showAiHistoryActionToast("Attach failed");
+    };
+    const title_text = std.fmt.allocPrint(
+        allocator,
+        "AI History: {s} {s}",
+        .{ meta.provider.label(), meta.session_id },
+    ) catch |err| {
+        log.warn("failed to build AI history Copilot context title for {s}: {}", .{ meta.session_id, err });
+        return showAiHistoryActionToast("Attach failed");
+    };
+    defer allocator.free(title_text);
+
+    target.appendContextCard(title_text, context.markdown, true) catch |err| {
+        log.warn("failed to attach AI history context to Copilot for {s}: {}", .{ meta.session_id, err });
+        return showAiHistoryActionToast("Attach failed");
+    };
+
+    if (context.truncated) {
+        return showAiHistoryActionToast("Attached AI History to Copilot; truncated");
+    }
+    return showAiHistoryActionToast("Attached AI History to Copilot");
+}
+
 fn activeMarkdownExportSession() ?*ai_chat.Session {
     if (activeAiChat()) |session| return session;
     return activeCopilotSessionForInput();
@@ -3280,7 +3494,7 @@ fn copyAiChatMarkdown(session: *ai_chat.Session, mode: ai_chat.MarkdownExportMod
 
     if (input.copyTextToClipboard(markdown)) {
         overlays.showCopyToast(markdown.len);
-        g_force_rebuild = true;
+        markUiDirty();
     } else {
         overlays.showStatusToast("Copy failed");
     }
@@ -3337,6 +3551,19 @@ fn makeCopilotSession() ?*ai_chat.Session {
 
 fn ensureActiveCopilotSession() ?*ai_chat.Session {
     return copilot_sidebar.ensureActiveSession(copilotSidebarHost());
+}
+
+fn ensureAiHistoryCopilotTarget() ?*ai_chat.Session {
+    if (activeAiChat()) |session| return session;
+    if (activeCopilotSessionForInput()) |session| return session;
+    const allocator = g_allocator orelse return null;
+    const session = makeCopilotSession() orelse return null;
+    if (!tab.spawnAiChatSession(allocator, session)) {
+        session.deinit();
+        return null;
+    }
+    clearUiStateOnTabChange();
+    return activeAiChat();
 }
 
 fn openCopilotApiConfig(session: ?*ai_chat.Session) void {
@@ -3484,8 +3711,58 @@ fn chooseAiChatMarkdownExportPath(
     return saveMarkdownDialogPath(allocator, root, filename);
 }
 
+fn chooseAiHistoryMarkdownExportPath(
+    allocator: std.mem.Allocator,
+    meta: ai_history_types.SessionMeta,
+) !?[]u8 {
+    const root = try aiChatExportRoot(allocator);
+    defer allocator.free(root);
+    std.fs.cwd().makePath(root) catch |err| {
+        log.warn("failed to create AI history export directory {s}: {}", .{ root, err });
+    };
+    var safe_buf: [180]u8 = undefined;
+    const raw = ai_history_markdown.rawDownloadFilename(meta, &safe_buf);
+    const filename = try std.fmt.allocPrint(allocator, "ai-history-{s}.md", .{std.fs.path.stem(raw)});
+    defer allocator.free(filename);
+    return saveMarkdownDialogPathWithTitle(allocator, "Save AI History Markdown", root, filename);
+}
+
+fn chooseAiHistoryRawDownloadPath(
+    allocator: std.mem.Allocator,
+    meta: ai_history_types.SessionMeta,
+) !?[]u8 {
+    const root = platform_dirs.downloadsDir(allocator) catch try aiChatExportRoot(allocator);
+    defer allocator.free(root);
+    var filename_buf: [180]u8 = undefined;
+    const filename = ai_history_markdown.rawDownloadFilename(meta, &filename_buf);
+    const filters = [_]platform_file_dialog.Filter{.{ .name = "All Files (*.*)", .pattern = "*.*" }};
+    const owner: platform_file_dialog.Owner = if (g_window) |w|
+        platform_file_dialog.windowOwner(window_backend.nativeHandleBits(w))
+    else
+        .{};
+    return platform_file_dialog.saveFile(allocator, .{
+        .owner = owner,
+        .title = "Save AI History Raw File",
+        .initial_dir = root,
+        .default_filename = filename,
+        .filters = &filters,
+    }) orelse {
+        overlays.showStatusToast("Raw download cancelled");
+        return null;
+    };
+}
+
 fn saveMarkdownDialogPath(
     allocator: std.mem.Allocator,
+    initial_dir: []const u8,
+    default_filename: []const u8,
+) !?[]u8 {
+    return saveMarkdownDialogPathWithTitle(allocator, "Save Copilot Markdown", initial_dir, default_filename);
+}
+
+fn saveMarkdownDialogPathWithTitle(
+    allocator: std.mem.Allocator,
+    title_text: []const u8,
     initial_dir: []const u8,
     default_filename: []const u8,
 ) !?[]u8 {
@@ -3499,7 +3776,7 @@ fn saveMarkdownDialogPath(
         .{};
     const path = platform_file_dialog.saveFile(allocator, .{
         .owner = owner,
-        .title = "Save Copilot Markdown",
+        .title = title_text,
         .initial_dir = initial_dir,
         .default_filename = default_filename,
         .default_extension = "md",
@@ -3513,6 +3790,21 @@ fn saveMarkdownDialogPath(
 
 fn writeFilePath(path: []const u8, bytes: []const u8) !void {
     try platform_atomic_file.writeFileReplaceSafe(path, bytes);
+}
+
+fn readLocalAiHistoryRaw(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(path)) {
+        const file = try std.fs.openFileAbsolute(path, .{});
+        defer file.close();
+        return try file.readToEndAlloc(allocator, ai_history_session.MAX_METADATA_FILE_BYTES);
+    }
+    return try std.fs.cwd().readFileAlloc(allocator, path, ai_history_session.MAX_METADATA_FILE_BYTES);
+}
+
+fn readWslAiHistoryRaw(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var command_buf: [2048]u8 = undefined;
+    const command = try ai_history_session.remoteCatCommand(path, command_buf[0..]);
+    return remote_file.wslExec(allocator, command) orelse error.RemoteExecFailed;
 }
 
 fn syncWindowTitlebarHeight(win: *window_backend.Window) f32 {
