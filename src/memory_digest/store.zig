@@ -190,6 +190,64 @@ pub fn upsertProject(gpa: std.mem.Allocator, memory_root: []const u8, slug: []co
     try writeJson(gpa, path, proj);
 }
 
+pub const SourceStatus = struct {
+    source_id: []const u8,
+    status: []const u8 = "ok", // "ok" | "skipped" | "failed"
+    detail: []const u8 = "",
+    sessions_collected: u32 = 0,
+};
+
+pub const RunRecord = struct {
+    started_at: i64,
+    finished_at: i64 = 0,
+    status: []const u8 = "ok", // "ok" | "partial" | "failed"
+    sources: []const SourceStatus = &.{},
+    sessions_summarized: u32 = 0,
+    sessions_failed: u32 = 0,
+    llm_calls: u32 = 0,
+};
+
+const MAX_RUNS_STORE_BYTES = 16 * 1024 * 1024;
+const MAX_RUNS_KEPT = 60;
+
+/// Read `state/runs.json` (missing/corrupt → empty), append `rec`, keep only
+/// the most recent MAX_RUNS_KEPT entries, and write back atomically. Mirrors
+/// SummaryStore's lenient-readback shape.
+pub fn appendRunRecord(gpa: std.mem.Allocator, memory_root: []const u8, rec: RunRecord) !void {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const dir = try std.fs.path.join(arena, &.{ memory_root, "state" });
+    try std.fs.cwd().makePath(dir);
+    const path = try std.fs.path.join(arena, &.{ dir, "runs.json" });
+
+    const FileShape = struct {
+        schema_version: u32 = SCHEMA_VERSION,
+        runs: []const RunRecord = &.{},
+    };
+
+    var existing: []const RunRecord = &.{};
+    if (std.fs.cwd().readFileAlloc(arena, path, MAX_RUNS_STORE_BYTES)) |bytes| {
+        if (std.json.parseFromSlice(FileShape, arena, bytes, .{
+            .ignore_unknown_fields = true,
+        })) |parsed| {
+            existing = parsed.value.runs; // arena-owned; no deinit needed
+        } else |_| {}
+    } else |_| {}
+
+    var runs: std.ArrayListUnmanaged(RunRecord) = .empty;
+    try runs.appendSlice(arena, existing);
+    try runs.append(arena, rec);
+
+    const items = if (runs.items.len > MAX_RUNS_KEPT)
+        runs.items[runs.items.len - MAX_RUNS_KEPT ..]
+    else
+        runs.items;
+
+    try writeJson(gpa, path, FileShape{ .runs = items });
+}
+
 const MAX_SUMMARY_STORE_BYTES = 16 * 1024 * 1024;
 
 pub const SummaryRecord = struct {
@@ -462,6 +520,79 @@ test "memory_digest_store: SummaryStore save and load roundtrip" {
     try std.testing.expectEqualStrings("did the thing", rec.summary);
     try std.testing.expectEqual(@as(usize, 2), rec.topics.len);
     try std.testing.expectEqualStrings("pr", rec.artifacts[0].type);
+}
+
+test "memory_digest_store: appendRunRecord creates, appends, then truncates to 60" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    try appendRunRecord(allocator, root, .{ .started_at = 1, .status = "ok" });
+    {
+        const bytes = try tmp.dir.readFileAlloc(allocator, "state/runs.json", 1 << 20);
+        defer allocator.free(bytes);
+        const parsed = try std.json.parseFromSlice(struct {
+            runs: []const RunRecord = &.{},
+        }, allocator, bytes, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        try std.testing.expectEqual(@as(usize, 1), parsed.value.runs.len);
+        try std.testing.expectEqual(@as(i64, 1), parsed.value.runs[0].started_at);
+    }
+
+    try appendRunRecord(allocator, root, .{ .started_at = 2, .status = "failed" });
+    {
+        const bytes = try tmp.dir.readFileAlloc(allocator, "state/runs.json", 1 << 20);
+        defer allocator.free(bytes);
+        const parsed = try std.json.parseFromSlice(struct {
+            runs: []const RunRecord = &.{},
+        }, allocator, bytes, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        try std.testing.expectEqual(@as(usize, 2), parsed.value.runs.len);
+        try std.testing.expectEqual(@as(i64, 1), parsed.value.runs[0].started_at);
+        try std.testing.expectEqual(@as(i64, 2), parsed.value.runs[1].started_at);
+    }
+
+    // Append 59 more (total 61) → must truncate to the most recent 60, i.e.
+    // started_at values 2..61 (the very first record, started_at=1, drops).
+    var i: i64 = 3;
+    while (i <= 61) : (i += 1) {
+        try appendRunRecord(allocator, root, .{ .started_at = i, .status = "ok" });
+    }
+    {
+        const bytes = try tmp.dir.readFileAlloc(allocator, "state/runs.json", 1 << 20);
+        defer allocator.free(bytes);
+        const parsed = try std.json.parseFromSlice(struct {
+            runs: []const RunRecord = &.{},
+        }, allocator, bytes, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        try std.testing.expectEqual(@as(usize, 60), parsed.value.runs.len);
+        try std.testing.expectEqual(@as(i64, 2), parsed.value.runs[0].started_at);
+        try std.testing.expectEqual(@as(i64, 61), parsed.value.runs[parsed.value.runs.len - 1].started_at);
+    }
+}
+
+test "memory_digest_store: appendRunRecord rebuilds from a corrupt runs.json" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    try tmp.dir.makePath("state");
+    try tmp.dir.writeFile(.{ .sub_path = "state/runs.json", .data = "{\"schema_version\":1,\"runs\":[{brok" });
+
+    try appendRunRecord(allocator, root, .{ .started_at = 42, .status = "ok" });
+
+    const bytes = try tmp.dir.readFileAlloc(allocator, "state/runs.json", 1 << 20);
+    defer allocator.free(bytes);
+    const parsed = try std.json.parseFromSlice(struct {
+        runs: []const RunRecord = &.{},
+    }, allocator, bytes, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.runs.len);
+    try std.testing.expectEqual(@as(i64, 42), parsed.value.runs[0].started_at);
 }
 
 test "memory_digest_store: SummaryStore missing or corrupt file loads empty" {

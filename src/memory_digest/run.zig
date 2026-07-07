@@ -33,6 +33,25 @@ pub const Summary = struct {
     days_written: usize = 0,
     sessions_summarized: usize = 0,
     sessions_failed: usize = 0,
+    llm_calls: usize = 0,
+};
+
+/// Wraps an `llm.Completer` to count calls for run observability
+/// (store.RunRecord.llm_calls). runOnce is single-threaded, so a plain
+/// counter is enough — no atomics needed.
+const CountingCompleter = struct {
+    inner: llm.Completer,
+    count: usize = 0,
+
+    fn completer(self: *CountingCompleter) llm.Completer {
+        return .{ .ctx = self, .completeFn = complete };
+    }
+
+    fn complete(ctx: *anyopaque, gpa: std.mem.Allocator, system_prompt: []const u8, user_text: []const u8) anyerror![]u8 {
+        const self: *CountingCompleter = @ptrCast(@alignCast(ctx));
+        self.count += 1;
+        return self.inner.complete(gpa, system_prompt, user_text);
+    }
 };
 
 /// Owning bundle for `defaultLocalRoots`'s three gpa-allocated paths, freed
@@ -82,10 +101,46 @@ pub fn defaultLocalRoots(gpa: std.mem.Allocator) !OwnedLocalRoots {
     };
 }
 
+/// Appends a RunRecord for this run (spec M3 Task 1). Only one source
+/// ("local") is tracked so far; M3 Task 3 expands sources[] to real
+/// multi-source status. A write failure here must never change runOnce's
+/// own result, so it's logged and swallowed.
+fn recordRun(
+    gpa: std.mem.Allocator,
+    memory_root: []const u8,
+    started_at: i64,
+    status: []const u8,
+    detail: []const u8,
+    sessions_collected: usize,
+    sessions_summarized: usize,
+    sessions_failed: usize,
+    llm_calls: usize,
+) void {
+    const rec: store.RunRecord = .{
+        .started_at = started_at,
+        .finished_at = std.time.milliTimestamp(),
+        .status = status,
+        .sources = &.{.{
+            .source_id = "local",
+            .status = status,
+            .detail = detail,
+            .sessions_collected = @intCast(sessions_collected),
+        }},
+        .sessions_summarized = @intCast(sessions_summarized),
+        .sessions_failed = @intCast(sessions_failed),
+        .llm_calls = @intCast(llm_calls),
+    };
+    store.appendRunRecord(gpa, memory_root, rec) catch |err| {
+        std.log.warn("memory_digest: appendRunRecord failed: {s}", .{@errorName(err)});
+    };
+}
+
 pub fn runOnce(gpa: std.mem.Allocator, opts: Options) !Summary {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
+
+    const started_at = opts.now_ms;
 
     const state_dir = try std.fs.path.join(arena, &.{ opts.memory_root, "state" });
     try std.fs.cwd().makePath(state_dir);
@@ -103,7 +158,16 @@ pub fn runOnce(gpa: std.mem.Allocator, opts: Options) !Summary {
     defer collected.deinit();
 
     if (opts.completer) |completer| {
-        return runOnceWithLlm(gpa, arena, opts, completer, &collected, &cur, cursors_path);
+        var counting: CountingCompleter = .{ .inner = completer };
+        if (runOnceWithLlm(gpa, arena, opts, counting.completer(), &collected, &cur, cursors_path)) |summary| {
+            recordRun(gpa, opts.memory_root, started_at, "ok", "", collected.sessions.len, summary.sessions_summarized, summary.sessions_failed, counting.count);
+            var s = summary;
+            s.llm_calls = counting.count;
+            return s;
+        } else |err| {
+            recordRun(gpa, opts.memory_root, started_at, "failed", @errorName(err), collected.sessions.len, 0, 0, counting.count);
+            return err;
+        }
     }
 
     // M1: cursor advancement is unconditional here (equivalent to the old
@@ -152,6 +216,7 @@ pub fn runOnce(gpa: std.mem.Allocator, opts: Options) !Summary {
     try writeIndexFromDisk(gpa, arena, opts.memory_root, opts.now_ms);
     try cur.saveToPath(gpa, cursors_path);
 
+    recordRun(gpa, opts.memory_root, started_at, "ok", "", collected.sessions.len, 0, 0, 0);
     return .{
         .sessions_collected = collected.sessions.len,
         .days_written = day_keys.items.len,
