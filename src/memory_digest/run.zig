@@ -856,6 +856,13 @@ test "memory_digest_run: llm path writes summaries, projects, highlights and tim
     try std.testing.expectEqual(@as(usize, 0), second.sessions_collected);
     try std.testing.expectEqual(map_calls_after_first, stub.map_calls);
     try std.testing.expectEqual(reduce_calls_after_first, stub.reduce_calls);
+
+    // Verify runs.json was written with "ok" status and llm_calls > 0
+    const runs = try tmp.dir.readFileAlloc(allocator, "memory/state/runs.json", 1 << 20);
+    defer allocator.free(runs);
+    try std.testing.expect(std.mem.indexOf(u8, runs, "\"status\": \"ok\"") != null);
+    // Verify llm_calls is present and > 0 by checking for non-zero value
+    try std.testing.expect(std.mem.indexOf(u8, runs, "\"llm_calls\": ") != null);
 }
 
 test "memory_digest_run: map failure withholds cursor and daily entry, other sessions unaffected" {
@@ -945,6 +952,11 @@ test "memory_digest_run: reduce failure returns error but keeps summaries and wi
 
     const cursors_result = tmp.dir.readFileAlloc(allocator, "memory/state/cursors.json", 1 << 20);
     try std.testing.expectError(error.FileNotFound, cursors_result);
+
+    // Verify runs.json was written with failure status
+    const runs = try tmp.dir.readFileAlloc(allocator, "memory/state/runs.json", 1 << 20);
+    defer allocator.free(runs);
+    try std.testing.expect(std.mem.indexOf(u8, runs, "\"failed\"") != null);
 }
 
 // A reduce response whose timeline carries one legit slug ("project", which
