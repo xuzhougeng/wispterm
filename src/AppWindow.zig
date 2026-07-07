@@ -80,6 +80,7 @@ const i18n = @import("i18n.zig");
 pub const tab = @import("appwindow/tab.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
 const tmux_controller = @import("appwindow/tmux_controller.zig");
+const memory_digest_scheduler = @import("memory_digest/scheduler.zig");
 pub const font = @import("font/manager.zig");
 pub const cell_renderer = @import("renderer/cell_renderer.zig");
 const cell_pipeline = @import("renderer/cell_pipeline.zig");
@@ -4749,6 +4750,13 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     overlays.setSubagentProfileName(cfg.@"ai-subagent-profile");
     @import("research/web_search.zig").setJinaApiKey(cfg.@"jina-api-key");
     @import("pty.zig").setConsoleHostPreference(cfg.@"windows-conpty");
+    memory_digest_scheduler.updateSettings(.{
+        .enabled = cfg.@"memory-digest-enabled",
+        .profile_name = cfg.@"memory-digest-profile",
+        .run_after = cfg.@"memory-digest-run-after",
+        .backfill_days = cfg.@"memory-digest-backfill-days",
+        .max_chars = cfg.@"memory-digest-max-chars",
+    });
 
     if (g_window == null) return;
     g_quake_mode = cfg.@"quake-mode";
@@ -6878,6 +6886,7 @@ fn runMainLoop(self: *AppWindow) !void {
         g_loop_iter +%= 1; // tag each iteration so the latency probe can tell same-iteration paints from stalls
         // Check for config file changes
         if (config_watcher) |*w| checkConfigReload(allocator, w);
+        memory_digest_scheduler.tick(allocator);
         tmux_controller.tickAll(allocator, term_cols, term_rows);
         overlays.tickSessionLauncher();
         overlays.tickQuickAiVerify();
@@ -7439,6 +7448,7 @@ fn runMainLoop(self: *AppWindow) !void {
 
     // Clean up file explorer async state (join background thread, free job)
     file_explorer.deinit();
+    memory_digest_scheduler.deinit();
     weixin_qr_renderer.deinit();
     weixin_qr_panel.deinit();
     feishu_reg_renderer.deinit();

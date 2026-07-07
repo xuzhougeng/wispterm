@@ -21,6 +21,24 @@ const TICK_INTERVAL_MS: i64 = 60_000;
 const STARTUP_DELAY_MS: i64 = 5 * 60 * 1000;
 const MAX_LAST_RUN_BYTES = 64 * 1024;
 
+// ponytail: dev-only override so real-machine verification doesn't require
+// waiting out the real 5-minute startup delay. Read once (cached) from
+// WISPTERM_MEMORY_DIGEST_STARTUP_DELAY_MS; unset/invalid -> default 5min.
+// Product default (STARTUP_DELAY_MS) is unchanged; do not rely on this for
+// normal operation.
+var g_startup_delay_ms: ?i64 = null;
+fn startupDelayMs() i64 {
+    if (g_startup_delay_ms) |v| return v;
+    const v = readStartupDelayOverride();
+    g_startup_delay_ms = v;
+    return v;
+}
+fn readStartupDelayOverride() i64 {
+    const env = std.process.getEnvVarOwned(std.heap.page_allocator, "WISPTERM_MEMORY_DIGEST_STARTUP_DELAY_MS") catch return STARTUP_DELAY_MS;
+    defer std.heap.page_allocator.free(env);
+    return std.fmt.parseInt(i64, env, 10) catch STARTUP_DELAY_MS;
+}
+
 pub const Settings = struct {
     enabled: bool = false,
     profile_name: []const u8 = "", // borrowed; updateSettings dupes it
@@ -135,7 +153,7 @@ pub fn parseRunAfterMinutes(s: []const u8) ?u16 {
 /// (local date), (b) local wall-clock has passed run_after, and (c) the app
 /// has been up at least 5 minutes (avoid competing with startup I/O).
 pub fn shouldRun(now_ms: i64, tz_offset_seconds: i32, run_after_minutes: u16, last_run_date_key: u32, app_started_ms: i64) bool {
-    if (now_ms - app_started_ms < STARTUP_DELAY_MS) return false;
+    if (now_ms - app_started_ms < startupDelayMs()) return false;
 
     const today_key = ai_types.dateKeyFromMs(now_ms, tz_offset_seconds);
     if (today_key == last_run_date_key) return false;
