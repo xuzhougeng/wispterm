@@ -169,11 +169,16 @@ fn collectAllSources(
 
     for (opts.remote_sources) |rs| {
         const before = out.items.len;
-        if (remote.collectRemote(gpa, arena, out, rs.source_id, rs.host, cur, min_mtime_ns, .{})) |_| {
+        if (remote.collectRemote(gpa, arena, out, rs.source_id, rs.host, cur, min_mtime_ns, .{})) |r| {
+            const detail = if (r.oversize_skipped > 0)
+                try std.fmt.allocPrint(arena, "oversize_skipped={d}", .{r.oversize_skipped})
+            else
+                "";
             try sources.append(arena, .{
                 .source_id = rs.source_id,
                 .status = "ok",
-                .sessions_collected = @intCast(out.items.len - before),
+                .detail = detail,
+                .sessions_collected = r.count,
             });
         } else |err| {
             std.log.warn("memory_digest: source '{s}' failed: {s}", .{ rs.source_id, @errorName(err) });
@@ -181,6 +186,7 @@ fn collectAllSources(
                 .source_id = rs.source_id,
                 .status = "failed",
                 .detail = @errorName(err),
+                .sessions_collected = @intCast(out.items.len - before),
             });
         }
     }

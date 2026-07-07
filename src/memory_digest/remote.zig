@@ -6,12 +6,20 @@
 //! stay identical between local and remote.
 const std = @import("std");
 const ai_session = @import("../terminal_agents/sessions/session.zig");
-const ai_types = @import("../terminal_agents/sessions/types.zig");
 const collector = @import("collector.zig");
 const cursors_mod = @import("cursors.zig");
+const remote_file = @import("../platform/remote_file.zig");
 const types = @import("types.zig");
 
-const MAX_FILE_BYTES = 64 * 1024 * 1024;
+/// sshExecCapture (platform/remote_file.zig) caps captured stdout at 2MB with
+/// silent truncation (no error) -- a file whose cat output would be truncated
+/// must never be cat'd at all, or it would ingest corrupt/truncated JSONL.
+/// 4KB headroom for the cat command's own framing. This is the real ceiling;
+/// session.zig's `providerFindCommand -size -2048k` find-side filter would
+/// have enforced roughly the same thing, but this module intentionally does
+/// NOT reuse that command (see findCommandNoSizeFilter below) so it can see
+/// (and count) oversize files instead of having `find` silently drop them.
+const REMOTE_CAT_LIMIT: u64 = 2 * 1024 * 1024 - 4096;
 
 /// Same shape as session.zig's RemoteExecHost, redeclared here so this
 /// module does not import the UI-coupled scanning layer — only the pure
@@ -26,9 +34,15 @@ pub const RemoteRootsSpec = struct {
     codex: bool = true,
 };
 
+/// Result of a `collectRemote` call: sessions collected plus how many
+/// candidate files were skipped for exceeding REMOTE_CAT_LIMIT.
+pub const CollectResult = struct {
+    count: u32 = 0,
+    oversize_skipped: u32 = 0,
+};
+
 /// Collects new sessions from one remote source (ssh/wsl) into `out`,
-/// advancing nothing but reading `cur` to decide what changed. Returns the
-/// number of sessions collected from this source.
+/// advancing nothing but reading `cur` to decide what changed.
 pub fn collectRemote(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
@@ -38,33 +52,28 @@ pub fn collectRemote(
     cur: *cursors_mod.Set,
     min_mtime_ns: i128,
     roots: RemoteRootsSpec,
-) !u32 {
+) !CollectResult {
     const home_raw = host.exec(host.ctx, gpa, "printf %s \"$HOME\"") catch return error.RemoteHomeFailed;
     defer gpa.free(home_raw);
     const home = std.mem.trim(u8, home_raw, " \t\r\n");
     if (home.len == 0) return error.RemoteHomeFailed;
 
-    var count: u32 = 0;
+    var result: CollectResult = .{};
     if (roots.claude) {
         const root = try std.fmt.allocPrint(gpa, "{s}/.claude/projects", .{home});
         defer gpa.free(root);
-        count += try collectProvider(gpa, arena, out, source_id, host, cur, min_mtime_ns, .claude, root);
+        const r = try collectProvider(gpa, arena, out, source_id, host, cur, min_mtime_ns, .claude, root);
+        result.count += r.count;
+        result.oversize_skipped += r.oversize_skipped;
     }
     if (roots.codex) {
         const root = try std.fmt.allocPrint(gpa, "{s}/.codex/sessions", .{home});
         defer gpa.free(root);
-        count += try collectProvider(gpa, arena, out, source_id, host, cur, min_mtime_ns, .codex, root);
+        const r = try collectProvider(gpa, arena, out, source_id, host, cur, min_mtime_ns, .codex, root);
+        result.count += r.count;
+        result.oversize_skipped += r.oversize_skipped;
     }
-    return count;
-}
-
-fn digestToAiProvider(provider: types.DigestProvider) ai_types.ProviderId {
-    return switch (provider) {
-        .claude => .claude,
-        .codex => .codex,
-        .reasonix => .reasonix,
-        .wispterm => unreachable, // wispterm is local-only (no remote root)
-    };
+    return result;
 }
 
 fn collectProvider(
@@ -77,13 +86,13 @@ fn collectProvider(
     min_mtime_ns: i128,
     provider: types.DigestProvider,
     root: []const u8,
-) !u32 {
+) !CollectResult {
     var cmd_buf: [2048]u8 = undefined;
-    const find_cmd = try ai_session.providerFindCommand(digestToAiProvider(provider), root, &cmd_buf);
+    const find_cmd = try findCommandNoSizeFilter(root, &cmd_buf);
     const find_out = try host.exec(host.ctx, gpa, find_cmd);
     defer gpa.free(find_out);
 
-    var count: u32 = 0;
+    var result: CollectResult = .{};
     var lines = std.mem.splitScalar(u8, find_out, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
@@ -98,22 +107,36 @@ fn collectProvider(
         if (cand.mtime_ns < min_mtime_ns) continue; // backfill window (spec §6), no cursor created
         const start = cur.pendingFrom(source_id, provider, cand.path, cand.size, cand.mtime_ns) orelse continue;
 
+        if (cand.size > REMOTE_CAT_LIMIT) {
+            // Would be silently truncated by sshExecCapture's 2MB stdout cap;
+            // never cat it. Stamp the cursor so it isn't retried every run.
+            try cur.update(source_id, provider, cand.path, cand.size, cand.mtime_ns, 0);
+            result.oversize_skipped += 1;
+            continue;
+        }
+
         var cmd_buf2: [2048]u8 = undefined;
         const cat_cmd = ai_session.remoteCatCommand(cand.path, &cmd_buf2) catch continue;
         const bytes = host.exec(host.ctx, gpa, cat_cmd) catch continue; // transient: retry next run, cursor untouched
         defer gpa.free(bytes);
 
-        if (bytes.len > MAX_FILE_BYTES) {
-            // Remember the stamp so the oversize file is not retried hot.
-            try cur.update(source_id, provider, cand.path, cand.size, cand.mtime_ns, 0);
-            continue;
-        }
-
         const before = out.items.len;
         try collector.ingestJsonlBytes(gpa, arena, out, cur, provider, source_id, cand.path, cand.size, cand.mtime_ns, bytes, start);
-        count += @intCast(out.items.len - before);
+        result.count += @intCast(out.items.len - before);
     }
-    return count;
+    return result;
+}
+
+/// Same shape as session.zig's providerFindCommand ("mtime<TAB>size<TAB>path",
+/// newest first, capped at 500) but WITHOUT the `-size -2048k` filter: this
+/// module needs to see oversize candidates (to count and skip them) rather
+/// than have `find` drop them silently. Only used for claude/codex roots
+/// (this module's RemoteRootsSpec has no reasonix support), so no reasonix
+/// name filter is needed here.
+fn findCommandNoSizeFilter(root: []const u8, out: []u8) ![]const u8 {
+    var quoted_buf: [1024]u8 = undefined;
+    const quoted = remote_file.shellQuote(&quoted_buf, root) orelse return error.CommandTooLong;
+    return std.fmt.bufPrint(out, "find {s} -type f -name '*.jsonl' -printf '%T@\\t%s\\t%p\\n' 2>/dev/null | sort -rn | head -500", .{quoted}) catch error.CommandTooLong;
 }
 
 const FindCandidate = struct {
@@ -218,8 +241,9 @@ test "memory_digest_remote: first run collects, second run collects nothing and 
     defer arena_state.deinit();
     var out: std.ArrayListUnmanaged(types.CollectedSession) = .empty;
 
-    const n = try collectRemote(allocator, arena_state.allocator(), &out, "ssh:box", host.execHost(), &cur, 0, .{});
-    try std.testing.expectEqual(@as(u32, 2), n);
+    const r = try collectRemote(allocator, arena_state.allocator(), &out, "ssh:box", host.execHost(), &cur, 0, .{});
+    try std.testing.expectEqual(@as(u32, 2), r.count);
+    try std.testing.expectEqual(@as(u32, 0), r.oversize_skipped);
     try std.testing.expectEqual(@as(usize, 2), out.items.len);
     try std.testing.expectEqual(@as(u32, 2), host.cat_calls);
     // project_path threaded through correctly for one of the sessions.
@@ -238,8 +262,8 @@ test "memory_digest_remote: first run collects, second run collects nothing and 
     }
 
     var out2: std.ArrayListUnmanaged(types.CollectedSession) = .empty;
-    const n2 = try collectRemote(allocator, arena_state.allocator(), &out2, "ssh:box", host.execHost(), &cur, 0, .{});
-    try std.testing.expectEqual(@as(u32, 0), n2);
+    const r2 = try collectRemote(allocator, arena_state.allocator(), &out2, "ssh:box", host.execHost(), &cur, 0, .{});
+    try std.testing.expectEqual(@as(u32, 0), r2.count);
     try std.testing.expectEqual(@as(u32, 2), host.cat_calls); // unchanged: no new cats
 }
 
@@ -274,8 +298,8 @@ test "memory_digest_remote: only the changed file is cat'd" {
     try host.cat_files.put(allocator, "/home/me/.claude/projects/proj-a/claude-abc.jsonl", appended);
 
     var out2: std.ArrayListUnmanaged(types.CollectedSession) = .empty;
-    const n2 = try collectRemote(allocator, arena_state.allocator(), &out2, "ssh:box", host.execHost(), &cur, 0, .{});
-    try std.testing.expectEqual(@as(u32, 1), n2);
+    const r2 = try collectRemote(allocator, arena_state.allocator(), &out2, "ssh:box", host.execHost(), &cur, 0, .{});
+    try std.testing.expectEqual(@as(u32, 1), r2.count);
     try std.testing.expectEqual(@as(usize, 1), out2.items.len);
     try std.testing.expectEqual(@as(usize, 1), out2.items[0].new_messages.len);
     try std.testing.expectEqualStrings("And lint", out2.items[0].new_messages[0].content);
@@ -324,9 +348,38 @@ test "memory_digest_remote: min_mtime filters out old files without creating cur
     defer arena_state.deinit();
     var out: std.ArrayListUnmanaged(types.CollectedSession) = .empty;
 
-    const n = try collectRemote(allocator, arena_state.allocator(), &out, "ssh:box", host.execHost(), &cur, std.math.maxInt(i128), .{});
-    try std.testing.expectEqual(@as(u32, 0), n);
+    const r = try collectRemote(allocator, arena_state.allocator(), &out, "ssh:box", host.execHost(), &cur, std.math.maxInt(i128), .{});
+    try std.testing.expectEqual(@as(u32, 0), r.count);
     try std.testing.expectEqual(@as(usize, 0), out.items.len);
     try std.testing.expectEqual(@as(usize, 0), cur.entries.items.len);
     try std.testing.expectEqual(@as(u32, 0), host.cat_calls);
+}
+
+test "memory_digest_remote: oversize file (>REMOTE_CAT_LIMIT) is skipped, not cat'd, and stamped" {
+    const allocator = std.testing.allocator;
+    const oversize: u64 = 3 * 1024 * 1024; // 3MB > REMOTE_CAT_LIMIT (~2MB - 4KB)
+    var buf: [256]u8 = undefined;
+    const find_line = std.fmt.bufPrint(&buf, "1780300860.0\t{d}\t/home/me/.claude/projects/proj-a/claude-abc.jsonl\n", .{oversize}) catch unreachable;
+    var host: FakeHost = .{ .find_output = find_line };
+    defer host.cat_files.deinit(allocator);
+    // Deliberately no cat_files entry: if collectProvider ever cats this path,
+    // the fake host returns error.CatFailed, which would be silently
+    // swallowed by `catch continue` -- so the real assertion is cat_calls==0.
+
+    var cur = cursors_mod.Set.init(allocator);
+    defer cur.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    var out: std.ArrayListUnmanaged(types.CollectedSession) = .empty;
+
+    const r = try collectRemote(allocator, arena_state.allocator(), &out, "ssh:box", host.execHost(), &cur, 0, .{});
+    try std.testing.expectEqual(@as(u32, 0), r.count);
+    try std.testing.expectEqual(@as(u32, 1), r.oversize_skipped);
+    try std.testing.expectEqual(@as(usize, 0), out.items.len);
+    try std.testing.expectEqual(@as(u32, 0), host.cat_calls);
+
+    // Cursor stamped (processed=0) so the hot path doesn't retry every run.
+    try std.testing.expectEqual(@as(usize, 1), cur.entries.items.len);
+    try std.testing.expectEqual(@as(u32, 0), cur.entries.items[0].processed_messages);
+    try std.testing.expectEqual(oversize, cur.entries.items[0].size);
 }

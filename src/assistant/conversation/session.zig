@@ -1232,6 +1232,10 @@ pub const Session = struct {
         session.title_is_custom = record.title_is_custom;
         session.created_at_ms = record.created_at;
         session.updated_at_ms = record.updated_at;
+        if (record.cwd.len > 0 and record.cwd.len <= session.working_dir_buf.len) {
+            @memcpy(session.working_dir_buf[0..record.cwd.len], record.cwd);
+            session.working_dir_len = record.cwd.len;
+        }
         for (record.messages) |msg| {
             var cloned_msg = Message{
                 .role = switch (msg.role) {
@@ -4880,6 +4884,7 @@ pub fn applySummaryResult(session: *Session, summary: []const u8, boundary: usiz
         .is_context_summary = true,
         .content_collapsed = true,
         .persist_to_history = true,
+        .ts_ms = std.time.milliTimestamp(),
     }) catch {
         allocator.free(content);
         session.setStatusLocked("Ready");
@@ -6108,6 +6113,7 @@ test "ai_chat: session loads from history record" {
         .agent_enabled = true,
         .created_at = 1,
         .updated_at = 2,
+        .cwd = "/home/tester/restored",
         .messages = &.{
             .{ .role = .user, .content = "hello", .reasoning = null, .usage_footer = null },
         },
@@ -6119,6 +6125,38 @@ test "ai_chat: session loads from history record" {
 
     try std.testing.expectEqualStrings("session-1", session.sessionId());
     try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
+    try std.testing.expectEqualStrings("/home/tester/restored", session.workingDirOverride().?);
+}
+
+test "ai_chat: session restores cwd through a history record round trip" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator,
+        "chat",
+        "https://api.anthropic.com",
+        "key",
+        "claude-x",
+        "sys",
+        "false",
+        "",
+        "false",
+        "false",
+    );
+    defer session.deinit();
+
+    session.mutex.lock();
+    const cwd = "/home/tester/project";
+    @memcpy(session.working_dir_buf[0..cwd.len], cwd);
+    session.working_dir_len = cwd.len;
+    session.mutex.unlock();
+
+    var record = try session.toHistoryRecord(allocator);
+    defer agent_history.freeOwnedRecord(allocator, &record);
+    try std.testing.expectEqualStrings(cwd, record.cwd);
+
+    const restored = try Session.initFromHistoryRecord(allocator, record);
+    defer restored.deinit();
+    try std.testing.expectEqualStrings(cwd, restored.workingDirOverride().?);
 }
 
 test "ai_chat: loading history record cleans up partial message clone on allocation failure" {

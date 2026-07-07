@@ -62,6 +62,7 @@ var g_thread: ?std.Thread = null;
 var g_in_flight: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 var g_last_tick_check_ms: i64 = 0;
 var g_app_started_ms: ?i64 = null;
+var g_shutting_down: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
 /// Loads a copy of `s`, duping the borrowed strings into the module's own
 /// arena. Call on the main thread whenever config is loaded/hot-reloaded.
@@ -77,6 +78,11 @@ pub fn updateSettings(s: Settings) void {
         .backfill_days = s.backfill_days,
         .max_chars = s.max_chars,
     };
+    // tick() silently `orelse return`s on a malformed run_after every 60s;
+    // warn once here (config-load time) instead of spamming that silence.
+    if (s.run_after.len > 0 and parseRunAfterMinutes(s.run_after) == null) {
+        std.log.warn("memory_digest: invalid run_after \"{s}\", scheduler will not run until it is fixed", .{s.run_after});
+    }
 }
 
 /// Main-loop tick. Self-throttles: only actually checks once per
@@ -109,7 +115,7 @@ pub fn tick(gpa: std.mem.Allocator) void {
 
     if (!shouldRun(now_ms, tz_offset_seconds, run_after_minutes, last_run.date_key, g_app_started_ms.?)) return;
 
-    spawnRun(gpa, now_ms, tz_offset_seconds);
+    spawnRun(gpa, now_ms, tz_offset_seconds, false);
 }
 
 /// Manually trigger a digest run right now, bypassing the enabled/date/
@@ -129,13 +135,15 @@ pub fn runNow(gpa: std.mem.Allocator) void {
 
     const now_ms = std.time.milliTimestamp();
     const tz_offset_seconds = time_mod.localOffsetSeconds();
-    spawnRun(gpa, now_ms, tz_offset_seconds);
+    spawnRun(gpa, now_ms, tz_offset_seconds, true);
 }
 
 /// Shared spawn path for both the scheduled tick and the manual runNow
 /// trigger: sets in_flight, builds thread params from current settings, and
 /// spawns runThreadMain. Caller must already hold the in_flight/join guards.
-fn spawnRun(gpa: std.mem.Allocator, now_ms: i64, tz_offset_seconds: i32) void {
+/// `manual` distinguishes an explicit runNow from a scheduled tick: a manual
+/// run with no profile configured must not consume today's scheduled slot.
+fn spawnRun(gpa: std.mem.Allocator, now_ms: i64, tz_offset_seconds: i32, manual: bool) void {
     g_in_flight.store(true, .release);
     const params = ThreadParams{
         .profile_name = gpa.dupe(u8, g_settings.profile_name) catch {
@@ -147,6 +155,7 @@ fn spawnRun(gpa: std.mem.Allocator, now_ms: i64, tz_offset_seconds: i32) void {
         .now_ms = now_ms,
         .tz_offset_seconds = tz_offset_seconds,
         .scan_remote = g_settings.scan_remote,
+        .manual = manual,
     };
     g_thread = std.Thread.spawn(.{}, runThreadMain, .{ gpa, params }) catch {
         gpa.free(params.profile_name);
@@ -155,10 +164,20 @@ fn spawnRun(gpa: std.mem.Allocator, now_ms: i64, tz_offset_seconds: i32) void {
     };
 }
 
-/// App shutdown: join the background thread if one is running.
+/// App shutdown: join the background thread if one is running. `fetch` has
+/// no timeout, so a run can be stuck mid-request on a half-open connection;
+/// joining unconditionally would hang app exit. If a run is still in flight,
+/// detach instead of joining -- writes go through atomic_file, so the worst
+/// case is losing the in-progress run's record, not a corrupt one. Proper
+/// LLM-call timeouts are M5.
 pub fn deinit() void {
+    g_shutting_down.store(true, .release);
     if (g_thread) |t| {
-        t.join();
+        if (g_in_flight.load(.acquire)) {
+            t.detach();
+        } else {
+            t.join();
+        }
         g_thread = null;
     }
     g_settings_arena.deinit();
@@ -220,13 +239,19 @@ const ThreadParams = struct {
     now_ms: i64,
     tz_offset_seconds: i32,
     scan_remote: bool = false,
+    /// True for an explicit runNow trigger, false for a scheduled tick. A
+    /// manual run with no profile configured must not consume today's
+    /// scheduled slot (see runThreadMain's no-profile branch).
+    manual: bool = false,
 };
 
 fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
     defer gpa.free(params.profile_name);
     defer {
         g_in_flight.store(false, .release);
-        window_backend.postWakeup();
+        // If deinit() detached this thread on the way out, the window/backend
+        // it would wake may already be torn down -- don't touch it.
+        if (!g_shutting_down.load(.acquire)) window_backend.postWakeup();
     }
 
     // Profiles are large fixed-buffer records (~98KB each); heap-allocate
@@ -238,10 +263,18 @@ fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
     const idx = llm.pickProfile(profiles, profile_count, params.profile_name) orelse {
         // No AI profile configured: an automatic background digest with no
         // LLM isn't useful (unlike the dev CLI's --raw fallback), so skip
-        // the run entirely. Still record today as "done" so tick doesn't
-        // retry every 60s and spam this warning until a profile is added.
-        std.log.warn("memory_digest: scheduler skipping run, no AI profile configured", .{});
-        markRanToday(gpa, params.now_ms, params.tz_offset_seconds);
+        // the run entirely.
+        if (params.manual) {
+            // A manual runNow with no profile isn't "today's scheduled run" --
+            // don't mark today done, or the real scheduled run would be
+            // skipped later once a profile is configured.
+            std.log.warn("memory_digest: runNow skipped, no AI profile configured", .{});
+        } else {
+            // Still record today as "done" so tick doesn't retry every 60s
+            // and spam this warning until a profile is added.
+            std.log.warn("memory_digest: scheduler skipping run, no AI profile configured", .{});
+            markRanToday(gpa, params.now_ms, params.tz_offset_seconds);
+        }
         return;
     };
 
