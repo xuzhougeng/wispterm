@@ -88,10 +88,16 @@ pub const Role = ai_chat_protocol.Role;
 pub const Message = struct {
     role: Role,
     content: []u8,
+    /// Allocated capacity for content when the slice has spare room. Zero
+    /// means the allocation is exactly `content.len`.
+    content_capacity: usize = 0,
     /// Model-only context appended when building API requests. This is not
     /// rendered, exported, or persisted in history.
     model_context: ?[]u8 = null,
     reasoning: ?[]u8 = null,
+    /// Allocated capacity for reasoning when the slice has spare room. Zero
+    /// means the allocation is exactly `reasoning.len`.
+    reasoning_capacity: usize = 0,
     usage_footer: ?[]u8 = null,
     tool_call_id: ?[]u8 = null,
     tool_name: ?[]u8 = null,
@@ -110,11 +116,22 @@ pub const Message = struct {
     /// append time, not at history-serialization time, so it reflects the
     /// real moment the turn happened.
     ts_ms: i64 = 0,
+    /// Collapsed state of the activity group this message starts. Only read on
+    /// the first message of a run of groupable tool messages (see
+    /// `groupableTool`); the whole run renders as one header row while true.
+    tool_group_collapsed: bool = true,
+
+    /// True when this message can merge into an activity group with adjacent
+    /// tool messages: a real tool card that is not a context summary and not
+    /// live (auto-expanded messages render individually while a request runs).
+    pub fn groupableTool(self: Message) bool {
+        return self.role == .tool and !self.is_context_summary and !self.content_auto_expand;
+    }
 
     pub fn deinit(self: Message, allocator: std.mem.Allocator) void {
-        allocator.free(self.content);
+        allocator.free(self.contentAllocation());
         if (self.model_context) |ctx| allocator.free(ctx);
-        if (self.reasoning) |reasoning| allocator.free(reasoning);
+        if (self.reasoning) |reasoning| allocator.free(self.reasoningAllocation(reasoning));
         if (self.usage_footer) |footer| allocator.free(footer);
         if (self.tool_call_id) |id| allocator.free(id);
         if (self.tool_name) |name| allocator.free(name);
@@ -123,7 +140,23 @@ pub const Message = struct {
             allocator.free(images);
         }
     }
+
+    fn contentAllocation(self: Message) []u8 {
+        return self.content.ptr[0..@max(self.content.len, self.content_capacity)];
+    }
+
+    fn reasoningAllocation(self: Message, reasoning: []u8) []u8 {
+        return reasoning.ptr[0..@max(reasoning.len, self.reasoning_capacity)];
+    }
 };
+
+/// First index of the run of groupable tool messages containing `index`.
+/// The renderer and the group toggle both anchor group state here.
+pub fn toolRunStart(msgs: []const Message, index: usize) usize {
+    var start = index;
+    while (start > 0 and msgs[start - 1].groupableTool()) start -= 1;
+    return start;
+}
 
 pub const MarkdownExportMode = enum {
     full,
@@ -374,6 +407,7 @@ const DeferredAction = union(enum) {
     copilot_conversation_picker,
     model_switch_picker,
     export_markdown: MarkdownExportMode,
+    copy_transcript: MarkdownExportMode,
 };
 
 /// Result of running a built-in command under the lock: the (optional) history
@@ -397,7 +431,9 @@ fn fireDeferredAction(session: *Session, action: DeferredAction) void {
         .model_switch_picker => if (g_model_switch_trigger) |t| t(session),
         // Targets the session that submitted `/export` (copilot sidebar OR a tab),
         // not the active tab — they can differ.
-        .export_markdown => |mode| if (g_markdown_export_trigger) |t| t(session, mode),
+        .export_markdown => |mode| if (g_transcript_sink_triggers.export_markdown) |t| t(session, mode),
+        // Targets the session that submitted `/copy` (copilot sidebar OR a tab).
+        .copy_transcript => |mode| if (g_transcript_sink_triggers.copy) |t| t(session, mode),
     }
 }
 
@@ -410,7 +446,13 @@ var g_default_working_dir_len: usize = 0;
 var g_session_id_counter = std.atomic.Value(u64).init(1);
 var g_session_resume_trigger: ?*const fn () void = null;
 var g_copilot_picker_trigger: ?*const fn () void = null;
-var g_markdown_export_trigger: ?*const fn (*Session, MarkdownExportMode) void = null;
+/// Sinks for the rendered conversation Markdown: `/export` writes a file,
+/// `/copy` writes the clipboard. One struct to respect the g_* global ceiling.
+const TranscriptSinkTriggers = struct {
+    export_markdown: ?*const fn (*Session, MarkdownExportMode) void = null,
+    copy: ?*const fn (*Session, MarkdownExportMode) void = null,
+};
+var g_transcript_sink_triggers: TranscriptSinkTriggers = .{};
 var g_model_switch_trigger: ?*const fn (*Session) void = null;
 threadlocal var g_dynamic_tool_specs: []ai_chat_protocol.DynamicToolSpec = &.{};
 threadlocal var g_dynamic_tool_specs_owned: bool = false;
@@ -477,7 +519,14 @@ pub fn setModelSwitchTrigger(cb: ?*const fn (*Session) void) void {
 /// Markdown. Fired AFTER the session mutex unlocks, because the export reads the
 /// session under the SAME mutex (`allocMarkdownExport`) and would otherwise deadlock.
 pub fn setMarkdownExportTrigger(cb: ?*const fn (*Session, MarkdownExportMode) void) void {
-    g_markdown_export_trigger = cb;
+    g_transcript_sink_triggers.export_markdown = cb;
+}
+
+/// Wire the callback that `/copy [full|clean]` fires to put the conversation
+/// Markdown on the clipboard. Fired AFTER the session mutex unlocks, because
+/// the copy reads the session under the SAME mutex (`allocMarkdownExport`).
+pub fn setTranscriptCopyTrigger(cb: ?*const fn (*Session, MarkdownExportMode) void) void {
+    g_transcript_sink_triggers.copy = cb;
 }
 threadlocal var g_tool_host: ?ToolHost = null;
 
@@ -861,6 +910,9 @@ fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8
         // .model_switch suppresses output and defers to the picker / by-name path;
         // this path is never reached, but the arm is required for exhaustiveness.
         .model_switch => allocator.dupe(u8, ""),
+        // .copy_transcript suppresses output (the copied Markdown must not
+        // include its own progress message); this path is never reached.
+        .copy_transcript => allocator.dupe(u8, ""),
     };
 }
 
@@ -2116,6 +2168,18 @@ pub const Session = struct {
         return allocator.dupe(u8, content[s..e]);
     }
 
+    /// Toggle the collapsed state of the activity group containing
+    /// `message_index`. The state lives on the run's first message; membership
+    /// is derived per frame, so appended messages join the group automatically.
+    pub fn toggleToolGroupCollapsed(self: *Session, message_index: usize) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const msgs = self.messages.items;
+        if (message_index >= msgs.len or !msgs[message_index].groupableTool()) return;
+        const start = toolRunStart(msgs, message_index);
+        self.messages.items[start].tool_group_collapsed = !msgs[start].tool_group_collapsed;
+    }
+
     pub fn toggleToolMessageCollapsed(self: *Session, message_index: usize) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -2858,6 +2922,16 @@ pub const Session = struct {
                 .resume_picker,
             .export_markdown => result.deferred = .{
                 .export_markdown = if (std.mem.eql(u8, std.mem.trim(u8, arg, " \t\r\n"), "full")) .full else .clean,
+            },
+            .copy_transcript => {
+                // Suppress the transcript message: it would be appended before
+                // the deferred copy fires and pollute the copied Markdown.
+                result.deferred = .{
+                    .copy_transcript = if (std.mem.eql(u8, std.mem.trim(u8, arg, " \t\r\n"), "full")) .full else .clean,
+                };
+                self.clearSubmittedInputLocked();
+                if (!self.request_inflight) self.setStatusLocked("Ready");
+                result.suppress_output = true;
             },
             .loop => self.runLoopCommandLocked(.loop, arg, &result),
             .watch => self.runLoopCommandLocked(.watch, arg, &result),
@@ -5257,6 +5331,60 @@ pub fn beginAssistantStream(session: *Session) !usize {
     return session.messages.items.len - 1;
 }
 
+fn growStreamCapacity(current_capacity: usize, required_capacity: usize) usize {
+    var capacity = if (current_capacity > 0) current_capacity else @as(usize, 64);
+    while (capacity < required_capacity) {
+        if (capacity > std.math.maxInt(usize) / 2) return required_capacity;
+        capacity *= 2;
+    }
+    return capacity;
+}
+
+fn appendOwnedBytes(
+    allocator: std.mem.Allocator,
+    bytes: *[]u8,
+    capacity: *usize,
+    delta: []const u8,
+) !void {
+    if (delta.len == 0) return;
+
+    const old_len = bytes.*.len;
+    const new_len = try std.math.add(usize, old_len, delta.len);
+    const current_capacity = if (capacity.* > 0) capacity.* else old_len;
+    if (new_len > current_capacity) {
+        const new_capacity = growStreamCapacity(current_capacity, new_len);
+        const grown = if (current_capacity == 0)
+            try allocator.alloc(u8, new_capacity)
+        else
+            try allocator.realloc(bytes.*.ptr[0..current_capacity], new_capacity);
+        bytes.* = grown[0..new_len];
+        capacity.* = new_capacity;
+    } else {
+        bytes.* = bytes.*.ptr[0..new_len];
+    }
+    @memcpy(bytes.*[old_len..new_len], delta);
+}
+
+fn appendOptionalOwnedBytes(
+    allocator: std.mem.Allocator,
+    bytes: *?[]u8,
+    capacity: *usize,
+    delta: []const u8,
+) !void {
+    if (bytes.*) |old_bytes| {
+        var updated = old_bytes;
+        try appendOwnedBytes(allocator, &updated, capacity, delta);
+        bytes.* = updated;
+        return;
+    }
+
+    const new_capacity = growStreamCapacity(0, delta.len);
+    const allocated = try allocator.alloc(u8, new_capacity);
+    @memcpy(allocated[0..delta.len], delta);
+    bytes.* = allocated[0..delta.len];
+    capacity.* = new_capacity;
+}
+
 fn appendAssistantStreamDelta(session: *Session, message_idx: usize, content_delta: []const u8, reasoning_delta: []const u8) !void {
     if (content_delta.len == 0 and reasoning_delta.len == 0) return;
     const allocator = session.allocator;
@@ -5273,19 +5401,10 @@ fn appendAssistantStreamDelta(session: *Session, message_idx: usize, content_del
 
     var msg = &session.messages.items[message_idx];
     if (content_delta.len > 0) {
-        const old_len = msg.content.len;
-        msg.content = try allocator.realloc(msg.content, old_len + content_delta.len);
-        @memcpy(msg.content[old_len..], content_delta);
+        try appendOwnedBytes(allocator, &msg.content, &msg.content_capacity, content_delta);
     }
     if (reasoning_delta.len > 0) {
-        if (msg.reasoning) |old_reasoning| {
-            const old_len = old_reasoning.len;
-            const resized = try allocator.realloc(old_reasoning, old_len + reasoning_delta.len);
-            @memcpy(resized[old_len..], reasoning_delta);
-            msg.reasoning = resized;
-        } else {
-            msg.reasoning = try allocator.dupe(u8, reasoning_delta);
-        }
+        try appendOptionalOwnedBytes(allocator, &msg.reasoning, &msg.reasoning_capacity, reasoning_delta);
     }
     session.scroll_px = 1_000_000;
     session.setStatusLocked("Streaming...");
@@ -5317,8 +5436,7 @@ pub fn finishAssistantStream(session: *Session, message_idx: usize, started_ms: 
     if (message_idx < session.messages.items.len) {
         const msg = &session.messages.items[message_idx];
         if (msg.content.len == 0 and msg.reasoning == null) {
-            msg.content = session.allocator.realloc(msg.content, "No response".len) catch msg.content;
-            if (msg.content.len == "No response".len) @memcpy(msg.content, "No response");
+            appendOwnedBytes(session.allocator, &msg.content, &msg.content_capacity, "No response") catch {};
         }
         if (allocUsageFooter(session.allocator, started_ms, first_token_ms, usage) catch null) |footer| {
             if (msg.usage_footer) |old_footer| session.allocator.free(old_footer);
@@ -5551,9 +5669,9 @@ test "ai chat slash command suggestions show and filter from input" {
     try std.testing.expectEqual(slash_command_entries.len, session.slashCommandSuggestionCount());
     try std.testing.expectEqualStrings("/skills", session.slashCommandSuggestionAt(0).?.command);
 
-    // "/c" filters to /commands, /clear, /cwd.
+    // "/c" filters to /commands, /clear, /cwd, /copy.
     session.appendInputText("c");
-    try std.testing.expectEqual(@as(usize, 3), session.slashCommandSuggestionCount());
+    try std.testing.expectEqual(@as(usize, 4), session.slashCommandSuggestionCount());
     try std.testing.expectEqualStrings("/commands", session.slashCommandSuggestionAt(0).?.command);
 }
 
@@ -5732,6 +5850,61 @@ var test_export_session: ?*Session = null;
 fn testExportHook(session: *Session, mode: MarkdownExportMode) void {
     test_export_session = session;
     test_export_mode = mode;
+}
+
+test "/copy via submit fires the transcript copy trigger with parsed mode" {
+    const a = std.testing.allocator;
+    setTranscriptCopyTrigger(testExportHook);
+    defer setTranscriptCopyTrigger(null);
+    var session = try Session.init(a, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer session.deinit();
+    test_export_mode = null;
+    test_export_session = null;
+    session.appendInputText("/copy full");
+    session.submit();
+    try std.testing.expectEqual(session, test_export_session.?);
+    try std.testing.expectEqual(MarkdownExportMode.full, test_export_mode.?);
+    // Suppressed output: /copy must not append a transcript message, or the
+    // copied Markdown would include it.
+    try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
+
+    test_export_mode = null;
+    test_export_session = null;
+    session.appendInputText("/copy");
+    session.submit();
+    try std.testing.expectEqual(MarkdownExportMode.clean, test_export_mode.?);
+}
+
+test "toolGroupCollapsed: toggle from any member flips the run's first message" {
+    const a = std.testing.allocator;
+    var session = try Session.init(a, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer session.deinit();
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
+    try session.messages.append(a, .{ .role = .tool, .content = try a.dupe(u8, "running exec one"), .content_collapsed = true });
+    try session.messages.append(a, .{ .role = .tool, .content = try a.dupe(u8, "running exec two"), .content_collapsed = true });
+    try session.messages.append(a, .{ .role = .tool, .content = try a.dupe(u8, "running exec three"), .content_collapsed = true });
+
+    // Default: the run is collapsed into a group anchored at index 1.
+    try std.testing.expect(session.messages.items[1].tool_group_collapsed);
+    try std.testing.expectEqual(@as(usize, 1), toolRunStart(session.messages.items, 3));
+
+    // Toggling via a non-first member expands the group at its start.
+    session.toggleToolGroupCollapsed(3);
+    try std.testing.expect(!session.messages.items[1].tool_group_collapsed);
+    session.toggleToolGroupCollapsed(1);
+    try std.testing.expect(session.messages.items[1].tool_group_collapsed);
+
+    // Non-groupable targets are ignored: user bubbles and live (auto-expanded)
+    // tool cards never anchor or toggle a group.
+    session.toggleToolGroupCollapsed(0);
+    try std.testing.expect(session.messages.items[1].tool_group_collapsed);
+    session.messages.items[2].content_auto_expand = true;
+    session.toggleToolGroupCollapsed(2);
+    try std.testing.expect(session.messages.items[1].tool_group_collapsed);
+    try std.testing.expect(session.messages.items[2].tool_group_collapsed);
+
+    // A live card splits the run: index 3 now anchors its own (length-1) run.
+    try std.testing.expectEqual(@as(usize, 3), toolRunStart(session.messages.items, 3));
 }
 
 test "/export via submit fires the export trigger with submitting session and parsed mode" {
@@ -9012,6 +9185,29 @@ test "failSummaryResult keeps raw history and points to resume" {
     try std.testing.expectEqualStrings("u1", session.messages.items[0].content);
     try std.testing.expectEqualStrings("a1", session.messages.items[1].content);
     try std.testing.expect(std.mem.indexOf(u8, session.status(), "/resume") != null);
+}
+
+test "assistant stream deltas grow with spare capacity" {
+    const allocator = std.testing.allocator;
+    var session = try Session.init(allocator, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer session.deinit();
+
+    const message_idx = try beginAssistantStream(session);
+    for (0..100) |_| {
+        try appendAssistantStreamDelta(session, message_idx, "x", "");
+    }
+    for (0..20) |_| {
+        try appendAssistantStreamDelta(session, message_idx, "", "r");
+    }
+
+    const msg = session.messages.items[message_idx];
+    try std.testing.expectEqual(@as(usize, 100), msg.content.len);
+    try std.testing.expect(std.mem.allEqual(u8, msg.content, 'x'));
+    try std.testing.expect(msg.content_capacity > msg.content.len);
+    try std.testing.expect(msg.reasoning != null);
+    try std.testing.expectEqual(@as(usize, 20), msg.reasoning.?.len);
+    try std.testing.expect(std.mem.allEqual(u8, msg.reasoning.?, 'r'));
+    try std.testing.expect(msg.reasoning_capacity > msg.reasoning.?.len);
 }
 
 const AskRunner = struct {

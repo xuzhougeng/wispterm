@@ -855,6 +855,23 @@ fn RingBuffer(comptime T: type, comptime N: usize) type {
 
 pub const CaptionButton = platform_window.CaptionButton;
 
+const ImeCaretPosition = struct {
+    x: i32,
+    y: i32,
+    height: i32,
+};
+
+const ImeWindowSync = struct {
+    caret: ImeCaretPosition,
+    client_width: i32,
+    client_height: i32,
+};
+
+const ImeCompositionActions = struct {
+    push_result: bool,
+    update_preedit: bool,
+};
+
 /// Platform window handle and associated state.
 pub const Window = struct {
     hwnd: HWND,
@@ -909,6 +926,9 @@ pub const Window = struct {
     ime_caret_x: i32 = 12,
     ime_caret_y: i32 = TITLEBAR_HEIGHT + 10,
     ime_caret_height: i32 = 20,
+    /// Last client/caret state pushed to the Win32 IME. Render paths may call
+    /// setImeCaret every frame; avoid resending identical IMM window updates.
+    ime_window_sync: ?ImeWindowSync = null,
     /// UTF-8 preedit text currently owned by the IME composition session.
     /// WispTerm renders this inline, so Windows' default white composition
     /// popup is hidden.
@@ -935,9 +955,15 @@ pub const Window = struct {
     on_file_drop: ?FileDropHandler = null,
 
     pub fn setImeCaret(self: *Window, x: i32, y: i32, height: i32) void {
-        self.ime_caret_x = @max(0, x);
-        self.ime_caret_y = @max(0, y);
-        self.ime_caret_height = @max(1, height);
+        const caret = normalizeImeCaret(x, y, height);
+        const next_sync = imeWindowSyncFor(self, caret);
+        if (self.ime_window_sync) |synced| {
+            if (imeWindowSyncEqual(synced, next_sync)) return;
+        }
+
+        self.ime_caret_x = caret.x;
+        self.ime_caret_y = caret.y;
+        self.ime_caret_height = caret.height;
         updateImeWindowPosition(self);
     }
 
@@ -1595,6 +1621,82 @@ fn filteredImeSetContextLParam(lParam: LPARAM) LPARAM {
     return @intCast(flags & ~ISC_SHOWUICOMPOSITIONWINDOW);
 }
 
+fn normalizeImeCaret(x: i32, y: i32, height: i32) ImeCaretPosition {
+    return .{
+        .x = @max(0, x),
+        .y = @max(0, y),
+        .height = @max(1, height),
+    };
+}
+
+fn imeWindowSyncFor(w: *const Window, caret: ImeCaretPosition) ImeWindowSync {
+    return .{
+        .caret = caret,
+        .client_width = w.width,
+        .client_height = w.height,
+    };
+}
+
+fn imeWindowSyncEqual(a: ImeWindowSync, b: ImeWindowSync) bool {
+    return a.caret.x == b.caret.x and
+        a.caret.y == b.caret.y and
+        a.caret.height == b.caret.height and
+        a.client_width == b.client_width and
+        a.client_height == b.client_height;
+}
+
+fn currentImeWindowSync(w: *const Window) ImeWindowSync {
+    return imeWindowSyncFor(w, .{
+        .x = w.ime_caret_x,
+        .y = w.ime_caret_y,
+        .height = w.ime_caret_height,
+    });
+}
+
+fn imeCompositionActions(lParam: LPARAM) ImeCompositionActions {
+    const flags: usize = @intCast(lParam);
+    return .{
+        .push_result = (flags & GCS_RESULTSTR) != 0,
+        .update_preedit = (flags & GCS_COMPSTR) != 0,
+    };
+}
+
+test "win32 IME composition handles result and preedit flags independently" {
+    const actions = imeCompositionActions(@as(LPARAM, @intCast(GCS_RESULTSTR | GCS_COMPSTR)));
+    try std.testing.expect(actions.push_result);
+    try std.testing.expect(actions.update_preedit);
+
+    const result_only = imeCompositionActions(@as(LPARAM, @intCast(GCS_RESULTSTR)));
+    try std.testing.expect(result_only.push_result);
+    try std.testing.expect(!result_only.update_preedit);
+}
+
+test "win32 IME caret sync dedup includes normalized caret and client size" {
+    const caret = normalizeImeCaret(-4, 12, 0);
+    try std.testing.expectEqual(@as(i32, 0), caret.x);
+    try std.testing.expectEqual(@as(i32, 12), caret.y);
+    try std.testing.expectEqual(@as(i32, 1), caret.height);
+
+    const first = ImeWindowSync{
+        .caret = caret,
+        .client_width = 800,
+        .client_height = 600,
+    };
+    const same = ImeWindowSync{
+        .caret = normalizeImeCaret(0, 12, 1),
+        .client_width = 800,
+        .client_height = 600,
+    };
+    const resized = ImeWindowSync{
+        .caret = normalizeImeCaret(0, 12, 1),
+        .client_width = 801,
+        .client_height = 600,
+    };
+
+    try std.testing.expect(imeWindowSyncEqual(first, same));
+    try std.testing.expect(!imeWindowSyncEqual(first, resized));
+}
+
 fn readImeCompositionString(hIMC: HIMC, index: DWORD, out: []WCHAR) usize {
     if (out.len == 0) return 0;
 
@@ -1930,13 +2032,15 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
             return 0;
         },
         WM_IME_COMPOSITION => {
-            updateImeWindowPosition(w);
+            const actions = imeCompositionActions(lParam);
 
-            if ((@as(usize, @intCast(lParam)) & GCS_RESULTSTR) != 0) {
+            if (actions.push_result) {
                 pushImeResultString(w);
-            } else if ((@as(usize, @intCast(lParam)) & GCS_COMPSTR) != 0) {
+            }
+            if (actions.update_preedit) {
                 updateImePreeditString(w);
             }
+            updateImeWindowPosition(w);
             return 0;
         },
         WM_IME_ENDCOMPOSITION => {
@@ -2260,7 +2364,10 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
 }
 
 fn updateImeWindowPosition(w: *Window) void {
-    const hIMC = ImmGetContext(w.hwnd) orelse return;
+    const hIMC = ImmGetContext(w.hwnd) orelse {
+        w.ime_window_sync = null;
+        return;
+    };
     defer _ = ImmReleaseContext(w.hwnd, hIMC);
 
     const x = @max(0, @min(w.width - 1, w.ime_caret_x));
@@ -2291,6 +2398,8 @@ fn updateImeWindowPosition(w: *Window) void {
         },
     };
     _ = ImmSetCandidateWindow(hIMC, &candidate);
+
+    w.ime_window_sync = currentImeWindowSync(w);
 }
 
 fn handleDropFiles(wParam: WPARAM, w: *Window) void {

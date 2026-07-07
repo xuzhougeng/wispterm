@@ -628,6 +628,23 @@ test "uniqueSlugInDir avoids overwriting an existing entry" {
 
 // --- Task 7: Orchestration layer ---
 
+/// Memory names open files as `<name>.md`, so a model-supplied name must
+/// never contain a path separator (or start with '.'): otherwise memory_save
+/// and memory_delete become write/delete primitives outside the memory dirs.
+pub fn isValidMemoryName(name: []const u8) bool {
+    if (name.len == 0 or name.len > 100) return false;
+    if (name[0] == '.') return false;
+    for (name) |c| {
+        const ok = std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == '.';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+fn invalidNameMessage(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "Invalid memory name '{s}'. Use a short slug of letters, digits, and dashes.", .{name});
+}
+
 fn dirForTier(allocator: std.mem.Allocator, tier: Tier, working_dir: ?[]const u8) !?[]u8 {
     switch (tier) {
         .global => return try globalDir(allocator),
@@ -652,6 +669,7 @@ pub fn saveMemory(
     type_: MemoryType,
     body: []const u8,
 ) ![]u8 {
+    if (!isValidMemoryName(name)) return invalidNameMessage(allocator, name);
     var effective = tier;
     var dir = try dirForTier(allocator, tier, working_dir);
     if (dir == null) {
@@ -699,25 +717,71 @@ pub fn saveMemory(
     return msg;
 }
 
-/// Full text of a memory: project tier first, then global. Caller frees.
+/// Full text of a memory: project tier first, then global. An exact name
+/// match wins; otherwise a case-insensitive substring of the name or
+/// description resolves (unique hit returns the memory, several hits return
+/// a candidate list) so entries dropped from the index budget stay reachable.
+/// Caller frees.
 pub fn recallMemory(allocator: std.mem.Allocator, working_dir: []const u8, name: []const u8) ![]u8 {
     const tiers = [_]Tier{ .project, .global };
-    for (tiers) |tier| {
+    var loaded: [tiers.len]?[]Entry = .{ null, null };
+    defer for (loaded) |opt| if (opt) |entries| freeEntries(allocator, entries);
+    for (tiers, 0..) |tier, i| {
         const dir = (try dirForTier(allocator, tier, if (working_dir.len > 0) working_dir else null)) orelse continue;
         defer allocator.free(dir);
-        const entries = try loadDirEntries(allocator, dir);
-        defer freeEntries(allocator, entries);
+        loaded[i] = try loadDirEntries(allocator, dir);
+    }
+
+    for (tiers, 0..) |tier, i| {
+        const entries = loaded[i] orelse continue;
         for (entries) |e| {
             if (std.mem.eql(u8, e.name, name)) {
                 return std.fmt.allocPrint(allocator, "[{s}] {s}\n\n{s}", .{ @tagName(tier), e.description, e.body });
             }
         }
     }
+
+    const Match = struct { tier: Tier, entry: *const Entry };
+    var matches: std.ArrayListUnmanaged(Match) = .empty;
+    defer matches.deinit(allocator);
+    if (name.len > 0) {
+        for (tiers, 0..) |tier, i| {
+            const entries = loaded[i] orelse continue;
+            for (entries) |*e| {
+                if (std.ascii.indexOfIgnoreCase(e.name, name) != null or
+                    std.ascii.indexOfIgnoreCase(e.description, name) != null)
+                {
+                    try matches.append(allocator, .{ .tier = tier, .entry = e });
+                }
+            }
+        }
+    }
+    if (matches.items.len == 1) {
+        const m = matches.items[0];
+        return std.fmt.allocPrint(allocator, "[{s}] {s}\n\n{s}", .{ @tagName(m.tier), m.entry.description, m.entry.body });
+    }
+    if (matches.items.len > 1) {
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        defer out.deinit(allocator);
+        const head = try std.fmt.allocPrint(allocator, "Multiple memories match '{s}':\n", .{name});
+        defer allocator.free(head);
+        try out.appendSlice(allocator, head);
+        for (matches.items) |m| {
+            try out.appendSlice(allocator, "- ");
+            try out.appendSlice(allocator, m.entry.name);
+            try out.appendSlice(allocator, ": ");
+            try out.appendSlice(allocator, m.entry.description);
+            try out.append(allocator, '\n');
+        }
+        try out.appendSlice(allocator, "Recall one by its exact name.");
+        return out.toOwnedSlice(allocator);
+    }
     return std.fmt.allocPrint(allocator, "No memory named '{s}'. Use /memory to list current memories.", .{name});
 }
 
 /// Delete by name. `tier` null searches project then global. Caller frees msg.
 pub fn deleteMemory(allocator: std.mem.Allocator, working_dir: []const u8, name: []const u8, tier: ?Tier) ![]u8 {
+    if (!isValidMemoryName(name)) return invalidNameMessage(allocator, name);
     const candidates = if (tier) |t| &[_]Tier{t} else &[_]Tier{ .project, .global };
     for (candidates) |cand| {
         const dir = (try dirForTier(allocator, cand, if (working_dir.len > 0) working_dir else null)) orelse continue;
@@ -837,6 +901,79 @@ test "orchestration: saveMemory tier=project without working dir falls back to g
     const block = try buildInjectionBlock(a, "");
     defer a.free(block);
     try std.testing.expect(std.mem.indexOf(u8, block, "x: y") != null);
+}
+
+test "orchestration: saveMemory and deleteMemory reject path-traversal names" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(root);
+    dirs.setTestConfigDirForCurrentThread(root);
+    defer dirs.clearTestConfigDirForCurrentThread();
+
+    const saved = try saveMemory(a, .global, null, "../evil", "d", .user, "b");
+    defer a.free(saved);
+    try std.testing.expect(std.mem.indexOf(u8, saved, "Invalid memory name") != null);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access("memory/evil.md", .{}));
+
+    // A file sitting outside the memory tiers must not be deletable by name.
+    const ok = try saveMemory(a, .global, null, "legit", "d", .user, "b");
+    a.free(ok);
+    try tmp.dir.writeFile(.{ .sub_path = "memory/outside.md", .data = "keep me" });
+    const deleted = try deleteMemory(a, "", "../outside", .global);
+    defer a.free(deleted);
+    try std.testing.expect(std.mem.indexOf(u8, deleted, "Invalid memory name") != null);
+    try tmp.dir.access("memory/outside.md", .{});
+}
+
+test "orchestration: recallMemory falls back to case-insensitive substring match" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(root);
+    dirs.setTestConfigDirForCurrentThread(root);
+    defer dirs.clearTestConfigDirForCurrentThread();
+
+    const m1 = try saveMemory(a, .global, null, "prefers-chinese-replies", "用户偏好中文", .user, "默认 zh-CN。");
+    a.free(m1);
+
+    const r = try recallMemory(a, "", "Chinese");
+    defer a.free(r);
+    try std.testing.expect(std.mem.indexOf(u8, r, "默认 zh-CN。") != null);
+
+    // Description text matches too (covers CJK-described facts).
+    const r2 = try recallMemory(a, "", "偏好");
+    defer a.free(r2);
+    try std.testing.expect(std.mem.indexOf(u8, r2, "默认 zh-CN。") != null);
+}
+
+test "orchestration: recallMemory lists candidates on multiple fuzzy matches" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(root);
+    dirs.setTestConfigDirForCurrentThread(root);
+    defer dirs.clearTestConfigDirForCurrentThread();
+
+    const m1 = try saveMemory(a, .global, null, "build-cmds", "zig build test", .project, "fast suite");
+    a.free(m1);
+    const m2 = try saveMemory(a, .global, null, "build-flags", "zig build flags", .project, "flag notes");
+    a.free(m2);
+
+    const r = try recallMemory(a, "", "build");
+    defer a.free(r);
+    try std.testing.expect(std.mem.indexOf(u8, r, "Multiple") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r, "build-cmds") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r, "build-flags") != null);
+    // Candidates list names and descriptions, not bodies.
+    try std.testing.expect(std.mem.indexOf(u8, r, "fast suite") == null);
+
+    const none = try recallMemory(a, "", "zzz-nope");
+    defer a.free(none);
+    try std.testing.expect(std.mem.indexOf(u8, none, "No memory") != null);
 }
 
 test "orchestration: deleteMemory and disabled-safe empty injection" {

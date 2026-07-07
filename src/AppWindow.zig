@@ -176,6 +176,12 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
             exportAiChatMarkdown(session, mode);
         }
     }.cb);
+    // `/copy [full|clean]` puts the same Markdown on the clipboard instead.
+    ai_chat.setTranscriptCopyTrigger(struct {
+        fn cb(session: *ai_chat.Session, mode: ai_chat.MarkdownExportMode) void {
+            copyAiChatMarkdown(session, mode);
+        }
+    }.cb);
     // `/model [name]` switches the active session's profile (and summarizes the
     // prior context with the new model). Empty pending name => open the picker.
     ai_chat.setModelSwitchTrigger(struct {
@@ -3259,6 +3265,24 @@ fn exportAiChatMarkdown(session: *ai_chat.Session, mode: ai_chat.MarkdownExportM
     std.debug.print("Exported AI chat Markdown to {s}\n", .{path});
 }
 
+fn copyAiChatMarkdown(session: *ai_chat.Session, mode: ai_chat.MarkdownExportMode) void {
+    const allocator = g_allocator orelse return;
+
+    const markdown = session.allocMarkdownExport(allocator, mode) catch |err| {
+        log.warn("failed to render AI chat Markdown for copy: {}", .{err});
+        overlays.showStatusToast("Copy failed");
+        return;
+    };
+    defer allocator.free(markdown);
+
+    if (input.copyTextToClipboard(markdown)) {
+        overlays.showCopyToast(markdown.len);
+        g_force_rebuild = true;
+    } else {
+        overlays.showStatusToast("Copy failed");
+    }
+}
+
 pub fn currentTitlebarHeight() f32 {
     if (g_window) |w| return @floatFromInt(window_backend.titlebarHeight(w));
     return titlebar.titlebarHeight();
@@ -4859,6 +4883,7 @@ const MemoryDebugTotals = struct {
     visible_surfaces: usize = 0,
     surfaces: usize = 0,
     terminal_page_bytes: usize = 0,
+    terminal_page_committed_bytes: usize = 0,
     terminal_page_limit_bytes: usize = 0,
     terminal_min_page_bytes: usize = 0,
     renderer_cpu_capacity_bytes: usize = 0,
@@ -4872,6 +4897,7 @@ const SurfaceMemoryDebug = struct {
     rows: usize = 0,
     screen_count: usize = 0,
     terminal_page_bytes: usize = 0,
+    terminal_page_committed_bytes: usize = 0,
     terminal_page_limit_bytes: usize = 0,
     terminal_min_page_bytes: usize = 0,
     renderer_cpu_capacity_bytes: usize = 0,
@@ -4901,6 +4927,15 @@ fn collectSurfaceMemoryDebug(surface: *Surface) SurfaceMemoryDebug {
         const screen = entry.value.*;
         stats.screen_count += 1;
         stats.terminal_page_bytes += screen.pages.page_size;
+        // page_size excludes the pool's preheated-but-unused pages (committed
+        // via VirtualAlloc at init), while the pool arena's capacity includes
+        // the in-use pooled pages — so take the max instead of summing.
+        // ponytail: undercounts a screen holding both pool surplus and
+        // oversized non-pool pages; fine for a debug metric.
+        stats.terminal_page_committed_bytes += @max(
+            screen.pages.page_size,
+            screen.pages.pool.pages.arena.queryCapacity(),
+        );
         stats.terminal_page_limit_bytes += screen.pages.explicit_max_size;
         stats.terminal_min_page_bytes += screen.pages.min_max_size;
     }
@@ -4945,6 +4980,7 @@ fn maybePrintMemoryDebug(now: i64) void {
             totals.surfaces += 1;
             if (visible) totals.visible_surfaces += 1;
             totals.terminal_page_bytes += stats.terminal_page_bytes;
+            totals.terminal_page_committed_bytes += stats.terminal_page_committed_bytes;
             totals.terminal_page_limit_bytes += stats.terminal_page_limit_bytes;
             totals.terminal_min_page_bytes += stats.terminal_min_page_bytes;
             totals.renderer_cpu_capacity_bytes += stats.renderer_cpu_capacity_bytes;
@@ -4993,7 +5029,7 @@ fn maybePrintMemoryDebug(now: i64) void {
         font_stats.icon_atlas_gpu_bytes +
         font_stats.titlebar_atlas_gpu_bytes;
     const tracked_cpu_bytes =
-        totals.terminal_page_bytes +
+        totals.terminal_page_committed_bytes +
         totals.renderer_cpu_capacity_bytes +
         font_cpu_bytes +
         totals.kitty_pending_cpu_bytes;
@@ -5024,7 +5060,7 @@ fn maybePrintMemoryDebug(now: i64) void {
     if (memory_debug.queryProcess()) |process| {
         const untracked_private = process.private_usage -| tracked_cpu_bytes;
         std.debug.print(
-            "[memory] process private={d:.1}MiB ws={d:.1}MiB commit={d:.1}MiB peak_ws={d:.1}MiB tabs={} ai_tabs={} surfaces={} visible_surfaces={} terminal_pages={d:.1}/{d:.1}MiB min={d:.1}MiB renderer_cap={d:.1}MiB font_atlas(cpu/gpu)={d:.1}/{d:.1}MiB kitty_bytes(cpu/gpu)={d:.1}/{d:.1}MiB fbo={d:.1}MiB tracked_cpu={d:.1}MiB untracked_private~={d:.1}MiB faults={}\n",
+            "[memory] process private={d:.1}MiB ws={d:.1}MiB commit={d:.1}MiB peak_ws={d:.1}MiB tabs={} ai_tabs={} surfaces={} visible_surfaces={} terminal_pages={d:.1}/{d:.1}MiB committed={d:.1}MiB min={d:.1}MiB renderer_cap={d:.1}MiB font_atlas(cpu/gpu)={d:.1}/{d:.1}MiB kitty_bytes(cpu/gpu)={d:.1}/{d:.1}MiB fbo={d:.1}MiB tracked_cpu={d:.1}MiB untracked_private~={d:.1}MiB faults={}\n",
             .{
                 memory_debug.mib(process.private_usage),
                 memory_debug.mib(process.working_set),
@@ -5036,6 +5072,7 @@ fn maybePrintMemoryDebug(now: i64) void {
                 totals.visible_surfaces,
                 memory_debug.mib(totals.terminal_page_bytes),
                 memory_debug.mib(totals.terminal_page_limit_bytes),
+                memory_debug.mib(totals.terminal_page_committed_bytes),
                 memory_debug.mib(totals.terminal_min_page_bytes),
                 memory_debug.mib(totals.renderer_cpu_capacity_bytes),
                 memory_debug.mib(font_cpu_bytes),
