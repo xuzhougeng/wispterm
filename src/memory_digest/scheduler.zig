@@ -363,6 +363,7 @@ fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
         remote_sources = std.mem.concat(arena, run_mod.RemoteSource, &.{ ssh_sources, wsl_sources }) catch &.{};
     }
 
+    const run_kind = if (params.manual) "manual" else "scheduler";
     const progress_sink: ?run_mod.ProgressSink = if (params.manual)
         .{ .ctx = @ptrCast(&g_progress_ctx), .onProgressFn = onRunProgress }
     else
@@ -385,14 +386,28 @@ fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
         // ponytail: no saveLastRun here — the 60s tick throttle naturally
         // retries later today. M3's runs.json will own richer retry/backoff
         // bookkeeping; until then "just try again next tick" is enough.
-        std.log.warn("memory_digest: scheduler run failed: {s}", .{@errorName(err)});
+        std.log.warn("memory_digest: {s} run failed: {s}", .{ run_kind, @errorName(err) });
         if (params.manual) setProgress(.failed, true, .{ .detail = "Digest run failed" });
         return;
     };
 
+    if (summary.sessions_collected == 0) {
+        std.log.info(
+            "memory_digest: {s} found no sessions (claude={s}, codex={s}, wispterm={s}, remote_sources={d}, backfill_days={d})",
+            .{
+                run_kind,
+                local_roots.claude_projects_dir,
+                local_roots.codex_sessions_dir,
+                local_roots.wispterm_sessions_dir,
+                remote_sources.len,
+                params.backfill_days,
+            },
+        );
+    }
     std.log.info(
-        "memory_digest: scheduler run ok, {d} sessions, {d} days, {d} summarized, {d} failed, {d} tokens ({d} prompt + {d} completion)",
+        "memory_digest: {s} run ok, {d} sessions, {d} days, {d} summarized, {d} failed, {d} tokens ({d} prompt + {d} completion)",
         .{
+            run_kind,
             summary.sessions_collected,
             summary.days_written,
             summary.sessions_summarized,
