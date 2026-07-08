@@ -9,6 +9,7 @@ const feishu_config = @import("feishu_config.zig");
 const quick_ai_config = @import("quick_ai_config.zig");
 const session_launcher = @import("session_launcher.zig");
 const command_palette_state = @import("command_palette_state.zig");
+const memory_center = @import("memory_center.zig");
 const command_registry = @import("../../command/registry.zig");
 
 /// User command snippets loaded from `<config-dir>/snippets/*.md`, re-read each
@@ -45,10 +46,12 @@ pub const OverlayState = struct {
     quick_ai: QuickAiFormState = .{},
     session: session_launcher.State = .{},
     command_palette: command_palette_state.State = .{},
+    memory_center: memory_center.State = .{},
     snippets: SnippetState = .{},
 
     pub fn deinit(self: *OverlayState, allocator: std.mem.Allocator) void {
         self.settings.deinit(allocator);
+        self.memory_center.deinit();
         command_registry.freeCommandList(allocator, self.snippets.items);
         self.snippets = .{};
     }
@@ -68,6 +71,7 @@ test "overlay state aggregates migrated overlay groups" {
     state.assistant_profiles.setFormField(.name, "claude");
     state.session.ai_history_source_selected = 2;
     state.command_palette.openWithMode(.commands);
+    state.memory_center.visible = true;
     state.mcp.beginAdd();
     state.mcp.setFormField(.name, "srv");
 
@@ -79,6 +83,7 @@ test "overlay state aggregates migrated overlay groups" {
     try std.testing.expectEqualStrings("claude", state.assistant_profiles.formField(.name));
     try std.testing.expectEqual(@as(usize, 2), state.session.ai_history_source_selected);
     try std.testing.expect(state.command_palette.visible);
+    try std.testing.expect(state.memory_center.visible);
     try std.testing.expectEqualStrings("srv", state.mcp.formField(.name));
 }
 

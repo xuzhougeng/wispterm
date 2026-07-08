@@ -3208,6 +3208,9 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
     if (overlays.settingsPageVisible()) {
         return overlays.settingsPageHandleKey(key_event);
     }
+    if (overlays.memoryCenterVisible()) {
+        return overlays.memoryCenterHandleKey(key_event);
+    }
     if (AppWindow.weixin_qr_panel.visible()) {
         switch (ev.key_code) {
             platform_input.key_escape => overlays.weixinQrPanelHandleAction(.close),
@@ -5415,6 +5418,22 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
         }
         return;
     }
+    if (overlays.memoryCenterVisible()) {
+        if (ev.button == .left and ev.action == .press) {
+            const win = AppWindow.g_window orelse return;
+            const fb = window_backend.framebufferSize(win);
+            const w_f: f32 = @floatFromInt(fb.width);
+            const h_f: f32 = @floatFromInt(fb.height);
+            const top_offset: f32 = @floatCast(titlebarHeight());
+            const xpos: f64 = @floatFromInt(ev.x);
+            const ypos: f64 = @floatFromInt(ev.y);
+            if (!overlays.memoryCenterContainsPoint(xpos, ypos, w_f, h_f, top_offset)) {
+                overlays.memoryCenterClose();
+                requestInputRepaint();
+            }
+        }
+        return;
+    }
     if (overlays.commandPaletteVisible()) {
         if (ev.button == .left and ev.action == .press) {
             const win = AppWindow.g_window orelse return;
@@ -5424,9 +5443,13 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             const top_offset: f32 = @floatCast(titlebarHeight());
             const xpos: f64 = @floatFromInt(ev.x);
             const ypos: f64 = @floatFromInt(ev.y);
-            if (overlays.commandPaletteExecuteAt(xpos, ypos, w_f, h_f, top_offset)) return;
+            if (overlays.commandPaletteExecuteAt(xpos, ypos, w_f, h_f, top_offset)) {
+                requestInputRepaint();
+                return;
+            }
             if (!overlays.commandPaletteContainsPoint(xpos, ypos, w_f, h_f, top_offset)) {
                 overlays.commandPaletteClose();
+                requestInputRepaint();
             }
         }
         return;
@@ -6846,6 +6869,11 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
     if (overlays.settingsPageVisible()) {
         overlays.settingsPageHandleScroll(@floatFromInt(ev.delta));
         requestInputRebuild();
+        return;
+    }
+    if (overlays.memoryCenterVisible()) {
+        overlays.memoryCenterHandleScroll(@floatFromInt(ev.delta));
+        requestInputRepaint();
         return;
     }
     if (overlays.commandPaletteVisible()) {

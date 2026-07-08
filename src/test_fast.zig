@@ -197,6 +197,7 @@ test {
     _ = @import("renderer/overlays/startup_shortcuts_layout.zig");
     _ = @import("renderer/overlays/settings_page_layout.zig");
     _ = @import("renderer/overlays/settings_page.zig");
+    _ = @import("renderer/overlays/memory_center.zig");
     _ = @import("renderer/overlays/toasts.zig");
     _ = @import("renderer/overlays/confirm_modals.zig");
     _ = @import("renderer/overlays/ssh_profiles.zig");
@@ -349,6 +350,7 @@ test {
     _ = @import("memory_digest/scheduler.zig");
     _ = @import("memory_digest/remote.zig");
     _ = @import("memory_digest/sources.zig");
+    _ = @import("memory_viewer.zig");
     _ = @import("skill/scan.zig");
     _ = @import("skill/install.zig");
     _ = @import("ssh/error.zig");
