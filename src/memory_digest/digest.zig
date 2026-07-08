@@ -48,6 +48,23 @@ const PROMPT_HIGHLIGHTS_SYSTEM =
 pub const MapOptions = struct {
     max_chars_per_message: usize = 2000,
     input_budget_chars: usize = 24_000,
+    progress_sink: ?MapProgressSink = null,
+};
+
+pub const MapProgress = struct {
+    chunk_index: usize,
+    chunk_total: usize,
+    prompt_bytes: usize,
+    rolling: bool,
+};
+
+pub const MapProgressSink = struct {
+    ctx: *anyopaque,
+    onProgressFn: *const fn (*anyopaque, MapProgress) void,
+
+    pub fn notify(self: MapProgressSink, progress: MapProgress) void {
+        self.onProgressFn(self.ctx, progress);
+    }
 };
 
 pub const MapResult = struct {
@@ -202,6 +219,12 @@ pub fn summarizeSession(
         if (!is_last) {
             const user_text = try buildRollingUserText(gpa, rolling, chunk_text);
             defer gpa.free(user_text);
+            if (opts.progress_sink) |sink| sink.notify(.{
+                .chunk_index = idx + 1,
+                .chunk_total = num_chunks,
+                .prompt_bytes = user_text.len,
+                .rolling = true,
+            });
             const resp = try completer.complete(gpa, PROMPT_B_SYSTEM, user_text);
             if (rolling) |r| gpa.free(r);
             rolling = resp;
@@ -212,6 +235,12 @@ pub fn summarizeSession(
         // rolling summary as prior context.
         const user_text = try buildFinalUserText(gpa, old_summary, rolling, chunk_text);
         defer gpa.free(user_text);
+        if (opts.progress_sink) |sink| sink.notify(.{
+            .chunk_index = idx + 1,
+            .chunk_total = num_chunks,
+            .prompt_bytes = user_text.len,
+            .rolling = false,
+        });
 
         var raw = try completer.complete(gpa, PROMPT_A_SYSTEM, user_text);
         defer gpa.free(raw);
