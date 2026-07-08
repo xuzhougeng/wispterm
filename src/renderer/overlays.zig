@@ -41,6 +41,7 @@ const overlay_state = @import("overlays/state.zig");
 const confirm_modals = @import("overlays/confirm_modals.zig");
 const settings_page = @import("overlays/settings_page.zig");
 const settings_page_layout = @import("overlays/settings_page_layout.zig");
+const memory_center = @import("overlays/memory_center.zig");
 const toasts = @import("overlays/toasts.zig");
 const ssh_profiles = @import("overlays/ssh_profiles.zig");
 const ssh_profiles_layout = @import("overlays/ssh_profiles_layout.zig");
@@ -66,6 +67,7 @@ const i18n = @import("../i18n.zig");
 const ai_model_switch = @import("../assistant/conversation/model_switch.zig");
 const agent_integration_prompt = @import("../terminal_agents/integration_prompt.zig");
 const ai_history_time = @import("../terminal_agents/sessions/time.zig");
+const text_wrap = @import("../text_wrap.zig");
 
 const ui_pipeline = @import("ui_pipeline.zig");
 
@@ -180,6 +182,10 @@ fn launcherState() *session_launcher.State {
 
 fn commandPaletteState() *command_palette_state.State {
     return &overlayState().command_palette;
+}
+
+fn memoryCenterState() *memory_center.State {
+    return &overlayState().memory_center;
 }
 
 fn switchModelTarget() ?*AppWindow.ai_chat.Session {
@@ -762,6 +768,7 @@ fn executeCommand(action: CommandAction) void {
         .open_latest_release => openLatestRelease(),
         .show_whats_new => showWhatsNew(),
         .show_integration_prompt => integrationPromptOpen(),
+        .open_memory_center => memoryCenterOpen(),
         .open_skill_center => {
             _ = AppWindow.spawnSkillCenterTab();
         },
@@ -6630,6 +6637,178 @@ pub fn settingsPageHandleScroll(delta_y: f64) void {
     settingsState().handleScroll(delta_y);
 }
 
+pub fn memoryCenterVisible() bool {
+    return memoryCenterState().visible;
+}
+
+pub fn memoryCenterOpen() void {
+    const allocator = AppWindow.g_allocator orelse std.heap.page_allocator;
+    memoryCenterState().open(allocator);
+}
+
+pub fn memoryCenterClose() void {
+    memoryCenterState().close();
+}
+
+pub fn memoryCenterHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
+    if (!memoryCenterVisible()) return .none;
+    memoryCenterState().handleKey(ev);
+    return .repaint;
+}
+
+pub fn memoryCenterContainsPoint(xpos: f64, ypos: f64, window_width: f32, window_height: f32, top_offset: f32) bool {
+    const layout = memoryCenterLayout(window_width, window_height, top_offset);
+    const x: f32 = @floatCast(xpos);
+    const y: f32 = @floatCast(ypos);
+    return x >= layout.x and x <= layout.x + layout.w and y >= layout.top_px and y <= layout.top_px + layout.h;
+}
+
+pub fn memoryCenterHandleScroll(delta_y: f64) void {
+    memoryCenterState().handleScroll(delta_y);
+}
+
+const MemoryCenterLayout = struct {
+    x: f32,
+    top_px: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    list_x: f32,
+    list_w: f32,
+    detail_x: f32,
+    detail_w: f32,
+    body_top: f32,
+    body_h: f32,
+};
+
+fn memoryCenterLayout(window_width: f32, window_height: f32, top_offset: f32) MemoryCenterLayout {
+    const margin: f32 = 32;
+    const w = @min(window_width - margin * 2, 1120);
+    const h = @min(window_height - top_offset - margin * 2, 720);
+    const x = @round((window_width - w) / 2);
+    const top_px = @round(top_offset + @max(18.0, (window_height - top_offset - h) / 2));
+    const y = @round(window_height - top_px - h);
+    const list_w = @round(@max(260.0, @min(390.0, w * 0.36)));
+    return .{
+        .x = x,
+        .top_px = top_px,
+        .y = y,
+        .w = w,
+        .h = h,
+        .list_x = x + 18,
+        .list_w = list_w,
+        .detail_x = x + 18 + list_w + 18,
+        .detail_w = w - list_w - 54,
+        .body_top = top_px + 116,
+        .body_h = h - 146,
+    };
+}
+
+pub fn renderMemoryCenter(window_width: f32, window_height: f32, top_offset: f32) void {
+    if (!memoryCenterVisible()) return;
+    const st = memoryCenterState();
+    const layout = memoryCenterLayout(window_width, window_height, top_offset);
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const accent = AppWindow.g_theme.cursor_color;
+    const muted = mixColor(bg, fg, 0.58);
+    const panel = mixColor(bg, fg, 0.035);
+
+    ui_pipeline.fillQuadAlpha(0, 0, window_width, window_height, .{ 0, 0, 0 }, 0.16);
+    renderRoundedQuadAlpha(layout.x - 1, layout.y - 1, layout.w + 2, layout.h + 2, 11, mixColor(bg, accent, 0.24), 0.24);
+    renderRoundedQuadAlpha(layout.x, layout.y, layout.w, layout.h, 10, panel, 0.96);
+
+    const title_y = textYFromTop(window_height, layout.top_px + 18);
+    renderTitlebarText("Memory Center", layout.x + 24, title_y, mixColor(fg, accent, 0.14));
+    renderTitlebarText("Esc", layout.x + layout.w - 52, title_y, mixColor(bg, fg, 0.72));
+
+    renderMemorySourceTabs(st, layout, window_height, accent, fg, muted);
+
+    if (st.status().len != 0) {
+        renderTitlebarTextLimited(st.status(), layout.x + 24, textYFromTop(window_height, layout.top_px + 84), .{ 1.0, 0.55, 0.45 }, layout.w - 48);
+        return;
+    }
+
+    renderMemoryList(st, layout, window_height, bg, fg, accent, muted);
+    renderMemoryDetail(st, layout, window_height, fg, accent, muted);
+}
+
+fn renderMemorySourceTabs(st: *const memory_center.State, layout: MemoryCenterLayout, window_height: f32, accent: [3]f32, fg: [3]f32, muted: [3]f32) void {
+    const tab_y = textYFromTop(window_height, layout.top_px + 54);
+    const tabs = [_]memory_center.Source{ .remembered, .digest };
+    var x = layout.x + 24;
+    for (tabs) |source| {
+        const label = source.label();
+        const active = st.source == source;
+        const w = @round(measureTitlebarText(label) + 26);
+        const box_y = window_height - (layout.top_px + 50) - 26;
+        renderRoundedQuadAlpha(x, box_y, w, 26, 6, if (active) mixColor(AppWindow.g_theme.background, accent, 0.22) else mixColor(AppWindow.g_theme.background, fg, 0.075), 0.86);
+        renderTitlebarTextLimited(label, x + 13, tab_y, if (active) accent else muted, w - 20);
+        x += w + 10;
+    }
+}
+
+fn renderMemoryList(st: *const memory_center.State, layout: MemoryCenterLayout, window_height: f32, bg: [3]f32, fg: [3]f32, accent: [3]f32, muted: [3]f32) void {
+    const count = st.count();
+    const row_h: f32 = 48;
+    const list_top = layout.body_top;
+    const visible_rows: usize = @intFromFloat(@max(1.0, @floor(layout.body_h / row_h)));
+    const first = if (st.selected >= visible_rows) st.selected - visible_rows + 1 else 0;
+    if (count == 0) {
+        renderTitlebarTextLimited("No memory in this source.", layout.list_x, textYFromTop(window_height, list_top), muted, layout.list_w);
+        return;
+    }
+    var i: usize = first;
+    while (i < count and i < first + visible_rows) : (i += 1) {
+        const row = st.snapshot.?.rowAt(st.source, i) orelse continue;
+        const top = list_top + @as(f32, @floatFromInt(i - first)) * row_h;
+        const gl_y = @round(window_height - top - row_h);
+        const selected = i == st.selected;
+        if (selected) {
+            renderRoundedQuadAlpha(layout.list_x - 6, gl_y + 3, layout.list_w + 6, row_h - 6, 6, mixColor(bg, accent, 0.22), 0.82);
+            ui_pipeline.fillQuadAlpha(layout.list_x - 6, gl_y + 3, 3, row_h - 6, accent, 0.82);
+        }
+        const title_y = textYFromTop(window_height, top + 8);
+        const detail_y = textYFromTop(window_height, top + 27);
+        renderTitlebarTextStrongLimited(row.title, layout.list_x, title_y, if (selected) mixColor(fg, accent, 0.12) else fg, layout.list_w - 8);
+        renderTitlebarTextLimited(row.detail, layout.list_x, detail_y, muted, layout.list_w - 8);
+    }
+}
+
+fn renderMemoryDetail(st: *const memory_center.State, layout: MemoryCenterLayout, window_height: f32, fg: [3]f32, accent: [3]f32, muted: [3]f32) void {
+    const row = st.selectedRow() orelse return;
+    const head_y = textYFromTop(window_height, layout.body_top);
+    const meta_y = textYFromTop(window_height, layout.body_top + 22);
+    renderTitlebarTextStrongLimited(row.title, layout.detail_x, head_y, mixColor(fg, accent, 0.12), layout.detail_w);
+    var meta_buf: [192]u8 = undefined;
+    const meta = std.fmt.bufPrint(&meta_buf, "{s} / {s}", .{ row.source.label(), row.scope }) catch row.scope;
+    renderTitlebarTextLimited(meta, layout.detail_x, meta_y, muted, layout.detail_w);
+
+    const line_h = overlayLineHeight();
+    const text_top = layout.body_top + 56;
+    const max_w = layout.detail_w;
+    const cols: usize = @max(16, @as(usize, @intFromFloat(max_w / @max(1.0, font.g_titlebar_cell_width))));
+    var line_index: usize = 0;
+    var rendered: usize = 0;
+    var offset: usize = 0;
+    const max_lines: usize = @intFromFloat(@max(1.0, @floor((layout.body_h - 56) / line_h)));
+    while (offset < row.body.len and rendered < max_lines) {
+        const wrap_end = text_wrap.wrapEnd(row.body, offset, cols);
+        const newline = std.mem.indexOfScalarPos(u8, row.body, offset, '\n');
+        const end = if (newline) |nl| @min(wrap_end, nl) else wrap_end;
+        if (line_index >= st.detail_scroll) {
+            const top = text_top + @as(f32, @floatFromInt(rendered)) * line_h;
+            renderTitlebarTextLimited(row.body[offset..end], layout.detail_x, textYFromTop(window_height, top), fg, max_w);
+            rendered += 1;
+        }
+        line_index += 1;
+        offset = if (end < row.body.len and row.body[end] == '\n') end + 1 else text_wrap.skipSpaces(row.body, end);
+    }
+    if (rendered == 0) {
+        renderTitlebarTextLimited("(empty)", layout.detail_x, textYFromTop(window_height, text_top), muted, max_w);
+    }
+}
+
 // ============================================================================
 // FPS debug overlay state
 // ============================================================================
@@ -8166,6 +8345,7 @@ pub fn whatsNewVisible() bool {
 pub fn anyBlockingOverlayVisible() bool {
     return commandPaletteVisible() or
         settingsPageVisible() or
+        memoryCenterVisible() or
         sessionLauncherVisible() or
         whatsNewVisible() or
         integrationPromptVisible() or
