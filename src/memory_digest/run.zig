@@ -411,7 +411,7 @@ fn runOnceWithLlm(
         else
             "";
         if (opts.progress_sink) |sink| {
-            std.log.warn("memory_digest: summarizing {s}", .{progress_detail});
+            std.log.warn("memory_digest: summarizing {s} file={s} messages={d}", .{ progress_detail, s.source_file, s.new_messages.len });
             sink.notify(.{ .summarizing = .{
                 .total = collected.len,
                 .completed = sessions_summarized,

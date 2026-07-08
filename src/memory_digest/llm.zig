@@ -101,6 +101,15 @@ pub const Client = struct {
         };
 
         const uri = try std.Uri.parse(endpoint);
+        var timer = try std.time.Timer.start();
+        std.log.warn("memory_digest: llm request start model={s} protocol={s} endpoint={s} prompt_bytes={d} body_bytes={d} timeout={d}s", .{
+            config.model,
+            @tagName(config.protocol),
+            endpoint,
+            user_text.len,
+            body.len,
+            config.timeout_seconds,
+        });
 
         var req = client.request(.POST, uri, .{
             .redirect_behavior = .unhandled,
@@ -114,10 +123,9 @@ pub const Client = struct {
             return err;
         };
         defer req.deinit();
+        std.log.warn("memory_digest: llm request connected model={s} elapsed_ms={d}", .{ config.model, timer.read() / std.time.ns_per_ms });
 
         setRequestTimeout(&req, config.timeout_seconds);
-
-        var timer = try std.time.Timer.start();
 
         req.transfer_encoding = .{ .content_length = body.len };
         req.sendBodyComplete(@constCast(body)) catch |err| {
@@ -127,6 +135,7 @@ pub const Client = struct {
             }
             return err;
         };
+        std.log.warn("memory_digest: llm request body sent model={s} elapsed_ms={d}", .{ config.model, timer.read() / std.time.ns_per_ms });
 
         // Reuses fetch()'s own redirect_buffer sizing (8KB) since
         // redirect_behavior is `.unhandled` here and this buffer is unused
@@ -144,6 +153,7 @@ pub const Client = struct {
             }
             return err;
         };
+        std.log.warn("memory_digest: llm response head model={s} status={d} elapsed_ms={d}", .{ config.model, @intFromEnum(response.head.status), timer.read() / std.time.ns_per_ms });
 
         var resp_buf: std.Io.Writer.Allocating = .init(gpa);
         defer resp_buf.deinit();
@@ -184,11 +194,16 @@ pub const Client = struct {
 
         var resp_list = resp_buf.toArrayList();
         defer resp_list.deinit(gpa);
+        std.log.warn("memory_digest: llm response body model={s} bytes={d} elapsed_ms={d}", .{ config.model, resp_list.items.len, timer.read() / std.time.ns_per_ms });
 
-        if (response.head.status != .ok) return error.LlmHttpError;
+        if (response.head.status != .ok) {
+            std.log.warn("memory_digest: llm request failed status={d} body_bytes={d}", .{ @intFromEnum(response.head.status), resp_list.items.len });
+            return error.LlmHttpError;
+        }
 
         var api_result = try protocol.parseApiResponse(gpa, resp_list.items, config.protocol);
         if (api_result.api_error) {
+            std.log.warn("memory_digest: llm api error model={s} elapsed_ms={d}", .{ config.model, timer.read() / std.time.ns_per_ms });
             api_result.deinit(gpa);
             return error.LlmApiError;
         }

@@ -5084,8 +5084,8 @@ fn syncMemoryDigestToast() void {
         .summarizing => if (progress.detail().len != 0)
             std.fmt.bufPrint(
                 &buf,
-                "Memory digest: summarizing {d}/{d} ({d} failed) - {s}",
-                .{ progress.sessions_done, progress.sessions_total, progress.sessions_failed, progress.detail() },
+                "Memory digest: summarizing {s} ({d}/{d} done, {d} failed)",
+                .{ progress.detail(), progress.sessions_done, progress.sessions_total, progress.sessions_failed },
             ) catch "Memory digest: summarizing sessions"
         else
             std.fmt.bufPrint(
