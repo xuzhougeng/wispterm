@@ -116,10 +116,10 @@ pub const OwnedLocalRoots = struct {
 /// Assembles the three real local session roots (Claude/.claude/projects,
 /// Codex/.codex/sessions, WispTerm's own agent-history/sessions), matching
 /// scan_main.zig's dev-CLI wiring exactly so both entry points scan the same
-/// on-disk sources. Shared here so the M2 scheduler doesn't drift from the
-/// CLI's root assembly.
+/// on-disk sources. Shared here so the scheduler doesn't drift from the CLI's
+/// root assembly.
 pub fn defaultLocalRoots(gpa: std.mem.Allocator) !OwnedLocalRoots {
-    const home = try std.process.getEnvVarOwned(gpa, "HOME");
+    const home = try dirs.homeDir(gpa);
     defer gpa.free(home);
 
     const claude_dir = try std.fs.path.join(gpa, &.{ home, ".claude", "projects" });
