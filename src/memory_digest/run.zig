@@ -43,6 +43,26 @@ pub const Options = struct {
     /// WSL/SSH sources to collect from in addition to local roots (spec §6,
     /// M3). Empty by default — M1/M2 behavior is local-only.
     remote_sources: []const RemoteSource = &.{},
+    progress_sink: ?ProgressSink = null,
+};
+
+pub const Progress = union(enum) {
+    scanning,
+    summarizing: struct {
+        total: usize,
+        completed: usize,
+        failed: usize,
+    },
+    finalizing,
+};
+
+pub const ProgressSink = struct {
+    ctx: *anyopaque,
+    onProgressFn: *const fn (*anyopaque, Progress) void,
+
+    pub fn notify(self: ProgressSink, progress: Progress) void {
+        self.onProgressFn(self.ctx, progress);
+    }
 };
 
 pub const Summary = struct {
@@ -230,6 +250,8 @@ pub fn runOnce(gpa: std.mem.Allocator, opts: Options) !Summary {
     else
         @as(i128, opts.now_ms) * 1_000_000 - @as(i128, opts.backfill_days) * 86_400_000_000_000;
 
+    if (opts.progress_sink) |sink| sink.notify(.scanning);
+
     var collected_sessions: std.ArrayListUnmanaged(types.CollectedSession) = .empty;
     var collect_result = try collectAllSources(gpa, arena, opts, &collected_sessions, &cur, min_mtime_ns);
     defer collect_result.local.deinit();
@@ -248,6 +270,8 @@ pub fn runOnce(gpa: std.mem.Allocator, opts: Options) !Summary {
             return err;
         }
     }
+
+    if (opts.progress_sink) |sink| sink.notify(.finalizing);
 
     // M1: cursor advancement is unconditional here (equivalent to the old
     // emit()-time advancement) — a real artifact-write failure below still
@@ -366,6 +390,14 @@ fn runOnceWithLlm(
     var sessions_summarized: usize = 0;
     var sessions_failed: usize = 0;
 
+    if (opts.progress_sink) |sink| {
+        sink.notify(.{ .summarizing = .{
+            .total = collected.len,
+            .completed = 0,
+            .failed = 0,
+        } });
+    }
+
     for (collected) |s| {
         const key = try summaryKey(arena, s.source_id, s.provider, s.session_id);
         const old_summary = try findOldSummary(arena, &summaries, s.source_id, s.provider, s.session_id, key);
@@ -373,11 +405,25 @@ fn runOnceWithLlm(
         const result = digest.summarizeSession(arena, gpa, completer, s, old_summary, map_opts) catch |err| {
             std.log.warn("memory_digest: map failed for {s} ({s}): {s}", .{ @tagName(s.provider), s.session_id, @errorName(err) });
             sessions_failed += 1;
+            if (opts.progress_sink) |sink| {
+                sink.notify(.{ .summarizing = .{
+                    .total = collected.len,
+                    .completed = sessions_summarized,
+                    .failed = sessions_failed,
+                } });
+            }
             continue;
         };
 
         try advanceCursor(cur, s);
         sessions_summarized += 1;
+        if (opts.progress_sink) |sink| {
+            sink.notify(.{ .summarizing = .{
+                .total = collected.len,
+                .completed = sessions_summarized,
+                .failed = sessions_failed,
+            } });
+        }
 
         const date_key = ai_types.dateKeyFromMs(lastActivityMs(s, opts.now_ms), opts.tz_offset_seconds);
         var date_buf: [10]u8 = undefined;
@@ -413,6 +459,7 @@ fn runOnceWithLlm(
     // Map results are persisted before reduce runs at all (spec §13): a
     // reduce failure below must not lose already-summarized sessions.
     try summaries.saveToPath(gpa, summaries_path);
+    if (opts.progress_sink) |sink| sink.notify(.finalizing);
 
     // Bucket only the successfully-summarized sessions by day; a session
     // that failed map stays out of every daily/reduce artifact this run
