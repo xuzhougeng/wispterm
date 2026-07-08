@@ -46,6 +46,7 @@ pub const OneShotProfile = struct {
 
 pub fn requestThreadMain(request: *ChatRequest) void {
     const allocator = request.allocator;
+    defer ai_chat.deinitMcpTools(allocator);
     defer request.deinit();
 
     if (request.agent_enabled) {

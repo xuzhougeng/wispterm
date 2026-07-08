@@ -519,6 +519,10 @@ pub const CachedServer = struct {
     spec_len: usize,
 };
 
+fn freeServerItems(allocator: std.mem.Allocator, items: []const CachedServer) void {
+    for (items) |s| allocator.free(s.name);
+}
+
 threadlocal var g_cache_servers: []CachedServer = &.{};
 threadlocal var g_cache_servers_owned: bool = false;
 threadlocal var g_cache_seen_gen: u64 = 0;
@@ -553,11 +557,18 @@ fn freeCache(allocator: std.mem.Allocator) void {
         g_cache_tools_owned = false;
     }
     if (g_cache_servers_owned) {
-        for (g_cache_servers) |s| allocator.free(s.name);
+        freeServerItems(allocator, g_cache_servers);
         allocator.free(g_cache_servers);
         g_cache_servers = &.{};
         g_cache_servers_owned = false;
     }
+}
+
+/// Release this thread's registry cache. The next ensureCacheFresh call must
+/// rebuild instead of treating the empty cache as current.
+pub fn deinitCache(allocator: std.mem.Allocator) void {
+    freeCache(allocator);
+    g_cache_seen_gen = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -687,7 +698,7 @@ fn loadSnapshotsFromCatalog(allocator: std.mem.Allocator) !CatalogSnapshots {
         specs.deinit(allocator);
         freeToolItems(allocator, tools.items);
         tools.deinit(allocator);
-        for (servers.items) |s| allocator.free(s.name);
+        freeServerItems(allocator, servers.items);
         servers.deinit(allocator);
     }
 
@@ -729,9 +740,24 @@ fn loadSnapshotsFromCatalog(allocator: std.mem.Allocator) !CatalogSnapshots {
             .spec_len = specs.items.len - off,
         });
     }
+    const spec_slice = try specs.toOwnedSlice(allocator);
+    errdefer {
+        freeSpecItems(allocator, spec_slice);
+        allocator.free(spec_slice);
+    }
+    const tool_slice = try tools.toOwnedSlice(allocator);
+    errdefer {
+        freeToolItems(allocator, tool_slice);
+        allocator.free(tool_slice);
+    }
+    const server_slice = try servers.toOwnedSlice(allocator);
+    errdefer {
+        freeServerItems(allocator, server_slice);
+        allocator.free(server_slice);
+    }
     return .{
-        .snap = .{ .specs = try specs.toOwnedSlice(allocator), .tools = try tools.toOwnedSlice(allocator) },
-        .servers = try servers.toOwnedSlice(allocator),
+        .snap = .{ .specs = spec_slice, .tools = tool_slice },
+        .servers = server_slice,
     };
 }
 
@@ -846,7 +872,7 @@ test "reloadCache builds specs from the disk catalog without spawning" {
     try mcp_catalog.upsertServer(a, "cached", mcp_catalog.configHash("/nonexistent/bin", one_arg[0..]), 1, specs[0..]);
 
     reloadCache(a);
-    defer reloadCacheFromServersForTest(a, &.{}); // 释放缓存
+    defer deinitCache(a);
 
     try std.testing.expectEqual(@as(usize, 1), cachedSpecs().len);
     try std.testing.expectEqualStrings("greet", cachedSpecs()[0].name);
@@ -861,6 +887,11 @@ test "reloadCache builds specs from the disk catalog without spawning" {
     try std.testing.expectEqualStrings("fresh", srvs[1].name);
     try std.testing.expect(!srvs[1].discovered);
     try std.testing.expectEqual(@as(usize, 0), srvs[1].spec_len);
+
+    deinitCache(a);
+    try std.testing.expectEqual(@as(usize, 0), cachedSpecs().len);
+    try std.testing.expectEqual(@as(usize, 0), cachedTools().len);
+    try std.testing.expectEqual(@as(usize, 0), cachedServers().len);
 }
 
 test "reloadCache treats a hash-mismatched catalog entry as undiscovered" {

@@ -748,6 +748,10 @@ pub fn reloadMcpTools(allocator: std.mem.Allocator) void {
     mcp_registry.reloadCache(allocator);
 }
 
+pub fn deinitMcpTools(allocator: std.mem.Allocator) void {
+    mcp_registry.deinitCache(allocator);
+}
+
 pub fn reloadFirstPartyToolState(allocator: std.mem.Allocator) void {
     var disabled = first_party_tools.loadDisabledTools(allocator) catch return;
     freeFirstPartyDisabledTools(allocator);
