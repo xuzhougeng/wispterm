@@ -323,6 +323,7 @@ fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
         .completer = client.completer(),
         .model_label = cfg.model,
         .remote_sources = remote_sources,
+        .llm_usage = &client.total_usage,
     }) catch |err| {
         // ponytail: no saveLastRun here — the 60s tick throttle naturally
         // retries later today. M3's runs.json will own richer retry/backoff
@@ -332,8 +333,16 @@ fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
     };
 
     std.log.info(
-        "memory_digest: scheduler run ok, {d} sessions, {d} days, {d} summarized, {d} failed",
-        .{ summary.sessions_collected, summary.days_written, summary.sessions_summarized, summary.sessions_failed },
+        "memory_digest: scheduler run ok, {d} sessions, {d} days, {d} summarized, {d} failed, {d} tokens ({d} prompt + {d} completion)",
+        .{
+            summary.sessions_collected,
+            summary.days_written,
+            summary.sessions_summarized,
+            summary.sessions_failed,
+            client.total_usage.total_tokens,
+            client.total_usage.prompt_tokens,
+            client.total_usage.completion_tokens,
+        },
     );
     markRanToday(gpa, params.now_ms, params.tz_offset_seconds);
 }

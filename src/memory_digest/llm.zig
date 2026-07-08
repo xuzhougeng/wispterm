@@ -5,7 +5,17 @@
 //! `Client.complete` is network glue with no unit test here — its components
 //! (protocol.buildRequestJson/apiEndpoint/parseApiResponse) are tested in
 //! place; real-network verification happens in Task 7.
+//!
+//! M5 Task 1: `complete()` uses the request-level `std.http.Client` API
+//! (not `fetch()`) so a per-request read/write timeout can be applied to the
+//! underlying socket via SO_RCVTIMEO/SO_SNDTIMEO before the body is sent.
+//! `fetch()` has no timeout knob in 0.15.2 — a hung server would block the
+//! digest scheduler thread forever otherwise (spec A.4 fallback: if this
+//! field chain had not compiled, we'd revert to fetch() + document the
+//! scheduler-thread detach as the only starvation guard; it did compile, see
+//! below).
 const std = @import("std");
+const builtin = @import("builtin");
 const protocol = @import("../assistant/conversation/protocol.zig");
 const profile_codec = @import("../renderer/overlays/profile_codec.zig");
 
@@ -24,10 +34,16 @@ pub const Config = struct {
     model: []const u8,
     protocol: protocol.ApiProtocol,
     max_tokens: u32 = 4096,
+    /// Read/write timeout applied to the request socket (spec M5 Task 1).
+    timeout_seconds: u32 = 120,
 };
 
 pub const Client = struct {
     config: Config,
+    /// Running total of token usage across every `complete()` call made
+    /// through this client (spec M5 Task 1 B.1). Callers read this after a
+    /// run to persist it into store.RunRecord — never reset mid-run.
+    total_usage: protocol.ApiUsage = .{},
 
     pub fn completer(self: *Client) Completer {
         return .{ .ctx = self, .completeFn = completeShim };
@@ -69,36 +85,80 @@ pub const Client = struct {
         };
         defer client.deinit();
 
-        var resp_buf: std.Io.Writer.Allocating = .init(gpa);
-        defer resp_buf.deinit();
-
         const is_anthropic = config.protocol == .anthropic;
         const anthropic_headers = [_]std.http.Header{
             .{ .name = "x-api-key", .value = config.api_key },
             .{ .name = "anthropic-version", .value = "2023-06-01" },
         };
-        const result = try client.fetch(.{
-            .location = .{ .url = endpoint },
-            .method = .POST,
-            .payload = body,
+
+        const uri = try std.Uri.parse(endpoint);
+
+        var req = client.request(.POST, uri, .{
+            .redirect_behavior = .unhandled,
             .headers = .{
                 .content_type = .{ .override = "application/json" },
                 .authorization = if (is_anthropic) .omit else .{ .override = bearer },
             },
             .extra_headers = if (is_anthropic) &anthropic_headers else &.{},
-            .response_writer = &resp_buf.writer,
-        });
+        }) catch |err| {
+            std.log.warn("memory_digest: llm request connect failed (model={s}): {s}", .{ config.model, @errorName(err) });
+            return err;
+        };
+        defer req.deinit();
+
+        setRequestTimeout(&req, config.timeout_seconds);
+
+        var timer = try std.time.Timer.start();
+
+        req.transfer_encoding = .{ .content_length = body.len };
+        req.sendBodyComplete(@constCast(body)) catch |err| {
+            if (isTimeoutError(err)) {
+                std.log.warn("memory_digest: llm request timed out sending body (model={s}, limit={d}s)", .{ config.model, config.timeout_seconds });
+                return error.LlmTimeout;
+            }
+            return err;
+        };
+
+        // Reuses fetch()'s own redirect_buffer sizing (8KB) since
+        // redirect_behavior is `.unhandled` here and this buffer is unused
+        // in that mode, but receiveHead still requires a slice.
+        var redirect_buffer: [8 * 1024]u8 = undefined;
+        var response = req.receiveHead(&redirect_buffer) catch |err| {
+            if (isTimeoutError(err)) {
+                std.log.warn("memory_digest: llm request timed out waiting for response head (model={s}, limit={d}s)", .{ config.model, config.timeout_seconds });
+                return error.LlmTimeout;
+            }
+            return err;
+        };
+
+        var resp_buf: std.Io.Writer.Allocating = .init(gpa);
+        defer resp_buf.deinit();
+
+        var transfer_buffer: [64]u8 = undefined;
+        const body_reader = response.reader(&transfer_buffer);
+        _ = body_reader.streamRemaining(&resp_buf.writer) catch |err| switch (err) {
+            error.ReadFailed => {
+                const body_err = response.bodyErr().?;
+                if (isTimeoutError(body_err)) {
+                    std.log.warn("memory_digest: llm request timed out reading body (model={s}, limit={d}s, elapsed_ms={d})", .{ config.model, config.timeout_seconds, timer.read() / std.time.ns_per_ms });
+                    return error.LlmTimeout;
+                }
+                return body_err;
+            },
+            else => |e| return e,
+        };
 
         var resp_list = resp_buf.toArrayList();
         defer resp_list.deinit(gpa);
 
-        if (result.status != .ok) return error.LlmHttpError;
+        if (response.head.status != .ok) return error.LlmHttpError;
 
         var api_result = try protocol.parseApiResponse(gpa, resp_list.items, config.protocol);
         if (api_result.api_error) {
             api_result.deinit(gpa);
             return error.LlmApiError;
         }
+        if (api_result.usage) |usage| self.total_usage.add(usage);
         if (api_result.reasoning) |reasoning| gpa.free(reasoning);
         if (api_result.tool_calls) |calls| {
             for (calls) |call| call.deinit(gpa);
@@ -107,6 +167,46 @@ pub const Client = struct {
         return api_result.content;
     }
 };
+
+/// True when `err` (or, for the body-read path, the more specific
+/// `http.Reader.BodyError`) is the WouldBlock surfaced by a SO_RCVTIMEO /
+/// SO_SNDTIMEO expiry on a blocking socket (see `setRequestTimeout`).
+fn isTimeoutError(err: anyerror) bool {
+    return err == error.WouldBlock;
+}
+
+/// Applies `timeout_seconds` as a receive+send timeout on the request's
+/// underlying socket (macOS/Linux/BSD via SO_RCVTIMEO/SO_SNDTIMEO — both
+/// take a `timeval` on every posix target Zig supports desktop-side).
+///
+/// `std.http.Client` has no built-in request timeout in 0.15.2 (`fetch()`
+/// can block forever on a stalled server), so this reaches through
+/// `Request.connection.?.stream_reader.getStream().handle` to the raw fd and
+/// sets the option directly. Every field on this chain is public in 0.15.2
+/// (only some *functions* on Connection are file-private), so this compiles
+/// without touching anything std marks private.
+///
+/// Windows has no SO_RCVTIMEO/SNDTIMEO with a `timeval` layout (it wants a
+/// DWORD milliseconds) and this module only ships on desktop hosts running
+/// the memory-digest scheduler (macOS/Linux dev today); a Windows branch is
+/// intentionally deferred rather than guessed at blind.
+/// TODO(windows): setsockopt(SOL_SOCKET, SO_RCVTIMEO/SNDTIMEO, DWORD ms) via
+/// ws2_32 once this scheduler ships on Windows.
+fn setRequestTimeout(req: *std.http.Client.Request, timeout_seconds: u32) void {
+    if (builtin.os.tag == .windows) return; // ponytail: TODO above, no Windows caller yet.
+    if (timeout_seconds == 0) return;
+
+    const connection = req.connection orelse return;
+    const stream = connection.stream_reader.getStream();
+    const tv: std.posix.timeval = .{ .sec = @intCast(timeout_seconds), .usec = 0 };
+    const tv_bytes = std.mem.asBytes(&tv);
+    std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, tv_bytes) catch |err| {
+        std.log.warn("memory_digest: failed to set RCVTIMEO: {s}", .{@errorName(err)});
+    };
+    std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, tv_bytes) catch |err| {
+        std.log.warn("memory_digest: failed to set SNDTIMEO: {s}", .{@errorName(err)});
+    };
+}
 
 /// Picks the profile matching `name`, falling back to the first profile when
 /// `name` is empty or not found. Returns null when there are no profiles.

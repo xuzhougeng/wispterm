@@ -11,6 +11,7 @@ const cursors_mod = @import("cursors.zig");
 const digest = @import("digest.zig");
 const dirs = @import("../platform/dirs.zig");
 const llm = @import("llm.zig");
+const protocol = @import("../assistant/conversation/protocol.zig");
 const remote = @import("remote.zig");
 const store = @import("store.zig");
 const types = @import("types.zig");
@@ -35,6 +36,10 @@ pub const Options = struct {
     completer: ?llm.Completer = null,
     model_label: []const u8 = "",
     max_chars_per_message: usize = 2000,
+    /// Points at the llm.Client's running total_usage (spec M5 Task 1 B.3),
+    /// read into the RunRecord written at the end of this run. null (stub
+    /// completers, M1 raw path, tests) records zero usage.
+    llm_usage: ?*const protocol.ApiUsage = null,
     /// WSL/SSH sources to collect from in addition to local roots (spec §6,
     /// M3). Empty by default — M1/M2 behavior is local-only.
     remote_sources: []const RemoteSource = &.{},
@@ -125,7 +130,9 @@ fn recordRun(
     sessions_summarized: usize,
     sessions_failed: usize,
     llm_calls: usize,
+    llm_usage: ?*const protocol.ApiUsage,
 ) void {
+    const usage = if (llm_usage) |u| u.* else protocol.ApiUsage{};
     const rec: store.RunRecord = .{
         .started_at = started_at,
         .finished_at = std.time.milliTimestamp(),
@@ -134,6 +141,9 @@ fn recordRun(
         .sessions_summarized = @intCast(sessions_summarized),
         .sessions_failed = @intCast(sessions_failed),
         .llm_calls = @intCast(llm_calls),
+        .prompt_tokens = usage.prompt_tokens,
+        .completion_tokens = usage.completion_tokens,
+        .total_tokens = usage.total_tokens,
     };
     store.appendRunRecord(gpa, memory_root, rec) catch |err| {
         std.log.warn("memory_digest: appendRunRecord failed: {s}", .{@errorName(err)});
@@ -229,12 +239,12 @@ pub fn runOnce(gpa: std.mem.Allocator, opts: Options) !Summary {
     if (opts.completer) |completer| {
         var counting: CountingCompleter = .{ .inner = completer };
         if (runOnceWithLlm(gpa, arena, opts, counting.completer(), collected_sessions.items, &cur, cursors_path)) |summary| {
-            recordRun(gpa, opts.memory_root, started_at, overall_status, sources, summary.sessions_summarized, summary.sessions_failed, counting.count);
+            recordRun(gpa, opts.memory_root, started_at, overall_status, sources, summary.sessions_summarized, summary.sessions_failed, counting.count, opts.llm_usage);
             var s = summary;
             s.llm_calls = counting.count;
             return s;
         } else |err| {
-            recordRun(gpa, opts.memory_root, started_at, "failed", sources, 0, 0, counting.count);
+            recordRun(gpa, opts.memory_root, started_at, "failed", sources, 0, 0, counting.count, opts.llm_usage);
             return err;
         }
     }
@@ -285,7 +295,7 @@ pub fn runOnce(gpa: std.mem.Allocator, opts: Options) !Summary {
     try writeIndexFromDisk(gpa, arena, opts.memory_root, opts.now_ms);
     try cur.saveToPath(gpa, cursors_path);
 
-    recordRun(gpa, opts.memory_root, started_at, overall_status, sources, 0, 0, 0);
+    recordRun(gpa, opts.memory_root, started_at, overall_status, sources, 0, 0, 0, opts.llm_usage);
     return .{
         .sessions_collected = collected_sessions.items.len,
         .days_written = day_keys.items.len,
@@ -982,6 +992,71 @@ test "memory_digest_run: llm path writes summaries, projects, highlights and tim
         if (r.llm_calls > 0) saw_llm_calls = true;
     }
     try std.testing.expect(saw_llm_calls);
+}
+
+test "memory_digest_run: llm_usage flows into runs.json, defaults to 0 when unset" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    try writeFixtures(tmp);
+
+    const claude_root = try std.fs.path.join(allocator, &.{ root, "claude" });
+    defer allocator.free(claude_root);
+    const memory_root = try std.fs.path.join(allocator, &.{ root, "memory" });
+    defer allocator.free(memory_root);
+
+    var stub = RoutingStub{ .map_response = MAP_JSON, .reduce_response = REDUCE_JSON };
+    const usage: protocol.ApiUsage = .{ .prompt_tokens = 100, .completion_tokens = 20, .total_tokens = 120 };
+    const opts: Options = .{
+        .roots = .{ .claude_projects_dir = claude_root },
+        .memory_root = memory_root,
+        .now_ms = 1783500000000,
+        .tz_offset_seconds = 8 * 3600,
+        .backfill_days = 0,
+        .completer = stub.completer(),
+        .model_label = "test-model",
+        .llm_usage = &usage,
+    };
+    _ = try runOnce(allocator, opts);
+
+    const RunsShape = struct {
+        runs: []const struct {
+            prompt_tokens: u64 = 0,
+            completion_tokens: u64 = 0,
+            total_tokens: u64 = 0,
+        } = &.{},
+    };
+
+    const runs = try tmp.dir.readFileAlloc(allocator, "memory/state/runs.json", 1 << 20);
+    defer allocator.free(runs);
+    const parsed = try std.json.parseFromSlice(RunsShape, allocator, runs, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    const rec = parsed.value.runs[parsed.value.runs.len - 1];
+    try std.testing.expectEqual(@as(u64, 100), rec.prompt_tokens);
+    try std.testing.expectEqual(@as(u64, 20), rec.completion_tokens);
+    try std.testing.expectEqual(@as(u64, 120), rec.total_tokens);
+
+    // Stub/no-usage path (llm_usage left null, as every other test in this
+    // file does): usage fields default to 0, existing behavior unchanged.
+    const memory_root2 = try std.fs.path.join(allocator, &.{ root, "memory2" });
+    defer allocator.free(memory_root2);
+    var stub2 = RoutingStub{ .map_response = MAP_JSON, .reduce_response = REDUCE_JSON };
+    _ = try runOnce(allocator, .{
+        .roots = .{ .claude_projects_dir = claude_root },
+        .memory_root = memory_root2,
+        .now_ms = 1783500000000,
+        .tz_offset_seconds = 8 * 3600,
+        .backfill_days = 0,
+        .completer = stub2.completer(),
+        .model_label = "test-model",
+    });
+    const runs2 = try tmp.dir.readFileAlloc(allocator, "memory2/state/runs.json", 1 << 20);
+    defer allocator.free(runs2);
+    const parsed2 = try std.json.parseFromSlice(RunsShape, allocator, runs2, .{ .ignore_unknown_fields = true });
+    defer parsed2.deinit();
+    try std.testing.expectEqual(@as(u64, 0), parsed2.value.runs[0].total_tokens);
 }
 
 test "memory_digest_run: map failure withholds cursor and daily entry, other sessions unaffected" {

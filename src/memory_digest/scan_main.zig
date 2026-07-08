@@ -6,6 +6,7 @@
 const std = @import("std");
 const dirs = @import("../platform/dirs.zig");
 const llm = @import("llm.zig");
+const protocol = @import("../assistant/conversation/protocol.zig");
 const profile_codec = @import("../renderer/overlays/profile_codec.zig");
 const profile_store = @import("../assistant/profile/store.zig");
 const run_mod = @import("run.zig");
@@ -81,6 +82,11 @@ pub fn main() !void {
         remote_sources = try std.mem.concat(arena_state.allocator(), run_mod.RemoteSource, &.{ ssh_sources, wsl_sources });
     }
 
+    // `client` is only initialized when a completer was picked above; its
+    // total_usage field would otherwise be undefined memory, so the usage
+    // pointer must stay null on the raw/no-profile path.
+    const llm_usage: ?*const protocol.ApiUsage = if (completer != null) &client.total_usage else null;
+
     const summary = try run_mod.runOnce(gpa, .{
         .roots = local_roots.roots(),
         .memory_root = memory_root,
@@ -91,9 +97,16 @@ pub fn main() !void {
         .completer = completer,
         .model_label = model_label,
         .remote_sources = remote_sources,
+        .llm_usage = llm_usage,
     });
     std.debug.print(
         "memory-digest: {d} sessions with new messages, {d} daily files written, {d} summarized, {d} failed, under {s}\n",
         .{ summary.sessions_collected, summary.days_written, summary.sessions_summarized, summary.sessions_failed, memory_root },
     );
+    if (completer != null) {
+        std.debug.print(
+            "memory-digest: {d} tokens ({d} prompt + {d} completion)\n",
+            .{ client.total_usage.total_tokens, client.total_usage.prompt_tokens, client.total_usage.completion_tokens },
+        );
+    }
 }

@@ -249,6 +249,11 @@ pub const RunRecord = struct {
     sessions_summarized: u32 = 0,
     sessions_failed: u32 = 0,
     llm_calls: u32 = 0,
+    // M5 Task 1 B.2: cumulative LLM token usage for the run (additive,
+    // schema-compatible — old runs.json entries parse fine with these at 0).
+    prompt_tokens: u64 = 0,
+    completion_tokens: u64 = 0,
+    total_tokens: u64 = 0,
 };
 
 const MAX_RUNS_STORE_BYTES = 16 * 1024 * 1024;
@@ -650,6 +655,44 @@ test "memory_digest_store: appendRunRecord creates, appends, then truncates to 6
         try std.testing.expectEqual(@as(i64, 2), parsed.value.runs[0].started_at);
         try std.testing.expectEqual(@as(i64, 61), parsed.value.runs[parsed.value.runs.len - 1].started_at);
     }
+}
+
+test "memory_digest_store: appendRunRecord round-trips token usage fields" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    try appendRunRecord(allocator, root, .{
+        .started_at = 1,
+        .status = "ok",
+        .prompt_tokens = 123,
+        .completion_tokens = 45,
+        .total_tokens = 168,
+    });
+
+    const bytes = try tmp.dir.readFileAlloc(allocator, "state/runs.json", 1 << 20);
+    defer allocator.free(bytes);
+    const parsed = try std.json.parseFromSlice(struct {
+        runs: []const RunRecord = &.{},
+    }, allocator, bytes, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.runs.len);
+    try std.testing.expectEqual(@as(u64, 123), parsed.value.runs[0].prompt_tokens);
+    try std.testing.expectEqual(@as(u64, 45), parsed.value.runs[0].completion_tokens);
+    try std.testing.expectEqual(@as(u64, 168), parsed.value.runs[0].total_tokens);
+
+    // A record with no usage set (M1-era stub path) defaults to 0 — schema
+    // compatibility with pre-M5 runs.json entries missing these fields.
+    try appendRunRecord(allocator, root, .{ .started_at = 2, .status = "ok" });
+    const bytes2 = try tmp.dir.readFileAlloc(allocator, "state/runs.json", 1 << 20);
+    defer allocator.free(bytes2);
+    const parsed2 = try std.json.parseFromSlice(struct {
+        runs: []const RunRecord = &.{},
+    }, allocator, bytes2, .{ .ignore_unknown_fields = true });
+    defer parsed2.deinit();
+    try std.testing.expectEqual(@as(u64, 0), parsed2.value.runs[1].total_tokens);
 }
 
 test "memory_digest_store: appendRunRecord rebuilds from a corrupt runs.json" {
