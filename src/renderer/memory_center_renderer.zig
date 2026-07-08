@@ -32,14 +32,14 @@ pub fn computeLayout(x: f32, width: f32) Layout {
         return .{ .left_x = x, .left_w = 0, .list_x = x, .list_w = 0, .detail_x = x, .detail_w = 0 };
     }
 
-    const min_left_w: f32 = 190;
+    const min_left_w: f32 = 260;
     const min_list_w: f32 = 300;
     const min_detail_w: f32 = 180;
     const min_total = min_left_w + min_list_w + min_detail_w;
     const left_w = if (available < min_total)
         available * (min_left_w / min_total)
     else
-        @min(@max(available * 0.20, min_left_w), 270);
+        @min(@max(available * 0.20, min_left_w), 320);
     const list_w = if (available < min_total)
         available * (min_list_w / min_total)
     else
@@ -167,13 +167,15 @@ fn renderSources(
             draw.fillQuadAlpha(layout.left_x, yFromTop(window_height, row_top, SOURCE_ROW_H), layout.left_w, SOURCE_ROW_H, selected_bg, 0.92);
             draw.fillQuad(layout.left_x, yFromTop(window_height, row_top, SOURCE_ROW_H), 4, SOURCE_ROW_H, accent);
         }
-        const label_color = if (active) fg else muted;
-        _ = draw.renderTextLimited(source.label(), layout.left_x + PAD_X + 6, yTextFromTop(draw, window_height, row_top + 9), label_color, layout.left_w - PAD_X * 2 - 48);
-
         var count_buf: [16]u8 = undefined;
         const count_text = std.fmt.bufPrint(&count_buf, "{d}", .{if (session.snapshot) |snap| snap.count(source) else 0}) catch "";
         const count_w = countColumnWidth(count_text, draw.glyphAdvance);
-        _ = draw.renderTextLimited(count_text, layout.left_x + layout.left_w - PAD_X - count_w, yTextFromTop(draw, window_height, row_top + 9), muted, count_w);
+        const count_x = layout.left_x + layout.left_w - PAD_X - count_w;
+        const label_x = layout.left_x + PAD_X + 6;
+        const text_y = yTextFromTop(draw, window_height, row_top + 9);
+        const label_color = if (active) fg else muted;
+        _ = draw.renderTextLimited(source.label(), label_x, text_y, label_color, @max(0, count_x - label_x - SMALL_GAP));
+        _ = draw.renderTextLimited(count_text, count_x, text_y, muted, count_w);
     }
 
     _ = draw.renderTextLimited("Tab / Left / Right switches source", layout.left_x + PAD_X, 12 + draw.cell_h + 6, muted, layout.left_w - PAD_X * 2);
@@ -407,7 +409,7 @@ fn testAdvance(_: u32) f32 {
 
 test "memory center renderer computes stable three-column layout" {
     const layout = computeLayout(40, 1000);
-    try std.testing.expect(layout.left_w >= 190);
+    try std.testing.expect(layout.left_w >= 260);
     try std.testing.expect(layout.list_w >= 300);
     try std.testing.expect(layout.detail_w > 0);
     try std.testing.expectEqual(@as(f32, layout.left_x + layout.left_w), layout.list_x);
