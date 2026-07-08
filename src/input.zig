@@ -3208,9 +3208,6 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
     if (overlays.settingsPageVisible()) {
         return overlays.settingsPageHandleKey(key_event);
     }
-    if (overlays.memoryCenterVisible()) {
-        return overlays.memoryCenterHandleKey(key_event);
-    }
     if (AppWindow.weixin_qr_panel.visible()) {
         switch (ev.key_code) {
             platform_input.key_escape => overlays.weixinQrPanelHandleAction(.close),
@@ -3362,6 +3359,50 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
             0x41 => if (plain and !ev.shift and !search_focused) {
                 _ = AppWindow.aiHistoryAttachSelectedToCopilot();
                 command_char_suppressors.ai_history = 'a';
+                return .none;
+            },
+            else => {},
+        }
+        return .none;
+    }
+
+    if (AppWindow.activeMemoryCenter() != null) {
+        const plain = !ev.ctrl and !ev.alt and !ev.super;
+        switch (ev.key_code) {
+            platform_input.key_up => {
+                _ = AppWindow.memoryCenterMoveSelection(-1);
+                return .none;
+            },
+            platform_input.key_down => {
+                _ = AppWindow.memoryCenterMoveSelection(1);
+                return .none;
+            },
+            platform_input.key_left => {
+                _ = AppWindow.memoryCenterCycleSource(-1);
+                return .none;
+            },
+            platform_input.key_right, platform_input.key_tab => {
+                _ = AppWindow.memoryCenterCycleSource(1);
+                return .none;
+            },
+            platform_input.key_page_up => {
+                _ = AppWindow.memoryCenterScrollDetail(-8);
+                return .none;
+            },
+            platform_input.key_page_down => {
+                _ = AppWindow.memoryCenterScrollDetail(8);
+                return .none;
+            },
+            platform_input.key_home => {
+                _ = AppWindow.memoryCenterScrollDetail(-(1 << 30));
+                return .none;
+            },
+            platform_input.key_end => {
+                _ = AppWindow.memoryCenterScrollDetail(1 << 30);
+                return .none;
+            },
+            0x52 => if (plain and !ev.shift) {
+                _ = AppWindow.memoryCenterReload();
                 return .none;
             },
             else => {},
@@ -5418,22 +5459,6 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
         }
         return;
     }
-    if (overlays.memoryCenterVisible()) {
-        if (ev.button == .left and ev.action == .press) {
-            const win = AppWindow.g_window orelse return;
-            const fb = window_backend.framebufferSize(win);
-            const w_f: f32 = @floatFromInt(fb.width);
-            const h_f: f32 = @floatFromInt(fb.height);
-            const top_offset: f32 = @floatCast(titlebarHeight());
-            const xpos: f64 = @floatFromInt(ev.x);
-            const ypos: f64 = @floatFromInt(ev.y);
-            if (!overlays.memoryCenterContainsPoint(xpos, ypos, w_f, h_f, top_offset)) {
-                overlays.memoryCenterClose();
-                requestInputRepaint();
-            }
-        }
-        return;
-    }
     if (overlays.commandPaletteVisible()) {
         if (ev.button == .left and ev.action == .press) {
             const win = AppWindow.g_window orelse return;
@@ -5706,6 +5731,10 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
 
             if (AppWindow.activeAiHistory() != null) {
                 if (AppWindow.aiHistoryHandleMousePress(xpos, ypos)) return;
+            }
+
+            if (AppWindow.activeMemoryCenter() != null) {
+                if (AppWindow.memoryCenterHandleMousePress(xpos, ypos)) return;
             }
 
             // AI copilot sidebar (terminal tabs). When the panel is visible,
@@ -6871,11 +6900,6 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
         requestInputRebuild();
         return;
     }
-    if (overlays.memoryCenterVisible()) {
-        overlays.memoryCenterHandleScroll(@floatFromInt(ev.delta));
-        requestInputRepaint();
-        return;
-    }
     if (overlays.commandPaletteVisible()) {
         overlays.commandPaletteHandleScroll(@floatFromInt(ev.delta));
         requestInputRepaint();
@@ -6934,6 +6958,10 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
             _ = AppWindow.aiHistoryScrollDateList(if (ev.delta > 0) -units else units);
             return;
         }
+        return;
+    }
+    if (AppWindow.activeMemoryCenter() != null) {
+        _ = AppWindow.memoryCenterHandleMouseWheel(ev.xpos, ev.ypos, @intCast(ev.delta));
         return;
     }
     if (AppWindow.activeAiChat()) |chat| {
