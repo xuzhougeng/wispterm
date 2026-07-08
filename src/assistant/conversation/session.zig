@@ -112,6 +112,10 @@ pub const Message = struct {
     is_context_summary: bool = false,
     reasoning_collapsed: bool = true,
     reasoning_auto_expand: bool = false,
+    /// Wall-clock time this message was appended (milliTimestamp). Set at
+    /// append time, not at history-serialization time, so it reflects the
+    /// real moment the turn happened.
+    ts_ms: i64 = 0,
     /// Collapsed state of the activity group this message starts. Only read on
     /// the first message of a run of groupable tool messages (see
     /// `groupableTool`); the whole run renders as one header row while true.
@@ -1280,6 +1284,10 @@ pub const Session = struct {
         session.title_is_custom = record.title_is_custom;
         session.created_at_ms = record.created_at;
         session.updated_at_ms = record.updated_at;
+        if (record.cwd.len > 0 and record.cwd.len <= session.working_dir_buf.len) {
+            @memcpy(session.working_dir_buf[0..record.cwd.len], record.cwd);
+            session.working_dir_len = record.cwd.len;
+        }
         for (record.messages) |msg| {
             var cloned_msg = Message{
                 .role = switch (msg.role) {
@@ -1288,6 +1296,7 @@ pub const Session = struct {
                     .tool => .tool,
                 },
                 .content = try allocator.dupe(u8, msg.content),
+                .ts_ms = msg.ts,
             };
             errdefer cloned_msg.deinit(allocator);
 
@@ -2461,6 +2470,7 @@ pub const Session = struct {
             .persist_to_history = false,
             .content_collapsed = false,
             .content_auto_expand = false,
+            .ts_ms = std.time.milliTimestamp(),
         });
         self.scroll_px = 1_000_000;
     }
@@ -2683,7 +2693,7 @@ pub const Session = struct {
         // Hand any pasted images to this user turn. They are re-sent on every
         // subsequent request for the life of the session (multi-turn vision).
         const user_images = self.takePendingImages();
-        self.messages.append(self.allocator, .{ .role = .user, .content = prompt, .model_context = prompt_model_context, .images = user_images }) catch {
+        self.messages.append(self.allocator, .{ .role = .user, .content = prompt, .model_context = prompt_model_context, .images = user_images, .ts_ms = std.time.milliTimestamp() }) catch {
             if (skill_preload_content) |content| self.allocator.free(content);
             self.allocator.free(prompt);
             if (prompt_model_context) |ctx| self.allocator.free(ctx);
@@ -2728,6 +2738,7 @@ pub const Session = struct {
                 .replay_to_model = true,
                 .content_collapsed = true,
                 .content_auto_expand = false,
+                .ts_ms = std.time.milliTimestamp(),
             }) catch {
                 self.allocator.free(tool_name);
                 self.allocator.free(tool_call_id);
@@ -4361,6 +4372,7 @@ pub const Session = struct {
             record_msg.tool_call_id = if (msg.tool_call_id) |id| try allocator.dupe(u8, id) else null;
             record_msg.tool_name = if (msg.tool_name) |name| try allocator.dupe(u8, name) else null;
             record_msg.replay_to_model = msg.replay_to_model;
+            record_msg.ts = msg.ts_ms;
 
             messages[initialized] = record_msg;
             initialized += 1;
@@ -4382,6 +4394,8 @@ pub const Session = struct {
         errdefer allocator.free(system_prompt);
         const reasoning_effort = try allocator.dupe(u8, self.reasoningEffort());
         errdefer allocator.free(reasoning_effort);
+        const cwd = try allocator.dupe(u8, self.effectiveWorkingDirLocked() orelse "");
+        errdefer allocator.free(cwd);
 
         return .{
             .session_id = session_id,
@@ -4401,6 +4415,7 @@ pub const Session = struct {
             .title_is_custom = self.title_is_custom,
             .created_at = self.created_at_ms,
             .updated_at = self.updated_at_ms,
+            .cwd = cwd,
             .messages = messages,
         };
     }
@@ -4966,6 +4981,7 @@ pub fn applySummaryResult(session: *Session, summary: []const u8, boundary: usiz
         .is_context_summary = true,
         .content_collapsed = true,
         .persist_to_history = true,
+        .ts_ms = std.time.milliTimestamp(),
     }) catch {
         allocator.free(content);
         session.setStatusLocked("Ready");
@@ -5136,6 +5152,7 @@ pub fn appendAssistantResult(session: *Session, result: ApiResult, started_ms: i
         .usage_footer = usage_footer,
         .reasoning_collapsed = reasoning_visible,
         .reasoning_auto_expand = false,
+        .ts_ms = std.time.milliTimestamp(),
     }) catch {
         allocator.free(content);
         if (reasoning_copy) |r| allocator.free(r);
@@ -5257,6 +5274,7 @@ pub fn appendProgressMessage(session: *Session, text: []const u8) !void {
         .persist_to_history = false,
         .content_collapsed = false,
         .content_auto_expand = true,
+        .ts_ms = std.time.milliTimestamp(),
     });
     session.scroll_px = 1_000_000;
     session.setStatusLocked("Running tools...");
@@ -5288,6 +5306,7 @@ pub fn appendReplayableToolMessage(
         .replay_to_model = true,
         .content_collapsed = true,
         .content_auto_expand = false,
+        .ts_ms = std.time.milliTimestamp(),
     };
     content_owned = false;
     id_owned = false;
@@ -5327,6 +5346,7 @@ pub fn beginAssistantStream(session: *Session) !usize {
         .reasoning = null,
         .reasoning_collapsed = false,
         .reasoning_auto_expand = true,
+        .ts_ms = std.time.milliTimestamp(),
     });
     session.scroll_px = 1_000_000;
     session.setStatusLocked("Streaming...");
@@ -6289,6 +6309,7 @@ test "ai_chat: session loads from history record" {
         .agent_enabled = true,
         .created_at = 1,
         .updated_at = 2,
+        .cwd = "/home/tester/restored",
         .messages = &.{
             .{ .role = .user, .content = "hello", .reasoning = null, .usage_footer = null },
         },
@@ -6300,6 +6321,38 @@ test "ai_chat: session loads from history record" {
 
     try std.testing.expectEqualStrings("session-1", session.sessionId());
     try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
+    try std.testing.expectEqualStrings("/home/tester/restored", session.workingDirOverride().?);
+}
+
+test "ai_chat: session restores cwd through a history record round trip" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator,
+        "chat",
+        "https://api.anthropic.com",
+        "key",
+        "claude-x",
+        "sys",
+        "false",
+        "",
+        "false",
+        "false",
+    );
+    defer session.deinit();
+
+    session.mutex.lock();
+    const cwd = "/home/tester/project";
+    @memcpy(session.working_dir_buf[0..cwd.len], cwd);
+    session.working_dir_len = cwd.len;
+    session.mutex.unlock();
+
+    var record = try session.toHistoryRecord(allocator);
+    defer agent_history.freeOwnedRecord(allocator, &record);
+    try std.testing.expectEqualStrings(cwd, record.cwd);
+
+    const restored = try Session.initFromHistoryRecord(allocator, record);
+    defer restored.deinit();
+    try std.testing.expectEqualStrings(cwd, restored.workingDirOverride().?);
 }
 
 test "ai_chat: loading history record cleans up partial message clone on allocation failure" {

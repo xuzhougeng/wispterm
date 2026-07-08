@@ -8,6 +8,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Config = @import("config.zig");
 const App = @import("App.zig");
+const memory_digest_scheduler = @import("memory_digest/scheduler.zig");
 const image_decoder = @import("image_decoder.zig");
 const app_metadata = @import("app_metadata.zig");
 const platform_console = @import("platform/console.zig");
@@ -191,6 +192,19 @@ pub fn main() !void {
     } else {
         std.debug.print("No config file found, using defaults\n", .{});
     }
+
+    // Apply memory-digest scheduler settings from the initial config load.
+    // AppWindow.init only copies individual fields out of App (not the whole
+    // Config), so this is the one place that sees the full Config before
+    // window setup; applyReloadedConfig covers every later hot-reload.
+    memory_digest_scheduler.updateSettings(.{
+        .enabled = cfg.@"memory-digest-enabled",
+        .profile_name = cfg.@"memory-digest-profile",
+        .run_after = cfg.@"memory-digest-run-after",
+        .scan_remote = cfg.@"memory-digest-scan-remote",
+        .backfill_days = cfg.@"memory-digest-backfill-days",
+        .max_chars = cfg.@"memory-digest-max-chars",
+    });
 
     // Resolve UI language (explicit config > system locale > en) before any
     // window/UI renders. Restart-applied (no live switch in v1).

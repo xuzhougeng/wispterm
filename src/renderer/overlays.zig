@@ -29,6 +29,7 @@ const ctl_ui_state = @import("../ctl/ui_state.zig");
 const command_palette_history_view = @import("../command/palette_history_view.zig");
 const command_palette_model = @import("../command/palette_model.zig");
 const command_registry = @import("../command/registry.zig");
+const memory_digest_scheduler = @import("../memory_digest/scheduler.zig");
 const agent_history = @import("../agent/history.zig");
 const platform_dirs = @import("../platform/dirs.zig");
 const platform_open_url = @import("../platform/open_url.zig");
@@ -776,6 +777,9 @@ fn executeCommand(action: CommandAction) void {
                 AppWindow.g_force_rebuild = true;
                 AppWindow.g_cells_valid = false;
             }
+        },
+        .run_memory_digest_now => {
+            if (AppWindow.g_allocator) |gpa| memory_digest_scheduler.runNow(gpa);
         },
     }
 }

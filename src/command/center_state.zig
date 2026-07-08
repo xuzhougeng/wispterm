@@ -50,6 +50,7 @@ pub const CommandAction = enum {
     open_skill_center,
     open_port_forwarding,
     split_preview,
+    run_memory_digest_now,
 };
 
 pub const CommandEntry = struct {
@@ -106,6 +107,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Install Integration", .detail = "Show the prompt for Codex, Claude Code, or another agent to generate its own WispTerm hook", .shortcut = "", .action = .show_integration_prompt },
     .{ .title = "Port Forwarding", .detail = "Manage SSH port forwarding rules", .shortcut = "", .action = .open_port_forwarding },
     .{ .title = "Split Preview", .detail = "Open a preview panel on the right", .shortcut = "", .action = .split_preview },
+    .{ .title = "Run Memory Digest Now", .detail = "Scan AI chat logs and generate today's digest", .shortcut = "", .action = .run_memory_digest_now },
 };
 
 test "command center exposes generic integration prompt action only" {

@@ -123,7 +123,7 @@ NormalizedMessage { role, text, ts: ?i64, tool_name: ?[]const u8 }
    - `sk-...`、`ghp_...`、`xoxb-...` 等常见 key 前缀；
    - `Bearer <token>`、`Authorization: ...`；
    - `password=`/`passwd:`/`token:` 后的非空白串；
-   - 40+ 位十六进制/base64 长串（保守掩码）。
+   - 64+ 位十六进制长串、40+ 位大小写数字混合的 base64 形态长串（40 位纯十六进制的 git SHA 刻意放行——它是 artifacts 引用的有效信号，掩掉会破坏摘要质量）。
 3. Prompt 层：归纳 prompt 明确要求"不得在摘要中复述任何密钥、密码、token"。
 
 脱敏是 `redact.zig` 单独模块，带表驱动测试（每类模式至少一正一负样例）。
@@ -279,14 +279,16 @@ memory/
 
 ## 12. 配置项（config 文件）
 
+键统一用 `memory-digest-` 前缀（`memory-` 会与既有 agent 记忆工具的 `ai-memory-enabled` 混淆）：
+
 | 键 | 默认 | 说明 |
 |----|------|------|
-| `memory-enabled` | `false` | 总开关（首版默认关，稳定后再默认开） |
-| `memory-profile` | 空（用默认 ai profile） | 归纳用的 AI profile 名 |
-| `memory-run-after` | `04:00` | 每日运行时点下限 |
-| `memory-scan-remote` | `true` | 是否扫描 WSL/SSH 源 |
-| `memory-backfill-days` | `7` | 首次/断档回填上限 |
-| `memory-max-chars-per-message` | `2000` | 消息截断 |
+| `memory-digest-enabled` | `false` | 总开关（首版默认关，稳定后再默认开） |
+| `memory-digest-profile` | 空（用第一个 ai profile） | 归纳用的 AI profile 名 |
+| `memory-digest-run-after` | `04:00` | 每日运行时点下限 |
+| `memory-digest-scan-remote` | `false` | 是否扫描 WSL/SSH 源（M3，首版默认关，opt-in） |
+| `memory-digest-backfill-days` | `7` | 首次/断档回填上限 |
+| `memory-digest-max-chars` | `2000` | 单条消息截断 |
 
 ## 13. 错误处理与幂等
 
@@ -310,7 +312,8 @@ memory/
 | 期 | 内容 | 出口标准 |
 |----|------|----------|
 | M1 | `src/memory_digest/` 骨架：collector（仅 local）+ provider_wispterm + 归一化 + cursors + store（daily 仅落"原始会话清单"无 LLM） | 本机跑通，daily JSON 里能看到三源当天会话列表 |
-| M2 | 脱敏 + LLM map/reduce + 调度 + 配置项 | 每日自动产出真实日报与项目时间线 |
+| M2a | 脱敏 + LLM map/reduce 管道（CLI 手动触发真实 LLM） | CLI 一次运行产出带摘要的日报与项目时间线 |
+| M2b | 配置项 + app 内每日调度（update_check 模式） | 每日自动产出真实日报与项目时间线 |
 | M3 | 远程源（WSL/SSH via ScannerHost）+ 回填/补跑 + runs.json 成本报表 | 多环境增量稳定运行一周 |
 | M4 | WispTerm 写入端补 cwd/ts；命令面板手动触发入口 | 新会话项目归属正确 |
 

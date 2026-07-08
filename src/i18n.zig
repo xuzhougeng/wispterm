@@ -941,6 +941,7 @@ pub fn commandTitle(action: CommandAction) ?[]const u8 {
         .open_skill_center => "技能中心",
         .open_port_forwarding => "端口转发",
         .split_preview => "分屏预览",
+        .run_memory_digest_now => "立即运行记忆摘要",
     };
 }
 
@@ -996,6 +997,7 @@ pub fn commandDetail(action: CommandAction) ?[]const u8 {
         .open_skill_center => "盘点各服务器上的 Claude Code / Codex 技能",
         .open_port_forwarding => "管理 SSH 端口转发规则",
         .split_preview => "在右侧打开预览面板",
+        .run_memory_digest_now => "扫描 AI 对话记录并生成今日摘要",
     };
 }
 
