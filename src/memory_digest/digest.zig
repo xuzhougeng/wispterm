@@ -34,6 +34,8 @@ const PROMPT_REDUCE_SYSTEM =
     \\- 只输出合法 JSON，不要输出任何 JSON 之外的文字或代码块围栏。
     \\- JSON 结构必须是：{"projects":[{"slug":"…","summary":"…","session_refs":["…"]}],"highlights":["…"],"timeline":[{"slug":"…","summary":"…","events":[{"type":"progress|decision|problem|todo","text":"…","refs":["…"]}]}]}
     \\- timeline 必须是数组（每个元素对应一个项目），不要用以 slug 为键的对象。
+    \\- projects 与 timeline 的 session_refs 只能填输入数组里 session_id 字段的原值（原样照抄，不得改写、拼接或翻译），
+    \\  禁止填标题（title）或自造的编号/名称；不确定就留空数组。
 ;
 
 const PROMPT_HIGHLIGHTS_SYSTEM =
@@ -304,9 +306,12 @@ pub const ReduceResult = struct {
     timelines: []const ProjectTimeline,
 };
 
-/// project/title/summary/outcome only — the compact input fed to the reduce
-/// prompt via `std.json.Stringify.valueAlloc` (never hand-built).
+/// session_id/project/title/summary/outcome — the compact input fed to the
+/// reduce prompt via `std.json.Stringify.valueAlloc` (never hand-built).
+/// `session_id` is included specifically so the LLM has the real id to copy
+/// into `session_refs` instead of inventing one from the title.
 const SessionCompact = struct {
+    session_id: []const u8,
     project: []const u8,
     title: []const u8,
     summary: []const u8,
@@ -360,7 +365,7 @@ fn compactSessionsJson(gpa: std.mem.Allocator, sessions: []const store.DailySess
     var compact = try gpa.alloc(SessionCompact, sessions.len);
     defer gpa.free(compact);
     for (sessions, 0..) |s, i| {
-        compact[i] = .{ .project = s.project, .title = s.title, .summary = s.summary, .outcome = s.outcome };
+        compact[i] = .{ .session_id = s.session_id, .project = s.project, .title = s.title, .summary = s.summary, .outcome = s.outcome };
     }
     return std.json.Stringify.valueAlloc(gpa, compact, .{});
 }
@@ -375,16 +380,42 @@ fn sessionRefsForSlug(arena: std.mem.Allocator, sessions: []const store.DailySes
     return refs.toOwnedSlice(arena);
 }
 
+/// Keeps only the entries of `refs` that match an actual `session_id` in
+/// `sessions` (the day's real input set), dropping anything the LLM
+/// hallucinated (e.g. a title copied in place of an id). Unlike `events[].refs`
+/// (which legitimately hold pr/commit/file references and are never
+/// filtered), `session_refs` must only ever point at real session ids.
+/// Illegal entries are dropped silently save for a debug-level count.
+fn filterSessionRefs(arena: std.mem.Allocator, refs: []const []const u8, sessions: []const store.DailySession) ![]const []const u8 {
+    var kept: std.ArrayListUnmanaged([]const u8) = .empty;
+    var dropped: usize = 0;
+    for (refs) |r| {
+        const valid = for (sessions) |s| {
+            if (std.mem.eql(u8, s.session_id, r)) break true;
+        } else false;
+        if (valid) {
+            try kept.append(arena, try arena.dupe(u8, r));
+        } else {
+            dropped += 1;
+        }
+    }
+    if (dropped > 0) {
+        std.log.debug("memory_digest: dropped {d} non-session_id ref(s) from session_refs", .{dropped});
+    }
+    return kept.toOwnedSlice(arena);
+}
+
 /// Dupes a parsed reduce result into `arena`, backfilling `session_refs` from
-/// `sessions` wherever the LLM left them empty.
+/// `sessions` wherever the LLM left them empty, and filtering whatever the
+/// LLM did supply down to real session ids (spec: session_refs must be
+/// faithful to the input, never a hallucinated title or made-up id).
 fn dupeReduceResult(arena: std.mem.Allocator, parsed: JsonReduceResult, date: []const u8, sessions: []const store.DailySession) !ReduceResult {
     const projects = try arena.alloc(store.DailyProject, parsed.projects.len);
     for (parsed.projects, 0..) |p, i| {
         const slug = try arena.dupe(u8, p.slug);
         var refs = p.session_refs;
         if (refs.len == 0) refs = try sessionRefsForSlug(arena, sessions, slug);
-        const duped_refs = try arena.alloc([]const u8, refs.len);
-        for (refs, 0..) |r, j| duped_refs[j] = try arena.dupe(u8, r);
+        const duped_refs = try filterSessionRefs(arena, refs, sessions);
         projects[i] = .{ .slug = slug, .summary = try arena.dupe(u8, p.summary), .session_refs = duped_refs };
     }
 
@@ -888,4 +919,55 @@ test "memory_digest_digest: reduceDay backfills session_refs when the LLM omits 
     try std.testing.expectEqual(@as(usize, 1), result.timelines.len);
     try std.testing.expectEqual(@as(usize, 2), result.timelines[0].entry.session_refs.len);
     try std.testing.expectEqualStrings("s1", result.timelines[0].entry.session_refs[0]);
+}
+
+test "memory_digest_digest: reduceDay filters hallucinated session_refs down to real session ids" {
+    var stub = StubCompleter{ .responses = &.{
+        \\{"projects":[{"slug":"phantty","summary":"s","session_refs":["s1","做了 A 功能","s2"]}],
+        \\"highlights":[],"timeline":[]}
+    } };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const sessions = [_]store.DailySession{
+        testDailySession("phantty", "s1", "t1", "sum1", "completed"),
+        testDailySession("phantty", "s2", "t2", "sum2", "completed"),
+    };
+    const result = try reduceDay(arena.allocator(), std.testing.allocator, stub.completer(), "2026-07-07", &sessions);
+
+    try std.testing.expectEqual(@as(usize, 1), result.projects.len);
+    try std.testing.expectEqual(@as(usize, 2), result.projects[0].session_refs.len);
+    try std.testing.expectEqualStrings("s1", result.projects[0].session_refs[0]);
+    try std.testing.expectEqualStrings("s2", result.projects[0].session_refs[1]);
+}
+
+test "memory_digest_digest: reduceDay drops all-illegal session_refs to an empty array without error" {
+    var stub = StubCompleter{ .responses = &.{
+        \\{"projects":[{"slug":"phantty","summary":"s","session_refs":["标题一","不存在的id"]}],
+        \\"highlights":[],"timeline":[]}
+    } };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const sessions = [_]store.DailySession{testDailySession("phantty", "s1", "t1", "sum1", "completed")};
+    const result = try reduceDay(arena.allocator(), std.testing.allocator, stub.completer(), "2026-07-07", &sessions);
+
+    try std.testing.expectEqual(@as(usize, 1), result.projects.len);
+    try std.testing.expectEqual(@as(usize, 0), result.projects[0].session_refs.len);
+}
+
+test "memory_digest_digest: reduceDay leaves events[].refs untouched (pr/commit/file refs are not session ids)" {
+    var stub = StubCompleter{ .responses = &.{
+        \\{"projects":[{"slug":"phantty","summary":"s","session_refs":[]}],
+        \\"highlights":[],"timeline":[{"slug":"phantty","summary":"t","events":[{"type":"progress","text":"x","refs":["#123","abc1234"]}]}]}
+    } };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const sessions = [_]store.DailySession{testDailySession("phantty", "s1", "t1", "sum1", "completed")};
+    const result = try reduceDay(arena.allocator(), std.testing.allocator, stub.completer(), "2026-07-07", &sessions);
+
+    try std.testing.expectEqual(@as(usize, 2), result.timelines[0].entry.events[0].refs.len);
+    try std.testing.expectEqualStrings("#123", result.timelines[0].entry.events[0].refs[0]);
+    try std.testing.expectEqualStrings("abc1234", result.timelines[0].entry.events[0].refs[1]);
 }

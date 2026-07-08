@@ -478,20 +478,27 @@ fn runOnceWithLlm(
                 continue;
             }
             try store.upsertTimelineEntry(gpa, opts.memory_root, tl.slug, tl.entry);
-            const idx = for (summarized.items, 0..) |sm, i| {
-                if (std.mem.eql(u8, sm.project, tl.slug)) break i;
-            } else null;
-            const project_path = if (idx) |i| summarized_paths.items[i] else "";
-            const source_id = if (idx) |i| summarized_source_ids.items[i] else "local";
-            if (std.mem.eql(u8, source_id, "local")) {
-                try store.upsertProject(gpa, opts.memory_root, tl.slug, project_path, dr.date);
-            } else {
-                // Remote sessions (spec M3 Task 3): the raw project_path is a
-                // remote-host path with no meaning on this machine, so it is
-                // recorded as an alias ("{source_id}:{project_path}") instead
-                // of a local `paths[]` entry.
-                const alias = try std.fmt.allocPrint(arena, "{s}:{s}", .{ source_id, project_path });
-                try store.upsertProjectAlias(gpa, opts.memory_root, tl.slug, alias, dr.date);
+
+            // Minor#7: walk every summarized session under this slug (not
+            // just the first match) so a day mixing local and remote
+            // sessions of the same project records both a local `paths[]`
+            // entry and a remote alias, instead of only whichever source
+            // happened to appear first. upsertProject/upsertProjectAlias
+            // already dedupe within their own list.
+            for (summarized.items, 0..) |sm, i| {
+                if (!std.mem.eql(u8, sm.project, tl.slug)) continue;
+                const project_path = summarized_paths.items[i];
+                const source_id = summarized_source_ids.items[i];
+                if (std.mem.eql(u8, source_id, "local")) {
+                    try store.upsertProject(gpa, opts.memory_root, tl.slug, project_path, dr.date);
+                } else {
+                    // Remote sessions (spec M3 Task 3): the raw project_path is a
+                    // remote-host path with no meaning on this machine, so it is
+                    // recorded as an alias ("{source_id}:{project_path}") instead
+                    // of a local `paths[]` entry.
+                    const alias = try std.fmt.allocPrint(arena, "{s}:{s}", .{ source_id, project_path });
+                    try store.upsertProjectAlias(gpa, opts.memory_root, tl.slug, alias, dr.date);
+                }
             }
         }
     }
@@ -1553,6 +1560,55 @@ test "memory_digest_run: remote session produces a project alias, not a path" {
     const parsed = try std.json.parseFromSlice(store.Project, allocator, project, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     try std.testing.expectEqual(@as(usize, 0), parsed.value.paths.len);
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.aliases.len);
+    try std.testing.expectEqualStrings("ssh:box:/root/project", parsed.value.aliases[0]);
+}
+
+test "memory_digest_run: mixed local+remote sessions under the same slug accumulate both paths and aliases" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    try writeFixtures(tmp); // local: claude-abc under /home/me/project → slug "project"
+
+    const claude_root = try std.fs.path.join(allocator, &.{ root, "claude" });
+    defer allocator.free(claude_root);
+    const memory_root = try std.fs.path.join(allocator, &.{ root, "memory" });
+    defer allocator.free(memory_root);
+
+    // remote-abc under /root/project also slugs to "project" (types.projectSlug
+    // takes only the basename), so one reduce-day bucket covers both sources.
+    var good_host = FakeRemoteHost{
+        .find_output = "1780300860.0\t200\t/root/.claude/projects/proj/remote-abc.jsonl\n",
+        .cat_content = REMOTE_CLAUDE_JSONL,
+    };
+
+    var stub = RoutingStub{ .map_response = MAP_JSON, .reduce_response = REDUCE_JSON };
+    const opts: Options = .{
+        .roots = .{ .claude_projects_dir = claude_root },
+        .memory_root = memory_root,
+        .now_ms = 1783500000000,
+        .tz_offset_seconds = 8 * 3600,
+        .backfill_days = 0,
+        .completer = stub.completer(),
+        .model_label = "test-model",
+        .remote_sources = &.{
+            .{ .source_id = "ssh:box", .host = good_host.execHost() },
+        },
+    };
+    const summary = try runOnce(allocator, opts);
+    try std.testing.expectEqual(@as(usize, 2), summary.sessions_summarized); // local + ssh:box
+
+    const project = try tmp.dir.readFileAlloc(allocator, "memory/projects/project/project.json", 1 << 20);
+    defer allocator.free(project);
+    const parsed = try std.json.parseFromSlice(store.Project, allocator, project, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    // Both sides must land: the local session's path and the remote session's
+    // alias — not just whichever source happened to be summarized first.
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.paths.len);
+    try std.testing.expectEqualStrings("/home/me/project", parsed.value.paths[0]);
     try std.testing.expectEqual(@as(usize, 1), parsed.value.aliases.len);
     try std.testing.expectEqualStrings("ssh:box:/root/project", parsed.value.aliases[0]);
 }
