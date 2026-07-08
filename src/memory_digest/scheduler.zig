@@ -21,6 +21,7 @@ const window_backend = @import("../platform/window_backend.zig");
 const TICK_INTERVAL_MS: i64 = 60_000;
 const STARTUP_DELAY_MS: i64 = 5 * 60 * 1000;
 const MAX_LAST_RUN_BYTES = 64 * 1024;
+const UI_DETAIL_MAX = 96;
 
 // ponytail: dev-only override so real-machine verification doesn't require
 // waiting out the real 5-minute startup delay. Read once (cached) from
@@ -54,6 +55,36 @@ pub const LastRun = struct {
     date_key: u32 = 0,
 };
 
+pub const ProgressStage = enum {
+    idle,
+    queued,
+    scanning,
+    summarizing,
+    finalizing,
+    success,
+    failed,
+    skipped,
+};
+
+pub const ProgressSnapshot = struct {
+    seq: u64 = 0,
+    visible: bool = false,
+    stage: ProgressStage = .idle,
+    sessions_total: u32 = 0,
+    sessions_done: u32 = 0,
+    sessions_failed: u32 = 0,
+    days_written: u32 = 0,
+    total_tokens: u64 = 0,
+    prompt_tokens: u64 = 0,
+    completion_tokens: u64 = 0,
+    detail_len: usize = 0,
+    detail_buf: [UI_DETAIL_MAX]u8 = [_]u8{0} ** UI_DETAIL_MAX,
+
+    pub fn detail(self: *const ProgressSnapshot) []const u8 {
+        return self.detail_buf[0..self.detail_len];
+    }
+};
+
 // ---- module state ----
 
 var g_settings_arena: std.heap.ArenaAllocator = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -63,6 +94,9 @@ var g_in_flight: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 var g_last_tick_check_ms: i64 = 0;
 var g_app_started_ms: ?i64 = null;
 var g_shutting_down: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+var g_progress_mutex: std.Thread.Mutex = .{};
+var g_progress: ProgressSnapshot = .{};
+var g_progress_ctx: u8 = 0;
 
 /// Loads a copy of `s`, duping the borrowed strings into the module's own
 /// arena. Call on the main thread whenever config is loaded/hot-reloaded.
@@ -125,6 +159,7 @@ pub fn tick(gpa: std.mem.Allocator) void {
 pub fn runNow(gpa: std.mem.Allocator) void {
     if (g_in_flight.load(.acquire)) {
         std.log.info("memory_digest: runNow skipped, a run is already in progress", .{});
+        setProgress(.skipped, true, .{ .detail = "Memory digest already running" });
         return;
     }
 
@@ -138,6 +173,12 @@ pub fn runNow(gpa: std.mem.Allocator) void {
     spawnRun(gpa, now_ms, tz_offset_seconds, true);
 }
 
+pub fn progressSnapshot() ProgressSnapshot {
+    g_progress_mutex.lock();
+    defer g_progress_mutex.unlock();
+    return g_progress;
+}
+
 /// Shared spawn path for both the scheduled tick and the manual runNow
 /// trigger: sets in_flight, builds thread params from current settings, and
 /// spawns runThreadMain. Caller must already hold the in_flight/join guards.
@@ -145,6 +186,7 @@ pub fn runNow(gpa: std.mem.Allocator) void {
 /// run with no profile configured must not consume today's scheduled slot.
 fn spawnRun(gpa: std.mem.Allocator, now_ms: i64, tz_offset_seconds: i32, manual: bool) void {
     g_in_flight.store(true, .release);
+    if (manual) setProgress(.queued, true, .{ .detail = "Queued" });
     const params = ThreadParams{
         .profile_name = gpa.dupe(u8, g_settings.profile_name) catch {
             g_in_flight.store(false, .release);
@@ -269,6 +311,7 @@ fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
             // don't mark today done, or the real scheduled run would be
             // skipped later once a profile is configured.
             std.log.warn("memory_digest: runNow skipped, no AI profile configured", .{});
+            setProgress(.skipped, true, .{ .detail = "Configure memory-digest-profile first" });
         } else {
             // Still record today as "done" so tick doesn't retry every 60s
             // and spam this warning until a profile is added.
@@ -284,18 +327,21 @@ fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
 
     const cfg = llm.configFromProfile(arena, &profiles[idx]) catch |err| {
         std.log.warn("memory_digest: scheduler failed to build LLM config: {s}", .{@errorName(err)});
+        if (params.manual) setProgress(.failed, true, .{ .detail = "Failed to load AI profile" });
         return;
     };
     var client: llm.Client = .{ .config = cfg };
 
     const local_roots = run_mod.defaultLocalRoots(gpa) catch |err| {
         std.log.warn("memory_digest: scheduler failed to resolve local roots: {s}", .{@errorName(err)});
+        if (params.manual) setProgress(.failed, true, .{ .detail = "Failed to resolve local history roots" });
         return;
     };
     defer local_roots.deinit(gpa);
 
     const memory_root = dirs.memoryDir(gpa) catch |err| {
         std.log.warn("memory_digest: scheduler failed to resolve memory dir: {s}", .{@errorName(err)});
+        if (params.manual) setProgress(.failed, true, .{ .detail = "Failed to resolve memory output dir" });
         return;
     };
     defer gpa.free(memory_root);
@@ -313,6 +359,11 @@ fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
         remote_sources = std.mem.concat(arena, run_mod.RemoteSource, &.{ ssh_sources, wsl_sources }) catch &.{};
     }
 
+    const progress_sink: ?run_mod.ProgressSink = if (params.manual)
+        .{ .ctx = @ptrCast(&g_progress_ctx), .onProgressFn = onRunProgress }
+    else
+        null;
+
     const summary = run_mod.runOnce(gpa, .{
         .roots = local_roots.roots(),
         .memory_root = memory_root,
@@ -324,11 +375,13 @@ fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
         .model_label = cfg.model,
         .remote_sources = remote_sources,
         .llm_usage = &client.total_usage,
+        .progress_sink = progress_sink,
     }) catch |err| {
         // ponytail: no saveLastRun here — the 60s tick throttle naturally
         // retries later today. M3's runs.json will own richer retry/backoff
         // bookkeeping; until then "just try again next tick" is enough.
         std.log.warn("memory_digest: scheduler run failed: {s}", .{@errorName(err)});
+        if (params.manual) setProgress(.failed, true, .{ .detail = "Digest run failed" });
         return;
     };
 
@@ -344,7 +397,67 @@ fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
             client.total_usage.completion_tokens,
         },
     );
+    if (params.manual) {
+        setProgress(.success, true, .{
+            .sessions_total = @intCast(summary.sessions_collected),
+            .sessions_done = @intCast(summary.sessions_summarized),
+            .sessions_failed = @intCast(summary.sessions_failed),
+            .days_written = @intCast(summary.days_written),
+            .total_tokens = client.total_usage.total_tokens,
+            .prompt_tokens = client.total_usage.prompt_tokens,
+            .completion_tokens = client.total_usage.completion_tokens,
+            .detail = "Complete",
+        });
+    }
     markRanToday(gpa, params.now_ms, params.tz_offset_seconds);
+}
+
+const ProgressUpdate = struct {
+    detail: []const u8 = "",
+    sessions_total: u32 = 0,
+    sessions_done: u32 = 0,
+    sessions_failed: u32 = 0,
+    days_written: u32 = 0,
+    total_tokens: u64 = 0,
+    prompt_tokens: u64 = 0,
+    completion_tokens: u64 = 0,
+};
+
+fn setProgress(stage: ProgressStage, visible: bool, update: ProgressUpdate) void {
+    g_progress_mutex.lock();
+    defer g_progress_mutex.unlock();
+
+    g_progress.seq +%= 1;
+    g_progress.visible = visible;
+    g_progress.stage = stage;
+    g_progress.sessions_total = update.sessions_total;
+    g_progress.sessions_done = update.sessions_done;
+    g_progress.sessions_failed = update.sessions_failed;
+    g_progress.days_written = update.days_written;
+    g_progress.total_tokens = update.total_tokens;
+    g_progress.prompt_tokens = update.prompt_tokens;
+    g_progress.completion_tokens = update.completion_tokens;
+    g_progress.detail_len = copyTruncated(&g_progress.detail_buf, update.detail);
+}
+
+fn copyTruncated(dst: []u8, src: []const u8) usize {
+    const len = @min(dst.len, src.len);
+    if (len > 0) @memcpy(dst[0..len], src[0..len]);
+    return len;
+}
+
+fn onRunProgress(ctx: *anyopaque, progress: run_mod.Progress) void {
+    _ = ctx;
+    switch (progress) {
+        .scanning => setProgress(.scanning, true, .{ .detail = "Scanning chat logs" }),
+        .summarizing => |v| setProgress(.summarizing, true, .{
+            .detail = "Summarizing sessions",
+            .sessions_total = @intCast(v.total),
+            .sessions_done = @intCast(v.completed),
+            .sessions_failed = @intCast(v.failed),
+        }),
+        .finalizing => setProgress(.finalizing, true, .{ .detail = "Writing digest files" }),
+    }
 }
 
 fn markRanToday(gpa: std.mem.Allocator, now_ms: i64, tz_offset_seconds: i32) void {

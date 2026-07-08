@@ -89,6 +89,7 @@ pub const ui_pipeline = @import("renderer/ui_pipeline.zig");
 pub const titlebar = @import("renderer/titlebar.zig");
 pub const input = @import("input.zig");
 pub const overlays = @import("renderer/overlays.zig");
+const overlay_toasts = @import("renderer/overlays/toasts.zig");
 const post_process = @import("renderer/post_process.zig");
 const d3d11_offscreen_smoke = @import("renderer/d3d11_offscreen_smoke.zig");
 const d3d11_ui_smoke = @import("renderer/d3d11_ui_smoke.zig");
@@ -1508,6 +1509,10 @@ fn windowState() *appwindow_state.WindowState {
 
 fn remoteState() *appwindow_state.RemoteState {
     return &g_appwindow_state.remote;
+}
+
+fn notificationState() *appwindow_state.NotificationState {
+    return &g_appwindow_state.notifications;
 }
 
 // Global theme (set at startup via config)
@@ -4912,6 +4917,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
     overlays.renderCloseShortcutConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderCopyToast(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderTransferToast(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    overlays.renderMemoryDigestToast(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderTransferCancelConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderUpdatePrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderWindowCloseConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
@@ -5062,8 +5068,48 @@ fn syncTransferToastFromFileExplorer() void {
     const notification = file_explorer.latestTransferNotification() orelse return;
     if (!remoteState().acceptTransferNotification(notification.seq)) return;
     overlays.showTransferToast(notification.kind, notification.status, notification.message);
-    g_force_rebuild = true;
-    g_cells_valid = false;
+    markUiDirty();
+}
+
+fn syncMemoryDigestToast() void {
+    const progress = memory_digest_scheduler.progressSnapshot();
+    if (!progress.visible) return;
+    if (!notificationState().acceptMemoryDigestProgress(progress.seq)) return;
+
+    var buf: [160]u8 = undefined;
+    const msg = switch (progress.stage) {
+        .queued => "Memory digest queued",
+        .scanning => "Memory digest: scanning chat logs",
+        .summarizing => std.fmt.bufPrint(
+            &buf,
+            "Memory digest: summarizing {d}/{d} ({d} failed)",
+            .{ progress.sessions_done, progress.sessions_total, progress.sessions_failed },
+        ) catch "Memory digest: summarizing sessions",
+        .finalizing => "Memory digest: writing digest files",
+        .success => std.fmt.bufPrint(
+            &buf,
+            "Memory digest complete: {d} sessions, {d} days, {d} tokens",
+            .{ progress.sessions_done, progress.days_written, progress.total_tokens },
+        ) catch "Memory digest complete",
+        .failed => if (progress.detail().len != 0)
+            std.fmt.bufPrint(&buf, "Memory digest failed: {s}", .{progress.detail()}) catch "Memory digest failed"
+        else
+            "Memory digest failed",
+        .skipped => if (progress.detail().len != 0)
+            std.fmt.bufPrint(&buf, "Memory digest skipped: {s}", .{progress.detail()}) catch "Memory digest skipped"
+        else
+            "Memory digest skipped",
+        .idle => return,
+    };
+
+    const status: overlay_toasts.MemoryDigestStatus = switch (progress.stage) {
+        .queued, .scanning, .summarizing, .finalizing => .in_progress,
+        .success => .success,
+        .failed => .failed,
+        .skipped => .skipped,
+        .idle => return,
+    };
+    overlays.showMemoryDigestToast(status, msg);
 }
 
 /// Apply freshly loaded configuration to this window/font/theme state.
@@ -7237,6 +7283,7 @@ fn runMainLoop(self: *AppWindow) !void {
         // Check for config file changes
         if (config_watcher) |*w| checkConfigReload(allocator, w);
         memory_digest_scheduler.tick(allocator);
+        syncMemoryDigestToast();
         tmux_controller.tickAll(allocator, term_cols, term_rows);
         overlays.tickSessionLauncher();
         overlays.tickQuickAiVerify();
@@ -7703,6 +7750,7 @@ fn runMainLoop(self: *AppWindow) !void {
         overlays.renderCloseShortcutConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderCopyToast(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderTransferToast(@floatFromInt(fb_width), @floatFromInt(fb_height));
+        overlays.renderMemoryDigestToast(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderTransferCancelConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderUpdatePrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderWindowCloseConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));

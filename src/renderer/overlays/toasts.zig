@@ -7,6 +7,9 @@ pub const COPY_TOAST_DURATION_MS: i64 = 1500;
 pub const TRANSFER_TOAST_DURATION_MS: i64 = 2500;
 pub const UPDATE_PROMPT_DURATION_MS: i64 = 10000;
 pub const UPDATE_STATUS_DURATION_MS: i64 = 2500;
+pub const MEMORY_DIGEST_TOAST_DURATION_MS: i64 = 4000;
+
+pub const MemoryDigestStatus = enum { in_progress, success, failed, skipped };
 
 pub const TextToast = struct {
     until_ms: i64 = 0,
@@ -101,10 +104,35 @@ pub const UpdatePrompt = struct {
     }
 };
 
+pub const MemoryDigestToast = struct {
+    until_ms: i64 = 0,
+    sticky: bool = false,
+    status: MemoryDigestStatus = .in_progress,
+    buf: [160]u8 = undefined,
+    len: usize = 0,
+
+    pub fn show(self: *MemoryDigestToast, status: MemoryDigestStatus, message: []const u8, now_ms: i64, duration_ms: i64) void {
+        self.len = copyTruncated(&self.buf, message);
+        self.status = status;
+        self.sticky = status == .in_progress;
+        self.until_ms = now_ms + duration_ms;
+    }
+
+    pub fn active(self: MemoryDigestToast, now_ms: i64) bool {
+        return self.len > 0 and (self.sticky or now_ms < self.until_ms);
+    }
+
+    pub fn text(self: *const MemoryDigestToast) ?[]const u8 {
+        if (self.len == 0) return null;
+        return self.buf[0..self.len];
+    }
+};
+
 pub const State = struct {
     copy: TextToast = .{},
     transfer: TransferToast = .{},
     update: UpdatePrompt = .{},
+    memory_digest: MemoryDigestToast = .{},
     close_shortcut_confirm_until_ms: i64 = 0,
 };
 
@@ -227,4 +255,17 @@ test "text toast truncates stored text to fixed buffer" {
 
     try std.testing.expectEqual(@as(usize, 64), toast.text().?.len);
     try std.testing.expectEqualStrings(long_message[0..64], toast.text().?);
+}
+
+test "memory digest toast stays sticky only while in progress" {
+    var toast: MemoryDigestToast = .{};
+
+    toast.show(.in_progress, "Digest running", 1000, MEMORY_DIGEST_TOAST_DURATION_MS);
+    try std.testing.expect(toast.active(1000 + MEMORY_DIGEST_TOAST_DURATION_MS + 1));
+    try std.testing.expect(toast.sticky);
+
+    toast.show(.success, "Digest complete", 2000, MEMORY_DIGEST_TOAST_DURATION_MS);
+    try std.testing.expect(!toast.sticky);
+    try std.testing.expect(toast.active(2000 + MEMORY_DIGEST_TOAST_DURATION_MS - 1));
+    try std.testing.expect(!toast.active(2000 + MEMORY_DIGEST_TOAST_DURATION_MS + 1));
 }

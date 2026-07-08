@@ -62,6 +62,7 @@ test "overlay state aggregates migrated overlay groups" {
 
     state.settings.open();
     state.toasts.copy.show("Copied", 10, 100);
+    state.toasts.memory_digest.show(.in_progress, "Digest running", 10, 100);
     state.confirms.openRestoreDefaults();
     state.ssh.setFormField(.name, "web");
     state.assistant_profiles.setFormField(.name, "claude");
@@ -72,6 +73,7 @@ test "overlay state aggregates migrated overlay groups" {
 
     try std.testing.expect(state.settings.visible);
     try std.testing.expectEqualStrings("Copied", state.toasts.copy.text().?);
+    try std.testing.expectEqualStrings("Digest running", state.toasts.memory_digest.text().?);
     try std.testing.expect(state.confirms.restore_defaults_visible);
     try std.testing.expectEqualStrings("web", state.ssh.formField(.name));
     try std.testing.expectEqualStrings("claude", state.assistant_profiles.formField(.name));
