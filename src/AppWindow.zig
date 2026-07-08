@@ -82,6 +82,7 @@ pub const tab = @import("appwindow/tab.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
 const tmux_controller = @import("appwindow/tmux_controller.zig");
 const memory_digest_scheduler = @import("memory_digest/scheduler.zig");
+const memory_center_session = @import("memory_center/session.zig");
 pub const font = @import("font/manager.zig");
 pub const cell_renderer = @import("renderer/cell_renderer.zig");
 const cell_pipeline = @import("renderer/cell_pipeline.zig");
@@ -129,6 +130,7 @@ else
     @import("browser/panel_stub.zig");
 pub const assistant_conversation_renderer = @import("renderer/assistant/conversation.zig");
 pub const terminal_agent_sessions_renderer = @import("renderer/terminal_agents/sessions.zig");
+const memory_center_renderer = @import("renderer/memory_center_renderer.zig");
 const skill_center_renderer = @import("renderer/skill_center_renderer.zig");
 const port_forwarding_renderer = @import("renderer/port_forwarding_renderer.zig");
 const ai_sidebar = @import("assistant/sidebar/panel.zig");
@@ -1928,6 +1930,36 @@ fn renderAiHistoryFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int
     }
 }
 
+fn renderMemoryCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
+    gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
+    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    clearWithBackground(fb_width, fb_height);
+    titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    if (active_tab.memory_center_session) |session| {
+        const draw: memory_center_renderer.DrawContext = .{
+            .bg = g_theme.background,
+            .fg = g_theme.foreground,
+            .accent = g_theme.cursor_color,
+            .cell_h = font.g_titlebar_cell_height,
+            .fillQuad = ui_pipeline.fillQuad,
+            .fillQuadAlpha = ui_pipeline.fillQuadAlpha,
+            .renderTextLimited = titlebar.renderTextLimited,
+            .glyphAdvance = titlebar.titlebarGlyphAdvance,
+        };
+        memory_center_renderer.render(
+            draw,
+            session,
+            @floatFromInt(fb_width),
+            @floatFromInt(fb_height),
+            titlebar_offset,
+            left_panels_w,
+            aiHistoryContentWidth(fb_width, left_panels_w, right_panels_w),
+        );
+    }
+}
+
 fn renderSkillCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
     gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
     ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
@@ -2303,6 +2335,10 @@ pub fn activeAiHistory() ?*ai_history_session.Session {
     const active = activeTab() orelse return null;
     if (active.kind != .ai_history) return null;
     return active.ai_history_session;
+}
+
+pub fn activeMemoryCenter() ?*memory_center_session.Session {
+    return tab.activeMemoryCenter();
 }
 
 pub fn activeSkillCenter() ?*skill_center.Session {
@@ -2829,6 +2865,86 @@ pub fn aiHistoryScrollDateList(delta: isize) bool {
 
 pub fn aiHistoryLoadSelectedTranscript() bool {
     return resumeAiHistorySelection();
+}
+
+pub fn memoryCenterCycleSource(delta: isize) bool {
+    const session = activeMemoryCenter() orelse return false;
+    session.cycleSource(delta);
+    markUiDirty();
+    return true;
+}
+
+pub fn memoryCenterMoveSelection(delta: isize) bool {
+    const session = activeMemoryCenter() orelse return false;
+    session.moveSelection(delta);
+    markUiDirty();
+    return true;
+}
+
+pub fn memoryCenterScrollDetail(delta: isize) bool {
+    const session = activeMemoryCenter() orelse return false;
+    session.scrollDetailBy(delta);
+    markUiDirty();
+    return true;
+}
+
+pub fn memoryCenterReload() bool {
+    const allocator = g_allocator orelse return false;
+    const session = activeMemoryCenter() orelse return false;
+    session.reload(allocator);
+    markUiDirty();
+    return true;
+}
+
+pub fn memoryCenterHandleMousePress(xpos: f64, ypos: f64) bool {
+    const session = activeMemoryCenter() orelse return false;
+    const win = g_window orelse return false;
+    const fb = window_backend.framebufferSize(win);
+    const left = leftPanelsWidth();
+    const width = aiHistoryContentWidth(fb.width, left, rightPanelsWidthForWindow(fb.width));
+    const hit = memory_center_renderer.hitTest(
+        session,
+        @floatFromInt(fb.height),
+        currentTitlebarHeight(),
+        left,
+        width,
+        font.g_titlebar_cell_height,
+        xpos,
+        ypos,
+    );
+    switch (hit) {
+        .source => |source| session.setSource(source),
+        .row => |idx| session.selectIndex(idx),
+        .detail => {},
+        .none => return false,
+    }
+    markUiDirty();
+    return true;
+}
+
+pub fn memoryCenterHandleMouseWheel(xpos: i32, ypos: i32, delta: i32) bool {
+    const session = activeMemoryCenter() orelse return false;
+    const win = g_window orelse return false;
+    const fb = window_backend.framebufferSize(win);
+    const left = leftPanelsWidth();
+    const width = aiHistoryContentWidth(fb.width, left, rightPanelsWidthForWindow(fb.width));
+    const hit = memory_center_renderer.hitTest(
+        session,
+        @floatFromInt(fb.height),
+        currentTitlebarHeight(),
+        left,
+        width,
+        font.g_titlebar_cell_height,
+        @floatFromInt(xpos),
+        @floatFromInt(ypos),
+    );
+    const direction: isize = if (delta > 0) -1 else 1;
+    switch (hit) {
+        .detail => session.scrollDetailBy(direction * 3),
+        .source, .row, .none => session.moveSelection(direction),
+    }
+    markUiDirty();
+    return true;
 }
 
 pub fn resumeAiHistorySelection() bool {
@@ -4188,6 +4304,14 @@ pub fn spawnAiHistoryTab(source: ai_history_source.Source) bool {
     return true;
 }
 
+pub fn spawnMemoryCenterTab() bool {
+    const allocator = g_allocator orelse return false;
+    if (!tab.spawnMemoryCenterTab(allocator)) return false;
+    clearUiStateOnTabChange();
+    markUiDirty();
+    return true;
+}
+
 /// Open a new Skill Center tab and scan the local library.
 pub fn spawnSkillCenterTab() bool {
     const allocator = g_allocator orelse return false;
@@ -4789,6 +4913,8 @@ fn renderResizeFrame(width: i32, height: i32) void {
                 renderAiChatFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .ai_history) {
                 renderAiHistoryFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (active_tab.kind == .memory_center) {
+                renderMemoryCenterFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .skill_center) {
                 renderSkillCenterFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .port_forwarding) {
@@ -4909,7 +5035,6 @@ fn renderResizeFrame(width: i32, height: i32) void {
     overlays.renderJupyterPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderCopilotPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderSettingsPage(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
-    overlays.renderMemoryCenter(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderSessionLauncher(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderMcpServers(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     weixin_qr_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -7510,7 +7635,7 @@ fn runMainLoop(self: *AppWindow) !void {
             control_api.syncPanes(allocator);
             control_api.syncUiState(allocator);
             syncImeCaretPosition(win, split_count);
-            if (active_tab.kind != .ai_chat and active_tab.kind != .ai_history and active_tab.kind != .skill_center and active_tab.kind != .port_forwarding and synchronizedOutputPendingForVisibleSplits(split_count)) {
+            if (active_tab.kind != .ai_chat and active_tab.kind != .ai_history and active_tab.kind != .memory_center and active_tab.kind != .skill_center and active_tab.kind != .port_forwarding and synchronizedOutputPendingForVisibleSplits(split_count)) {
                 // Block instead of spinning at ~1kHz: the IO thread posts a
                 // wakeup when the application ends synchronized output (or new
                 // output arrives), and the timeout bounds the watchdog check.
@@ -7524,6 +7649,8 @@ fn runMainLoop(self: *AppWindow) !void {
                 renderAiChatFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .ai_history) {
                 renderAiHistoryFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (active_tab.kind == .memory_center) {
+                renderMemoryCenterFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .skill_center) {
                 renderSkillCenterFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .port_forwarding) {
@@ -7751,7 +7878,6 @@ fn runMainLoop(self: *AppWindow) !void {
         overlays.renderJupyterPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderCopilotPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderSettingsPage(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
-        overlays.renderMemoryCenter(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderSessionLauncher(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderMcpServers(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         weixin_qr_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
