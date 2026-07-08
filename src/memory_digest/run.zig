@@ -52,6 +52,7 @@ pub const Progress = union(enum) {
         total: usize,
         completed: usize,
         failed: usize,
+        detail: []const u8 = "",
     },
     finalizing,
 };
@@ -398,7 +399,27 @@ fn runOnceWithLlm(
         } });
     }
 
-    for (collected) |s| {
+    for (collected, 0..) |s, i| {
+        const progress_detail = if (opts.progress_sink != null)
+            try std.fmt.allocPrint(arena, "{d}/{d} {s}/{s}:{s}", .{
+                i + 1,
+                collected.len,
+                s.source_id,
+                @tagName(s.provider),
+                s.session_id,
+            })
+        else
+            "";
+        if (opts.progress_sink) |sink| {
+            std.log.warn("memory_digest: summarizing {s}", .{progress_detail});
+            sink.notify(.{ .summarizing = .{
+                .total = collected.len,
+                .completed = sessions_summarized,
+                .failed = sessions_failed,
+                .detail = progress_detail,
+            } });
+        }
+
         const key = try summaryKey(arena, s.source_id, s.provider, s.session_id);
         const old_summary = try findOldSummary(arena, &summaries, s.source_id, s.provider, s.session_id, key);
 
@@ -410,6 +431,7 @@ fn runOnceWithLlm(
                     .total = collected.len,
                     .completed = sessions_summarized,
                     .failed = sessions_failed,
+                    .detail = progress_detail,
                 } });
             }
             continue;
@@ -422,6 +444,7 @@ fn runOnceWithLlm(
                 .total = collected.len,
                 .completed = sessions_summarized,
                 .failed = sessions_failed,
+                .detail = progress_detail,
             } });
         }
 
@@ -968,6 +991,32 @@ const RoutingStub = struct {
     }
 };
 
+const ProgressRecorder = struct {
+    first_detail_buf: [128]u8 = undefined,
+    first_detail_len: usize = 0,
+
+    fn sink(self: *ProgressRecorder) ProgressSink {
+        return .{ .ctx = self, .onProgressFn = onProgress };
+    }
+
+    fn onProgress(ctx: *anyopaque, progress: Progress) void {
+        const self: *ProgressRecorder = @ptrCast(@alignCast(ctx));
+        switch (progress) {
+            .summarizing => |v| {
+                if (self.first_detail_len != 0 or v.detail.len == 0) return;
+                const len = @min(self.first_detail_buf.len, v.detail.len);
+                @memcpy(self.first_detail_buf[0..len], v.detail[0..len]);
+                self.first_detail_len = len;
+            },
+            else => {},
+        }
+    }
+
+    fn firstDetail(self: *const ProgressRecorder) []const u8 {
+        return self.first_detail_buf[0..self.first_detail_len];
+    }
+};
+
 fn writeFixtures(tmp: std.testing.TmpDir) !void {
     try tmp.dir.makePath("claude/proj-a");
     var d = try tmp.dir.openDir("claude/proj-a", .{});
@@ -1111,6 +1160,35 @@ test "memory_digest_run: llm_usage flows into runs.json, defaults to 0 when unse
     const parsed2 = try std.json.parseFromSlice(RunsShape, allocator, runs2, .{ .ignore_unknown_fields = true });
     defer parsed2.deinit();
     try std.testing.expectEqual(@as(u64, 0), parsed2.value.runs[0].total_tokens);
+}
+
+test "memory_digest_run: progress detail names the active session before map completes" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    try writeFixtures(tmp);
+
+    const claude_root = try std.fs.path.join(allocator, &.{ root, "claude" });
+    defer allocator.free(claude_root);
+    const memory_root = try std.fs.path.join(allocator, &.{ root, "memory" });
+    defer allocator.free(memory_root);
+
+    var stub = RoutingStub{ .map_response = MAP_JSON, .reduce_response = REDUCE_JSON };
+    var recorder = ProgressRecorder{};
+    _ = try runOnce(allocator, .{
+        .roots = .{ .claude_projects_dir = claude_root },
+        .memory_root = memory_root,
+        .now_ms = 1783500000000,
+        .tz_offset_seconds = 8 * 3600,
+        .backfill_days = 0,
+        .completer = stub.completer(),
+        .model_label = "test-model",
+        .progress_sink = recorder.sink(),
+    });
+
+    try std.testing.expect(std.mem.indexOf(u8, recorder.firstDetail(), "1/1 local/claude:claude-abc") != null);
 }
 
 test "memory_digest_run: map failure withholds cursor and daily entry, other sessions unaffected" {

@@ -5081,11 +5081,18 @@ fn syncMemoryDigestToast() void {
     const msg = switch (progress.stage) {
         .queued => "Memory digest queued",
         .scanning => "Memory digest: scanning chat logs",
-        .summarizing => std.fmt.bufPrint(
-            &buf,
-            "Memory digest: summarizing {d}/{d} ({d} failed)",
-            .{ progress.sessions_done, progress.sessions_total, progress.sessions_failed },
-        ) catch "Memory digest: summarizing sessions",
+        .summarizing => if (progress.detail().len != 0)
+            std.fmt.bufPrint(
+                &buf,
+                "Memory digest: summarizing {d}/{d} ({d} failed) - {s}",
+                .{ progress.sessions_done, progress.sessions_total, progress.sessions_failed, progress.detail() },
+            ) catch "Memory digest: summarizing sessions"
+        else
+            std.fmt.bufPrint(
+                &buf,
+                "Memory digest: summarizing {d}/{d} ({d} failed)",
+                .{ progress.sessions_done, progress.sessions_total, progress.sessions_failed },
+            ) catch "Memory digest: summarizing sessions",
         .finalizing => "Memory digest: writing digest files",
         .success => std.fmt.bufPrint(
             &buf,

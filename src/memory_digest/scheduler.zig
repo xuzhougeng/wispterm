@@ -451,7 +451,7 @@ fn onRunProgress(ctx: *anyopaque, progress: run_mod.Progress) void {
     switch (progress) {
         .scanning => setProgress(.scanning, true, .{ .detail = "Scanning chat logs" }),
         .summarizing => |v| setProgress(.summarizing, true, .{
-            .detail = "Summarizing sessions",
+            .detail = if (v.detail.len != 0) v.detail else "Summarizing sessions",
             .sessions_total = @intCast(v.total),
             .sessions_done = @intCast(v.completed),
             .sessions_failed = @intCast(v.failed),
