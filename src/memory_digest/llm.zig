@@ -14,6 +14,15 @@
 //! field chain had not compiled, we'd revert to fetch() + document the
 //! scheduler-thread detach as the only starvation guard; it did compile, see
 //! below).
+//!
+//! Timeout coverage: SO_RCVTIMEO/SNDTIMEO (set in `setRequestTimeout`) only
+//! bound the send/receive-head/body-read phases below, i.e. everything after
+//! `client.request()` returns a live connection. The TCP connect and TLS
+//! handshake happen *inside* `client.request()`, before the socket options
+//! are applied, and std has no pre-connect timeout knob to reach for — a
+//! stalled connect/handshake is unprotected here. The only backstop for that
+//! window is the scheduler detaching/killing the whole worker thread on
+//! shutdown (see the scheduler); it is not a per-call timeout.
 const std = @import("std");
 const builtin = @import("builtin");
 const protocol = @import("../assistant/conversation/protocol.zig");
@@ -112,7 +121,7 @@ pub const Client = struct {
 
         req.transfer_encoding = .{ .content_length = body.len };
         req.sendBodyComplete(@constCast(body)) catch |err| {
-            if (isTimeoutError(err)) {
+            if (err == error.WriteFailed and isTimeoutError(connectionWriteError(req.connection))) {
                 std.log.warn("memory_digest: llm request timed out sending body (model={s}, limit={d}s)", .{ config.model, config.timeout_seconds });
                 return error.LlmTimeout;
             }
@@ -124,7 +133,12 @@ pub const Client = struct {
         // in that mode, but receiveHead still requires a slice.
         var redirect_buffer: [8 * 1024]u8 = undefined;
         var response = req.receiveHead(&redirect_buffer) catch |err| {
-            if (isTimeoutError(err)) {
+            const timed_out = switch (err) {
+                error.ReadFailed => isTimeoutError(connectionReadError(req.connection)),
+                error.WriteFailed => isTimeoutError(connectionWriteError(req.connection)),
+                else => false,
+            };
+            if (timed_out) {
                 std.log.warn("memory_digest: llm request timed out waiting for response head (model={s}, limit={d}s)", .{ config.model, config.timeout_seconds });
                 return error.LlmTimeout;
             }
@@ -134,16 +148,36 @@ pub const Client = struct {
         var resp_buf: std.Io.Writer.Allocating = .init(gpa);
         defer resp_buf.deinit();
 
+        // Mirrors fetch()'s readerDecompressing path (std/http/Client.zig
+        // fetch(), ~line 1822-1839): Request advertises gzip/deflate/zstd
+        // accept-encoding by default, so a gateway is free to compress the
+        // response. response.reader() alone hands back the raw compressed
+        // bytes; without decompression here a gzip response would land in
+        // resp_buf as binary garbage instead of JSON.
+        const decompress_buffer: []u8 = switch (response.head.content_encoding) {
+            .identity => &.{},
+            .zstd => try gpa.alloc(u8, std.compress.zstd.default_window_len),
+            .deflate, .gzip => try gpa.alloc(u8, std.compress.flate.max_window_len),
+            .compress => return error.LlmUnsupportedCompression,
+        };
+        defer if (decompress_buffer.len != 0) gpa.free(decompress_buffer);
+
         var transfer_buffer: [64]u8 = undefined;
-        const body_reader = response.reader(&transfer_buffer);
+        var decompress: std.http.Decompress = undefined;
+        const body_reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
         _ = body_reader.streamRemaining(&resp_buf.writer) catch |err| switch (err) {
             error.ReadFailed => {
-                const body_err = response.bodyErr().?;
-                if (isTimeoutError(body_err)) {
+                const read_err = connectionReadError(req.connection);
+                if (isTimeoutError(read_err)) {
                     std.log.warn("memory_digest: llm request timed out reading body (model={s}, limit={d}s, elapsed_ms={d})", .{ config.model, config.timeout_seconds, timer.read() / std.time.ns_per_ms });
                     return error.LlmTimeout;
                 }
-                return body_err;
+                // Fall back to the body-level diagnostic (set on the chunked
+                // path — see isTimeoutError doc comment) when the connection
+                // itself recorded no error, rather than unwrapping a null.
+                if (read_err) |e| return e;
+                if (response.bodyErr()) |body_err| return body_err;
+                return error.LlmHttpError;
             },
             else => |e| return e,
         };
@@ -168,11 +202,48 @@ pub const Client = struct {
     }
 };
 
-/// True when `err` (or, for the body-read path, the more specific
-/// `http.Reader.BodyError`) is the WouldBlock surfaced by a SO_RCVTIMEO /
-/// SO_SNDTIMEO expiry on a blocking socket (see `setRequestTimeout`).
-fn isTimeoutError(err: anyerror) bool {
-    return err == error.WouldBlock;
+/// True when `err` is the WouldBlock surfaced by a SO_RCVTIMEO / SO_SNDTIMEO
+/// expiry on a blocking socket (see `setRequestTimeout`). `null` (no error
+/// recorded on the connection) is never a timeout.
+///
+/// `std.http.Client`'s public error sets (`Request.sendBodyComplete`'s
+/// `Writer.Error`, `Request.receiveHead`'s `ReceiveHeadError`,
+/// `http.Reader.BodyError` from `bodyErr()`) collapse the real POSIX error
+/// down to a generic `WriteFailed`/`ReadFailed` marker — none of those sets
+/// mention `WouldBlock` themselves. The specific error always lives on the
+/// `Connection` instead: `connectionReadError`/`connectionWriteError` below
+/// fetch it from there, and this function only classifies whatever they
+/// return.
+fn isTimeoutError(err: ?anyerror) bool {
+    // ponytail: `err == error.WouldBlock` directly on an `?anyerror` trips a
+    // Zig 0.15.2 peer-type-resolution quirk (the comparison's inferred type
+    // becomes an error union, not bool — reproduced standalone outside this
+    // file). Unwrapping first avoids it.
+    const e = err orelse return false;
+    return e == error.WouldBlock;
+}
+
+/// Fetches the specific error stashed on the connection after a read-side
+/// `error.ReadFailed` (`Connection.getReadError`, std/http/Client.zig:368 —
+/// covers both the plain-socket and TLS read paths). Returns null when the
+/// request has no connection (already released) or the connection recorded
+/// no error.
+fn connectionReadError(connection: ?*std.http.Client.Connection) ?anyerror {
+    const c = connection orelse return null;
+    return c.getReadError();
+}
+
+/// Fetches the specific error stashed on the connection after a write-side
+/// `error.WriteFailed`. Unlike the read side, `Connection` has no
+/// `getWriteError` accessor — every write path (`sendHead`, `sendBodyComplete`,
+/// TLS or plain) funnels through `Connection.flush`, which always ends by
+/// flushing `stream_writer.interface` (std/http/Client.zig:442-449), so the
+/// raw-socket `net.Stream.Writer.err` field (std/net.zig, public on every
+/// platform) is where the real error — including a SO_SNDTIMEO `WouldBlock`
+/// — actually lands.
+fn connectionWriteError(connection: ?*std.http.Client.Connection) ?anyerror {
+    const c = connection orelse return null;
+    return c.stream_writer.err;
 }
 
 /// Applies `timeout_seconds` as a receive+send timeout on the request's
