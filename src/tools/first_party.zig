@@ -50,7 +50,7 @@ const static_definitions = [_]Definition{
     .{ .name = "wispterm_docs", .label = "wispterm_docs", .description = "Read WispTerm's own documentation.", .category = .docs },
     .{ .name = "mcp_config", .label = "mcp_config", .description = "List and configure MCP servers.", .category = .agent },
     .{ .name = "mcp_activate", .label = "mcp_activate", .description = "Activate a configured MCP server's tools for the conversation.", .category = .agent },
-    .{ .name = "memory_digest_config", .label = "memory_digest_config", .description = "List and configure Memory Digest settings.", .category = .memory },
+    .{ .name = "wispterm_config", .label = "wispterm_config", .description = "List and configure WispTerm settings.", .category = .agent },
     .{ .name = "websearch", .label = "websearch", .description = "Search the web for current information via Jina.", .category = .web },
     .{ .name = "webread", .label = "webread", .description = "Read a web page or local document into markdown via Jina Reader.", .category = .web },
     .{ .name = "pubmed", .label = "pubmed", .description = "Search PubMed biomedical literature.", .category = .web },
