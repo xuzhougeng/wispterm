@@ -313,6 +313,7 @@ test {
     _ = @import("agent_tools/research.zig");
     _ = @import("agent_tools/knowledge.zig");
     _ = @import("agent_tools/memory.zig");
+    _ = @import("agent_tools/memory_search.zig");
     _ = @import("agent_tools/output.zig");
     _ = @import("agent_tools/schedule.zig");
     _ = @import("agent_tools/terminal.zig");
