@@ -20,6 +20,7 @@ pub fn findGaps(
     memory_root: []const u8,
     limit: usize,
 ) ![]const Gap {
+    if (limit == 0) return &.{};
     var gaps: std.ArrayListUnmanaged(Gap) = .empty;
     const daily_dir = try std.fs.path.join(gpa, &.{ memory_root, "daily" });
     defer gpa.free(daily_dir);
@@ -98,6 +99,9 @@ test "backfill: findGaps returns local empty-summary sessions oldest-first with 
 
     const limited = try findGaps(a, arena, root, 2);
     try std.testing.expectEqual(@as(usize, 2), limited.len);
+
+    const none = try findGaps(a, arena, root, 0);
+    try std.testing.expectEqual(@as(usize, 0), none.len);
 }
 
 test "backfill: findGaps tolerates missing daily dir" {
