@@ -21,6 +21,7 @@ const tool_args = @import("args.zig");
 const agent_research = @import("research.zig");
 const knowledge = @import("knowledge.zig");
 const agent_memory_tool = @import("memory.zig");
+const agent_memory_search = @import("memory_search.zig");
 const agent_wispterm_config = @import("wispterm_config.zig");
 const terminal_tools = @import("terminal.zig");
 const agent_sessions = @import("sessions.zig");
@@ -34,6 +35,7 @@ const agent_mcp_config = @import("mcp_config.zig");
 const agent_mcp_activate = @import("mcp_activate.zig");
 const agent_weixin = @import("weixin.zig");
 const agent_ui_screenshot = @import("ui_screenshot.zig");
+const platform_dirs = @import("../platform/dirs.zig");
 
 // ---------------------------------------------------------------------------
 // Tool dispatch
@@ -285,6 +287,11 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
         return agent_memory_tool.delete(ctx, args.value);
+    }
+    if (std.mem.eql(u8, call.name, "memory_search")) {
+        const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        return agent_memory_search.search(ctx, args.value);
     }
     if (agent_dynamic.find(ctx.settings.dynamic_binary_tools, call.name)) |tool| {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
@@ -1169,6 +1176,30 @@ test "executeToolCall reports memory disabled when ai-memory-enabled is off" {
     });
     defer a.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "disabled") != null);
+}
+
+test "executeToolCall memory_search returns no-match text when digest artifacts absent" {
+    const a = std.testing.allocator;
+    platform_dirs.setTestConfigDirForCurrentThread("memory-search-test-config");
+    defer platform_dirs.clearTestConfigDirForCurrentThread();
+
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .memory_enabled = true },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const out = try executeToolCall(&ctx, .{
+        .id = @constCast("1"),
+        .name = @constCast("memory_search"),
+        .arguments = @constCast("{\"keywords\":[\"DESeq2\",\"RNA-seq\"],\"source\":\"CPU2\"}"),
+    });
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "No digest match") != null);
 }
 
 test "terminal_snapshot keeps the live screen tail when output exceeds the limit" {

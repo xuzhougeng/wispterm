@@ -59,6 +59,7 @@ const static_definitions = [_]Definition{
     .{ .name = "memory_save", .label = "memory_save", .description = "Save a durable long-term memory.", .category = .memory },
     .{ .name = "memory_recall", .label = "memory_recall", .description = "Read a durable long-term memory.", .category = .memory },
     .{ .name = "memory_delete", .label = "memory_delete", .description = "Delete a durable long-term memory.", .category = .memory },
+    .{ .name = "memory_search", .label = "memory_search", .description = "Search digested history of past AI agent sessions across local and remote hosts.", .category = .memory },
 };
 
 const DefinitionLookup = union(enum) {

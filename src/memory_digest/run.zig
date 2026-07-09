@@ -345,6 +345,7 @@ pub fn runOnce(gpa: std.mem.Allocator, opts: Options) !Summary {
                 .project = try arena.dupe(u8, types.projectSlug(s.project_path, &slug_buf)),
                 .title = s.title,
                 .message_count_new = @intCast(s.new_messages.len),
+                .source_file = s.source_file,
             });
         }
         var date_buf: [10]u8 = undefined;
@@ -526,6 +527,7 @@ fn runOnceWithLlm(
             .topics = result.topics,
             .outcome = result.outcome,
             .artifacts = result.artifacts,
+            .source_file = s.source_file,
         });
         try summarized_dates.append(arena, date);
         try summarized_paths.append(arena, s.project_path);
@@ -659,6 +661,7 @@ fn mergeDailyWithExisting(
         topics: []const []const u8 = &.{},
         outcome: []const u8 = "unknown",
         artifacts: []const store.Artifact = &.{},
+        source_file: []const u8 = "",
     };
     const DailyShape = struct { sessions: []const ExistingShape = &.{} };
 
@@ -705,6 +708,7 @@ fn mergeDailyWithExisting(
                 .topics = if (keep_old_summary) old.topics else n.topics,
                 .outcome = if (keep_old_summary) old.outcome else n.outcome,
                 .artifacts = if (keep_old_summary) old.artifacts else n.artifacts,
+                .source_file = if (n.source_file.len != 0) n.source_file else old.source_file,
             });
         } else {
             try merged.append(arena, .{
@@ -718,6 +722,7 @@ fn mergeDailyWithExisting(
                 .topics = old.topics,
                 .outcome = old.outcome,
                 .artifacts = old.artifacts,
+                .source_file = old.source_file,
             });
         }
     }

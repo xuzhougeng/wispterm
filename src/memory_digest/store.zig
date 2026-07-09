@@ -20,6 +20,7 @@ pub const DailySession = struct {
     topics: []const []const u8 = &.{},
     outcome: []const u8 = "unknown",
     artifacts: []const Artifact = &.{},
+    source_file: []const u8 = "",
 };
 
 pub const DailyProject = struct { slug: []const u8, summary: []const u8, session_refs: []const []const u8 = &.{} };
@@ -734,4 +735,45 @@ test "memory_digest_store: SummaryStore missing or corrupt file loads empty" {
     var corrupt = try SummaryStore.loadFromPath(allocator, path);
     defer corrupt.deinit();
     try std.testing.expectEqual(@as(usize, 0), corrupt.records.items.len);
+}
+
+test "memory_digest_store: DailySession source_file round-trips and defaults for old json" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(root);
+
+    try writeDaily(a, root, .{
+        .date = "2026-07-09",
+        .generated_at = 1,
+        .sessions = &.{.{
+            .provider = "claude",
+            .source_id = "ssh:CPU2",
+            .session_id = "aaa-111",
+            .project = "rnaseq",
+            .title = "t",
+            .message_count_new = 3,
+            .source_file = "/root/.claude/projects/-root-rnaseq/aaa-111.jsonl",
+        }},
+    });
+
+    const path = try std.fs.path.join(a, &.{ root, "daily", "2026-07-09.json" });
+    defer a.free(path);
+    const bytes = try std.fs.cwd().readFileAlloc(a, path, 1 << 20);
+    defer a.free(bytes);
+    var parsed = try std.json.parseFromSlice(Daily, a, bytes, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings(
+        "/root/.claude/projects/-root-rnaseq/aaa-111.jsonl",
+        parsed.value.sessions[0].source_file,
+    );
+
+    // 旧格式（无 source_file 字段）解析回默认空串。
+    const old_json =
+        \\{"schema_version":1,"date":"2026-07-08","generated_at":1,"sessions":[{"provider":"codex","source_id":"local","session_id":"b","project":"p","title":"t","message_count_new":1}]}
+    ;
+    var old_parsed = try std.json.parseFromSlice(Daily, a, old_json, .{ .ignore_unknown_fields = true });
+    defer old_parsed.deinit();
+    try std.testing.expectEqualStrings("", old_parsed.value.sessions[0].source_file);
 }
