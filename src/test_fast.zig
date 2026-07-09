@@ -308,6 +308,7 @@ test {
     _ = @import("agent_tools/mod.zig");
     _ = @import("agent_tools/mcp_config.zig");
     _ = @import("agent_tools/mcp_activate.zig");
+    _ = @import("agent_tools/wispterm_config.zig");
     _ = @import("tools/mcp_catalog.zig");
     _ = @import("agent_tools/research.zig");
     _ = @import("agent_tools/knowledge.zig");

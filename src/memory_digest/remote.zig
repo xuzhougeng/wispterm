@@ -186,10 +186,17 @@ const CLAUDE_JSONL_2 =
     \\
 ;
 
+const CODEX_JSONL =
+    \\{"type":"session_meta","timestamp":"2026-05-31T10:00:00Z","payload":{"id":"codex-abc","cwd":"/home/me/codex-project"}}
+    \\{"type":"response_item","timestamp":"2026-05-31T10:01:00Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Fix remote Codex parsing"}]}}
+    \\
+;
+
 const FakeHost = struct {
     home: []const u8 = "/home/me",
     fail_home: bool = false,
     find_output: []const u8 = "",
+    codex_find_output: []const u8 = "",
     cat_files: std.StringHashMapUnmanaged([]const u8) = .empty,
     cat_calls: u32 = 0,
 
@@ -200,10 +207,13 @@ const FakeHost = struct {
             return gpa.dupe(u8, self.home);
         }
         if (std.mem.startsWith(u8, command, "find ")) {
-            // Only serve claude root queries in these tests (codex root query
-            // returns empty = no files, which is a valid "nothing found").
+            // Tests can serve Claude and Codex roots independently; empty
+            // output is a valid "nothing found".
             if (std.mem.indexOf(u8, command, "/.claude/projects") != null) {
                 return gpa.dupe(u8, self.find_output);
+            }
+            if (std.mem.indexOf(u8, command, "/.codex/sessions") != null) {
+                return gpa.dupe(u8, self.codex_find_output);
             }
             return gpa.dupe(u8, "");
         }
@@ -265,6 +275,40 @@ test "memory_digest_remote: first run collects, second run collects nothing and 
     const r2 = try collectRemote(allocator, arena_state.allocator(), &out2, "ssh:box", host.execHost(), &cur, 0, .{});
     try std.testing.expectEqual(@as(u32, 0), r2.count);
     try std.testing.expectEqual(@as(u32, 2), host.cat_calls); // unchanged: no new cats
+}
+
+test "memory_digest_remote: collects claude and codex from one remote source" {
+    const allocator = std.testing.allocator;
+    var host: FakeHost = .{
+        .find_output = "1780300860.0\t200\t/home/me/.claude/projects/proj-a/claude-abc.jsonl\n",
+        .codex_find_output = "1780300861.0\t180\t/home/me/.codex/sessions/2026/05/codex-abc.jsonl\n",
+    };
+    defer host.cat_files.deinit(allocator);
+    try host.cat_files.put(allocator, "/home/me/.claude/projects/proj-a/claude-abc.jsonl", CLAUDE_JSONL);
+    try host.cat_files.put(allocator, "/home/me/.codex/sessions/2026/05/codex-abc.jsonl", CODEX_JSONL);
+
+    var cur = cursors_mod.Set.init(allocator);
+    defer cur.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    var out: std.ArrayListUnmanaged(types.CollectedSession) = .empty;
+
+    const r = try collectRemote(allocator, arena_state.allocator(), &out, "ssh:box", host.execHost(), &cur, 0, .{});
+    try std.testing.expectEqual(@as(u32, 2), r.count);
+    try std.testing.expectEqual(@as(usize, 2), out.items.len);
+    try std.testing.expectEqual(@as(u32, 2), host.cat_calls);
+
+    var found_claude = false;
+    var found_codex = false;
+    for (out.items) |s| {
+        if (s.provider == .claude and std.mem.eql(u8, s.session_id, "claude-abc")) found_claude = true;
+        if (s.provider == .codex and std.mem.eql(u8, s.session_id, "codex-abc")) {
+            try std.testing.expectEqualStrings("/home/me/codex-project", s.project_path);
+            found_codex = true;
+        }
+    }
+    try std.testing.expect(found_claude);
+    try std.testing.expect(found_codex);
 }
 
 test "memory_digest_remote: only the changed file is cat'd" {
