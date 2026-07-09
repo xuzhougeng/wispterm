@@ -81,6 +81,31 @@ typedef struct ICoreWebView2Vtbl {
     HRESULT (STDMETHODCALLTYPE *get_Source)(ICoreWebView2 *This, LPWSTR *uri);
     HRESULT (STDMETHODCALLTYPE *Navigate)(ICoreWebView2 *This, LPCWSTR uri);
     HRESULT (STDMETHODCALLTYPE *NavigateToString)(ICoreWebView2 *This, LPCWSTR htmlContent);
+    // Keep the hand-written ABI layout in sync with WebView2.h through Reload.
+    HRESULT (STDMETHODCALLTYPE *add_NavigationStarting)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_NavigationStarting)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *add_ContentLoading)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_ContentLoading)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *add_SourceChanged)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_SourceChanged)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *add_HistoryChanged)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_HistoryChanged)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *add_NavigationCompleted)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_NavigationCompleted)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *add_FrameNavigationStarting)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_FrameNavigationStarting)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *add_FrameNavigationCompleted)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_FrameNavigationCompleted)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *add_ScriptDialogOpening)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_ScriptDialogOpening)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *add_PermissionRequested)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_PermissionRequested)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *add_ProcessFailed)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_ProcessFailed)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *AddScriptToExecuteOnDocumentCreated)(ICoreWebView2 *This, LPCWSTR javaScript, void *handler);
+    HRESULT (STDMETHODCALLTYPE *RemoveScriptToExecuteOnDocumentCreated)(ICoreWebView2 *This, LPCWSTR id);
+    HRESULT (STDMETHODCALLTYPE *ExecuteScript)(ICoreWebView2 *This, LPCWSTR javaScript, void *handler);
+    HRESULT (STDMETHODCALLTYPE *CapturePreview)(ICoreWebView2 *This, int imageFormat, void *imageStream, void *handler);
     HRESULT (STDMETHODCALLTYPE *Reload)(ICoreWebView2 *This);
 } ICoreWebView2Vtbl;
 
