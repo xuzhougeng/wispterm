@@ -298,7 +298,7 @@ theme: ?[]const u8 = null,
 
 /// Master on/off switch for the Copilot long-term memory system.
 /// When true, memory index is injected into the system prompt and the
-/// memory_save/memory_recall/memory_delete tools are advertised to the model.
+/// memory_save/memory_recall/memory_delete/memory_search tools are advertised to the model.
 @"ai-memory-enabled": bool = true,
 
 /// When true, the Copilot appends a "This task looks reusable. Distill it into
