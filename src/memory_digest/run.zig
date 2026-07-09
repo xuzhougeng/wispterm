@@ -240,6 +240,7 @@ fn collectAllSources(
     try sources.append(arena, .{
         .source_id = "local",
         .status = "ok",
+        .detail = try arena.dupe(u8, local.detail),
         .sessions_collected = @intCast(local.sessions.len),
     });
 
@@ -247,9 +248,9 @@ fn collectAllSources(
         const before = out.items.len;
         if (remote.collectRemote(gpa, arena, out, rs.source_id, rs.host, cur, min_mtime_ns, .{})) |r| {
             const detail = if (r.oversize_skipped > 0)
-                try std.fmt.allocPrint(arena, "oversize_skipped={d}", .{r.oversize_skipped})
+                try std.fmt.allocPrint(arena, "{s}; oversize_skipped={d}", .{ r.detail, r.oversize_skipped })
             else
-                "";
+                r.detail;
             try sources.append(arena, .{
                 .source_id = rs.source_id,
                 .status = "ok",

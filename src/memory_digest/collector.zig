@@ -25,6 +25,9 @@ pub const LocalRoots = struct {
 pub const Result = struct {
     arena: std.heap.ArenaAllocator,
     sessions: []types.CollectedSession = &.{},
+    /// Per-provider candidate file counts, e.g. "claude: 3 files; codex: 1
+    /// files; wispterm: 2 files" (spec §13 diagnostics). Arena-owned.
+    detail: []const u8 = "",
 
     pub fn deinit(self: *Result) void {
         self.arena.deinit();
@@ -38,6 +41,9 @@ const Ctx = struct {
     list: *std.ArrayListUnmanaged(types.CollectedSession),
     cur: *cursors_mod.Set,
     min_mtime_ns: i128,
+    claude_files: u32 = 0,
+    codex_files: u32 = 0,
+    wispterm_files: u32 = 0,
 };
 
 pub fn collectLocal(gpa: std.mem.Allocator, roots: LocalRoots, cur: *cursors_mod.Set, min_mtime_ns: i128) !Result {
@@ -57,6 +63,7 @@ pub fn collectLocal(gpa: std.mem.Allocator, roots: LocalRoots, cur: *cursors_mod
     if (roots.wispterm_sessions_dir) |root| try collectWispterm(&ctx, root);
 
     result.sessions = try list.toOwnedSlice(ctx.alloc);
+    result.detail = try std.fmt.allocPrint(result.arena.allocator(), "claude: {d} files; codex: {d} files; wispterm: {d} files", .{ ctx.claude_files, ctx.codex_files, ctx.wispterm_files });
     return result;
 }
 
@@ -91,6 +98,11 @@ fn collectCodex(ctx: *Ctx, root: []const u8) !void {
 }
 
 fn collectJsonlFile(ctx: *Ctx, provider: types.DigestProvider, path: []const u8, dir: std.fs.Dir, name: []const u8) !void {
+    switch (provider) {
+        .claude => ctx.claude_files += 1,
+        .codex => ctx.codex_files += 1,
+        else => {},
+    }
     const stat = dir.statFile(name) catch return; // transient: retry next run
     if (stat.mtime < ctx.min_mtime_ns) return; // backfill window (spec §6)
     const start = ctx.cur.pendingFrom(SOURCE_LOCAL, provider, path, stat.size, stat.mtime) orelse return;
@@ -169,6 +181,7 @@ fn collectWispterm(ctx: *Ctx, root: []const u8) !void {
     var it = dir.iterate();
     while (try it.next()) |ent| {
         if (ent.kind != .file or !std.mem.endsWith(u8, ent.name, ".json")) continue;
+        ctx.wispterm_files += 1;
         const path = try std.fs.path.join(ctx.alloc, &.{ root, ent.name });
         const stat = dir.statFile(ent.name) catch continue;
         if (stat.mtime < ctx.min_mtime_ns) continue;
@@ -377,6 +390,7 @@ test "memory_digest_collector: first run collects all three providers, second ru
     var first = try collectLocal(allocator, roots, &cur, 0);
     defer first.deinit();
     try std.testing.expectEqual(@as(usize, 3), first.sessions.len);
+    try std.testing.expect(std.mem.indexOf(u8, first.detail, "claude:") != null);
 
     for (first.sessions) |s| {
         if (s.provider == .wispterm) {
