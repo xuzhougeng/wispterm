@@ -35,7 +35,8 @@ pub const CategoryCounts = struct {
 
 pub fn isSubagentSession(meta: SessionMeta) bool {
     const title = std.mem.trimLeft(u8, meta.title, " \t\r\n");
-    return std.mem.startsWith(u8, title, "You are");
+    const prefix = "you are";
+    return title.len >= prefix.len and std.ascii.eqlIgnoreCase(title[0..prefix.len], prefix);
 }
 
 pub fn categoryMatchesMeta(category: CategoryFilter, meta: SessionMeta) bool {
@@ -245,9 +246,16 @@ test "ai_history_types: You are titles are classified as subagent metadata" {
     const subagent: SessionMeta = .{
         .provider = .claude,
         .session_id = "subagent",
-        .title = "  You are implementing Task 3 of the plan",
+        .title = "  You Are implementing Task 3 of the plan",
         .source_path = "subagent.jsonl",
         .resume_kind = .claude_resume,
+    };
+    const lowercase: SessionMeta = .{
+        .provider = .codex,
+        .session_id = "subagent-lower",
+        .title = "you are a code-review subagent",
+        .source_path = "subagent-lower.jsonl",
+        .resume_kind = .codex_resume,
     };
     const normal: SessionMeta = .{
         .provider = .claude,
@@ -258,6 +266,7 @@ test "ai_history_types: You are titles are classified as subagent metadata" {
     };
 
     try std.testing.expect(isSubagentSession(subagent));
+    try std.testing.expect(isSubagentSession(lowercase));
     try std.testing.expect(categoryMatchesMeta(.subagent, subagent));
     try std.testing.expect(!categoryMatchesMeta(.claude, subagent));
     try std.testing.expect(!isSubagentSession(normal));

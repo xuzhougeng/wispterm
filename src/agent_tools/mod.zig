@@ -21,6 +21,7 @@ const tool_args = @import("args.zig");
 const agent_research = @import("research.zig");
 const knowledge = @import("knowledge.zig");
 const agent_memory_tool = @import("memory.zig");
+const agent_memory_digest_config = @import("memory_digest_config.zig");
 const terminal_tools = @import("terminal.zig");
 const agent_sessions = @import("sessions.zig");
 const tool_access = @import("access.zig");
@@ -232,6 +233,9 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
     }
     if (std.mem.eql(u8, call.name, "mcp_activate")) {
         return agent_mcp_activate.run(ctx, call.arguments);
+    }
+    if (std.mem.eql(u8, call.name, "memory_digest_config")) {
+        return agent_memory_digest_config.run(ctx, call.arguments);
     }
     if (std.mem.eql(u8, call.name, "send_attachment") or
         std.mem.eql(u8, call.name, "weixin_send_attachment")) // legacy alias
