@@ -353,6 +353,7 @@ test {
     _ = @import("memory_digest/scheduler.zig");
     _ = @import("memory_digest/remote.zig");
     _ = @import("memory_digest/sources.zig");
+    _ = @import("memory_digest/backfill.zig");
     _ = @import("memory_viewer.zig");
     _ = @import("skill/scan.zig");
     _ = @import("skill/install.zig");

@@ -22,9 +22,23 @@ const SshCtx = struct {
     conn: ssh_connection.SshConnection,
 };
 
+/// Same 2MB stdout cap and error semantics as remote_file.sshExecCapture
+/// (non-zero exit -> error.RemoteExecFailed, stdout ownership transferred to
+/// caller on success), but goes through sshExecCaptureFullCapped directly so
+/// this call site can log a stderr summary on failure (spec §13 diagnostics)
+/// instead of only remote_file's own std.debug.print.
 fn sshExec(ctx: *anyopaque, gpa: std.mem.Allocator, command: []const u8) anyerror![]u8 {
     const self: *SshCtx = @ptrCast(@alignCast(ctx));
-    return remote_file.sshExecCapture(gpa, &self.conn, command);
+    var cap = try remote_file.sshExecCaptureFullCapped(gpa, &self.conn, command, 2 * 1024 * 1024);
+    if (!cap.exited_ok) {
+        const stderr_preview = cap.stderr[0..@min(cap.stderr.len, 200)];
+        const stderr_trimmed = std.mem.trimRight(u8, stderr_preview, "\r\n");
+        std.log.warn("memory_digest: remote exec failed stderr={s}", .{stderr_trimmed});
+        cap.deinit(gpa);
+        return error.RemoteExecFailed;
+    }
+    gpa.free(cap.stderr);
+    return cap.stdout; // ownership transferred to caller
 }
 
 /// Reads the app's ssh_hosts file and returns one `run.RemoteSource` per

@@ -25,6 +25,40 @@ pub const DailySession = struct {
 
 pub const DailyProject = struct { slug: []const u8, summary: []const u8, session_refs: []const []const u8 = &.{} };
 
+pub const DailySource = struct {
+    source_id: []const u8,
+    providers: []const []const u8 = &.{},
+    session_count: u32 = 0,
+};
+
+/// Derive the per-source rollup shown in daily artifacts and the Memory
+/// Center from a day's session list. Order follows first appearance.
+pub fn aggregateSources(arena: std.mem.Allocator, sessions: []const DailySession) ![]const DailySource {
+    const Acc = struct { source_id: []const u8, providers: std.ArrayListUnmanaged([]const u8), count: u32 };
+    var accs: std.ArrayListUnmanaged(Acc) = .empty;
+    for (sessions) |s| {
+        const acc: *Acc = blk: {
+            for (accs.items) |*a| {
+                if (std.mem.eql(u8, a.source_id, s.source_id)) break :blk a;
+            }
+            try accs.append(arena, .{ .source_id = s.source_id, .providers = .empty, .count = 0 });
+            break :blk &accs.items[accs.items.len - 1];
+        };
+        acc.count += 1;
+        const seen = for (acc.providers.items) |p| {
+            if (std.mem.eql(u8, p, s.provider)) break true;
+        } else false;
+        if (!seen) try acc.providers.append(arena, s.provider);
+    }
+    var out = try arena.alloc(DailySource, accs.items.len);
+    for (accs.items, 0..) |*a, i| out[i] = .{
+        .source_id = a.source_id,
+        .providers = a.providers.items,
+        .session_count = a.count,
+    };
+    return out;
+}
+
 pub const Daily = struct {
     schema_version: u32 = SCHEMA_VERSION,
     date: []const u8, // "2026-07-07"
@@ -33,6 +67,7 @@ pub const Daily = struct {
     model: []const u8 = "",
     projects: []const DailyProject = &.{},
     highlights: []const []const u8 = &.{},
+    sources: []const DailySource = &.{},
 };
 
 pub const IndexProject = struct {
@@ -776,4 +811,33 @@ test "memory_digest_store: DailySession source_file round-trips and defaults for
     var old_parsed = try std.json.parseFromSlice(Daily, a, old_json, .{ .ignore_unknown_fields = true });
     defer old_parsed.deinit();
     try std.testing.expectEqualStrings("", old_parsed.value.sessions[0].source_file);
+}
+
+test "memory_digest_store: aggregateSources groups by source with provider list" {
+    const a = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(a);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const sessions = [_]DailySession{
+        .{ .provider = "claude", .source_id = "local", .session_id = "a", .project = "p", .title = "", .message_count_new = 1 },
+        .{ .provider = "codex", .source_id = "local", .session_id = "b", .project = "p", .title = "", .message_count_new = 1 },
+        .{ .provider = "claude", .source_id = "local", .session_id = "c", .project = "p", .title = "", .message_count_new = 1 },
+        .{ .provider = "claude", .source_id = "ssh:CPU", .session_id = "d", .project = "p", .title = "", .message_count_new = 1 },
+    };
+    const srcs = try aggregateSources(arena, &sessions);
+    try std.testing.expectEqual(@as(usize, 2), srcs.len);
+    try std.testing.expectEqualStrings("local", srcs[0].source_id);
+    try std.testing.expectEqual(@as(u32, 3), srcs[0].session_count);
+    try std.testing.expectEqual(@as(usize, 2), srcs[0].providers.len); // claude, codex 去重
+    try std.testing.expectEqualStrings("ssh:CPU", srcs[1].source_id);
+    try std.testing.expectEqual(@as(u32, 1), srcs[1].session_count);
+
+    // 旧 daily JSON（无 sources 字段）解析回默认空。
+    const old_json =
+        \\{"schema_version":1,"date":"2026-07-08","generated_at":1,"sessions":[]}
+    ;
+    var parsed = try std.json.parseFromSlice(Daily, a, old_json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.sources.len);
 }

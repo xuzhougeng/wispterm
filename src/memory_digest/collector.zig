@@ -25,6 +25,9 @@ pub const LocalRoots = struct {
 pub const Result = struct {
     arena: std.heap.ArenaAllocator,
     sessions: []types.CollectedSession = &.{},
+    /// Per-provider candidate file counts, e.g. "claude: 3 files; codex: 1
+    /// files; wispterm: 2 files" (spec §13 diagnostics). Arena-owned.
+    detail: []const u8 = "",
 
     pub fn deinit(self: *Result) void {
         self.arena.deinit();
@@ -38,6 +41,9 @@ const Ctx = struct {
     list: *std.ArrayListUnmanaged(types.CollectedSession),
     cur: *cursors_mod.Set,
     min_mtime_ns: i128,
+    claude_files: u32 = 0,
+    codex_files: u32 = 0,
+    wispterm_files: u32 = 0,
 };
 
 pub fn collectLocal(gpa: std.mem.Allocator, roots: LocalRoots, cur: *cursors_mod.Set, min_mtime_ns: i128) !Result {
@@ -57,6 +63,7 @@ pub fn collectLocal(gpa: std.mem.Allocator, roots: LocalRoots, cur: *cursors_mod
     if (roots.wispterm_sessions_dir) |root| try collectWispterm(&ctx, root);
 
     result.sessions = try list.toOwnedSlice(ctx.alloc);
+    result.detail = try std.fmt.allocPrint(result.arena.allocator(), "claude: {d} files; codex: {d} files; wispterm: {d} files", .{ ctx.claude_files, ctx.codex_files, ctx.wispterm_files });
     return result;
 }
 
@@ -91,6 +98,11 @@ fn collectCodex(ctx: *Ctx, root: []const u8) !void {
 }
 
 fn collectJsonlFile(ctx: *Ctx, provider: types.DigestProvider, path: []const u8, dir: std.fs.Dir, name: []const u8) !void {
+    switch (provider) {
+        .claude => ctx.claude_files += 1,
+        .codex => ctx.codex_files += 1,
+        else => {},
+    }
     const stat = dir.statFile(name) catch return; // transient: retry next run
     if (stat.mtime < ctx.min_mtime_ns) return; // backfill window (spec §6)
     const start = ctx.cur.pendingFrom(SOURCE_LOCAL, provider, path, stat.size, stat.mtime) orelse return;
@@ -169,6 +181,7 @@ fn collectWispterm(ctx: *Ctx, root: []const u8) !void {
     var it = dir.iterate();
     while (try it.next()) |ent| {
         if (ent.kind != .file or !std.mem.endsWith(u8, ent.name, ".json")) continue;
+        ctx.wispterm_files += 1;
         const path = try std.fs.path.join(ctx.alloc, &.{ root, ent.name });
         const stat = dir.statFile(ent.name) catch continue;
         if (stat.mtime < ctx.min_mtime_ns) continue;
@@ -251,6 +264,73 @@ fn emit(
     // still stamp here unchanged.
 }
 
+/// Locate a local session file by provider + session id, for backfill of
+/// daily entries that predate the source_file field. All three providers
+/// name files with the session id in the basename.
+pub fn locateSessionFile(
+    gpa: std.mem.Allocator,
+    alloc: std.mem.Allocator,
+    roots: LocalRoots,
+    provider: types.DigestProvider,
+    session_id: []const u8,
+) !?[]const u8 {
+    if (session_id.len == 0) return null;
+    const root = switch (provider) {
+        .claude => roots.claude_projects_dir,
+        .codex => roots.codex_sessions_dir,
+        .wispterm => roots.wispterm_sessions_dir,
+        else => null,
+    } orelse return null;
+    var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch return null;
+    defer dir.close();
+    var walker = try dir.walk(gpa);
+    defer walker.deinit();
+    while (true) {
+        const ent = (walker.next() catch break) orelse break;
+        if (ent.kind != .file) continue;
+        if (std.mem.indexOf(u8, ent.basename, session_id) == null) continue;
+        return try std.fs.path.join(alloc, &.{ root, ent.path });
+    }
+    return null;
+}
+
+/// Load one full session (all messages, cursor-independent) for backfill.
+/// Returns null when the file is gone, unparseable, or a subagent session.
+pub fn loadFullSessionByPath(
+    gpa: std.mem.Allocator,
+    alloc: std.mem.Allocator,
+    provider: types.DigestProvider,
+    path: []const u8,
+) !?types.CollectedSession {
+    const stat = std.fs.cwd().statFile(path) catch return null;
+    const bytes = std.fs.cwd().readFileAlloc(gpa, path, MAX_FILE_BYTES) catch return null;
+    defer gpa.free(bytes);
+
+    var scratch = cursors_mod.Set.init(gpa); // backfill never touches real cursors
+    defer scratch.deinit();
+    var list: std.ArrayListUnmanaged(types.CollectedSession) = .empty;
+    defer list.deinit(alloc);
+
+    switch (provider) {
+        .claude, .codex => ingestJsonlBytes(gpa, alloc, &list, &scratch, provider, SOURCE_LOCAL, path, stat.size, stat.mtime, bytes, 0) catch return null,
+        .wispterm => {
+            var parse_arena = std.heap.ArenaAllocator.init(gpa);
+            defer parse_arena.deinit();
+            const sess = provider_wispterm.parse(parse_arena.allocator(), bytes) catch return null;
+            try emit(alloc, &list, &scratch, .wispterm, SOURCE_LOCAL, path, stat.size, stat.mtime, .{
+                .session_id = sess.session_id,
+                .title = sess.title,
+                .project_path = sess.cwd,
+                .started_at_ms = sess.created_at_ms,
+                .ended_at_ms = sess.updated_at_ms,
+            }, sess.messages, 0);
+        },
+        else => return null,
+    }
+    if (list.items.len == 0) return null; // subagent or empty
+    return list.items[0];
+}
+
 const CLAUDE_JSONL =
     \\{"sessionId":"claude-abc","cwd":"/home/me/project","timestamp":"2026-05-31T10:00:00.000Z","type":"user","message":{"role":"user","content":"Fix tests"}}
     \\{"sessionId":"claude-abc","cwd":"/home/me/project","timestamp":"2026-05-31T10:01:00.000Z","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I will inspect the failure."}]}}
@@ -310,6 +390,7 @@ test "memory_digest_collector: first run collects all three providers, second ru
     var first = try collectLocal(allocator, roots, &cur, 0);
     defer first.deinit();
     try std.testing.expectEqual(@as(usize, 3), first.sessions.len);
+    try std.testing.expect(std.mem.indexOf(u8, first.detail, "claude:") != null);
 
     for (first.sessions) |s| {
         if (s.provider == .wispterm) {
@@ -421,4 +502,45 @@ test "memory_digest_collector: missing roots are fine" {
     }, &cur, 0);
     defer res.deinit();
     try std.testing.expectEqual(@as(usize, 0), res.sessions.len);
+}
+
+test "collector: locateSessionFile finds codex file by session id substring" {
+    const a = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(a);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("codex/2026/07/05");
+    try tmp.dir.writeFile(.{ .sub_path = "codex/2026/07/05/rollout-2026-07-05T17-00-27-abc-123.jsonl", .data = "" });
+    const root = try tmp.dir.realpathAlloc(a, "codex");
+    defer a.free(root);
+
+    const found = try locateSessionFile(a, arena, .{ .codex_sessions_dir = root }, .codex, "abc-123");
+    try std.testing.expect(found != null);
+    try std.testing.expect(std.mem.endsWith(u8, found.?, "rollout-2026-07-05T17-00-27-abc-123.jsonl"));
+
+    const missing = try locateSessionFile(a, arena, .{ .codex_sessions_dir = root }, .codex, "zzz-999");
+    try std.testing.expect(missing == null);
+}
+
+test "collector: loadFullSessionByPath returns all messages ignoring cursors" {
+    const a = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(a);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeTestFile(tmp.dir, "claude/proj-a", "claude-abc.jsonl", CLAUDE_JSONL);
+    const path = try tmp.dir.realpathAlloc(a, "claude/proj-a/claude-abc.jsonl");
+    defer a.free(path);
+
+    const sess = (try loadFullSessionByPath(a, arena, .claude, path)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), sess.new_messages.len);
+    try std.testing.expectEqual(@as(u32, 2), sess.total_messages);
+    try std.testing.expectEqualStrings(path, sess.source_file);
+
+    try std.testing.expect((try loadFullSessionByPath(a, arena, .claude, "/nonexistent.jsonl")) == null);
 }

@@ -149,10 +149,20 @@ fn loadDigest(gpa: std.mem.Allocator, arena: std.mem.Allocator, rows: *std.Array
 }
 
 fn digestDetail(arena: std.mem.Allocator, daily: digest_store.Daily) ![]const u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
     if (daily.model.len > 0) {
-        return std.fmt.allocPrint(arena, "{d} sessions, {d} projects, {s}", .{ daily.sessions.len, daily.projects.len, daily.model });
+        const head = try std.fmt.allocPrint(arena, "{d} sessions, {d} projects, {s}", .{ daily.sessions.len, daily.projects.len, daily.model });
+        try out.appendSlice(arena, head);
+    } else {
+        const head = try std.fmt.allocPrint(arena, "{d} sessions, {d} projects", .{ daily.sessions.len, daily.projects.len });
+        try out.appendSlice(arena, head);
     }
-    return std.fmt.allocPrint(arena, "{d} sessions, {d} projects", .{ daily.sessions.len, daily.projects.len });
+    const srcs = try digest_store.aggregateSources(arena, daily.sessions);
+    for (srcs) |src| {
+        const part = try std.fmt.allocPrint(arena, " · {s}×{d}", .{ src.source_id, src.session_count });
+        try out.appendSlice(arena, part);
+    }
+    return out.items;
 }
 
 fn digestBody(arena: std.mem.Allocator, daily: digest_store.Daily) ![]const u8 {
@@ -209,4 +219,23 @@ test "memory_viewer: snapshot filters rows by source" {
     try std.testing.expectEqual(@as(usize, 1), snapshot.count(.remembered));
     try std.testing.expectEqualStrings("b", snapshot.rowAt(.digest, 0).?.title);
     try std.testing.expect(snapshot.rowAt(.digest, 1) == null);
+}
+
+test "memory_viewer: digestDetail appends source breakdown" {
+    const a = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(a);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const daily = digest_store.Daily{
+        .date = "2026-07-08",
+        .generated_at = 1,
+        .sessions = &.{
+            .{ .provider = "claude", .source_id = "local", .session_id = "a", .project = "p", .title = "", .message_count_new = 1 },
+            .{ .provider = "claude", .source_id = "ssh:CPU", .session_id = "b", .project = "p", .title = "", .message_count_new = 1 },
+        },
+    };
+    const detail = try digestDetail(arena, daily);
+    try std.testing.expect(std.mem.indexOf(u8, detail, "local×1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, detail, "ssh:CPU×1") != null);
 }

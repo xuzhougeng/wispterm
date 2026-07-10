@@ -58,6 +58,9 @@ pub fn searchDailyDir(
     const Match = struct { date: []const u8, hits: u32, s: digest_store.DailySession };
     var matches: std.ArrayListUnmanaged(Match) = .empty;
     var files_scanned: usize = 0;
+    // ponytail: linear scan per source id; ids number in the handfuls.
+    const SourceCount = struct { source_id: []const u8, count: u32 };
+    var source_counts: std.ArrayListUnmanaged(SourceCount) = .empty;
 
     scan: {
         var dir = std.fs.cwd().openDir(daily_dir, .{ .iterate = true }) catch break :scan;
@@ -75,6 +78,15 @@ pub fn searchDailyDir(
             }) catch continue;
             files_scanned += 1;
             for (daily.sessions) |s| {
+                // 覆盖统计在 source 过滤之前计，不受过滤影响。
+                const sc: *SourceCount = blk: {
+                    for (source_counts.items) |*c| {
+                        if (std.mem.eql(u8, c.source_id, s.source_id)) break :blk c;
+                    }
+                    try source_counts.append(arena, .{ .source_id = try arena.dupe(u8, s.source_id), .count = 0 });
+                    break :blk &source_counts.items[source_counts.items.len - 1];
+                };
+                sc.count += 1;
                 if (source) |src| {
                     if (std.ascii.indexOfIgnoreCase(s.source_id, src) == null) continue;
                 }
@@ -86,13 +98,15 @@ pub fn searchDailyDir(
     }
 
     if (matches.items.len == 0) {
+        const scan_info = try scanLine(arena, files_scanned, source_counts.items);
         return std.fmt.allocPrint(
             gpa,
-            "No digest match in the last {d} days ({d} daily files scanned). " ++
+            "{s}\n" ++
+                "No digest match in the last {d} days ({d} daily files scanned). " ++
                 "If the work happened on a remote host, run this on an open SSH surface " ++
                 "there via ssh_session_exec: grep -rli <keyword> ~/.claude/projects ~/.codex/sessions | head. " ++
                 "If digest data is missing, suggest memory-digest-scan-remote=true or 'Run memory digest now'.",
-            .{ window_days, files_scanned },
+            .{ scan_info, window_days, files_scanned },
         );
     }
 
@@ -105,7 +119,8 @@ pub fn searchDailyDir(
 
     const shown = @min(matches.items.len, MAX_RESULTS);
     var out: std.ArrayListUnmanaged(u8) = .empty;
-    const header = try std.fmt.allocPrint(arena, "{d} match(es), showing {d}:\n\n", .{ matches.items.len, shown });
+    const scan_info = try scanLine(arena, files_scanned, source_counts.items);
+    const header = try std.fmt.allocPrint(arena, "{s}\n{d} match(es), showing {d}:\n\n", .{ scan_info, matches.items.len, shown });
     try out.appendSlice(arena, header);
     for (matches.items[0..shown]) |m| {
         const head = try std.fmt.allocPrint(arena, "[{s}] {s} · project: {s} · outcome: {s}\n", .{
@@ -137,6 +152,24 @@ pub fn searchDailyDir(
         try out.appendSlice(arena, "\n");
     }
     return gpa.dupe(u8, std.mem.trimRight(u8, out.items, "\n"));
+}
+
+/// C3 header line: `Scanned {N} daily files; sources: local (2 sessions), ...`
+/// counts is anytype because SourceCount is local to searchDailyDir.
+fn scanLine(arena: std.mem.Allocator, files_scanned: usize, counts: anytype) ![]const u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    const head = try std.fmt.allocPrint(arena, "Scanned {d} daily files", .{files_scanned});
+    try out.appendSlice(arena, head);
+    if (counts.len != 0) {
+        try out.appendSlice(arena, "; sources: ");
+        for (counts, 0..) |c, i| {
+            if (i != 0) try out.appendSlice(arena, ", ");
+            const part = try std.fmt.allocPrint(arena, "{s} ({d} sessions)", .{ c.source_id, c.count });
+            try out.appendSlice(arena, part);
+        }
+    }
+    try out.appendSlice(arena, ".");
+    return out.items;
 }
 
 fn keywordHits(s: digest_store.DailySession, keywords: []const []const u8) u32 {
@@ -209,6 +242,10 @@ test "memory_search: OR keywords rank by hit count, source filter, days cutoff" 
     defer a.free(filtered);
     try std.testing.expect(std.mem.indexOf(u8, filtered, "aaa-111") != null);
     try std.testing.expect(std.mem.indexOf(u8, filtered, "bbb-222") == null);
+
+    // Task 2 (C3): 头部扫描覆盖行。
+    try std.testing.expect(std.mem.indexOf(u8, out, "sources: local (1 sessions), ssh:CPU2 (1 sessions)") != null or
+        std.mem.indexOf(u8, out, "sources: ssh:CPU2 (1 sessions), local (1 sessions)") != null);
 }
 
 test "memory_search: no match reports scanned window and fallback hint" {
@@ -222,6 +259,8 @@ test "memory_search: no match reports scanned window and fallback hint" {
     defer a.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "No digest match") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "ssh_session_exec") != null);
+    // no-match 输出同样带扫描覆盖行（0 文件时来源为空）。
+    try std.testing.expect(std.mem.indexOf(u8, out, "Scanned 0 daily files") != null);
 }
 
 test "memory_search: missing daily dir returns no-match, not error" {

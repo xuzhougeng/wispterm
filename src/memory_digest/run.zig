@@ -6,6 +6,7 @@
 //! unchanged.
 const std = @import("std");
 const ai_types = @import("../terminal_agents/sessions/types.zig");
+const backfill_mod = @import("backfill.zig");
 const collector = @import("collector.zig");
 const cursors_mod = @import("cursors.zig");
 const digest = @import("digest.zig");
@@ -17,6 +18,10 @@ const store = @import("store.zig");
 const types = @import("types.zig");
 
 pub const DEFAULT_INPUT_BUDGET_CHARS = digest.DEFAULT_INPUT_BUDGET_CHARS;
+
+/// Max historical empty-summary sessions summarized per run (spec §3).
+/// ponytail: fixed cap, make it a config key only if real backlogs demand.
+const BACKFILL_LIMIT: usize = 8;
 
 /// One WSL/SSH remote source to collect from alongside local roots (spec §6,
 /// M3). `source_id` becomes CollectedSession.source_id and thus flows into
@@ -235,6 +240,7 @@ fn collectAllSources(
     try sources.append(arena, .{
         .source_id = "local",
         .status = "ok",
+        .detail = try arena.dupe(u8, local.detail),
         .sessions_collected = @intCast(local.sessions.len),
     });
 
@@ -242,9 +248,9 @@ fn collectAllSources(
         const before = out.items.len;
         if (remote.collectRemote(gpa, arena, out, rs.source_id, rs.host, cur, min_mtime_ns, .{})) |r| {
             const detail = if (r.oversize_skipped > 0)
-                try std.fmt.allocPrint(arena, "oversize_skipped={d}", .{r.oversize_skipped})
+                try std.fmt.allocPrint(arena, "{s}; oversize_skipped={d}", .{ r.detail, r.oversize_skipped })
             else
-                "";
+                r.detail;
             try sources.append(arena, .{
                 .source_id = rs.source_id,
                 .status = "ok",
@@ -355,6 +361,7 @@ pub fn runOnce(gpa: std.mem.Allocator, opts: Options) !Summary {
             .date = date,
             .generated_at = opts.now_ms,
             .sessions = merged,
+            .sources = try store.aggregateSources(arena, merged),
         });
     }
 
@@ -534,6 +541,112 @@ fn runOnceWithLlm(
         try summarized_source_ids.append(arena, s.source_id);
     }
 
+    // Backfill (spec 2026-07-09 §3): summarize historical daily entries that
+    // still have an empty summary (collected before M2, or map previously
+    // failed). Never advances cursors; merges via the same summarized lists.
+    const gaps = backfill_mod.findGaps(gpa, arena, opts.memory_root, BACKFILL_LIMIT) catch |err| blk: {
+        std.log.warn("memory_digest: backfill scan failed: {s}", .{@errorName(err)});
+        break :blk &.{};
+    };
+    for (gaps) |gap| {
+        // Same-run duplicate guard: the map loop above may have just
+        // summarized this exact session for this same date (M1 left an
+        // empty-summary daily row and new messages arrived this run) —
+        // findGaps reads the still-empty on-disk daily, so appending a
+        // backfill copy would give the day two rows for one session and
+        // mergeDailyWithExisting never collapses new-vs-new duplicates.
+        // A different date still passes: filling an older day's hole is
+        // the whole point of backfill.
+        const provider_tag = @tagName(gap.provider);
+        const map_handled = for (summarized.items, 0..) |sm, i| {
+            if (std.mem.eql(u8, sm.provider, provider_tag) and
+                std.mem.eql(u8, sm.session_id, gap.session_id) and
+                std.mem.eql(u8, sm.source_id, "local") and
+                std.mem.eql(u8, summarized_dates.items[i], gap.date)) break true;
+        } else false;
+        if (map_handled) continue;
+
+        const key = try summaryKey(arena, "local", gap.provider, gap.session_id);
+        // 本轮增量刚处理过（或历史已归纳但 daily 写失败的窗口）→ 直接复用。
+        // An empty stored summary (digest returns "" for an all-meta
+        // transcript) is NOT reusable: treat it as a miss so the gap is
+        // retried through the map path instead of being pinned empty
+        // forever while consuming a BACKFILL_LIMIT slot every run.
+        var reused: ?*store.SummaryRecord = summaries.find(key);
+        if (reused) |rec| {
+            if (rec.summary.len == 0) reused = null;
+        }
+        var sess: ?types.CollectedSession = null;
+        if (reused == null) {
+            const path = if (gap.source_file.len != 0)
+                gap.source_file
+            else
+                (collector.locateSessionFile(gpa, arena, opts.roots, gap.provider, gap.session_id) catch null) orelse {
+                    std.log.warn("memory_digest: backfill source missing for {s}:{s}", .{ @tagName(gap.provider), gap.session_id });
+                    continue;
+                };
+            sess = (collector.loadFullSessionByPath(gpa, arena, gap.provider, path) catch null) orelse {
+                std.log.warn("memory_digest: backfill load failed for {s}:{s}", .{ @tagName(gap.provider), gap.session_id });
+                continue;
+            };
+        }
+
+        var summary_text: []const u8 = undefined;
+        var topics: []const []const u8 = undefined;
+        var outcome: []const u8 = undefined;
+        var artifacts: []const store.Artifact = undefined;
+        var source_file: []const u8 = gap.source_file;
+        if (reused) |rec| {
+            summary_text = rec.summary;
+            topics = rec.topics;
+            outcome = rec.outcome;
+            artifacts = rec.artifacts;
+        } else {
+            const s = sess.?;
+            const result = digest.summarizeSession(arena, gpa, completer, s, null, .{
+                .max_chars_per_message = opts.max_chars_per_message,
+                .input_budget_chars = opts.input_budget_chars,
+            }) catch |err| {
+                std.log.warn("memory_digest: backfill map failed for {s}:{s}: {s}", .{ @tagName(gap.provider), gap.session_id, @errorName(err) });
+                sessions_failed += 1;
+                continue;
+            };
+            summary_text = result.summary;
+            topics = result.topics;
+            outcome = result.outcome;
+            artifacts = result.artifacts;
+            source_file = s.source_file;
+            try summaries.put(.{
+                .key = key,
+                .date = gap.date,
+                .summary = result.summary,
+                .topics = result.topics,
+                .outcome = result.outcome,
+                .artifacts = result.artifacts,
+            });
+            sessions_summarized += 1;
+        }
+
+        var slug_buf: [64]u8 = undefined;
+        const project_path = if (sess) |s| s.project_path else "";
+        try summarized.append(arena, .{
+            .provider = provider_tag,
+            .source_id = "local",
+            .session_id = gap.session_id,
+            .project = if (sess) |s| try arena.dupe(u8, types.projectSlug(s.project_path, &slug_buf)) else "",
+            .title = if (sess) |s| s.title else "",
+            .message_count_new = 0, // merge keeps the original count
+            .summary = summary_text,
+            .topics = topics,
+            .outcome = outcome,
+            .artifacts = artifacts,
+            .source_file = source_file,
+        });
+        try summarized_dates.append(arena, gap.date);
+        try summarized_paths.append(arena, project_path);
+        try summarized_source_ids.append(arena, "local");
+    }
+
     // Map results are persisted before reduce runs at all (spec §13): a
     // reduce failure below must not lose already-summarized sessions.
     try summaries.saveToPath(gpa, summaries_path);
@@ -586,6 +699,7 @@ fn runOnceWithLlm(
             .model = opts.model_label,
             .projects = dr.reduced.projects,
             .highlights = dr.reduced.highlights,
+            .sources = try store.aggregateSources(arena, dr.merged),
         });
 
         // Slug allowlist (Item 1): transcripts are untrusted, and `tl.slug`
@@ -701,8 +815,11 @@ fn mergeDailyWithExisting(
                 .provider = n.provider,
                 .source_id = n.source_id,
                 .session_id = n.session_id,
-                .project = n.project,
-                .title = n.title,
+                // A reused backfill entry (no fresh session loaded) carries
+                // empty project/title; keep the on-disk value rather than
+                // blanking it out (same three-way shape as source_file).
+                .project = if (n.project.len != 0) n.project else old.project,
+                .title = if (n.title.len != 0) n.title else old.title,
                 .message_count_new = old.message_count_new + n.message_count_new,
                 .summary = if (keep_old_summary) old.summary else n.summary,
                 .topics = if (keep_old_summary) old.topics else n.topics,
@@ -1797,4 +1914,221 @@ test "memory_digest_run: mixed local+remote sessions under the same slug accumul
     try std.testing.expectEqualStrings("/home/me/project", parsed.value.paths[0]);
     try std.testing.expectEqual(@as(usize, 1), parsed.value.aliases.len);
     try std.testing.expectEqualStrings("ssh:box:/root/project", parsed.value.aliases[0]);
+}
+
+// ---- Backfill (Task 5) ----
+
+const CODEX_JSONL_BACKFILL =
+    \\{"type":"session_meta","timestamp":"2026-06-30T10:00:00Z","payload":{"id":"codex-gap-1","cwd":"/home/me/gapproj"}}
+    \\{"type":"response_item","timestamp":"2026-06-30T10:01:00Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Fix the renderer crash"}]}}
+    \\
+;
+
+// A daily row collected before LLM summarization existed: empty summary, no
+// source_file, but a real title/project already on disk (raw M1 listing).
+const BACKFILL_DAILY_JSON =
+    \\{"schema_version":1,"date":"2026-06-30","generated_at":1,"sessions":[
+    \\{"provider":"codex","source_id":"local","session_id":"codex-gap-1","project":"gapproj","title":"Original Title","message_count_new":5,"summary":""}]}
+;
+
+const BACKFILL_CODEX_FILE = "codex/2026/06/30/rollout-2026-06-30T10-00-00-codex-gap-1.jsonl";
+
+/// codex root with one fixture whose basename contains the gap's session_id
+/// (so collector.locateSessionFile can find it) + the pre-seeded gap daily.
+fn writeBackfillFixtures(tmp: std.testing.TmpDir) !void {
+    try tmp.dir.makePath("codex/2026/06/30");
+    {
+        var d = try tmp.dir.openDir("codex/2026/06/30", .{});
+        defer d.close();
+        try d.writeFile(.{ .sub_path = "rollout-2026-06-30T10-00-00-codex-gap-1.jsonl", .data = CODEX_JSONL_BACKFILL });
+    }
+    try tmp.dir.makePath("memory/daily");
+    try tmp.dir.writeFile(.{ .sub_path = "memory/daily/2026-06-30.json", .data = BACKFILL_DAILY_JSON });
+}
+
+/// Stamp the codex fixture's cursor as already fully processed, so the
+/// *normal* collection path (which shares the same codex root — needed for
+/// collector.locateSessionFile to find it during backfill) does not also
+/// re-collect it as a brand-new session.
+fn stampBackfillCursor(allocator: std.mem.Allocator, tmp: std.testing.TmpDir, memory_root: []const u8) !void {
+    const codex_abs_path = try tmp.dir.realpathAlloc(allocator, BACKFILL_CODEX_FILE);
+    defer allocator.free(codex_abs_path);
+    const stat = try std.fs.cwd().statFile(codex_abs_path);
+    var cur = cursors_mod.Set.init(allocator);
+    defer cur.deinit();
+    try cur.update("local", .codex, codex_abs_path, stat.size, stat.mtime, 1);
+    const state_dir = try std.fs.path.join(allocator, &.{ memory_root, "state" });
+    defer allocator.free(state_dir);
+    try std.fs.cwd().makePath(state_dir);
+    const cursors_path = try std.fs.path.join(allocator, &.{ state_dir, "cursors.json" });
+    defer allocator.free(cursors_path);
+    try cur.saveToPath(allocator, cursors_path);
+}
+
+test "run: backfill summarizes local empty-summary daily entries without touching cursors" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    try writeBackfillFixtures(tmp);
+
+    const codex_root = try std.fs.path.join(allocator, &.{ root, "codex" });
+    defer allocator.free(codex_root);
+    const memory_root = try std.fs.path.join(allocator, &.{ root, "memory" });
+    defer allocator.free(memory_root);
+
+    // Only the backfill path (driven off the daily gap, not the cursor)
+    // should touch this session this run.
+    try stampBackfillCursor(allocator, tmp, memory_root);
+
+    var stub = RoutingStub{ .map_response = MAP_JSON, .reduce_response = REDUCE_JSON };
+    const opts: Options = .{
+        .roots = .{ .codex_sessions_dir = codex_root },
+        .memory_root = memory_root,
+        .now_ms = 1783500000000,
+        .tz_offset_seconds = 8 * 3600,
+        .backfill_days = 0,
+        .completer = stub.completer(),
+        .model_label = "test-model",
+    };
+
+    // First run: nothing new is collected (no fixture under a
+    // roots-matching mtime window changes), but the backfill scan finds the
+    // empty-summary gap and summarizes it through the same map path.
+    _ = try runOnce(allocator, opts);
+    const map_calls_after_first = stub.map_calls;
+    try std.testing.expect(map_calls_after_first >= 1);
+
+    {
+        const daily = try tmp.dir.readFileAlloc(allocator, "memory/daily/2026-06-30.json", 1 << 20);
+        defer allocator.free(daily);
+        try std.testing.expect(std.mem.indexOf(u8, daily, "\"summary\": \"修复了失败的测试\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, daily, "\"source_file\": \"\"") == null);
+        // Backfill never touches message_count_new (merge adds 0).
+        try std.testing.expect(std.mem.indexOf(u8, daily, "\"message_count_new\": 5") != null);
+    }
+
+    const summaries_after_first = try tmp.dir.readFileAlloc(allocator, "memory/state/session_summaries.json", 1 << 20);
+    defer allocator.free(summaries_after_first);
+    try std.testing.expect(std.mem.indexOf(u8, summaries_after_first, "\"local|codex:codex-gap-1\"") != null);
+
+    // Second run: the daily entry's summary is now non-empty, so findGaps no
+    // longer reports it — idempotent, no extra map call.
+    _ = try runOnce(allocator, opts);
+    try std.testing.expectEqual(map_calls_after_first, stub.map_calls);
+
+    // Simulate the "store has a record but the daily write for that cycle
+    // never landed" window (a prior run's daily save failed after summaries
+    // were persisted): reset the daily entry's summary to "" while the
+    // summary store keeps its record. This forces the backfill loop's reused
+    // branch (summaries.find(key) hits, sess stays null) instead of a fresh
+    // load. The reused branch has no session to pull title/project from, so
+    // mergeDailyWithExisting must keep the ON-DISK title/project rather than
+    // blanking them with the reused entry's empty new values.
+    try tmp.dir.writeFile(.{ .sub_path = "memory/daily/2026-06-30.json", .data = BACKFILL_DAILY_JSON });
+    _ = try runOnce(allocator, opts);
+    // Reused branch never calls the LLM.
+    try std.testing.expectEqual(map_calls_after_first, stub.map_calls);
+    {
+        const daily = try tmp.dir.readFileAlloc(allocator, "memory/daily/2026-06-30.json", 1 << 20);
+        defer allocator.free(daily);
+        try std.testing.expect(std.mem.indexOf(u8, daily, "\"summary\": \"修复了失败的测试\"") != null);
+        // The reused-path merge must not blank the pre-existing title/project
+        // with the empty values a reused (no fresh session) entry carries.
+        try std.testing.expect(std.mem.indexOf(u8, daily, "\"title\": \"Original Title\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, daily, "\"project\": \"gapproj\"") != null);
+    }
+
+    // Cursor stays exactly as pre-seeded (one entry, processed_messages
+    // still 1): backfill must never call advanceCursor for a gap session,
+    // and the codex fixture itself produced no *new* messages this whole
+    // test (its cursor stamp was pre-seeded as already fully processed).
+    const cursors_path = try std.fs.path.join(allocator, &.{ memory_root, "state", "cursors.json" });
+    defer allocator.free(cursors_path);
+    var final_cur = try cursors_mod.Set.loadFromPath(allocator, cursors_path);
+    defer final_cur.deinit();
+    try std.testing.expectEqual(@as(usize, 1), final_cur.entries.items.len);
+    try std.testing.expectEqual(@as(u32, 1), final_cur.entries.items[0].processed_messages);
+}
+
+test "run: backfill skips a session the map loop already summarized for the same date" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    try writeBackfillFixtures(tmp);
+    // NO cursor stamp: the codex fixture has new messages this run, so the
+    // normal map loop collects and summarizes it (date 2026-06-30 — same day
+    // as the on-disk empty-summary row). findGaps reads the still-empty
+    // on-disk daily and reports the same session again; the backfill loop
+    // must not append a second row for the identity+date the map loop
+    // already handled, or the day ends up with a duplicate forever.
+
+    const codex_root = try std.fs.path.join(allocator, &.{ root, "codex" });
+    defer allocator.free(codex_root);
+    const memory_root = try std.fs.path.join(allocator, &.{ root, "memory" });
+    defer allocator.free(memory_root);
+
+    var stub = RoutingStub{ .map_response = MAP_JSON, .reduce_response = REDUCE_JSON };
+    _ = try runOnce(allocator, .{
+        .roots = .{ .codex_sessions_dir = codex_root },
+        .memory_root = memory_root,
+        .now_ms = 1783500000000,
+        .tz_offset_seconds = 8 * 3600,
+        .backfill_days = 0,
+        .completer = stub.completer(),
+        .model_label = "test-model",
+    });
+
+    const daily = try tmp.dir.readFileAlloc(allocator, "memory/daily/2026-06-30.json", 1 << 20);
+    defer allocator.free(daily);
+    // Exactly one row: the map loop's entry merged into the on-disk row
+    // (5 old + 1 new message), no duplicate backfill copy appended after it.
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, daily, "\"session_id\": \"codex-gap-1\""));
+    try std.testing.expect(std.mem.indexOf(u8, daily, "\"message_count_new\": 6") != null);
+    try std.testing.expect(std.mem.indexOf(u8, daily, "\"summary\": \"修复了失败的测试\"") != null);
+}
+
+test "run: backfill retries a gap whose stored summary is empty instead of reusing it" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    try writeBackfillFixtures(tmp);
+
+    const codex_root = try std.fs.path.join(allocator, &.{ root, "codex" });
+    defer allocator.free(codex_root);
+    const memory_root = try std.fs.path.join(allocator, &.{ root, "memory" });
+    defer allocator.free(memory_root);
+    try stampBackfillCursor(allocator, tmp, memory_root);
+
+    // Pre-seed the summary store with an EMPTY summary for this session
+    // (digest returns "" for an all-meta transcript, and put() persists it).
+    // Reusing that empty record would pin the gap empty forever while still
+    // consuming a BACKFILL_LIMIT slot every run — it must be treated as a
+    // miss so the session is re-summarized through the LLM.
+    try tmp.dir.writeFile(.{ .sub_path = "memory/state/session_summaries.json", .data = 
+        \\{"schema_version":1,"records":[{"key":"local|codex:codex-gap-1","date":"2026-06-30","summary":"","topics":[],"outcome":"unknown","artifacts":[]}]}
+    });
+
+    var stub = RoutingStub{ .map_response = MAP_JSON, .reduce_response = REDUCE_JSON };
+    _ = try runOnce(allocator, .{
+        .roots = .{ .codex_sessions_dir = codex_root },
+        .memory_root = memory_root,
+        .now_ms = 1783500000000,
+        .tz_offset_seconds = 8 * 3600,
+        .backfill_days = 0,
+        .completer = stub.completer(),
+        .model_label = "test-model",
+    });
+
+    // The empty store record was NOT reused: the LLM ran and the daily row
+    // got a real summary.
+    try std.testing.expect(stub.map_calls >= 1);
+    const daily = try tmp.dir.readFileAlloc(allocator, "memory/daily/2026-06-30.json", 1 << 20);
+    defer allocator.free(daily);
+    try std.testing.expect(std.mem.indexOf(u8, daily, "\"summary\": \"修复了失败的测试\"") != null);
 }

@@ -39,6 +39,11 @@ pub const RemoteRootsSpec = struct {
 pub const CollectResult = struct {
     count: u32 = 0,
     oversize_skipped: u32 = 0,
+    /// Per-provider candidate file counts plus any diagnostic notes (BSD
+    /// find/no-stamps), e.g. "claude: 12 files; codex: 0 files" or
+    /// "claude: no-stamps(BSD?)" (spec §13 diagnostics). Allocated from the
+    /// `arena` passed into `collectRemote`.
+    detail: []const u8 = "",
 };
 
 /// Collects new sessions from one remote source (ssh/wsl) into `out`,
@@ -59,12 +64,14 @@ pub fn collectRemote(
     if (home.len == 0) return error.RemoteHomeFailed;
 
     var result: CollectResult = .{};
+    var detail_parts: std.ArrayListUnmanaged(u8) = .empty;
     if (roots.claude) {
         const root = try std.fmt.allocPrint(gpa, "{s}/.claude/projects", .{home});
         defer gpa.free(root);
         const r = try collectProvider(gpa, arena, out, source_id, host, cur, min_mtime_ns, .claude, root);
         result.count += r.count;
         result.oversize_skipped += r.oversize_skipped;
+        try appendProviderDetail(arena, &detail_parts, "claude", r);
     }
     if (roots.codex) {
         const root = try std.fmt.allocPrint(gpa, "{s}/.codex/sessions", .{home});
@@ -72,9 +79,35 @@ pub fn collectRemote(
         const r = try collectProvider(gpa, arena, out, source_id, host, cur, min_mtime_ns, .codex, root);
         result.count += r.count;
         result.oversize_skipped += r.oversize_skipped;
+        try appendProviderDetail(arena, &detail_parts, "codex", r);
     }
+    result.detail = detail_parts.items;
     return result;
 }
+
+fn appendProviderDetail(arena: std.mem.Allocator, parts: *std.ArrayListUnmanaged(u8), provider_name: []const u8, r: ProviderResult) !void {
+    if (parts.items.len > 0) try parts.appendSlice(arena, "; ");
+    if (r.no_stamps) {
+        try parts.writer(arena).print("{s}: no-stamps(BSD?)", .{provider_name});
+    } else {
+        try parts.writer(arena).print("{s}: {d} files", .{ provider_name, r.files_seen });
+    }
+}
+
+/// Extends CollectResult with per-provider diagnostics that only make sense
+/// scoped to a single provider (collectRemote folds these into its combined
+/// `detail` string via appendProviderDetail).
+const ProviderResult = struct {
+    count: u32 = 0,
+    oversize_skipped: u32 = 0,
+    /// Candidate files this provider's `find` produced (parseable lines,
+    /// including ones later skipped for backfill/oversize/transient
+    /// reasons) — this is what the "{provider}: N files" detail text means.
+    files_seen: u32 = 0,
+    /// True once a BSD-style (tab-less) find line was seen for this
+    /// provider. Non-fatal: that line is skipped and collection continues.
+    no_stamps: bool = false,
+};
 
 fn collectProvider(
     gpa: std.mem.Allocator,
@@ -86,18 +119,27 @@ fn collectProvider(
     min_mtime_ns: i128,
     provider: types.DigestProvider,
     root: []const u8,
-) !CollectResult {
+) !ProviderResult {
     var cmd_buf: [2048]u8 = undefined;
     const find_cmd = try findCommandNoSizeFilter(root, &cmd_buf);
     const find_out = try host.exec(host.ctx, gpa, find_cmd);
     defer gpa.free(find_out);
 
-    var result: CollectResult = .{};
+    var result: ProviderResult = .{};
     var lines = std.mem.splitScalar(u8, find_out, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
-        var cand = try parseFindLine(line, provider);
+        var cand = parseFindLine(line, provider) catch {
+            // BSD find (no tabs): unsupported shape, but must not abort the
+            // other providers/sources (spec §13) — record and skip the line.
+            if (!result.no_stamps) {
+                std.log.warn("memory_digest: remote find output for {s} has no stamps (BSD find?) - recorded in detail", .{@tagName(provider)});
+                result.no_stamps = true;
+            }
+            continue;
+        };
+        result.files_seen += 1;
         // find_out (and thus cand.path, which borrows from it) is freed when
         // this function returns; CollectedSession.source_file must outlive
         // that, so dupe into the output arena now (mirrors collector.zig's
@@ -152,15 +194,13 @@ const FindCandidate = struct {
 /// find on Linux remotes only; BSD/macOS remote support needs the
 /// providerFindCommandPlain two-pass fallback session.zig already has for
 /// the UI scanner — wire that in when a real BSD remote shows up).
-fn parseFindLine(line: []const u8, provider: types.DigestProvider) !FindCandidate {
+fn parseFindLine(line: []const u8, _: types.DigestProvider) !FindCandidate {
     var it = std.mem.splitScalar(u8, line, '\t');
     const first = it.next().?;
     const second = it.next() orelse {
-        std.log.warn("memory_digest: remote find output for {s} has no stamps (BSD find?) - unsupported", .{@tagName(provider)});
         return error.RemoteFindUnsupported;
     };
     const third = it.next() orelse {
-        std.log.warn("memory_digest: remote find output for {s} has no stamps (BSD find?) - unsupported", .{@tagName(provider)});
         return error.RemoteFindUnsupported;
     };
     const secs_str = std.mem.sliceTo(first, '.');
@@ -256,6 +296,7 @@ test "memory_digest_remote: first run collects, second run collects nothing and 
     try std.testing.expectEqual(@as(u32, 0), r.oversize_skipped);
     try std.testing.expectEqual(@as(usize, 2), out.items.len);
     try std.testing.expectEqual(@as(u32, 2), host.cat_calls);
+    try std.testing.expect(std.mem.indexOf(u8, r.detail, "claude:") != null);
     // project_path threaded through correctly for one of the sessions.
     var found_proj_a = false;
     for (out.items) |s| {
@@ -350,7 +391,7 @@ test "memory_digest_remote: only the changed file is cat'd" {
     try std.testing.expectEqual(@as(u32, 3), host.cat_calls); // one more cat only
 }
 
-test "memory_digest_remote: BSD find output (no tabs) errors" {
+test "memory_digest_remote: BSD find output (no tabs) is recorded in detail, not fatal" {
     const allocator = std.testing.allocator;
     var host: FakeHost = .{
         .find_output = "/home/me/.claude/projects/proj-a/claude-abc.jsonl\n",
@@ -362,7 +403,10 @@ test "memory_digest_remote: BSD find output (no tabs) errors" {
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
     var out: std.ArrayListUnmanaged(types.CollectedSession) = .empty;
-    try std.testing.expectError(error.RemoteFindUnsupported, collectRemote(allocator, arena_state.allocator(), &out, "ssh:box", host.execHost(), &cur, 0, .{}));
+    const r = try collectRemote(allocator, arena_state.allocator(), &out, "ssh:box", host.execHost(), &cur, 0, .{});
+    try std.testing.expectEqual(@as(u32, 0), r.count);
+    try std.testing.expectEqual(@as(usize, 0), out.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, r.detail, "no-stamps") != null);
 }
 
 test "memory_digest_remote: home exec failure errors" {
