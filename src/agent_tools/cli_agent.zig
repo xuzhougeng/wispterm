@@ -215,10 +215,11 @@ pub fn run(ctx: *ToolContext, backend: *const Backend, task: []const u8, cwd: ?[
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Pipe;
-    child.cwd = cwd orelse ctx.settings.working_dir;
+    const effective_cwd = cwd orelse ctx.settings.working_dir;
+    child.cwd = effective_cwd;
     child.create_no_window = true;
     child.spawn() catch |err| {
-        return std.fmt.allocPrint(allocator, "{s} CLI ({s}) not found or failed to start: {}", .{ backend.display, backend.exe, err });
+        return std.fmt.allocPrint(allocator, "{s} CLI ({s}) not found or failed to start: {} (cwd: {s})", .{ backend.display, backend.exe, err, effective_cwd orelse "." });
     };
     // posix_spawn() itself returns success even when the exec inside the
     // forked child fails (e.g. missing executable) — the real error only
@@ -234,7 +235,7 @@ pub fn run(ctx: *ToolContext, backend: *const Backend, task: []const u8, cwd: ?[
         if (child.stdout) |*f| f.close();
         if (child.stderr) |*f| f.close();
         if (builtin.os.tag != .windows) _ = platform_process.childExited(child.id, 1000);
-        return std.fmt.allocPrint(allocator, "{s} CLI ({s}) not found or failed to start: {}", .{ backend.display, backend.exe, err });
+        return std.fmt.allocPrint(allocator, "{s} CLI ({s}) not found or failed to start: {} (cwd: {s})", .{ backend.display, backend.exe, err, effective_cwd orelse "." });
     };
 
     var stream = LineStream{ .allocator = allocator, .file = child.stdout.? };
@@ -276,6 +277,10 @@ pub fn run(ctx: *ToolContext, backend: *const Backend, task: []const u8, cwd: ?[
         }
         if (ctx.isCancelled()) {
             canceled = true;
+            // ponytail: kill() is SIGTERM + blocking wait — a SIGTERM-ignoring
+            // child hangs here and grandchildren orphan; process-group +
+            // SIGKILL escalation if real codex runs hit it. Same ceiling as
+            // exec.runArgv, deliberate.
             _ = child.kill() catch {};
             break;
         }
@@ -310,7 +315,14 @@ pub fn run(ctx: *ToolContext, backend: *const Backend, task: []const u8, cwd: ?[
         try out.appendSlice(allocator, f);
     } else {
         try out.appendSlice(allocator, "No final message parsed; raw output tail:\n");
-        try out.appendSlice(allocator, tail.items);
+        // appendTail lets `tail` grow to 2x output_limit before compressing;
+        // truncateOwned below keeps the FIRST output_limit bytes, which would
+        // cut off the very end of the stream the fallback exists to preserve.
+        // Budget the tail to half the limit so header+marker+tail survives
+        // keep-head truncation, leaving room for stderr too.
+        const tail_budget = @max(ctx.settings.output_limit / 2, 1);
+        const tail_slice = tail.items[tail.items.len -| tail_budget..];
+        try out.appendSlice(allocator, tail_slice);
     }
     if (exit_code != 0 and stderr_capture.data.len > 0) {
         try out.print(allocator, "\nstderr:\n{s}", .{stderr_capture.data});
@@ -460,6 +472,34 @@ test "run falls back to the raw stdout tail when no final message parses" {
     defer a.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "No final message parsed") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "plain line two") != null);
+}
+
+test "run fallback tail keeps the most recent output under a small output_limit" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest; // uses /bin/sh
+    const a = std.testing.allocator;
+    const script = "for i in $(seq 1 40); do echo \"noise line $i padding padding padding\"; done; echo \"LAST_LINE_MARKER\"";
+    const args = [_][]const u8{ "-c", script };
+    const fake = Backend{
+        .key = "fake",
+        .display = "Fake",
+        .exe = "/bin/sh",
+        .base_args = args[0..],
+        .parseEvent = codexParseEvent,
+    };
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .permission = .full, .output_limit = 256 },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const out = try run(&ctx, &fake, "task", null, 30_000);
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "No final message parsed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "LAST_LINE_MARKER") != null);
 }
 
 test "run requires approval outside full permission and reports denial" {

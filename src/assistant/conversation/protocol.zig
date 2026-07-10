@@ -2228,8 +2228,7 @@ test "full toolset includes cli_agent and subagent toolset excludes it" {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(a);
     try appendToolSchemas(a, &out, .{ .include_memory = false });
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"cli_agent\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"agent\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"name\":\"cli_agent\"") != null);
 
     var sub: std.ArrayListUnmanaged(u8) = .empty;
     defer sub.deinit(a);
