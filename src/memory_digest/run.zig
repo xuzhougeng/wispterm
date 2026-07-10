@@ -20,8 +20,17 @@ const types = @import("types.zig");
 pub const DEFAULT_INPUT_BUDGET_CHARS = digest.DEFAULT_INPUT_BUDGET_CHARS;
 
 /// Max historical empty-summary sessions summarized per run (spec §3).
+/// Counts only actual LLM summarize attempts: dead gaps (source file gone,
+/// load failed) and tombstoned gaps are skipped without consuming a slot.
 /// ponytail: fixed cap, make it a config key only if real backlogs demand.
 const BACKFILL_LIMIT: usize = 8;
+
+/// findGaps candidate scan cap. Since dead/tombstoned gaps don't consume
+/// BACKFILL_LIMIT, scan extra candidates or a run full of dead gaps would
+/// starve the real ones behind them.
+/// ponytail: fixed 8x over-scan; if dead gaps ever pile past this, switch
+/// findGaps to an iterator.
+const BACKFILL_SCAN_LIMIT: usize = BACKFILL_LIMIT * 8;
 
 /// One WSL/SSH remote source to collect from alongside local roots (spec §6,
 /// M3). `source_id` becomes CollectedSession.source_id and thus flows into
@@ -544,11 +553,13 @@ fn runOnceWithLlm(
     // Backfill (spec 2026-07-09 §3): summarize historical daily entries that
     // still have an empty summary (collected before M2, or map previously
     // failed). Never advances cursors; merges via the same summarized lists.
-    const gaps = backfill_mod.findGaps(gpa, arena, opts.memory_root, BACKFILL_LIMIT) catch |err| blk: {
+    const gaps = backfill_mod.findGaps(gpa, arena, opts.memory_root, BACKFILL_SCAN_LIMIT) catch |err| blk: {
         std.log.warn("memory_digest: backfill scan failed: {s}", .{@errorName(err)});
         break :blk &.{};
     };
+    var backfill_llm_attempts: usize = 0;
     for (gaps) |gap| {
+        if (backfill_llm_attempts >= BACKFILL_LIMIT) break;
         // Same-run duplicate guard: the map loop above may have just
         // summarized this exact session for this same date (M1 left an
         // empty-summary daily row and new messages arrived this run) —
@@ -570,11 +581,18 @@ fn runOnceWithLlm(
         // 本轮增量刚处理过（或历史已归纳但 daily 写失败的窗口）→ 直接复用。
         // An empty stored summary (digest returns "" for an all-meta
         // transcript) is NOT reusable: treat it as a miss so the gap is
-        // retried through the map path instead of being pinned empty
-        // forever while consuming a BACKFILL_LIMIT slot every run.
+        // retried once through the map path. A second consecutive empty
+        // result tombstones the record (no_retry) — an all-meta session
+        // summarizes to "" deterministically, so retrying forever would
+        // burn an LLM call every run.
         var reused: ?*store.SummaryRecord = summaries.find(key);
+        var prior_empty = false;
         if (reused) |rec| {
-            if (rec.summary.len == 0) reused = null;
+            if (rec.summary.len == 0) {
+                if (rec.no_retry) continue;
+                prior_empty = true;
+                reused = null;
+            }
         }
         var sess: ?types.CollectedSession = null;
         if (reused == null) {
@@ -603,6 +621,7 @@ fn runOnceWithLlm(
             artifacts = rec.artifacts;
         } else {
             const s = sess.?;
+            backfill_llm_attempts += 1;
             const result = digest.summarizeSession(arena, gpa, completer, s, null, .{
                 .max_chars_per_message = opts.max_chars_per_message,
                 .input_budget_chars = opts.input_budget_chars,
@@ -623,6 +642,7 @@ fn runOnceWithLlm(
                 .topics = result.topics,
                 .outcome = result.outcome,
                 .artifacts = result.artifacts,
+                .no_retry = prior_empty and result.summary.len == 0,
             });
             sessions_summarized += 1;
         }
@@ -1663,7 +1683,7 @@ const FakeRemoteHost = struct {
             if (self.fail_home) return error.ExecFailed;
             return gpa.dupe(u8, "/root");
         }
-        if (std.mem.startsWith(u8, command, "find ")) {
+        if (std.mem.indexOf(u8, command, "find ") != null) {
             if (std.mem.indexOf(u8, command, "/.claude/projects") != null) return gpa.dupe(u8, self.find_output);
             return gpa.dupe(u8, "");
         }
@@ -2131,4 +2151,106 @@ test "run: backfill retries a gap whose stored summary is empty instead of reusi
     const daily = try tmp.dir.readFileAlloc(allocator, "memory/daily/2026-06-30.json", 1 << 20);
     defer allocator.free(daily);
     try std.testing.expect(std.mem.indexOf(u8, daily, "\"summary\": \"修复了失败的测试\"") != null);
+}
+
+// An older daily full of dead gaps: sessions whose source files no longer
+// exist anywhere under the roots (locateSessionFile misses), so backfill can
+// never summarize them. There are BACKFILL_LIMIT+1 of them, sorted before
+// the real gap's 2026-06-30 daily.
+const DEAD_GAPS_DAILY_JSON =
+    \\{"schema_version":1,"date":"2026-06-29","generated_at":1,"sessions":[
+    \\{"provider":"codex","source_id":"local","session_id":"dead-1","project":"p","title":"t","message_count_new":1},
+    \\{"provider":"codex","source_id":"local","session_id":"dead-2","project":"p","title":"t","message_count_new":1},
+    \\{"provider":"codex","source_id":"local","session_id":"dead-3","project":"p","title":"t","message_count_new":1},
+    \\{"provider":"codex","source_id":"local","session_id":"dead-4","project":"p","title":"t","message_count_new":1},
+    \\{"provider":"codex","source_id":"local","session_id":"dead-5","project":"p","title":"t","message_count_new":1},
+    \\{"provider":"codex","source_id":"local","session_id":"dead-6","project":"p","title":"t","message_count_new":1},
+    \\{"provider":"codex","source_id":"local","session_id":"dead-7","project":"p","title":"t","message_count_new":1},
+    \\{"provider":"codex","source_id":"local","session_id":"dead-8","project":"p","title":"t","message_count_new":1},
+    \\{"provider":"codex","source_id":"local","session_id":"dead-9","project":"p","title":"t","message_count_new":1}]}
+;
+
+test "run: backfill dead gaps (source file gone) don't consume the LLM quota" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    try writeBackfillFixtures(tmp);
+    // 9 dead gaps (> BACKFILL_LIMIT=8) on an EARLIER date than the real gap:
+    // if the quota were consumed at findGaps time, they alone would fill it
+    // and starve codex-gap-1 forever.
+    try tmp.dir.writeFile(.{ .sub_path = "memory/daily/2026-06-29.json", .data = DEAD_GAPS_DAILY_JSON });
+
+    const codex_root = try std.fs.path.join(allocator, &.{ root, "codex" });
+    defer allocator.free(codex_root);
+    const memory_root = try std.fs.path.join(allocator, &.{ root, "memory" });
+    defer allocator.free(memory_root);
+    try stampBackfillCursor(allocator, tmp, memory_root);
+
+    var stub = RoutingStub{ .map_response = MAP_JSON, .reduce_response = REDUCE_JSON };
+    _ = try runOnce(allocator, .{
+        .roots = .{ .codex_sessions_dir = codex_root },
+        .memory_root = memory_root,
+        .now_ms = 1783500000000,
+        .tz_offset_seconds = 8 * 3600,
+        .backfill_days = 0,
+        .completer = stub.completer(),
+        .model_label = "test-model",
+    });
+
+    // The real gap behind the 9 dead ones still got its LLM slot.
+    try std.testing.expect(stub.map_calls >= 1);
+    const daily = try tmp.dir.readFileAlloc(allocator, "memory/daily/2026-06-30.json", 1 << 20);
+    defer allocator.free(daily);
+    try std.testing.expect(std.mem.indexOf(u8, daily, "\"summary\": \"修复了失败的测试\"") != null);
+}
+
+const EMPTY_MAP_JSON =
+    \\{"summary":"","topics":[],"outcome":"unknown","artifacts":[]}
+;
+
+test "run: backfill tombstones a gap after two consecutive empty summaries" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    try writeBackfillFixtures(tmp);
+
+    const codex_root = try std.fs.path.join(allocator, &.{ root, "codex" });
+    defer allocator.free(codex_root);
+    const memory_root = try std.fs.path.join(allocator, &.{ root, "memory" });
+    defer allocator.free(memory_root);
+    try stampBackfillCursor(allocator, tmp, memory_root);
+
+    // The LLM deterministically returns an empty summary for this session
+    // (the all-meta transcript case digest maps to "").
+    var stub = RoutingStub{ .map_response = EMPTY_MAP_JSON, .reduce_response = REDUCE_JSON };
+    const opts: Options = .{
+        .roots = .{ .codex_sessions_dir = codex_root },
+        .memory_root = memory_root,
+        .now_ms = 1783500000000,
+        .tz_offset_seconds = 8 * 3600,
+        .backfill_days = 0,
+        .completer = stub.completer(),
+        .model_label = "test-model",
+    };
+
+    // Run 1: fresh attempt, stores an empty record (retryable).
+    _ = try runOnce(allocator, opts);
+    try std.testing.expectEqual(@as(usize, 1), stub.map_calls);
+
+    // Run 2: stored summary is empty → one retry through the map path;
+    // empty again → the record is tombstoned.
+    _ = try runOnce(allocator, opts);
+    try std.testing.expectEqual(@as(usize, 2), stub.map_calls);
+    const summaries = try tmp.dir.readFileAlloc(allocator, "memory/state/session_summaries.json", 1 << 20);
+    defer allocator.free(summaries);
+    try std.testing.expect(std.mem.indexOf(u8, summaries, "\"no_retry\": true") != null);
+
+    // Run 3: the gap is still on disk (daily summary stayed empty) but the
+    // tombstone skips it — no further LLM calls, ever.
+    _ = try runOnce(allocator, opts);
+    try std.testing.expectEqual(@as(usize, 2), stub.map_calls);
 }

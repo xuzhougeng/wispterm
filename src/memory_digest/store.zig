@@ -342,6 +342,12 @@ pub const SummaryRecord = struct {
     topics: []const []const u8 = &.{},
     outcome: []const u8 = "unknown",
     artifacts: []const Artifact = &.{},
+    /// Backfill tombstone: the gap produced an empty summary twice in a row
+    /// (all-meta transcript summarizes to "" deterministically), so later
+    /// backfill runs skip it instead of burning an LLM call every run. The
+    /// normal map path resets this when new messages arrive (its put() uses
+    /// the default false).
+    no_retry: bool = false,
 };
 
 /// Per-session LLM summaries, keyed by "provider:session_id" (spec §8).
@@ -383,6 +389,7 @@ pub const SummaryStore = struct {
             .topics = topics,
             .outcome = try alloc.dupe(u8, rec.outcome),
             .artifacts = artifacts,
+            .no_retry = rec.no_retry,
         };
         if (self.find(rec.key)) |existing| {
             existing.* = duped;

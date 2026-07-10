@@ -87,7 +87,9 @@ pub fn collectRemote(
 
 fn appendProviderDetail(arena: std.mem.Allocator, parts: *std.ArrayListUnmanaged(u8), provider_name: []const u8, r: ProviderResult) !void {
     if (parts.items.len > 0) try parts.appendSlice(arena, "; ");
-    if (r.no_stamps) {
+    if (r.find_failed and r.files_seen == 0) {
+        try parts.writer(arena).print("{s}: find failed (BSD?)", .{provider_name});
+    } else if (r.no_stamps) {
         try parts.writer(arena).print("{s}: no-stamps(BSD?)", .{provider_name});
     } else {
         try parts.writer(arena).print("{s}: {d} files", .{ provider_name, r.files_seen });
@@ -107,6 +109,11 @@ const ProviderResult = struct {
     /// True once a BSD-style (tab-less) find line was seen for this
     /// provider. Non-fatal: that line is skipped and collection continues.
     no_stamps: bool = false,
+    /// True once a FINDFAIL marker was seen: find itself exited nonzero
+    /// (BSD find rejecting -printf, most likely). Only surfaced in detail
+    /// when files_seen is also 0 — a partial traversal error alongside
+    /// real results keeps the "{N} files" text.
+    find_failed: bool = false,
 };
 
 fn collectProvider(
@@ -120,7 +127,8 @@ fn collectProvider(
     provider: types.DigestProvider,
     root: []const u8,
 ) !ProviderResult {
-    var cmd_buf: [2048]u8 = undefined;
+    // 4096: the dir-existence guard makes the quoted root appear twice.
+    var cmd_buf: [4096]u8 = undefined;
     const find_cmd = try findCommandNoSizeFilter(root, &cmd_buf);
     const find_out = try host.exec(host.ctx, gpa, find_cmd);
     defer gpa.free(find_out);
@@ -130,6 +138,13 @@ fn collectProvider(
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
+        if (std.mem.startsWith(u8, line, "FINDFAIL:")) {
+            if (!result.find_failed) {
+                std.log.warn("memory_digest: remote find for {s} exited nonzero ({s}; BSD find without -printf?) - recorded in detail", .{ @tagName(provider), line });
+                result.find_failed = true;
+            }
+            continue;
+        }
         var cand = parseFindLine(line, provider) catch {
             // BSD find (no tabs): unsupported shape, but must not abort the
             // other providers/sources (spec §13) — record and skip the line.
@@ -175,10 +190,17 @@ fn collectProvider(
 /// than have `find` drop them silently. Only used for claude/codex roots
 /// (this module's RemoteRootsSpec has no reasonix support), so no reasonix
 /// name filter is needed here.
+///
+/// `| sort | head` would swallow find's own exit code (BSD find rejects
+/// `-printf` outright), making "find failed" indistinguishable from "0
+/// files" — so a nonzero find exits leaves a FINDFAIL:<code> marker line in
+/// the pipe (a failed find printed nothing, so the marker is the sole line
+/// and survives `head`). A missing root dir stays plain empty output ("0
+/// files" is honest there), guarded by the leading `[ ! -d ... ]`.
 fn findCommandNoSizeFilter(root: []const u8, out: []u8) ![]const u8 {
     var quoted_buf: [1024]u8 = undefined;
     const quoted = remote_file.shellQuote(&quoted_buf, root) orelse return error.CommandTooLong;
-    return std.fmt.bufPrint(out, "find {s} -type f -name '*.jsonl' -printf '%T@\\t%s\\t%p\\n' 2>/dev/null | sort -rn | head -500", .{quoted}) catch error.CommandTooLong;
+    return std.fmt.bufPrint(out, "[ ! -d {s} ] || (find {s} -type f -name '*.jsonl' -printf '%T@\\t%s\\t%p\\n' 2>/dev/null || echo FINDFAIL:$?) | sort -rn | head -500", .{ quoted, quoted }) catch error.CommandTooLong;
 }
 
 const FindCandidate = struct {
@@ -246,7 +268,7 @@ const FakeHost = struct {
             if (self.fail_home) return error.ExecFailed;
             return gpa.dupe(u8, self.home);
         }
-        if (std.mem.startsWith(u8, command, "find ")) {
+        if (std.mem.indexOf(u8, command, "find ") != null) {
             // Tests can serve Claude and Codex roots independently; empty
             // output is a valid "nothing found".
             if (std.mem.indexOf(u8, command, "/.claude/projects") != null) {
@@ -407,6 +429,31 @@ test "memory_digest_remote: BSD find output (no tabs) is recorded in detail, not
     try std.testing.expectEqual(@as(u32, 0), r.count);
     try std.testing.expectEqual(@as(usize, 0), out.items.len);
     try std.testing.expect(std.mem.indexOf(u8, r.detail, "no-stamps") != null);
+}
+
+test "memory_digest_remote: find exit marker becomes 'find failed', not '0 files'" {
+    const allocator = std.testing.allocator;
+    // claude: BSD find rejected -printf → marker is the sole output line.
+    // codex: one valid line plus a trailing traversal-error marker (GNU find
+    // exits 1 on e.g. an unreadable subdir) → real results win the detail.
+    var host: FakeHost = .{
+        .find_output = "FINDFAIL:1\n",
+        .codex_find_output = "1780300861.0\t180\t/home/me/.codex/sessions/2026/05/codex-abc.jsonl\nFINDFAIL:1\n",
+    };
+    defer host.cat_files.deinit(allocator);
+    try host.cat_files.put(allocator, "/home/me/.codex/sessions/2026/05/codex-abc.jsonl", CODEX_JSONL);
+
+    var cur = cursors_mod.Set.init(allocator);
+    defer cur.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    var out: std.ArrayListUnmanaged(types.CollectedSession) = .empty;
+    const r = try collectRemote(allocator, arena_state.allocator(), &out, "ssh:box", host.execHost(), &cur, 0, .{});
+    try std.testing.expect(std.mem.indexOf(u8, r.detail, "claude: find failed (BSD?)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.detail, "codex: 1 files") != null);
+    // The marker must not be mistaken for a BSD no-stamps path line.
+    try std.testing.expect(std.mem.indexOf(u8, r.detail, "no-stamps") == null);
+    try std.testing.expectEqual(@as(u32, 1), r.count);
 }
 
 test "memory_digest_remote: home exec failure errors" {
