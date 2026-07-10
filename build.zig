@@ -632,7 +632,16 @@ pub fn build(b: *std.Build) void {
             exe.subsystem = if (optimize == .Debug or debug_console) .Console else .Windows;
         }
 
-        b.installArtifact(exe);
+        const install_exe = b.addInstallArtifact(exe, .{});
+        if (target.result.os.tag == .windows) {
+            // Windows locks a running .exe, so overwriting zig-out\bin\wispterm.exe
+            // while WispTerm is open fails the install with AccessDenied. Free the
+            // destination first (delete, or rename it aside — Windows allows renaming
+            // a running exe) so a rebuild-while-running succeeds. Mirrors the macOS
+            // bundle's clean-existing pre-step below.
+            install_exe.step.dependOn(&FreeLockedInstallTarget.create(b, "wispterm.exe").step);
+        }
+        b.getInstallStep().dependOn(&install_exe.step);
 
         if (target.result.os.tag == .windows) {
             const askpass_mod = b.createModule(.{
@@ -1386,6 +1395,58 @@ fn createBenchModule(
     }
     return bench_mod;
 }
+
+/// Install pre-step that frees a locked destination in zig-out/bin before the
+/// artifact is copied. On Windows a running .exe cannot be overwritten (the OS
+/// holds a lock), so `zig build` fails with AccessDenied whenever WispTerm is
+/// open. Deleting the running exe also fails — but Windows *does* allow renaming
+/// it aside, which frees the path so the fresh binary can be written. Leftover
+/// `<name>.old-N` files delete cleanly on the next build once the old process
+/// has exited. Best-effort everywhere else (a missing/unlocked file is fine).
+const FreeLockedInstallTarget = struct {
+    step: std.Build.Step,
+    name: []const u8,
+
+    fn create(b: *std.Build, name: []const u8) *FreeLockedInstallTarget {
+        const self = b.allocator.create(FreeLockedInstallTarget) catch @panic("OOM");
+        self.* = .{
+            .step = std.Build.Step.init(.{
+                .id = .custom,
+                .name = b.fmt("free locked {s}", .{name}),
+                .owner = b,
+                .makeFn = make,
+            }),
+            .name = name,
+        };
+        return self;
+    }
+
+    fn make(step: *std.Build.Step, options: std.Build.Step.MakeOptions) anyerror!void {
+        _ = options;
+        const self: *FreeLockedInstallTarget = @fieldParentPtr("step", step);
+        const b = step.owner;
+        var dir = std.fs.cwd().openDir(b.getInstallPath(.bin, ""), .{ .iterate = true }) catch return;
+        defer dir.close();
+
+        // Sweep leftover renamed-aside binaries from earlier rebuilds.
+        var it = dir.iterate();
+        while (it.next() catch null) |entry| {
+            if (std.mem.indexOf(u8, entry.name, ".old-") != null) dir.deleteFile(entry.name) catch {};
+        }
+
+        dir.deleteFile(self.name) catch |err| switch (err) {
+            error.FileNotFound => {}, // nothing installed yet
+            else => {
+                // Almost certainly a running exe (AccessDenied); rename it aside.
+                var n: usize = 0;
+                while (n < 1000) : (n += 1) {
+                    if (dir.rename(self.name, b.fmt("{s}.old-{d}", .{ self.name, n }))) |_| return else |_| {}
+                }
+                return error.CouldNotFreeInstallTarget;
+            },
+        };
+    }
+};
 
 fn addMacosAppBundle(
     b: *std.Build,
