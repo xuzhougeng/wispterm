@@ -12,7 +12,7 @@ pub fn now(allocator: std.mem.Allocator) ![]u8 {
 
 fn format(allocator: std.mem.Allocator, now_ms: i64, offset_seconds: i32) ![]u8 {
     const local_seconds = @divFloor(now_ms, 1000) + @as(i64, offset_seconds);
-    const seconds_today = @mod(local_seconds, SECONDS_PER_DAY);
+    const seconds_today: u64 = @intCast(@mod(local_seconds, SECONDS_PER_DAY));
     const date = ai_types.dateKeyFromMs(now_ms, offset_seconds);
     const offset_minutes: i32 = @divTrunc(offset_seconds, 60);
     const offset_abs: u32 = @abs(offset_minutes);
@@ -26,7 +26,7 @@ fn format(allocator: std.mem.Allocator, now_ms: i64, offset_seconds: i32) ![]u8 
             @divFloor(seconds_today, 3600),
             @divFloor(@mod(seconds_today, 3600), 60),
             @mod(seconds_today, 60),
-            if (offset_minutes < 0) '-' else '+',
+            @as(u8, if (offset_minutes < 0) '-' else '+'),
             @divFloor(offset_abs, 60),
             @mod(offset_abs, 60),
             now_ms,

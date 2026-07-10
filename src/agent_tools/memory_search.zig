@@ -61,7 +61,9 @@ pub fn searchDailyDir(
     // In that legacy shape date-only queries should show the whole day.
     const inferred_date = if (date == null) isoDateKeyword(keywords) else null;
     const requested_date = date orelse inferred_date;
-    const apply_keywords = inferred_date == null;
+    // Date with no keywords returns the whole day; only filter when the caller
+    // actually supplied keywords (and we're not in the legacy ISO-keyword shape).
+    const apply_keywords = inferred_date == null and keywords.len > 0;
     const window_days: u32 = @min(if (days == 0) DEFAULT_DAYS else days, MAX_DAYS);
     const cutoff_ms = now_ms -| @as(i64, window_days) * std.time.ms_per_day;
     var cutoff_buf: [10]u8 = undefined;
