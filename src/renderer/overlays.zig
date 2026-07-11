@@ -4538,12 +4538,46 @@ fn backspaceAiFormField(field: usize) void {
 }
 
 /// Cycle the Protocol form field to the next/previous valid protocol. The field
-/// is constrained to valid values (chat_completions / responses / anthropic),
+/// is constrained to valid values (chat_completions / responses / anthropic / acp),
 /// so users toggle with ←/→ instead of typing an arbitrary string.
 fn cycleAiFormProtocol(forward: bool) void {
     const idx = @intFromEnum(AiField.protocol);
     const current = AppWindow.ai_chat.ApiProtocol.parse(assistantProfiles().bufs[idx][0..assistantProfiles().lens[idx]]);
-    setAiDefault(.protocol, current.cycle(forward).name());
+    const next = current.cycle(forward);
+    setAiDefault(.protocol, next.name());
+    // Landing on acp with no command yet: prefill the standard ACP adapter launch
+    // command so the field isn't left blank-but-required.
+    if (next == .acp and aiField(.command).len == 0) {
+        setAiDefault(.command, "npx @zed-industries/claude-code-acp");
+    }
+}
+
+test "cycleAiFormProtocol prefills the acp launch command only when landing on acp with an empty command" {
+    const saved_protocol_len = assistantProfiles().lens[@intFromEnum(AiField.protocol)];
+    const saved_protocol_buf = assistantProfiles().bufs[@intFromEnum(AiField.protocol)];
+    const saved_command_len = assistantProfiles().lens[@intFromEnum(AiField.command)];
+    const saved_command_buf = assistantProfiles().bufs[@intFromEnum(AiField.command)];
+    defer {
+        assistantProfiles().lens[@intFromEnum(AiField.protocol)] = saved_protocol_len;
+        assistantProfiles().bufs[@intFromEnum(AiField.protocol)] = saved_protocol_buf;
+        assistantProfiles().lens[@intFromEnum(AiField.command)] = saved_command_len;
+        assistantProfiles().bufs[@intFromEnum(AiField.command)] = saved_command_buf;
+    }
+
+    // anthropic -> acp (forward cycle), empty command: gets prefilled.
+    setAiDefault(.protocol, "anthropic");
+    setAiDefault(.command, "");
+    cycleAiFormProtocol(true);
+    try std.testing.expectEqualStrings("acp", aiField(.protocol));
+    try std.testing.expectEqualStrings("npx @zed-industries/claude-code-acp", aiField(.command));
+
+    // Cycling away from acp and back must not clobber a user-edited command.
+    setAiDefault(.command, "custom-launcher");
+    cycleAiFormProtocol(true); // acp -> chat_completions
+    try std.testing.expectEqualStrings("chat_completions", aiField(.protocol));
+    cycleAiFormProtocol(false); // chat_completions -> acp
+    try std.testing.expectEqualStrings("acp", aiField(.protocol));
+    try std.testing.expectEqualStrings("custom-launcher", aiField(.command));
 }
 
 /// Protocol row display: the current protocol name plus a small ASCII toggle
@@ -4959,7 +4993,7 @@ test "overlays: missing copilot API with no profile opens Quick Configure" {
     openAiConfigForMissingCopilotApi();
 
     // No AI configured → guide setup via the Quick Configure overlay, not the full
-    // 12-field profile form (which g_ai_form_visible tracks).
+    // 13-field profile form (which g_ai_form_visible tracks).
     try std.testing.expect(quickAiForm().visible);
     try std.testing.expect(!g_ai_form_visible);
     try std.testing.expect(!g_ai_list_visible);
@@ -5231,6 +5265,7 @@ fn sessionDesiredBoxWidth() f32 {
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_protocol, aiProtocolDisplay()));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_max_tokens, aiField(.max_tokens)));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_vision, aiVisionDisplay()));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_command, aiField(.command)));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_save_open, i18n.s().sl_v_agent));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_save, i18n.s().sl_v_profile));
         desired = @max(desired, sessionTwoColumnWidth(sessionLauncherCancelLabel(), "Esc"));
@@ -5921,6 +5956,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.protocol), i18n.s().sl_ai_protocol, aiProtocolDisplay(), false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.max_tokens), i18n.s().sl_ai_max_tokens, aiField(.max_tokens), false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.vision), i18n.s().sl_ai_vision, aiVisionDisplay(), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.command), i18n.s().sl_ai_command, aiField(.command), false);
         renderSessionRow(layout, window_height, AI_FIELD_COUNT, i18n.s().sl_save_open, i18n.s().sl_v_agent, assistantProfiles().focus == AI_FIELD_COUNT);
         renderSessionRow(layout, window_height, AI_FIELD_COUNT + 1, i18n.s().sl_save, i18n.s().sl_v_profile, assistantProfiles().focus == AI_FIELD_COUNT + 1);
         renderSessionRow(layout, window_height, AI_FIELD_COUNT + 2, sessionLauncherCancelLabel(), "Esc", assistantProfiles().focus == AI_FIELD_COUNT + 2);
@@ -7154,7 +7190,7 @@ test "overlays: session launcher caps rows and scrolls to keep selection visible
     const bottom_pad = @round(@max(20.0, overlayTextHeight() * 0.55));
     const base_h = header_h + bottom_pad;
 
-    // The tallest mode is the AI form (12 fields + 3 action rows = 15 rows).
+    // The tallest mode is the AI form (13 fields + 3 action rows = 16 rows).
     const total: usize = AI_FIELD_COUNT + 3;
 
     // A tall window fits every row.
