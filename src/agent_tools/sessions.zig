@@ -129,7 +129,7 @@ pub fn tabNew(ctx: *ToolContext, kind: []const u8, command: ?[]const u8) ![]u8 {
 
     const out = try std.fmt.allocPrint(
         ctx.allocator,
-        "created tab kind={s} surface_id={s} tab={d} focused={} surface_kind={s} title=\"{s}\" cwd=\"{s}\"",
+        "created tab kind={s} surface_id={s} tab={d} focused={} surface_kind={s} title=\"{s}\" cwd=\"{s}\". Close this temporary tab with tab_close when the task finishes.",
         .{
             if (trimmed_kind.len > 0) trimmed_kind else "default",
             surface.id,

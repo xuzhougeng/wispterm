@@ -31,6 +31,9 @@ test "app source guards" {
     if (std.mem.indexOf(u8, app_window_source, "W" ++ "M_") != null) {
         return guardFailed("AppWindow.zig comments and logic must describe platform-neutral event handling, not Win32 messages");
     }
+    if (std.mem.indexOf(u8, app_window_source, ".restored_session => syncActiveSurfaceCaches(),") == null) {
+        return guardFailed("restored startup tabs must seed the active Agent/Copilot surface context");
+    }
     if (std.mem.indexOf(u8, app_window_source, "[260]u16") != null or
         std.mem.indexOf(u8, app_window_source, "[256]u16") != null or
         std.mem.indexOf(u8, app_window_source, "[*:0]const u16") != null or

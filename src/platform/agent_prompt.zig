@@ -74,7 +74,7 @@ const common_tools_after_wsl =
     \\- For a stuck terminal (`>` prompt, unclosed quote, hung command, pager), send `terminal_repl_exec repl=plain code=<ctrl-c>` (or `<ctrl-u>`/`<esc>`/`<ctrl-d>`).
     \\- Read terminal snapshots from the bottom; if stale/truncated, re-read with `terminal_snapshot`.
     \\- Answer Claude Code/Codex approval menus with `terminal_answer_prompt`; never blind-press unseen prompts.
-    \\- Use `tab_new` only when no suitable terminal exists; it is reserved for this Agent.
+    \\- Use `tab_new` only when no suitable terminal exists; it is reserved for this Agent. Close temporary tabs with `tab_close` as soon as their task finishes. Side Copilot cannot create or close tabs and stays within its bound tab and splits.
     \\- For WispTerm questions, call `wispterm_docs`.
     \\- For biomedical literature, decompose into English keywords (AND/OR), then call `pubmed`.
     \\- Delegate heavy research/reading (full web pages, PDFs, multi-query searches) to `subagent` with one complete task description; only its final report enters this conversation.

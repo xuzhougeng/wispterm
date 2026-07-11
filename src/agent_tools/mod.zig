@@ -45,6 +45,16 @@ const platform_dirs = @import("../platform/dirs.zig");
 
 pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
     if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
+    const remote_sidebar_local_command = blk: {
+        if (!ctx.copilot or !first_party_tools.isHostLocalCommand(call.name)) break :blk false;
+        const selected = ctx.writeContextSurfaceId() orelse break :blk false;
+        const snapshot = ctx.tool_snapshot orelse break :blk false;
+        const surface = terminal_tools.findSurface(snapshot, selected) orelse break :blk false;
+        break :blk surface.is_ssh or surface.is_wsl;
+    };
+    if (ctx.copilot and (first_party_tools.isSidebarRestricted(call.name) or remote_sidebar_local_command)) {
+        return std.fmt.allocPrint(ctx.allocator, "Tool is unavailable in Side Copilot because it is restricted to the bound tab: {s}", .{call.name});
+    }
     if (first_party_tools.isKnown(call.name) and first_party_tools.isDisabledName(ctx.settings.disabled_first_party_tools, call.name)) {
         return std.fmt.allocPrint(ctx.allocator, "Tool is disabled: {s}", .{call.name});
     }
@@ -635,6 +645,84 @@ test "executeToolCall rejects disabled first-party webread before validating arg
     defer std.testing.allocator.free(out);
 
     try std.testing.expectEqualStrings("Tool is disabled: webread", out);
+}
+
+test "executeToolCall hard-denies tab lifecycle tools in Side Copilot" {
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = std.testing.allocator,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{},
+        .copilot = true,
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+
+    inline for (.{ "tab_new", "tab_close", "ssh_profile_connect" }) |name| {
+        const out = try executeToolCall(&ctx, .{
+            .id = @constCast("c1"),
+            .name = @constCast(name),
+            .arguments = @constCast("{}"),
+        });
+        defer std.testing.allocator.free(out);
+        try std.testing.expect(std.mem.indexOf(u8, out, "restricted to the bound tab") != null);
+    }
+}
+
+test "executeToolCall allows host-local exec for local Side Copilot" {
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = std.testing.allocator,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{},
+        .copilot = true,
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const out = try executeToolCall(&ctx, .{
+        .id = @constCast("c1"),
+        .name = @constCast(platform_process.localCommandToolName()),
+        .arguments = @constCast("{}"),
+    });
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "restricted to the bound tab") == null);
+}
+
+test "executeToolCall denies host-local exec for remote Side Copilot" {
+    var dummy: u8 = 0;
+    var surfaces = [_]ToolSurface{.{
+        .id = @constCast("remote-1"),
+        .title = @constCast("ssh"),
+        .cwd = @constCast("/home/user"),
+        .snapshot = @constCast("$ "),
+        .tab_index = 0,
+        .focused = true,
+        .is_ssh = true,
+        .is_wsl = false,
+        .ptr = @ptrCast(&dummy),
+    }};
+    var ctx = ToolContext{
+        .allocator = std.testing.allocator,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = .{ .surfaces = surfaces[0..], .active_tab = 0 },
+        .settings = .{},
+        .copilot = true,
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    terminal_tools.setWriteContext(&ctx, "remote-1");
+    const out = try executeToolCall(&ctx, .{
+        .id = @constCast("c1"),
+        .name = @constCast(platform_process.localCommandToolName()),
+        .arguments = @constCast("{}"),
+    });
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "restricted to the bound tab") != null);
 }
 
 test "executeToolCall does not treat disabled dynamic names as first-party tools" {

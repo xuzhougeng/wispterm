@@ -3972,8 +3972,7 @@ fn syncActiveSurfaceCaches() void {
 pub fn handleActiveSurfaceChangeWithinTab() void {
     syncVisibleFileExplorerForActiveTab(false);
     syncActiveSurfaceCaches();
-    g_force_rebuild = true;
-    g_cells_valid = false;
+    applyUiEffect(.{ .needs_rebuild = true, .cells_invalid = true });
 }
 
 fn clearUiStateOnTabChange() void {
@@ -7339,7 +7338,11 @@ fn runMainLoop(self: *AppWindow) !void {
                 .initial_cwd_present = initial_cwd != null,
                 .first_plain_window = restore_once,
             })) {
-                .restored_session => {},
+                // Restoring tabs bypasses the normal tab-switch integration
+                // path. Seed the active surface context now so a restored SSH
+                // tab's Copilot binds to SSH instead of falling back to the
+                // host-local command tool.
+                .restored_session => syncActiveSurfaceCaches(),
                 .single_terminal => {
                     if (!spawnTabWithCwd(allocator, initial_cwd)) {
                         std.debug.print("Failed to spawn initial tab\n", .{});
