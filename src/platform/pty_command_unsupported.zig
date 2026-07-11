@@ -113,6 +113,15 @@ pub const Command = struct {
         }
     }
 
+    /// Best-effort SIGHUP (not SIGKILL): lets shells/REPLs exit gracefully,
+    /// matching what closing the controlling terminal does. Reaping is left to
+    /// the normal IO-thread exit path, so this does not touch `self.pid`.
+    pub fn kill(self: *Command) void {
+        if (self.pid <= 0) return;
+        if (builtin.os.tag == .windows) return;
+        std.posix.kill(self.pid, std.posix.SIG.HUP) catch {};
+    }
+
     /// PID usable for an OS cwd query (proc_pidinfo / /proc), or null.
     pub fn cwdQueryId(self: *const Command) ?i32 {
         return if (self.pid > 0) @intCast(self.pid) else null;
@@ -370,4 +379,27 @@ test "unsupported backend uses UTF-8 native command and cwd storage" {
     defer freeCwd(std.testing.allocator, cwd);
     var utf8: [32]u8 = undefined;
     try std.testing.expectEqualStrings("/tmp", cwdToUtf8(&utf8, cwdFromOwned(cwd)).?);
+}
+
+test "Command.kill sends SIGHUP and the child is reaped as signaled" {
+    // No real Pty involved: this spawns a plain child via std.process.Child
+    // and drives the platform-impl Command directly by its pid, which is all
+    // kill() touches. Building a real Pty just to get a pid would pull in
+    // platform terminal setup unrelated to what's under test.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var child = std.process.Child.init(&.{ "sleep", "30" }, std.testing.allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    try child.spawn();
+
+    var cmd = Command{ .pid = child.id };
+    cmd.kill();
+
+    // Block for the reap ourselves (rather than child.wait()) so we can
+    // inspect the raw wait status and confirm it was SIGHUP specifically.
+    const result = std.posix.waitpid(child.id, 0);
+    try std.testing.expect(std.posix.W.IFSIGNALED(result.status));
+    try std.testing.expectEqual(@as(u32, @intCast(std.posix.SIG.HUP)), std.posix.W.TERMSIG(result.status));
 }

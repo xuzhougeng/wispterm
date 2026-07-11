@@ -165,6 +165,60 @@ pub fn agentSurfaceSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator, surfa
     return buildRemoteSurfaceSnapshot(allocator, surface, remote_snapshot.agent_max_history_rows);
 }
 
+/// Poll a surface's child-process exit state for the ACP `terminal/*`
+/// capability (`terminal/output`, `terminal/wait_for_exit`).
+///
+/// `.exited`/`.failed` report exited=true; `.starting`/`.running`/`.stopping`
+/// report exited=false. `.stopped` also reports exited=false — in practice it
+/// is unobservable here: `.stopped` is only ever set by `Surface.deinit`'s
+/// teardown sequence, which first calls `surface_registry.unregister` (see
+/// deinit's step 0), and `unregister` blocks until any in-flight `acquire()`
+/// guard — including the one this function holds — releases. So by the time
+/// a caller can reach `.stopped` through this guarded path, the surface is
+/// gone from the registry and `acquire` below has already failed with
+/// `error.SurfaceClosed`.
+pub fn agentSurfaceExitStatus(ctx: *anyopaque, surface_id: []const u8, surface_ptr: *anyopaque) anyerror!ai_chat.SurfaceExitInfo {
+    _ = ctx;
+    if (!surface_registry.acquire(surface_ptr, surface_id)) return error.SurfaceClosed;
+    defer surface_registry.release();
+    const surface: *Surface = @ptrCast(@alignCast(surface_ptr));
+    return switch (surface.currentIoState()) {
+        .exited => |info| .{
+            .exited = true,
+            .exit_code = exitCodeFromInfo(surface, info),
+        },
+        .failed => .{ .exited = true, .exit_code = null },
+        else => .{ .exited = false, .exit_code = null },
+    };
+}
+
+/// `ExitInfo.status` is normally populated at the moment of exit (see
+/// `Surface.markExited` call sites, which all pass `surface.pollExitStatus()`)
+/// but can race to null if the non-blocking wait() didn't yet observe the
+/// child as reaped. Re-poll once in that case: it's a cheap non-blocking
+/// waitpid and may catch the exit code the first poll missed.
+fn exitCodeFromInfo(surface: *Surface, info: Surface.ExitInfo) ?u32 {
+    if (info.status) |status| return switch (status) {
+        .exited => |code| code,
+        .unknown => null,
+    };
+    const status = surface.pollExitStatus() orelse return null;
+    return switch (status) {
+        .exited => |code| code,
+        .unknown => null,
+    };
+}
+
+/// Kill a surface's child process for the ACP `terminal/kill` capability.
+/// Same worker-thread hazard as agentSurfaceSnapshot.
+pub fn agentKillSurfaceChild(ctx: *anyopaque, surface_id: []const u8, surface_ptr: *anyopaque) anyerror!void {
+    _ = ctx;
+    if (!surface_registry.acquire(surface_ptr, surface_id)) return error.SurfaceClosed;
+    defer surface_registry.release();
+    const surface: *Surface = @ptrCast(@alignCast(surface_ptr));
+    surface.command.kill();
+}
+
 pub fn agentWriteSurface(ctx: *anyopaque, surface_id: []const u8, surface_ptr: *anyopaque, data: []const u8) bool {
     _ = ctx;
     // Same worker-thread hazard as agentSurfaceSnapshot.
@@ -192,6 +246,8 @@ test "agent surface callbacks reject a surface that is not registered as live" {
 
     try std.testing.expectError(error.SurfaceClosed, agentSurfaceSnapshot(ptr, std.testing.allocator, "missing", ptr));
     try std.testing.expect(!agentWriteSurface(ptr, "missing", ptr, "x"));
+    try std.testing.expectError(error.SurfaceClosed, agentSurfaceExitStatus(ptr, "missing", ptr));
+    try std.testing.expectError(error.SurfaceClosed, agentKillSurfaceChild(ptr, "missing", ptr));
 }
 
 pub fn agentSshConnectionForSurface(ctx: *anyopaque, surface_id: []const u8) ?Surface.SshConnection {

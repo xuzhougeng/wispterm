@@ -657,6 +657,13 @@ pub const Command = struct {
         }
     }
 
+    /// Best-effort termination. No graceful-shutdown signal equivalent to
+    /// POSIX SIGHUP exists for console processes here, so this hard-kills.
+    pub fn kill(self: *Command) void {
+        if (self.process == INVALID_HANDLE_VALUE) return;
+        windows.TerminateProcess(self.process, 1) catch {};
+    }
+
     /// No POSIX-style pid cwd query on Windows (local preview uses OSC 7).
     pub fn cwdQueryId(self: *const Command) ?i32 {
         _ = self;
