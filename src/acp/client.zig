@@ -141,10 +141,13 @@ pub const Connection = struct {
 
         // Child is live; from here any failure must tear it down.
         errdefer {
+            self.state_mutex.lock();
             self.closing = true;
+            self.state_mutex.unlock();
             _ = self.child.kill() catch {};
             if (self.reader_thread) |t| t.join();
             if (self.stderr_thread) |t| t.join();
+            self.stderr_tail.deinit(self.allocator);
         }
         self.stderr_thread = try std.Thread.spawn(.{}, stderrMain, .{self});
         self.reader_thread = try std.Thread.spawn(.{}, readerMain, .{self});
@@ -156,6 +159,17 @@ pub const Connection = struct {
         self.state_mutex.lock();
         self.closing = true;
         self.state_mutex.unlock();
+
+        // Take stdin out under write_mutex before kill(): std.Child killPosix →
+        // cleanupStreams close+NULLs child.stdin WITHOUT holding our lock, racing
+        // any in-flight writeAll. Once nulled here, writeAll returns
+        // AcpConnectionClosed and cleanupStreams skips the field (no double close).
+        self.write_mutex.lock();
+        if (self.child.stdin) |*f| {
+            f.close();
+            self.child.stdin = null;
+        }
+        self.write_mutex.unlock();
 
         // Killing the child EOFs the reader/stderr pipes so those threads exit.
         // ponytail: kill() is SIGTERM + blocking reap — a SIGTERM-ignoring child
