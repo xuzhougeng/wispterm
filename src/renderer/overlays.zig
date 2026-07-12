@@ -1159,12 +1159,12 @@ test "command palette surfaces user snippets and filters them by name/descriptio
     sshState().profiles_loaded = true;
     assistantProfiles().profiles_loaded = true;
 
-    // Empty filter shows only the curated built-in commands; snippets surface
-    // by typing, like SSH/AI/theme rows.
+    // Empty filter lists the user's snippets after the built-in commands
+    // (the list scrolls past the render window; themes stay search-only).
     setCommandPaletteFilterForTest("");
     rebuildPaletteScratch();
-    try std.testing.expect(!paletteContainsSnippetForTest(0));
-    try std.testing.expect(!paletteContainsSnippetForTest(1));
+    try std.testing.expect(paletteContainsSnippetForTest(0));
+    try std.testing.expect(paletteContainsSnippetForTest(1));
 
     // Name match.
     setCommandPaletteFilterForTest("deploy");
