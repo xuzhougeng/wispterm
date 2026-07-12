@@ -25,6 +25,7 @@ comptime {
     if (activeAppTestShard(.assistant)) {
         _ = @import("assistant/conversation/session.zig");
         _ = @import("assistant/conversation/request.zig");
+        _ = @import("assistant/conversation/acp_turn.zig");
         _ = @import("assistant/conversation/model_switch.zig");
         _ = @import("agent_tools/mod.zig");
         _ = @import("assistant/conversation/skills.zig");

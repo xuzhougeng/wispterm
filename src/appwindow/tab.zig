@@ -569,6 +569,7 @@ pub fn spawnAiChatTab(
     agent_val: []const u8,
     max_tokens: u32,
     vision_val: []const u8,
+    command: []const u8,
 ) bool {
     if (g_tab_count >= MAX_TABS) return false;
 
@@ -590,6 +591,7 @@ pub fn spawnAiChatTab(
         return false;
     };
     session.setMaxTokens(max_tokens);
+    session.setAcpCommand(command);
 
     if (!spawnAiChatSession(allocator, session)) {
         session.deinit();

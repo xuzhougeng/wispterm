@@ -3,7 +3,7 @@ const profile_codec = @import("../../renderer/overlays/profile_codec.zig");
 const platform_dirs = @import("../../platform/dirs.zig");
 const platform_atomic_file = @import("../../platform/atomic_file.zig");
 
-const AI_PROFILES_HEADER = "# WispTerm AI Chat profiles. Fields are hex encoded: name, base_url, api_key, model, system_prompt, thinking, reasoning_effort, stream, agent, protocol, max_tokens, vision.\n";
+const AI_PROFILES_HEADER = "# WispTerm AI Chat profiles. Fields are hex encoded: name, base_url, api_key, model, system_prompt, thinking, reasoning_effort, stream, agent, protocol, max_tokens, vision, command.\n";
 
 pub fn profilesPath(allocator: std.mem.Allocator) ![]const u8 {
     return platform_dirs.aiProfilesPath(allocator);

@@ -10,7 +10,7 @@ const ssh_connection = @import("../../ssh/connection.zig");
 
 pub const SSH_FIELD_COUNT = 8;
 pub const SSH_FIELD_MAX = ssh_connection.IDENTITY_FILE_MAX;
-pub const AI_FIELD_COUNT = 12;
+pub const AI_FIELD_COUNT = 13;
 pub const AI_FIELD_MAX = 8192;
 
 pub const SshField = enum(usize) {
@@ -37,6 +37,7 @@ pub const AiField = enum(usize) {
     protocol = 9,
     max_tokens = 10,
     vision = 11,
+    command = 12,
 };
 
 pub const SshProfile = struct {
@@ -305,4 +306,22 @@ test "overlays: AI profile line decode defaults vision off for legacy 11-field p
     const profile = decodeAiProfileLine(legacy) orelse return error.ExpectedProfile;
     try std.testing.expectEqualStrings("4096", aiProfileField(&profile, .max_tokens));
     try std.testing.expectEqualStrings("off", aiProfileField(&profile, .vision));
+}
+
+test "legacy 12-field ai profile line decodes with empty command" {
+    // Profiles written before ACP command existed have only the first twelve
+    // fields (indices 0-11). They must still load, with command defaulted
+    // empty, and the existing positional fields staying aligned.
+    var buf: [1024]u8 = undefined;
+    const legacy = testEncodeProfileLine(&buf, &.{
+        "Legacy", "https://api.anthropic.com", "sk-key", "claude-x",
+        "sys",    "enabled",                   "high",   "false",
+        "true",   "anthropic",                 "4096",   "off",
+    });
+    const profile = decodeAiProfileLine(legacy) orelse return error.ExpectedProfile;
+    try std.testing.expectEqualStrings("Legacy", aiProfileField(&profile, .name));
+    try std.testing.expectEqualStrings("anthropic", aiProfileField(&profile, .protocol));
+    try std.testing.expectEqualStrings("4096", aiProfileField(&profile, .max_tokens));
+    try std.testing.expectEqualStrings("off", aiProfileField(&profile, .vision));
+    try std.testing.expectEqual(@as(usize, 0), aiProfileField(&profile, .command).len);
 }

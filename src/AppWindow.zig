@@ -4283,9 +4283,10 @@ pub fn spawnAiChatTab(
     agent_val: []const u8,
     max_tokens: u32,
     vision_val: []const u8,
+    command: []const u8,
 ) bool {
     const allocator = g_allocator orelse return false;
-    if (!tab.spawnAiChatTab(allocator, name, base_url, api_key, model, protocol, system_prompt, thinking, reasoning_effort, stream_val, agent_val, max_tokens, vision_val)) return false;
+    if (!tab.spawnAiChatTab(allocator, name, base_url, api_key, model, protocol, system_prompt, thinking, reasoning_effort, stream_val, agent_val, max_tokens, vision_val, command)) return false;
     clearUiStateOnTabChange();
     return true;
 }

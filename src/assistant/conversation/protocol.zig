@@ -24,6 +24,7 @@ pub const ApiProtocol = enum {
     chat_completions,
     responses,
     anthropic,
+    acp,
 
     pub fn parse(value: []const u8) ApiProtocol {
         const trimmed = std.mem.trim(u8, value, " \t\r\n");
@@ -39,6 +40,7 @@ pub const ApiProtocol = enum {
         {
             return .anthropic;
         }
+        if (std.ascii.eqlIgnoreCase(trimmed, "acp")) return .acp;
         return .chat_completions;
     }
 
@@ -47,6 +49,7 @@ pub const ApiProtocol = enum {
             .chat_completions => DEFAULT_PROTOCOL,
             .responses => "responses",
             .anthropic => "anthropic",
+            .acp => "acp",
         };
     }
 
@@ -57,13 +60,15 @@ pub const ApiProtocol = enum {
             return switch (self) {
                 .chat_completions => .responses,
                 .responses => .anthropic,
-                .anthropic => .chat_completions,
+                .anthropic => .acp,
+                .acp => .chat_completions,
             };
         }
         return switch (self) {
-            .chat_completions => .anthropic,
+            .chat_completions => .acp,
             .responses => .chat_completions,
             .anthropic => .responses,
+            .acp => .anthropic,
         };
     }
 };
@@ -72,13 +77,22 @@ test "ApiProtocol.cycle toggles forward and backward through the valid set, wrap
     // forward
     try std.testing.expectEqual(ApiProtocol.responses, ApiProtocol.chat_completions.cycle(true));
     try std.testing.expectEqual(ApiProtocol.anthropic, ApiProtocol.responses.cycle(true));
-    try std.testing.expectEqual(ApiProtocol.chat_completions, ApiProtocol.anthropic.cycle(true));
+    try std.testing.expectEqual(ApiProtocol.acp, ApiProtocol.anthropic.cycle(true));
+    try std.testing.expectEqual(ApiProtocol.chat_completions, ApiProtocol.acp.cycle(true));
     // backward
-    try std.testing.expectEqual(ApiProtocol.anthropic, ApiProtocol.chat_completions.cycle(false));
+    try std.testing.expectEqual(ApiProtocol.acp, ApiProtocol.chat_completions.cycle(false));
     try std.testing.expectEqual(ApiProtocol.chat_completions, ApiProtocol.responses.cycle(false));
     try std.testing.expectEqual(ApiProtocol.responses, ApiProtocol.anthropic.cycle(false));
+    try std.testing.expectEqual(ApiProtocol.anthropic, ApiProtocol.acp.cycle(false));
     // a full forward loop returns to start
-    try std.testing.expectEqual(ApiProtocol.chat_completions, ApiProtocol.chat_completions.cycle(true).cycle(true).cycle(true));
+    try std.testing.expectEqual(ApiProtocol.chat_completions, ApiProtocol.chat_completions.cycle(true).cycle(true).cycle(true).cycle(true));
+}
+
+test "ApiProtocol parses and cycles acp" {
+    try std.testing.expectEqual(ApiProtocol.acp, ApiProtocol.parse("acp"));
+    try std.testing.expectEqualStrings("acp", ApiProtocol.acp.name());
+    try std.testing.expectEqual(ApiProtocol.acp, ApiProtocol.anthropic.cycle(true));
+    try std.testing.expectEqual(ApiProtocol.chat_completions, ApiProtocol.acp.cycle(true));
 }
 
 pub const Role = enum {
@@ -250,7 +264,8 @@ pub const RequestParams = struct {
 
 pub fn buildRequestJson(allocator: std.mem.Allocator, params: RequestParams, messages: []const RequestMessage, include_tools: bool) ![]u8 {
     return switch (params.protocol) {
-        .chat_completions => buildChatCompletionsRequestJsonForMessages(allocator, params, messages, include_tools),
+        // .acp never reaches HTTP request building; harmless defensive default.
+        .chat_completions, .acp => buildChatCompletionsRequestJsonForMessages(allocator, params, messages, include_tools),
         .responses => buildResponsesRequestJsonForMessages(allocator, params, messages, include_tools),
         .anthropic => buildAnthropicRequestJsonForMessages(allocator, params, messages, include_tools),
     };
@@ -310,7 +325,8 @@ pub fn isAnthropicBaseUrl(base_url: []const u8) bool {
 
 pub fn apiEndpoint(allocator: std.mem.Allocator, base_url_raw: []const u8, protocol: ApiProtocol) ![]u8 {
     return switch (protocol) {
-        .chat_completions => chatEndpoint(allocator, base_url_raw),
+        // .acp never reaches HTTP endpoints; harmless defensive default.
+        .chat_completions, .acp => chatEndpoint(allocator, base_url_raw),
         .responses => responsesEndpoint(allocator, base_url_raw),
         .anthropic => messagesEndpoint(allocator, base_url_raw),
     };
