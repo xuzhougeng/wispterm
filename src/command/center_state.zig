@@ -187,11 +187,10 @@ pub const State = struct {
     }
 
     pub fn commandPaletteClose(self: *State) void {
+        // Only flip visibility: filter/selection/mode are kept so the render
+        // side can draw the fade-out frames with the last visible contents.
+        // commandPaletteOpenWithMode fully resets them on the next open.
         self.command_palette_visible = false;
-        self.command_palette_filter_len = 0;
-        self.command_palette_selected = 0;
-        self.commandPaletteSetMode(.commands);
-        self.command_palette_history_selected = 0;
         self.session_launcher_return_to_command_palette = false;
     }
 
@@ -480,14 +479,20 @@ test "Select Agent History reuses command center open flow and switches to histo
     try std.testing.expect(state.commandPaletteIsHistoryMode());
 }
 
-test "closing the command center clears history picker mode" {
+test "closing the command center keeps contents until the next open resets them" {
     var state = State{};
     state.commandPaletteOpenAgentHistory();
 
     state.commandPaletteClose();
 
     try std.testing.expect(!state.command_palette_visible);
+    // Mode/filter/selection survive close for fade-out rendering.
+    try std.testing.expect(state.commandPaletteIsHistoryMode());
+    state.commandPaletteOpen();
+    try std.testing.expect(state.command_palette_visible);
     try std.testing.expect(!state.commandPaletteIsHistoryMode());
+    try std.testing.expectEqual(@as(usize, 0), state.command_palette_selected);
+    try std.testing.expectEqual(@as(usize, 0), state.command_palette_filter_len);
 }
 
 test "agent history picker defaults selection to the first row" {
@@ -557,6 +562,10 @@ test "opening settings from agent history closes the command center cleanly" {
 
     try std.testing.expect(state.settings_visible);
     try std.testing.expect(!state.command_palette_visible);
+    // Mode survives close so the fade-out can render the last contents; the
+    // next open resets it.
+    try std.testing.expect(state.commandPaletteIsHistoryMode());
+    state.commandPaletteOpen();
     try std.testing.expect(!state.commandPaletteIsHistoryMode());
 }
 

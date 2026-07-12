@@ -339,6 +339,85 @@ threadlocal var g_command_palette_history_rows: []agent_history.Row = &.{};
 threadlocal var g_command_palette_history_rows_owned: bool = false;
 threadlocal var g_command_palette_history_revision: u64 = 0;
 
+// Palette animations: open fade/slide-in, close fade-out, and a highlight bar
+// that slides between rows. Same time-based pattern as startup_shortcuts /
+// copilot_edge_handle; anyOverlayActive keeps frames coming while these run.
+const PALETTE_FADE_IN_MS: i64 = 140;
+const PALETTE_FADE_OUT_MS: i64 = 100;
+const PALETTE_HL_MS: i64 = 120;
+threadlocal var g_palette_opened_at_ms: i64 = 0;
+threadlocal var g_palette_closing_at_ms: i64 = 0;
+threadlocal var g_palette_hl_from: f32 = -1; // -1 = snap to target on next frame
+threadlocal var g_palette_hl_target: f32 = -1;
+threadlocal var g_palette_hl_start_ms: i64 = 0;
+
+fn animProgress(elapsed_ms: i64, duration_ms: i64) f32 {
+    if (elapsed_ms <= 0) return 0;
+    if (elapsed_ms >= duration_ms) return 1;
+    return @as(f32, @floatFromInt(elapsed_ms)) / @as(f32, @floatFromInt(duration_ms));
+}
+
+fn easeOutCubic(t: f32) f32 {
+    const u = 1.0 - t;
+    return 1.0 - u * u * u;
+}
+
+fn paletteHighlightCurrent(now_ms: i64) f32 {
+    const e = easeOutCubic(animProgress(now_ms - g_palette_hl_start_ms, PALETTE_HL_MS));
+    return g_palette_hl_from + (g_palette_hl_target - g_palette_hl_from) * e;
+}
+
+/// Advance the highlight-bar animation toward `target` (a display-row index)
+/// and return the current animated position.
+fn paletteHighlightPos(now_ms: i64, target: f32) f32 {
+    if (g_palette_hl_from < 0) {
+        g_palette_hl_from = target;
+        g_palette_hl_target = target;
+        g_palette_hl_start_ms = now_ms;
+        return target;
+    }
+    if (g_palette_hl_target != target) {
+        g_palette_hl_from = paletteHighlightCurrent(now_ms);
+        g_palette_hl_target = target;
+        g_palette_hl_start_ms = now_ms;
+    }
+    return paletteHighlightCurrent(now_ms);
+}
+
+/// Draw the sliding selection highlight at its animated position. `target` is
+/// the selected row's display index; geometry mirrors rowSlot.selected_fill.
+fn drawPaletteHighlight(
+    layout: CommandPaletteLayout,
+    window_height: f32,
+    text_h: f32,
+    now_ms: i64,
+    target: f32,
+    color: [3]f32,
+    alpha: f32,
+) void {
+    const slot0 = command_palette_layout.rowSlot(layout, window_height, 0, text_h);
+    const pos = paletteHighlightPos(now_ms, target);
+    const y = slot0.selected_fill.y - pos * layout.row_h;
+    renderRoundedQuadAlpha(slot0.selected_fill.x, y, slot0.selected_fill.w, slot0.selected_fill.h, 5, color, alpha);
+}
+
+/// Whether a palette animation still needs per-frame repaints. Consulted by
+/// anyOverlayActive; settles (returns false) once every animation finished.
+fn commandPaletteAnimActive(now: i64) bool {
+    const state = commandPaletteState();
+    if (state.visible) {
+        if (now - g_palette_opened_at_ms < PALETTE_FADE_IN_MS) return true;
+        if (g_palette_hl_from >= 0 and g_palette_hl_target != g_palette_hl_from and
+            now - g_palette_hl_start_ms < PALETTE_HL_MS) return true;
+        return false;
+    }
+    if (g_palette_closing_at_ms != 0) {
+        if (!state.isHistoryMode() and now - g_palette_closing_at_ms < PALETTE_FADE_OUT_MS) return true;
+        g_palette_closing_at_ms = 0;
+    }
+    return false;
+}
+
 const CommandPaletteLayout = command_palette_layout.Layout;
 
 pub fn commandPaletteVisible() bool {
@@ -358,6 +437,11 @@ fn commandPaletteSetMode(mode: CommandPaletteMode) void {
 fn commandPaletteOpenWithMode(mode: CommandPaletteMode) void {
     freeSnippets(); // re-read snippet files on each open so edits show without restart
     snippetsState().loaded = false;
+    if (!commandPaletteState().visible) {
+        g_palette_opened_at_ms = std.time.milliTimestamp();
+        g_palette_closing_at_ms = 0;
+        g_palette_hl_from = -1;
+    }
     var state = commandCenterStateSnapshot();
     state.commandPaletteOpenWithMode(mode);
     commandCenterStateCommit(state);
@@ -368,6 +452,7 @@ pub fn commandPaletteOpen() void {
 }
 
 pub fn commandPaletteClose() void {
+    if (commandPaletteState().visible) g_palette_closing_at_ms = std.time.milliTimestamp();
     var state = commandCenterStateSnapshot();
     state.commandPaletteClose();
     commandCenterStateCommit(state);
@@ -1402,8 +1487,18 @@ fn commandPaletteLayout(window_width: f32, window_height: f32, top_offset: f32) 
         top_offset,
         font.g_titlebar_cell_height,
         commandPaletteResultCount(),
+        paletteDpiScale(),
     );
 }
+
+/// Physical-pixels-per-logical-point factor, so point-based palette widths
+/// match Ghostty's on any display density.
+fn paletteDpiScale() f32 {
+    const default_dpi: f32 = @floatFromInt(platform_display.default_dpi);
+    return @max(1.0, @as(f32, @floatFromInt(font.g_dpi)) / default_dpi);
+}
+
+const platform_display = @import("../platform/display.zig");
 
 pub const ImeCaretPx = struct { x: f32, y: f32, h: f32 };
 
@@ -1415,12 +1510,12 @@ pub fn commandPaletteImeCaret(window_width: f32, window_height: f32, top_offset:
     if (!commandPaletteState().visible) return null;
     if (commandPaletteIsHistoryMode()) return null; // history mode has no text filter
     const layout = commandPaletteLayout(window_width, window_height, top_offset);
-    const pad_x: f32 = 24; // must match renderCommandPalette
-    const text_x = @round(layout.box_x + pad_x) + 12;
+    const pad_x: f32 = 16; // must match renderCommandPalette
+    const text_x = @round(layout.box_x + pad_x);
     const cell_h = font.g_titlebar_cell_height;
     return .{
         .x = text_x + measureTitlebarText(commandPaletteFilter()),
-        .y = layout.box_top_px + layout.header_h + (layout.filter_h - cell_h) / 2,
+        .y = layout.box_top_px + (layout.filter_h - cell_h) / 2,
         .h = cell_h,
     };
 }
@@ -1994,73 +2089,80 @@ pub fn renderBrowserUrlBar(window_width: f32, window_height: f32, top_offset: f3
 
 /// Render the command center overlay.
 pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f32) void {
-    if (!commandPaletteState().visible) return;
-    commandPaletteSyncAgentHistoryRows();
+    const now_ms = std.time.milliTimestamp();
+    const palette_visible = commandPaletteState().visible;
+    // Closed palettes keep drawing their (preserved) contents while the
+    // fade-out runs. History mode skips the fade: its rows are freed on close.
+    const closing = !palette_visible and g_palette_closing_at_ms != 0 and
+        !commandPaletteState().isHistoryMode() and
+        now_ms - g_palette_closing_at_ms < PALETTE_FADE_OUT_MS;
+    if (!palette_visible and !closing) return;
+    if (palette_visible) commandPaletteSyncAgentHistoryRows();
 
     var history_view: ?command_palette_history_view.View = null;
     const hist_alloc = AppWindow.g_allocator;
     defer if (history_view) |*v| {
         if (hist_alloc) |a| v.deinit(a);
     };
-    const hist_now_ms = std.time.milliTimestamp();
     if (commandPaletteIsHistoryMode()) {
         history_view = buildHistoryView();
         commandPaletteState().history_item_count = if (history_view) |v| v.items.len else 0;
     }
 
-    const layout = commandPaletteLayout(window_width, window_height, top_offset);
+    var fade: f32 = 1.0;
+    var slide: f32 = 0.0;
+    if (palette_visible) {
+        const t = easeOutCubic(animProgress(now_ms - g_palette_opened_at_ms, PALETTE_FADE_IN_MS));
+        fade = t;
+        slide = -8.0 * paletteDpiScale() * (1.0 - t); // drop in from slightly above the rest position
+    } else {
+        fade = 1.0 - animProgress(now_ms - g_palette_closing_at_ms, PALETTE_FADE_OUT_MS);
+    }
+
+    var layout = commandPaletteLayout(window_width, window_height, top_offset);
+    layout.box_top_px += slide;
+    layout.row_top_px += slide;
     const text_h = overlayTextHeight();
     const chrome = command_palette_layout.panelChrome(layout, window_width, window_height);
 
     const bg = AppWindow.g_theme.background;
-    const fg = AppWindow.g_theme.foreground;
-    const accent = AppWindow.g_theme.cursor_color;
+    // Text/chrome colors converge to the background as the panel fades, so
+    // glyphs (which have no alpha channel) fade with the quads.
+    const fg = mixColor(bg, AppWindow.g_theme.foreground, fade);
+    const accent = mixColor(bg, AppWindow.g_theme.cursor_color, fade);
     const panel_color = mixColor(bg, fg, 0.035);
-    const border_color = mixColor(bg, fg, 0.16);
-    const field_color = mixColor(bg, fg, 0.075);
-    const field_border = mixColor(bg, fg, 0.19);
+    const border_color = mixColor(bg, fg, 0.28);
     const muted = mixColor(bg, fg, 0.62);
     const dim = mixColor(bg, fg, 0.44);
-    const title_color = mixColor(fg, accent, 0.08);
-    const selected_bg = mixColor(bg, accent, 0.50);
-    const selected_border = mixColor(accent, fg, 0.16);
 
-    ui_pipeline.fillQuadAlpha(chrome.scrim.x, chrome.scrim.y, chrome.scrim.w, chrome.scrim.h, .{ 0.0, 0.0, 0.0 }, 0.22);
-    renderRoundedQuadAlpha(chrome.border.x, chrome.border.y, chrome.border.w, chrome.border.h, 9, border_color, 0.42);
-    renderRoundedQuadAlpha(chrome.panel.x, chrome.panel.y, chrome.panel.w, chrome.panel.h, 8, panel_color, 0.98);
+    // Ghostty-style chrome: a faint scrim, a soft drop shadow (two stacked
+    // translucent quads offset downward), then the bordered panel.
+    ui_pipeline.fillQuadAlpha(chrome.scrim.x, chrome.scrim.y, chrome.scrim.w, chrome.scrim.h, .{ 0.0, 0.0, 0.0 }, 0.10 * fade);
+    renderRoundedQuadAlpha(chrome.panel.x - 6, chrome.panel.y - 12, chrome.panel.w + 12, chrome.panel.h + 14, 16, .{ 0.0, 0.0, 0.0 }, 0.10 * fade);
+    renderRoundedQuadAlpha(chrome.panel.x - 2, chrome.panel.y - 6, chrome.panel.w + 4, chrome.panel.h + 7, 12, .{ 0.0, 0.0, 0.0 }, 0.16 * fade);
+    renderRoundedQuadAlpha(chrome.border.x, chrome.border.y, chrome.border.w, chrome.border.h, 11, border_color, 0.55 * fade);
+    renderRoundedQuadAlpha(chrome.panel.x, chrome.panel.y, chrome.panel.w, chrome.panel.h, 10, panel_color, 0.98 * fade);
 
-    const pad_x: f32 = 24;
-    const title_y = textYFromTop(window_height, layout.box_top_px + 16);
-    renderTitlebarText(if (commandPaletteIsHistoryMode()) i18n.s().cmd_palette_history_title else i18n.s().cmd_palette_title, layout.box_x + pad_x, title_y, title_color);
-    const esc_hint = if (commandPaletteIsHistoryMode()) i18n.s().cmd_palette_esc_returns else i18n.s().cmd_palette_esc_closes;
-    renderTitlebarText(esc_hint, layout.box_x + layout.box_w - pad_x - measureTitlebarText(esc_hint), title_y, muted);
+    // Filter field: borderless text on the panel with a divider below,
+    // like Ghostty's query row.
+    const pad_x: f32 = 16;
+    const filter_chrome = command_palette_layout.fieldChrome(layout, window_height, pad_x, text_h);
+    const filter_text_y = filter_chrome.text_y;
+    var filter_text_w = filter_chrome.field.w;
     if (commandPaletteIsHistoryMode()) {
         const chip = historySourceLabel(commandPaletteState().history_source);
         const chip_w = measureTitlebarText(chip);
-        const chip_x = layout.box_x + layout.box_w - pad_x - measureTitlebarText(esc_hint) - 16 - chip_w;
-        renderTitlebarText(chip, chip_x, title_y, mixColor(fg, accent, 0.20));
+        renderTitlebarText(chip, layout.box_x + layout.box_w - pad_x - chip_w, filter_text_y, mixColor(fg, accent, 0.20));
+        filter_text_w -= chip_w + 12;
     }
-
-    const filter_chrome = command_palette_layout.fieldChrome(layout, window_height, pad_x, text_h);
-    renderRoundedQuadAlpha(filter_chrome.border.x, filter_chrome.border.y, filter_chrome.border.w, filter_chrome.border.h, 6, field_border, 0.42);
-    renderRoundedQuadAlpha(filter_chrome.field.x, filter_chrome.field.y, filter_chrome.field.w, filter_chrome.field.h, 5, field_color, 0.92);
-
-    const filter_text_y = filter_chrome.text_y;
-    if (commandPaletteIsHistoryMode()) {
-        const filter = commandPaletteFilter();
-        if (filter.len > 0) {
-            renderTitlebarTextLimited(filter, filter_chrome.field.x + 12, filter_text_y, fg, filter_chrome.field.w - 24);
-        } else {
-            renderTitlebarTextLimited(i18n.s().cmd_palette_history_search_placeholder, filter_chrome.field.x + 12, filter_text_y, dim, filter_chrome.field.w - 24);
-        }
+    const filter = commandPaletteFilter();
+    if (filter.len > 0) {
+        renderTitlebarTextLimited(filter, filter_chrome.field.x, filter_text_y, fg, filter_text_w);
     } else {
-        const filter = commandPaletteFilter();
-        if (filter.len > 0) {
-            renderTitlebarTextLimited(filter, filter_chrome.field.x + 12, filter_text_y, fg, filter_chrome.field.w - 24);
-        } else {
-            renderTitlebarTextLimited(i18n.s().cmd_palette_filter_placeholder, filter_chrome.field.x + 12, filter_text_y, dim, filter_chrome.field.w - 24);
-        }
+        const placeholder = if (commandPaletteIsHistoryMode()) i18n.s().cmd_palette_history_search_placeholder else i18n.s().cmd_palette_filter_placeholder;
+        renderTitlebarTextLimited(placeholder, filter_chrome.field.x, filter_text_y, dim, filter_text_w);
     }
+    ui_pipeline.fillQuadAlpha(chrome.panel.x, filter_chrome.field.y, chrome.panel.w, 1, mixColor(bg, fg, 0.22), 0.60 * fade);
 
     if (commandPaletteIsHistoryMode()) {
         const selectable = if (history_view) |v| v.rowCount() else 0;
@@ -2073,6 +2175,11 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
             const selected_ord = @min(commandPaletteState().history_selected, selectable - 1);
             const focus_item = historySelectedItemIndex(view, selected_ord);
             const first_item = historyWindowStart(view.items.len, layout.rendered_rows, focus_item);
+
+            if (focus_item >= first_item and focus_item - first_item < layout.rendered_rows) {
+                const target: f32 = @floatFromInt(focus_item - first_item);
+                drawPaletteHighlight(layout, window_height, text_h, now_ms, target, accent, 0.22 * fade);
+            }
 
             var display_row: usize = 0;
             while (display_row < layout.rendered_rows) : (display_row += 1) {
@@ -2088,17 +2195,13 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
                     .row => |ord| {
                         const row = g_command_palette_history_rows[view.filtered[ord]];
                         const selected = ord == selected_ord;
-                        if (selected) {
-                            renderRoundedQuadAlpha(slot.selected_border.x, slot.selected_border.y, slot.selected_border.w, slot.selected_border.h, 5, selected_border, 0.38);
-                            renderRoundedQuadAlpha(slot.selected_fill.x, slot.selected_fill.y, slot.selected_fill.w, slot.selected_fill.h, 4, selected_bg, 0.78);
-                        }
                         const row_title_color = if (selected) fg else mixColor(bg, fg, 0.86);
                         const meta_color = if (selected) mixColor(fg, accent, 0.08) else mixColor(bg, fg, 0.54);
                         const title_x = @round(layout.box_x + pad_x + 2);
                         const meta_right = layout.box_x + layout.box_w - pad_x;
 
                         var tbuf: [32]u8 = undefined;
-                        const rel = copilot_picker.formatRelativeTime(hist_now_ms, row.updated_at, &tbuf);
+                        const rel = copilot_picker.formatRelativeTime(now_ms, row.updated_at, &tbuf);
                         const rel_w = measureTitlebarText(rel);
                         renderTitlebarText(rel, meta_right - rel_w, text_y, meta_color);
 
@@ -2122,6 +2225,11 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
             renderTitlebarText(empty_text, layout.box_x + (layout.box_w - measureTitlebarText(empty_text)) / 2, empty_y, muted);
         } else {
             const first_row = commandPaletteFirstVisibleIndex(layout.rendered_rows);
+            const sel_idx = commandPaletteState().selected;
+            if (sel_idx >= first_row and sel_idx - first_row < layout.rendered_rows) {
+                const target: f32 = @floatFromInt(sel_idx - first_row);
+                drawPaletteHighlight(layout, window_height, text_h, now_ms, target, accent, 0.22 * fade);
+            }
             var display_row: usize = 0;
             while (display_row < layout.rendered_rows) : (display_row += 1) {
                 const item_idx = first_row + display_row;
@@ -2130,11 +2238,6 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
                 const selected = item_idx == commandPaletteState().selected;
 
                 const slot = command_palette_layout.rowSlot(layout, window_height, display_row, text_h);
-                if (selected) {
-                    renderRoundedQuadAlpha(slot.selected_border.x, slot.selected_border.y, slot.selected_border.w, slot.selected_border.h, 5, selected_border, 0.38);
-                    renderRoundedQuadAlpha(slot.selected_fill.x, slot.selected_fill.y, slot.selected_fill.w, slot.selected_fill.h, 4, selected_bg, 0.78);
-                }
-
                 const row_title_color = if (selected) fg else mixColor(bg, fg, 0.86);
                 const shortcut_color = if (selected) mixColor(fg, accent, 0.08) else mixColor(bg, fg, 0.54);
 
@@ -2234,13 +2337,10 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
             break :blk historyWindowStart(v.items.len, layout.rendered_rows, historySelectedItemIndex(v, selected_ord));
         } else commandPaletteFirstVisibleIndex(layout.rendered_rows);
         if (command_palette_layout.scrollbar(layout, window_height, total_results, first_row)) |sb| {
-            ui_pipeline.fillQuadAlpha(sb.track.x, sb.track.y, sb.track.w, sb.track.h, mixColor(bg, fg, 0.25), 0.30);
-            ui_pipeline.fillQuadAlpha(sb.thumb.x, sb.thumb.y, sb.thumb.w, sb.thumb.h, accent, 0.55);
+            ui_pipeline.fillQuadAlpha(sb.track.x, sb.track.y, sb.track.w, sb.track.h, mixColor(bg, fg, 0.25), 0.30 * fade);
+            ui_pipeline.fillQuadAlpha(sb.thumb.x, sb.thumb.y, sb.thumb.w, sb.thumb.h, accent, 0.55 * fade);
         }
     }
-
-    const footer = if (commandPaletteIsHistoryMode()) i18n.s().cmd_palette_footer_history else i18n.s().cmd_palette_footer;
-    renderTitlebarTextLimited(footer, layout.box_x + pad_x, command_palette_layout.footerTextY(layout, window_height, text_h), muted, layout.box_w - pad_x * 2);
 }
 
 // ============================================================================
@@ -8220,6 +8320,9 @@ pub fn anyOverlayActive(now: i64) bool {
 
     // Copilot edge handle: shimmer / reveal-fade / hover-tooltip dwell.
     if (copilot_edge_handle.isAnimating()) return true;
+
+    // Command palette: open fade-in / close fade-out / highlight slide.
+    if (commandPaletteAnimActive(now)) return true;
 
     // FPS 叠层开启时每秒刷新
     if (g_debug_fps) return true;
