@@ -2032,7 +2032,6 @@ fn renderSkillCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_i
             .ctx = @ptrCast(m),
             .itemAt = scEntryItemAt,
             .sel_row = m.sel_row,
-            .scroll = m.scroll,
             .title = i18n.s().sl_skill_center,
             .legend = switch (m.overlay) {
                 .import_list => i18n.s().sc_legend_import,

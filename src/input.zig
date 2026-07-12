@@ -3563,6 +3563,15 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
                 if (AppWindow.skillCenterMove(1)) markSkillCenterInputDirty();
                 return .none;
             },
+            // ponytail: fixed page of 10 rows; wire real visible-capacity if it matters.
+            platform_input.key_page_up => {
+                if (AppWindow.skillCenterMove(-10)) markSkillCenterInputDirty();
+                return .none;
+            },
+            platform_input.key_page_down => {
+                if (AppWindow.skillCenterMove(10)) markSkillCenterInputDirty();
+                return .none;
+            },
             platform_input.key_enter => {
                 if (overlay_active) {
                     if (AppWindow.skillCenterOverlaySelect()) markSkillCenterInputDirty();
@@ -6966,6 +6975,13 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
     }
     if (AppWindow.activeMemoryCenter() != null) {
         _ = AppWindow.memoryCenterHandleMouseWheel(ev.xpos, ev.ypos, @intCast(ev.delta));
+        return;
+    }
+    // Skill Center list follows the selection, so the wheel moves the selection
+    // (same as the copilot/jupyter pickers) to scroll the overflowing list.
+    if (AppWindow.activeSkillCenter() != null) {
+        const units: isize = @intCast(mouseWheelUnits(ev.delta));
+        if (AppWindow.skillCenterMove(if (ev.delta > 0) -units else units)) requestInputRepaint();
         return;
     }
     if (AppWindow.activeAiChat()) |chat| {

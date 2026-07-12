@@ -446,7 +446,6 @@ pub const PanelModel = struct {
     allocator: std.mem.Allocator,
     entries: ?[]LibraryEntry = null,
     sel_row: usize = 0,
-    scroll: usize = 0,
     overlay: Overlay = .none,
 
     pub fn init(allocator: std.mem.Allocator) PanelModel {

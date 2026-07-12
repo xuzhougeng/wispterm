@@ -63,7 +63,6 @@ pub const View = struct {
     ctx: *anyopaque,
     itemAt: *const fn (*anyopaque, usize) ListItem,
     sel_row: usize,
-    scroll: usize,
     title: []const u8, // localized "Skill Center"
     legend: []const u8, // localized action legend
     status: []const u8, // "Scanning…" etc, or ""
@@ -152,12 +151,12 @@ const PanelLayout = struct {
         return @intFromFloat(@max(0.0, @floor(usable / self.row_h)));
     }
 
-    fn mainListWindow(self: PanelLayout, total: usize, requested_scroll: usize) ListWindow {
+    fn mainListWindow(self: PanelLayout, total: usize, selected: usize) ListWindow {
         const cap = self.bodyVisibleRows();
         return .{
             .top_px = self.body_top,
             .visible_rows = cap,
-            .first_visible = clampScroll(requested_scroll, total, cap),
+            .first_visible = firstVisibleForSelection(selected, cap, total),
         };
     }
 
@@ -414,7 +413,7 @@ fn renderSkillList(
         _ = draw.renderTextLimited(view.status, layout.content_x + PAD_X, empty_y, muted, layout.content_w - PAD_X * 2);
         return;
     }
-    const list = layout.mainListWindow(view.skills_len, view.scroll);
+    const list = layout.mainListWindow(view.skills_len, view.sel_row);
     var rendered: usize = 0;
     var ri: usize = list.first_visible;
     while (ri < view.skills_len and rendered < list.visible_rows) : (ri += 1) {
@@ -429,6 +428,11 @@ fn renderSkillList(
         _ = draw.renderTextLimited(item.label, layout.content_x + PAD_X, slot.text_y, fg, @max(0, layout.content_w - PAD_X * 2 - meta_w));
         renderListMetadata(draw, item, layout.content_x, layout.content_w, slot.text_y, muted);
         rendered += 1;
+    }
+
+    if (listScrollbar(layout, window_height, list, view.skills_len)) |sb| {
+        draw.fillQuadAlpha(sb.track.x, sb.track.y, sb.track.w, sb.track.h, mixColor(muted, fg, 0.2), 0.30);
+        draw.fillQuadAlpha(sb.thumb.x, sb.thumb.y, sb.thumb.w, sb.thumb.h, accent, 0.55);
     }
 }
 
@@ -588,6 +592,18 @@ test "skill_center_renderer: firstVisibleForSelection keeps selection in view" {
     try std.testing.expectEqual(@as(usize, 0), firstVisibleForSelection(2, 4, 16));
     try std.testing.expectEqual(@as(usize, 12), firstVisibleForSelection(15, 4, 16));
     try std.testing.expectEqual(@as(usize, 5), firstVisibleForSelection(8, 4, 16));
+}
+
+test "skill_center_renderer: main list window follows the selection" {
+    const layout = panelLayout(420, 40, 16, 0, 300).?;
+    // Selection near the top: window starts at row 0.
+    try std.testing.expectEqual(@as(usize, 0), layout.mainListWindow(40, 2).first_visible);
+    // Selection past the fold: window scrolls so the selected row stays visible
+    // (regression: previously the window was pinned at 0 and rows below were unreachable).
+    const deep = layout.mainListWindow(40, 39);
+    try std.testing.expect(deep.visible_rows > 0);
+    try std.testing.expect(deep.first_visible > 0);
+    try std.testing.expect(39 < deep.first_visible + deep.visible_rows);
 }
 
 test "skill_center_renderer: clampScroll keeps scroll within range" {

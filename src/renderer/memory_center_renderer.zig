@@ -258,6 +258,18 @@ fn renderList(
         _ = draw.renderTextLimited(row.title, layout.list_x + PAD_X, yTextFromTop(draw, window_height, row_top_px + 8), if (selected) fg else mixColor(fg, accent, 0.05), layout.list_w - PAD_X * 2);
         _ = draw.renderTextLimited(row.detail, layout.list_x + PAD_X, yTextFromTop(draw, window_height, row_top_px + row_h - 9 - draw.cell_h), muted, layout.list_w - PAD_X * 2);
     }
+
+    // Scrollbar for the overflowing list (mirrors the Skill Center list).
+    if (count > max_rows and max_rows > 0) {
+        const track_h = row_h * @as(f32, @floatFromInt(max_rows));
+        const sb_w: f32 = 3;
+        const sb_x = layout.list_x + layout.list_w - sb_w - 4;
+        const thumb_h = @max(24.0, @round(track_h * @as(f32, @floatFromInt(max_rows)) / @as(f32, @floatFromInt(count))));
+        const max_scroll: f32 = @floatFromInt(count - max_rows);
+        const thumb_offset = if (max_scroll > 0) @round((track_h - thumb_h) * (@as(f32, @floatFromInt(start)) / max_scroll)) else 0;
+        draw.fillQuadAlpha(sb_x, yFromTop(window_height, row_top, track_h), sb_w, track_h, mixColor(muted, fg, 0.2), 0.30);
+        draw.fillQuadAlpha(sb_x, yFromTop(window_height, row_top + thumb_offset, thumb_h), sb_w, thumb_h, accent, 0.55);
+    }
 }
 
 fn renderDetail(
