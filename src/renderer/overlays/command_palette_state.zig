@@ -39,12 +39,9 @@ pub const State = struct {
     }
 
     pub fn close(self: *State) void {
+        // Contents survive close so the fade-out can draw them; openWithMode
+        // resets everything on the next open.
         self.visible = false;
-        self.filter_len = 0;
-        self.selected = 0;
-        self.setMode(.commands);
-        self.history_selected = 0;
-        self.history_item_count = 0;
     }
 
     pub fn openAgentHistory(self: *State) void {
