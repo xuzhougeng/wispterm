@@ -212,6 +212,11 @@ pub fn acpTurnThreadMain(request: *ChatRequest) void {
     defer request.allocator.free(result_json);
 
     if (cancel_sent) {
+        // Seal the half-streamed bubble (usage footer / empty-bubble fill +
+        // history capture) before the stopped-state cleanup; finishAssistantStream
+        // would short-circuit on the still-set stop_requested flag and leave it
+        // dangling with no footer.
+        if (state.takeStreamIdx()) |idx| ai_chat.sealCancelledAssistantStream(session, idx, request.started_ms, null);
         ai_chat.finishStoppedRequest(session);
         return;
     }
@@ -459,6 +464,14 @@ fn onRequest(ctx: *anyopaque, allocator: std.mem.Allocator, method: []const u8, 
         const n = @min(req.options.len, options.len);
         if (n == 0) return schema.encodePermissionCancelled(allocator); // nothing to select
         for (req.options[0..n], 0..) |opt, i| options[i] = .{ .label = opt.name, .description = opt.kind };
+        // Dead-connection guard: after the death path's unblockPermissionAskers,
+        // a stopRequest on an idle session self-resets stop_requested — a late
+        // asker relying on that persistent flag alone could block in askUser
+        // with nothing left to wake it. The erase implies the connection was
+        // already marked dead, so checking alive() here closes that window
+        // deterministically. (Placed after the n == 0 return: tests drive this
+        // handler with `conn = undefined`.)
+        if (!state.conn.alive()) return schema.encodePermissionCancelled(allocator);
         const answer = state.session.askUser(req.title, options[0..n]);
         return switch (answer) {
             .option_index => |i| schema.encodePermissionSelected(allocator, req.options[@min(i, n - 1)].id),
@@ -1030,6 +1043,40 @@ test "permission request with no options answers cancelled without asking" {
 
     var parsed = try std.json.parseFromSlice(std.json.Value, a,
         \\{"sessionId":"s1","toolCall":{"toolCallId":"t1","title":"x"},"options":[]}
+    , .{});
+    defer parsed.deinit();
+    const out = try onRequest(@ptrCast(&st), a, "session/request_permission", parsed.value);
+    defer a.free(out);
+    try std.testing.expectEqualStrings("{\"outcome\":{\"outcome\":\"cancelled\"}}", out);
+}
+
+test "permission request on a dead connection cancels without asking" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    const session = try newAcpTestSession(a);
+    defer session.deinit();
+
+    // The stopRequest-erase scenario: connection dead, but stop_requested was
+    // reset — the asker cannot rely on the persistent flag. Without the alive()
+    // guard this askUser blocks forever (nobody answers), hanging the test.
+    var st = AcpState{ .allocator = a, .session = session, .conn = undefined, .acp_session_id = &.{}, .stream_idx = null };
+    const conn = try acp_client.Connection.spawn(a, &.{ "/bin/sh", "-c", "exit 0" }, null, .{
+        .ctx = &st,
+        .onSessionUpdate = onSessionUpdate,
+        .onRequest = onRequest,
+    });
+    defer conn.deinit();
+    st.conn = conn;
+
+    var waited: u64 = 0;
+    while (conn.alive()) : (waited += 5) {
+        if (waited > 10_000) return error.AgentStillAlive;
+        std.Thread.sleep(5 * std.time.ns_per_ms);
+    }
+    try std.testing.expect(!session.stop_requested.load(.acquire));
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, a,
+        \\{"sessionId":"s1","toolCall":{"toolCallId":"t1","title":"x"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"}]}
     , .{});
     defer parsed.deinit();
     const out = try onRequest(@ptrCast(&st), a, "session/request_permission", parsed.value);

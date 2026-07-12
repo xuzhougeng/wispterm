@@ -5618,23 +5618,45 @@ pub fn finishAssistantStream(session: *Session, message_idx: usize, started_ms: 
         session.setStatusLocked("Stopped");
         return;
     }
-    if (message_idx < session.messages.items.len) {
-        const msg = &session.messages.items[message_idx];
-        if (msg.content.len == 0 and msg.reasoning == null) {
-            appendOwnedBytes(session.allocator, &msg.content, &msg.content_capacity, "No response") catch {};
-        }
-        if (allocUsageFooter(session.allocator, started_ms, first_token_ms, usage) catch null) |footer| {
-            if (msg.usage_footer) |old_footer| session.allocator.free(old_footer);
-            msg.usage_footer = footer;
-        }
-        history_change = session.captureHistoryChangeLocked();
-    }
+    history_change = sealStreamMessageLocked(session, message_idx, started_ms, first_token_ms, usage);
     session.request_inflight = false;
     session.distill_inflight = false;
     session.collapseAutoExpandedDetailsLocked();
     session.scroll_px = 1_000_000;
     session.setCompletionStatusLocked(started_ms, usage);
     session.maybeAppendDistillSuggestionLocked();
+}
+
+/// Seal a stream bubble's message in place: fill an all-empty message with
+/// "No response", attach the usage footer, and capture the history change.
+/// Message-only — request state and status stay with the caller.
+fn sealStreamMessageLocked(session: *Session, message_idx: usize, started_ms: i64, first_token_ms: i64, usage: ?ApiUsage) ?PendingHistoryChange {
+    if (message_idx >= session.messages.items.len) return null;
+    const msg = &session.messages.items[message_idx];
+    if (msg.content.len == 0 and msg.reasoning == null) {
+        appendOwnedBytes(session.allocator, &msg.content, &msg.content_capacity, "No response") catch {};
+    }
+    if (allocUsageFooter(session.allocator, started_ms, first_token_ms, usage) catch null) |footer| {
+        if (msg.usage_footer) |old_footer| session.allocator.free(old_footer);
+        msg.usage_footer = footer;
+    }
+    return session.captureHistoryChangeLocked();
+}
+
+/// Cancel-path seal: `finishAssistantStream` deliberately refuses to touch the
+/// message once `stop_requested` is set (it routes to `finishStoppedRequest`),
+/// which left a cancelled turn's half-streamed bubble unsealed. Seals the
+/// message only — pair with `finishStoppedRequest` for the request state.
+pub fn sealCancelledAssistantStream(session: *Session, message_idx: usize, started_ms: i64, usage: ?ApiUsage) void {
+    if (session.closing.load(.acquire)) return;
+    var history_change: ?PendingHistoryChange = null;
+    session.mutex.lock();
+    defer {
+        session.mutex.unlock();
+        session.notifyHistoryChange(history_change);
+    }
+    if (session.closing.load(.acquire)) return;
+    history_change = sealStreamMessageLocked(session, message_idx, started_ms, 0, usage);
 }
 
 pub fn failAssistantStream(session: *Session, message_idx: ?usize, text: []const u8) void {

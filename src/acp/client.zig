@@ -105,10 +105,17 @@ pub const Connection = struct {
     reader_thread: ?std.Thread = null,
     stderr_thread: ?std.Thread = null,
     inbound_mutex: std.Thread.Mutex = .{},
-    inbound_threads: std.ArrayListUnmanaged(std.Thread) = .empty,
+    inbound_threads: std.ArrayListUnmanaged(*InboundThread) = .empty,
 
     stderr_mutex: std.Thread.Mutex = .{},
     stderr_tail: std.ArrayListUnmanaged(u8) = .empty,
+
+    /// Joinable inbound worker + its "safe to join now" flag. Heap-allocated so
+    /// the worker can flip `done` after the list reallocates or drops the slot.
+    const InboundThread = struct {
+        thread: std.Thread,
+        done: std.atomic.Value(bool),
+    };
 
     /// Spawn `argv` with piped stdio and start the reader/stderr threads.
     pub fn spawn(allocator: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const u8, handler: Handler) !*Connection {
@@ -179,7 +186,10 @@ pub const Connection = struct {
         if (self.stderr_thread) |t| t.join();
 
         self.inbound_mutex.lock();
-        for (self.inbound_threads.items) |t| t.join();
+        for (self.inbound_threads.items) |slot| {
+            slot.thread.join();
+            self.allocator.destroy(slot);
+        }
         self.inbound_mutex.unlock();
         self.inbound_threads.deinit(self.allocator);
 
@@ -352,19 +362,49 @@ pub const Connection = struct {
     }
 
     fn spawnInbound(self: *Connection, raw_line: []const u8) void {
+        // Reap finished workers first: each unjoined thread parks its stack
+        // (~512KB) until joined, so a long session's terminal/output polling
+        // would otherwise accumulate them until deinit.
+        self.reapInboundThreads();
         const owned = self.allocator.dupe(u8, raw_line) catch return;
-        const t = std.Thread.spawn(.{}, inboundMain, .{ self, owned }) catch {
+        const slot = self.allocator.create(InboundThread) catch {
+            self.allocator.free(owned);
+            return;
+        };
+        slot.* = .{ .thread = undefined, .done = .init(false) };
+        slot.thread = std.Thread.spawn(.{}, inboundMain, .{ self, owned, slot }) catch {
+            self.allocator.destroy(slot);
             self.allocator.free(owned);
             return;
         };
         self.inbound_mutex.lock();
         defer self.inbound_mutex.unlock();
-        self.inbound_threads.append(self.allocator, t) catch {
+        self.inbound_threads.append(self.allocator, slot) catch {
             // ponytail: OOM tracking the handle → detach so deinit's join set
-            // stays consistent; a detached thread can outlive the Connection.
+            // stays consistent; a detached thread can outlive the Connection,
+            // and the slot leaks (the worker still flips its `done` flag).
             // Single-agent scale makes this effectively unreachable.
-            t.detach();
+            slot.thread.detach();
         };
+    }
+
+    /// Join and free every inbound worker whose `done` flag is set. Only ever
+    /// blocks on threads that are past their last statement, so this is cheap
+    /// enough for the reader thread's dispatch path.
+    fn reapInboundThreads(self: *Connection) void {
+        self.inbound_mutex.lock();
+        defer self.inbound_mutex.unlock();
+        var i: usize = 0;
+        while (i < self.inbound_threads.items.len) {
+            const slot = self.inbound_threads.items[i];
+            if (slot.done.load(.acquire)) {
+                slot.thread.join();
+                self.allocator.destroy(slot);
+                _ = self.inbound_threads.swapRemove(i);
+            } else {
+                i += 1;
+            }
+        }
     }
 
     /// Route one decoded JSON line. `line` is borrowed (valid for this call).
@@ -447,7 +487,10 @@ pub const Connection = struct {
 
 // ponytail: one thread per inbound request keeps a blocking permission/exec
 // handler from stalling the reader; single-agent scale needs no thread pool.
-fn inboundMain(self: *Connection, line: []u8) void {
+fn inboundMain(self: *Connection, line: []u8, slot: *Connection.InboundThread) void {
+    // First defer runs last: after this store the thread only returns, so a
+    // reaper that observes done=true joins without meaningfully blocking.
+    defer slot.done.store(true, .release);
     defer self.allocator.free(line);
     const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, line, .{}) catch return;
     defer parsed.deinit();
@@ -653,6 +696,52 @@ test "inbound request with a string id is echoed verbatim" {
     recorder.mutex.lock();
     defer recorder.mutex.unlock();
     try std.testing.expectEqualStrings("session/request_permission", recorder.last_method.?);
+}
+
+test "finished inbound threads are reaped instead of accumulating" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    // Two sequential inbound requests, each answered before the next; both
+    // workers are finished once the prompt completes, so reaping must drain
+    // the tracked-thread list to zero (a regression leaves them until deinit).
+    const script =
+        \\while IFS= read -r line; do
+        \\  case "$line" in
+        \\    *'"session/prompt"'*)
+        \\      printf '%s\n' '{"jsonrpc":"2.0","id":100,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"t1","title":"Edit"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"}]}}'
+        \\      IFS= read -r reply
+        \\      printf '%s\n' '{"jsonrpc":"2.0","id":101,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"t2","title":"Edit"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"}]}}'
+        \\      IFS= read -r reply
+        \\      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}'
+        \\      ;;
+        \\  esac
+        \\done
+    ;
+    var recorder = TestHandler{};
+    defer recorder.deinit();
+    const conn = try Connection.spawn(a, &.{ "/bin/sh", "-c", script }, null, recorder.handler());
+    defer conn.deinit();
+
+    const p = try conn.beginCall("session/prompt", "{\"sessionId\":\"s1\",\"prompt\":[]}");
+    defer p.release();
+    try std.testing.expect(p.wait(5000));
+    const r = try p.take(a);
+    defer a.free(r);
+    try std.testing.expect(std.mem.indexOf(u8, r, "end_turn") != null);
+
+    // The workers flip `done` just after writing their replies; poll the reap
+    // until both are collected (no new inbound arrives to trigger it for us).
+    var attempts: usize = 0;
+    var remaining: usize = std.math.maxInt(usize);
+    while (attempts < 200) : (attempts += 1) {
+        conn.reapInboundThreads();
+        conn.inbound_mutex.lock();
+        remaining = conn.inbound_threads.items.len;
+        conn.inbound_mutex.unlock();
+        if (remaining == 0) break;
+        std.Thread.sleep(5 * std.time.ns_per_ms);
+    }
+    try std.testing.expectEqual(@as(usize, 0), remaining);
 }
 
 test "agent death fails pending calls with stderr tail available" {
