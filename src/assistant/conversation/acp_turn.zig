@@ -267,7 +267,8 @@ fn ensureState(session: *Session, request: *ChatRequest, spawn_stderr: *?[]u8) !
     }
 
     {
-        const params = try schema.encodeInitializeParams(a, true); // terminal/* handled by onRequest
+        // ponytail: Windows command assembly is unescaped; keep the capability off there until it is.
+        const params = try schema.encodeInitializeParams(a, builtin.os.tag != .windows); // terminal/* handled by onRequest
         defer a.free(params);
         var parsed = try callResult(a, conn, "initialize", params);
         defer parsed.deinit();
@@ -598,7 +599,9 @@ fn noteEnvIgnoredOnce(state: *AcpState) void {
 /// wrapper since spawnTab has no cwd/env parameter.
 /// ponytail: Windows path is shape-only (macOS is the e2e target) — raw
 /// space-join under `cmd.exe /c`; real Windows agents would need caret/quote
-/// escaping, add it when one ships.
+/// escaping, add it when one ships. The `terminal` capability is gated off on
+/// Windows (see the `initialize` call) so this path is currently unreachable
+/// there in practice.
 fn buildTerminalCommand(
     allocator: std.mem.Allocator,
     command: []const u8,
