@@ -15,11 +15,21 @@ const std = @import("std");
 const builtin = @import("builtin");
 const ai_chat = @import("session.zig");
 const proto = @import("protocol.zig");
+const types = @import("types.zig");
+const terminal_lease = @import("../../agent/terminal_lease.zig");
 const acp_client = @import("../../acp/client.zig");
 const schema = @import("../../acp/schema.zig");
 
 const Session = ai_chat.Session;
 const ChatRequest = ai_chat.ChatRequest;
+const ToolHost = types.ToolHost;
+
+/// Default `terminal/output` tail cap when the agent gives no `outputByteLimit`.
+const DEFAULT_TERMINAL_OUTPUT_LIMIT: usize = 32 * 1024;
+/// Upper bound so a hostile/buggy `outputByteLimit` can't request unbounded copies.
+const MAX_TERMINAL_OUTPUT_LIMIT: usize = 1024 * 1024;
+/// `terminal/wait_for_exit` poll granularity (also the max teardown-observe lag).
+const TERMINAL_WAIT_POLL_MS: u64 = 150;
 
 /// Bounded wait for the `initialize` / `session/new` handshake replies.
 const HANDSHAKE_TIMEOUT_MS: u64 = 20_000;
@@ -43,12 +53,72 @@ pub const AcpState = struct {
     /// answers). ACP agents ask permissions serially in practice; defensive.
     permission_mutex: std.Thread.Mutex = .{},
 
+    /// ACP `terminal/*` state: panes this session's agent created, plus the live
+    /// `ToolHost` the handlers reach the app through. Guarded by `terminals_mutex`
+    /// (host refreshed once per turn; handlers run on per-request inbound threads).
+    terminals: std.ArrayListUnmanaged(Terminal) = .empty,
+    terminals_mutex: std.Thread.Mutex = .{},
+    tool_host: ?ToolHost = null,
+    /// One-shot latch so the "env ignored" progress note posts at most once.
+    env_note_posted: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    const Terminal = struct {
+        id: []u8, // owned copy of the surface id (== ACP terminalId)
+        ptr: *anyopaque, // live Surface, borrowed from the host
+        output_byte_limit: usize,
+    };
+
     /// Kill the child + join every client thread (so no more handler callbacks
-    /// reference this struct), then free. `conn.deinit()` MUST run first.
+    /// reference this struct), then free. `conn.deinit()` MUST run first — it
+    /// joins the inbound threads that touch `terminals`.
     pub fn deinit(self: *AcpState) void {
         self.conn.deinit();
+        for (self.terminals.items) |t| self.allocator.free(t.id);
+        self.terminals.deinit(self.allocator);
         if (self.acp_session_id.len > 0) self.allocator.free(self.acp_session_id);
         self.allocator.destroy(self);
+    }
+
+    fn setToolHost(self: *AcpState, host: ?ToolHost) void {
+        self.terminals_mutex.lock();
+        defer self.terminals_mutex.unlock();
+        self.tool_host = host;
+    }
+
+    fn getToolHost(self: *AcpState) ?ToolHost {
+        self.terminals_mutex.lock();
+        defer self.terminals_mutex.unlock();
+        return self.tool_host;
+    }
+
+    fn addTerminal(self: *AcpState, id: []const u8, ptr: *anyopaque, limit: usize) !void {
+        const id_owned = try self.allocator.dupe(u8, id);
+        errdefer self.allocator.free(id_owned);
+        self.terminals_mutex.lock();
+        defer self.terminals_mutex.unlock();
+        try self.terminals.append(self.allocator, .{ .id = id_owned, .ptr = ptr, .output_byte_limit = limit });
+    }
+
+    fn findTerminal(self: *AcpState, id: []const u8) ?Terminal {
+        self.terminals_mutex.lock();
+        defer self.terminals_mutex.unlock();
+        for (self.terminals.items) |t| {
+            if (std.mem.eql(u8, t.id, id)) return t;
+        }
+        return null;
+    }
+
+    fn removeTerminal(self: *AcpState, id: []const u8) void {
+        self.terminals_mutex.lock();
+        defer self.terminals_mutex.unlock();
+        var i: usize = 0;
+        while (i < self.terminals.items.len) : (i += 1) {
+            if (std.mem.eql(u8, self.terminals.items[i].id, id)) {
+                const t = self.terminals.swapRemove(i);
+                self.allocator.free(t.id);
+                return;
+            }
+        }
     }
 
     fn takeStreamIdx(self: *AcpState) ?usize {
@@ -97,6 +167,10 @@ pub fn acpTurnThreadMain(request: *ChatRequest) void {
     // Fresh turn on a reused connection: clear any stale stream from a prior
     // cancelled turn so the first chunk opens a new bubble.
     _ = state.takeStreamIdx();
+
+    // Point the terminal/* handlers at this turn's live host before the agent
+    // can call them (it only can after receiving the prompt sent just below).
+    state.setToolHost(request.tool_host);
 
     const params = schema.encodePromptParams(request.allocator, state.acp_session_id, prompt_text) catch return;
     defer request.allocator.free(params);
@@ -193,7 +267,8 @@ fn ensureState(session: *Session, request: *ChatRequest, spawn_stderr: *?[]u8) !
     }
 
     {
-        const params = try schema.encodeInitializeParams(a, false); // terminal capability lands in PR3
+        // ponytail: Windows command assembly is unescaped; keep the capability off there until it is.
+        const params = try schema.encodeInitializeParams(a, builtin.os.tag != .windows); // terminal/* handled by onRequest
         defer a.free(params);
         var parsed = try callResult(a, conn, "initialize", params);
         defer parsed.deinit();
@@ -388,7 +463,205 @@ fn onRequest(ctx: *anyopaque, allocator: std.mem.Allocator, method: []const u8, 
             .custom, .cancelled => schema.encodePermissionCancelled(allocator),
         };
     }
-    return error.MethodNotFound; // terminal/* wired in PR3
+    if (std.mem.eql(u8, method, "terminal/create")) return terminalCreate(state, allocator, params);
+    if (std.mem.eql(u8, method, "terminal/output")) return terminalOutput(state, allocator, params);
+    if (std.mem.eql(u8, method, "terminal/wait_for_exit")) return terminalWaitForExit(state, allocator, params);
+    if (std.mem.eql(u8, method, "terminal/kill")) return terminalKill(state, allocator, params);
+    if (std.mem.eql(u8, method, "terminal/release")) return terminalRelease(state, allocator, params);
+    return error.MethodNotFound;
+}
+
+// ---------------------------------------------------------------------------
+// terminal/* handlers. Each runs on its own inbound thread, so blocking in
+// wait_for_exit is fine. Any error propagates to a JSON-RPC error reply
+// (unknown terminal, closed pane, missing host, …). Results are owned JSON.
+// ---------------------------------------------------------------------------
+
+fn terminalCreate(state: *AcpState, allocator: std.mem.Allocator, params: std.json.Value) ![]u8 {
+    var create = try schema.parseTerminalCreate(allocator, params);
+    defer create.deinit(allocator);
+
+    const host = state.getToolHost() orelse return error.NoTerminalHost;
+
+    // ponytail: env has no spawnTab channel in the MVP → ignored; note it once.
+    // Upgrade path: thread env through AgentTabNewRequest if agents rely on it.
+    if (envRequested(params)) noteEnvIgnoredOnce(state);
+
+    const cmd = try buildTerminalCommand(allocator, create.command, create.args, create.cwd, builtin.os.tag == .windows);
+    defer allocator.free(cmd);
+
+    // spawnTab only takes ownership of the returned ToolSurface metadata; the
+    // real pane lives in the app, so `surface.deinit` never closes it.
+    var surface = try host.spawnTab(host.ctx, allocator, "command", cmd);
+    defer surface.deinit(allocator);
+
+    // Reserve the pane for this agent (mirrors agent_tools/sessions.zig tabNew:
+    // fail the call on a lost claim; the pane stays open, no rollback needed).
+    const agent_id = state.session.agentInstanceId();
+    if (agent_id != 0 and !terminal_lease.active().claim(agent_id, surface.id)) {
+        return error.TerminalLeaseClaimFailed;
+    }
+
+    const limit = normalizeOutputLimit(create.output_byte_limit);
+    try state.addTerminal(surface.id, surface.ptr, limit);
+    return schema.encodeTerminalCreated(allocator, surface.id);
+}
+
+fn terminalOutput(state: *AcpState, allocator: std.mem.Allocator, params: std.json.Value) ![]u8 {
+    const tid = paramTerminalId(params) orelse return error.AcpTerminalBadParams;
+    const term = state.findTerminal(tid) orelse return error.AcpUnknownTerminal;
+    const host = state.getToolHost() orelse return error.NoTerminalHost;
+
+    const snap = try host.surfaceSnapshot(host.ctx, allocator, tid, term.ptr);
+    defer allocator.free(snap);
+    const tail = tailBytes(snap, term.output_byte_limit);
+
+    var exited = false;
+    var exit_code: ?u32 = null;
+    if (host.surfaceExitStatus) |probe| {
+        // A probe glitch must not drop the (valid) output — report not-exited.
+        if (probe(host.ctx, tid, term.ptr)) |info| {
+            exited = info.exited;
+            exit_code = info.exit_code;
+        } else |_| {}
+    }
+    return schema.encodeTerminalOutput(allocator, tail, tail.len < snap.len, exited, exit_code);
+}
+
+fn terminalWaitForExit(state: *AcpState, allocator: std.mem.Allocator, params: std.json.Value) ![]u8 {
+    const tid = paramTerminalId(params) orelse return error.AcpTerminalBadParams;
+    const term = state.findTerminal(tid) orelse return error.AcpUnknownTerminal;
+    const host = state.getToolHost() orelse return error.NoTerminalHost;
+    const probe = host.surfaceExitStatus orelse return error.AcpTerminalWaitUnsupported;
+
+    while (true) {
+        // Bail before Connection.deinit reaches the inbound-thread join (which
+        // would otherwise deadlock waiting on this loop) or the session closes.
+        if (state.conn.isClosing() or state.session.closing.load(.acquire)) return error.AcpConnectionClosing;
+        const info = try probe(host.ctx, tid, term.ptr); // SurfaceClosed → error
+        if (info.exited) return schema.encodeWaitForExit(allocator, info.exit_code);
+        std.Thread.sleep(TERMINAL_WAIT_POLL_MS * std.time.ns_per_ms);
+    }
+}
+
+fn terminalKill(state: *AcpState, allocator: std.mem.Allocator, params: std.json.Value) ![]u8 {
+    const tid = paramTerminalId(params) orelse return error.AcpTerminalBadParams;
+    const term = state.findTerminal(tid) orelse return error.AcpUnknownTerminal;
+    const host = state.getToolHost() orelse return error.NoTerminalHost;
+    const kill = host.killSurfaceChild orelse return error.AcpTerminalKillUnsupported;
+    try kill(host.ctx, tid, term.ptr); // pane stays open; only the child dies
+    return allocator.dupe(u8, "{}");
+}
+
+fn terminalRelease(state: *AcpState, allocator: std.mem.Allocator, params: std.json.Value) ![]u8 {
+    const tid = paramTerminalId(params) orelse return error.AcpTerminalBadParams;
+    // ponytail: drop the record only; the lease is freed for all panes at
+    // session end via releaseOwner, and the pane itself is left for the user.
+    state.removeTerminal(tid);
+    return allocator.dupe(u8, "{}");
+}
+
+fn normalizeOutputLimit(requested: u64) usize {
+    if (requested == 0) return DEFAULT_TERMINAL_OUTPUT_LIMIT;
+    return @min(@as(usize, @intCast(@min(requested, MAX_TERMINAL_OUTPUT_LIMIT))), MAX_TERMINAL_OUTPUT_LIMIT);
+}
+
+/// Last `limit` bytes of `s`, advanced to a UTF-8 leading byte so the truncated
+/// output stays valid for JSON string encoding.
+fn tailBytes(s: []const u8, limit: usize) []const u8 {
+    if (s.len <= limit) return s;
+    var start = s.len - limit;
+    while (start < s.len and (s[start] & 0xC0) == 0x80) start += 1;
+    return s[start..];
+}
+
+fn paramTerminalId(params: std.json.Value) ?[]const u8 {
+    if (params != .object) return null;
+    const v = params.object.get("terminalId") orelse return null;
+    return if (v == .string) v.string else null;
+}
+
+fn envRequested(params: std.json.Value) bool {
+    if (params != .object) return false;
+    const env = params.object.get("env") orelse return false;
+    return env == .array and env.array.items.len > 0;
+}
+
+fn noteEnvIgnoredOnce(state: *AcpState) void {
+    if (state.env_note_posted.swap(true, .acq_rel)) return;
+    ai_chat.appendProgressMessage(state.session, "[terminal] 自定义环境变量已忽略（当前实现不支持传递 env）") catch {};
+}
+
+/// Assemble the single command-line string handed to `ToolHost.spawnTab`, whose
+/// downstream tokenizer is a NO-SHELL whitespace+quotes parser (pty_posix
+/// parseArgv) → execvp. Each token is single-quoted (embedded `'` → `'\''`) so
+/// spaces/quotes survive. A `cwd` rides in via a `/bin/sh -c 'cd … && exec …'`
+/// wrapper since spawnTab has no cwd/env parameter.
+/// ponytail: Windows path is shape-only (macOS is the e2e target) — raw
+/// space-join under `cmd.exe /c`; real Windows agents would need caret/quote
+/// escaping, add it when one ships. The `terminal` capability is gated off on
+/// Windows (see the `initialize` call) so this path is currently unreachable
+/// there in practice.
+fn buildTerminalCommand(
+    allocator: std.mem.Allocator,
+    command: []const u8,
+    args: []const []u8,
+    cwd: ?[]const u8,
+    is_windows: bool,
+) ![]u8 {
+    if (is_windows) {
+        var raw: std.ArrayListUnmanaged(u8) = .empty;
+        defer raw.deinit(allocator);
+        try raw.appendSlice(allocator, command);
+        for (args) |arg| {
+            try raw.append(allocator, ' ');
+            try raw.appendSlice(allocator, arg);
+        }
+        if (cwd) |c| return std.fmt.allocPrint(allocator, "cmd.exe /c \"cd /d {s} && {s}\"", .{ c, raw.items });
+        return std.fmt.allocPrint(allocator, "cmd.exe /c \"{s}\"", .{raw.items});
+    }
+
+    const joined = try joinQuoted(allocator, command, args);
+    defer allocator.free(joined);
+    const dir = cwd orelse return allocator.dupe(u8, joined);
+
+    const dir_q = try sqQuote(allocator, dir);
+    defer allocator.free(dir_q);
+    const script = try std.fmt.allocPrint(allocator, "cd {s} && exec {s}", .{ dir_q, joined });
+    defer allocator.free(script);
+    const script_q = try sqQuote(allocator, script);
+    defer allocator.free(script_q);
+    return std.fmt.allocPrint(allocator, "/bin/sh -c {s}", .{script_q});
+}
+
+/// Space-join `command` + `args`, each POSIX single-quoted.
+fn joinQuoted(allocator: std.mem.Allocator, command: []const u8, args: []const []u8) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(allocator);
+    const cq = try sqQuote(allocator, command);
+    defer allocator.free(cq);
+    try out.appendSlice(allocator, cq);
+    for (args) |arg| {
+        try out.append(allocator, ' ');
+        const aq = try sqQuote(allocator, arg);
+        defer allocator.free(aq);
+        try out.appendSlice(allocator, aq);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Wrap `s` in single quotes for the no-shell tokenizer, escaping embedded `'`
+/// as `'\''` (close, backslash-escaped quote, reopen) — exactly what parseArgv
+/// decodes (see pty_posix.zig tests).
+fn sqQuote(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(allocator);
+    try out.append(allocator, '\'');
+    for (s) |c| {
+        if (c == '\'') try out.appendSlice(allocator, "'\\''") else try out.append(allocator, c);
+    }
+    try out.append(allocator, '\'');
+    return out.toOwnedSlice(allocator);
 }
 
 // ===========================================================================
@@ -442,6 +715,42 @@ test "progressCardText maps tool kind/title and terminal calls" {
     });
     defer a.free(untitled);
     try std.testing.expectEqualStrings("[tool] (untitled)", untitled);
+}
+
+test "buildTerminalCommand quotes argv and wraps cwd for the no-shell tokenizer" {
+    const a = std.testing.allocator;
+    var no_args = [_][]u8{};
+
+    // No args, no cwd → just the quoted command.
+    const bare = try buildTerminalCommand(a, "ls", no_args[0..], null, false);
+    defer a.free(bare);
+    try std.testing.expectEqualStrings("'ls'", bare);
+
+    // Args with a space and an embedded single quote get quoted independently.
+    var args = [_][]u8{ @constCast("hello world"), @constCast("it's") };
+    const quoted = try buildTerminalCommand(a, "echo", args[0..], null, false);
+    defer a.free(quoted);
+    try std.testing.expectEqualStrings("'echo' 'hello world' 'it'\\''s'", quoted);
+
+    // cwd present → /bin/sh -c 'cd <cwd> && exec <argv>'.
+    const with_cwd = try buildTerminalCommand(a, "echo", args[0..1], "/my dir", false);
+    defer a.free(with_cwd);
+    try std.testing.expectEqualStrings(
+        "/bin/sh -c 'cd '\\''/my dir'\\'' && exec '\\''echo'\\'' '\\''hello world'\\'''",
+        with_cwd,
+    );
+
+    // Windows shape (compile + shape only; e2e is macOS).
+    const win = try buildTerminalCommand(a, "echo", args[0..1], "C:\\tmp", true);
+    defer a.free(win);
+    try std.testing.expectEqualStrings("cmd.exe /c \"cd /d C:\\tmp && echo hello world\"", win);
+}
+
+test "tailBytes keeps the tail on a UTF-8 boundary" {
+    try std.testing.expectEqualStrings("cd", tailBytes("abcd", 2));
+    try std.testing.expectEqualStrings("abc", tailBytes("abc", 10)); // shorter than limit
+    // 'é' is two bytes (0xC3 0xA9); a mid-codepoint cut skips forward to 'x'.
+    try std.testing.expectEqualStrings("x", tailBytes("é" ++ "x", 2));
 }
 
 fn buildAcpRequest(a: std.mem.Allocator, session: *Session, prompt: []const u8) !*ChatRequest {
@@ -684,4 +993,109 @@ test "permission request with no options answers cancelled without asking" {
     const out = try onRequest(@ptrCast(&st), a, "session/request_permission", parsed.value);
     defer a.free(out);
     try std.testing.expectEqualStrings("{\"outcome\":{\"outcome\":\"cancelled\"}}", out);
+}
+
+/// Stub ToolHost backing the terminal/* e2e test: spawnTab hands back a fixed
+/// surface id, surfaceSnapshot returns canned text, and the exit probe reports
+/// an already-exited child so wait_for_exit returns at once.
+const FakeTerminalHost = struct {
+    const surface_id = "acp-term-e2e-1";
+    var surface_sentinel: u8 = 0;
+
+    fn collectSnapshot(_: *anyopaque, _: std.mem.Allocator) anyerror!types.ToolSnapshot {
+        return error.Unsupported;
+    }
+    fn surfaceSnapshot(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8, _: *anyopaque) anyerror![]u8 {
+        return allocator.dupe(u8, "hello from terminal\n$ ");
+    }
+    fn writeSurface(_: *anyopaque, _: []const u8, _: *anyopaque, _: []const u8) bool {
+        return false;
+    }
+    fn spawnTab(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8, command: ?[]const u8) anyerror!types.ToolSurface {
+        // Prove the cwd wrapper reached spawnTab; the pane itself is faked.
+        if (command == null or std.mem.indexOf(u8, command.?, "/bin/sh -c ") == null) return error.BadCommand;
+        return types.ToolSurface.initOwned(allocator, surface_id, "echo", "/tmp", try allocator.dupe(u8, ""), .{
+            .tab_index = 0,
+            .focused = true,
+            .is_ssh = false,
+            .is_wsl = false,
+            .ptr = @ptrCast(&surface_sentinel),
+        });
+    }
+    fn closeTab(_: *anyopaque, _: std.mem.Allocator, _: ?usize, _: ?[]const u8, _: ?[]const u8) anyerror!types.ToolClosedTab {
+        return error.Unsupported;
+    }
+    fn saveSshProfile(_: *anyopaque, _: std.mem.Allocator, _: types.SshProfileSaveArgs) anyerror!types.SavedSshProfile {
+        return error.Unsupported;
+    }
+    fn connectSshProfile(_: *anyopaque, _: std.mem.Allocator, _: []const u8) anyerror!types.ToolSurface {
+        return error.Unsupported;
+    }
+    fn surfaceExitStatus(_: *anyopaque, _: []const u8, _: *anyopaque) anyerror!types.SurfaceExitInfo {
+        return .{ .exited = true, .exit_code = 0 };
+    }
+    fn killSurfaceChild(_: *anyopaque, _: []const u8, _: *anyopaque) anyerror!void {}
+
+    fn host() ToolHost {
+        return .{
+            .ctx = @ptrCast(&surface_sentinel),
+            .collectSnapshot = collectSnapshot,
+            .surfaceSnapshot = surfaceSnapshot,
+            .writeSurface = writeSurface,
+            .spawnTab = spawnTab,
+            .closeTab = closeTab,
+            .saveSshProfile = saveSshProfile,
+            .connectSshProfile = connectSshProfile,
+            .surfaceExitStatus = surfaceExitStatus,
+            .killSurfaceChild = killSurfaceChild,
+        };
+    }
+};
+
+test "acp terminal/* round-trips create, output, wait, kill, release against a fake host" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+
+    // Scripted agent: on session/prompt it drives the full terminal lifecycle,
+    // asserting each reply by exiting non-zero on any mismatch (so a broken
+    // handler kills the connection and "terminal-ok" never reaches the chat).
+    const script =
+        \\while IFS= read -r line; do
+        \\  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+        \\  case "$line" in
+        \\    *'"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1}}\n' "$id";;
+        \\    *'"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1"}}\n' "$id";;
+        \\    *'"session/prompt"'*)
+        \\      printf '%s\n' '{"jsonrpc":"2.0","id":200,"method":"terminal/create","params":{"sessionId":"s1","command":"echo","args":["hello world"],"cwd":"/tmp","outputByteLimit":1024}}'
+        \\      IFS= read -r r; case "$r" in *'"id":200'*'acp-term-e2e-1'*) : ;; *) exit 21 ;; esac
+        \\      printf '%s\n' '{"jsonrpc":"2.0","id":201,"method":"terminal/output","params":{"sessionId":"s1","terminalId":"acp-term-e2e-1"}}'
+        \\      IFS= read -r r; case "$r" in *'"id":201'*'hello from terminal'*'"exitCode":0'*) : ;; *) exit 22 ;; esac
+        \\      printf '%s\n' '{"jsonrpc":"2.0","id":202,"method":"terminal/wait_for_exit","params":{"sessionId":"s1","terminalId":"acp-term-e2e-1"}}'
+        \\      IFS= read -r r; case "$r" in *'"id":202'*'"exitCode":0'*) : ;; *) exit 23 ;; esac
+        \\      printf '%s\n' '{"jsonrpc":"2.0","id":203,"method":"terminal/kill","params":{"sessionId":"s1","terminalId":"acp-term-e2e-1"}}'
+        \\      IFS= read -r r; case "$r" in *'"id":203'*'"result"'*) : ;; *) exit 24 ;; esac
+        \\      printf '%s\n' '{"jsonrpc":"2.0","id":205,"method":"terminal/output","params":{"sessionId":"s1","terminalId":"unknown-id"}}'
+        \\      IFS= read -r r; case "$r" in *'"id":205'*'"error"'*) : ;; *) exit 25 ;; esac
+        \\      printf '%s\n' '{"jsonrpc":"2.0","id":206,"method":"terminal/release","params":{"sessionId":"s1","terminalId":"acp-term-e2e-1"}}'
+        \\      IFS= read -r r; case "$r" in *'"id":206'*'"result"'*) : ;; *) exit 26 ;; esac
+        \\      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"terminal-ok"}}}}'
+        \\      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+        \\      ;;
+        \\  esac
+        \\done
+    ;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const session = try newAcpTestSession(a);
+    defer session.deinit();
+    try setScriptedAgent(a, tmp.dir, session, script);
+
+    const req = try buildAcpRequest(a, session, "run a command");
+    req.tool_host = FakeTerminalHost.host();
+    var thread = try std.Thread.spawn(.{}, acpTurnThreadMain, .{req});
+    thread.join();
+
+    try std.testing.expect(session.acp_state != null); // connection survived the chain
+    try std.testing.expect(transcriptContains(session, .assistant, "terminal-ok"));
 }

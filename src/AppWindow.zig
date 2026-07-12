@@ -6195,6 +6195,8 @@ fn installAgentToolHost(self: *AppWindow) void {
         .uiScreenshot = agent_requests.uiScreenshot,
         .focusTerminal = agent_requests.focusTerminal,
         .reconnectTerminal = agent_requests.reconnectTerminal,
+        .surfaceExitStatus = surface_snapshots.agentSurfaceExitStatus,
+        .killSurfaceChild = surface_snapshots.agentKillSurfaceChild,
     });
 }
 

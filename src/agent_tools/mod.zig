@@ -36,7 +36,6 @@ const agent_mcp_config = @import("mcp_config.zig");
 const agent_mcp_activate = @import("mcp_activate.zig");
 const agent_weixin = @import("weixin.zig");
 const agent_ui_screenshot = @import("ui_screenshot.zig");
-const agent_cli_agent = @import("cli_agent.zig");
 const platform_dirs = @import("../platform/dirs.zig");
 
 // ---------------------------------------------------------------------------
@@ -321,17 +320,6 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
         return agent_memory_search.search(ctx, args.value);
-    }
-    if (std.mem.eql(u8, call.name, "cli_agent")) {
-        const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
-        defer args.deinit();
-        const agent_key = tool_args.string(args.value, "agent") orelse return ctx.allocator.dupe(u8, "Missing agent");
-        const backend = agent_cli_agent.find(agent_key) orelse
-            return std.fmt.allocPrint(ctx.allocator, "Unknown agent \"{s}\". Available: {s}", .{ agent_key, agent_cli_agent.available_keys });
-        const task = tool_args.string(args.value, "task") orelse return ctx.allocator.dupe(u8, "Missing task");
-        const cwd = tool_args.string(args.value, "cwd");
-        const timeout_ms = tool_args.int(args.value, "timeout_ms") orelse agent_cli_agent.DEFAULT_TIMEOUT_MS;
-        return agent_cli_agent.run(ctx, backend, task, cwd, timeout_ms);
     }
     if (agent_dynamic.find(ctx.settings.dynamic_binary_tools, call.name)) |tool| {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
@@ -1409,42 +1397,4 @@ test "executeToolCall pubmed reports missing query" {
     });
     defer a.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "Missing query") != null);
-}
-
-test "executeToolCall cli_agent validates agent and task arguments" {
-    const a = std.testing.allocator;
-    var dummy: u8 = 0;
-    var ctx = ToolContext{
-        .allocator = a,
-        .ctx = &dummy,
-        .tool_host = null,
-        .tool_snapshot = null,
-        .settings = .{ .permission = .full },
-        .approve = fakeApprove,
-        .cancelled = fakeCancelled,
-    };
-    const missing_agent = try executeToolCall(&ctx, .{
-        .id = @constCast("c1"),
-        .name = @constCast("cli_agent"),
-        .arguments = @constCast("{\"task\":\"do something\"}"),
-    });
-    defer a.free(missing_agent);
-    try std.testing.expect(std.mem.indexOf(u8, missing_agent, "Missing agent") != null);
-
-    const unknown_agent = try executeToolCall(&ctx, .{
-        .id = @constCast("c2"),
-        .name = @constCast("cli_agent"),
-        .arguments = @constCast("{\"agent\":\"oh-my-pi\",\"task\":\"x\"}"),
-    });
-    defer a.free(unknown_agent);
-    try std.testing.expect(std.mem.indexOf(u8, unknown_agent, "Unknown agent") != null);
-    try std.testing.expect(std.mem.indexOf(u8, unknown_agent, "codex") != null);
-
-    const missing_task = try executeToolCall(&ctx, .{
-        .id = @constCast("c3"),
-        .name = @constCast("cli_agent"),
-        .arguments = @constCast("{\"agent\":\"codex\"}"),
-    });
-    defer a.free(missing_task);
-    try std.testing.expect(std.mem.indexOf(u8, missing_task, "Missing task") != null);
 }

@@ -299,6 +299,105 @@ pub fn encodeCancelParams(allocator: std.mem.Allocator, session_id: []const u8) 
     return std.fmt.allocPrint(allocator, "{{\"sessionId\":{s}}}", .{sid_quoted});
 }
 
+// ---------------------------------------------------------------------------
+// terminal/* client capability (ACP agent runs commands in real WispTerm panes)
+// ---------------------------------------------------------------------------
+
+/// Parsed `terminal/create` params. `command` + `args` are raw (unquoted) — the
+/// no-shell argv assembly + cwd wrapper live in acp_turn's `buildTerminalCommand`.
+/// `output_byte_limit == 0` means the agent did not specify one (caller defaults).
+pub const TerminalCreateParams = struct {
+    command: []u8,
+    args: [][]u8,
+    cwd: ?[]u8,
+    output_byte_limit: u64,
+
+    pub fn deinit(self: *TerminalCreateParams, allocator: std.mem.Allocator) void {
+        allocator.free(self.command);
+        for (self.args) |a| allocator.free(a);
+        allocator.free(self.args);
+        if (self.cwd) |c| allocator.free(c);
+    }
+};
+
+/// Parse `terminal/create` params: `{command, args?[], cwd?, outputByteLimit?}`.
+/// `env` is intentionally not parsed (acp_turn ignores env in the MVP).
+pub fn parseTerminalCreate(allocator: std.mem.Allocator, params: std.json.Value) !TerminalCreateParams {
+    const command_str = objectString(params, "command") orelse return error.AcpTerminalNoCommand;
+    if (command_str.len == 0) return error.AcpTerminalNoCommand;
+    const command = try allocator.dupe(u8, command_str);
+    errdefer allocator.free(command);
+
+    var args: std.ArrayListUnmanaged([]u8) = .empty;
+    errdefer {
+        for (args.items) |a| allocator.free(a);
+        args.deinit(allocator);
+    }
+    if (objectValue(params, "args")) |av| {
+        if (av == .array) {
+            for (av.array.items) |item| {
+                if (item != .string) continue;
+                const dup = try allocator.dupe(u8, item.string);
+                args.append(allocator, dup) catch |e| {
+                    allocator.free(dup);
+                    return e;
+                };
+            }
+        }
+    }
+
+    var cwd: ?[]u8 = null;
+    errdefer if (cwd) |c| allocator.free(c);
+    if (objectString(params, "cwd")) |c| cwd = try allocator.dupe(u8, c);
+
+    var limit: u64 = 0;
+    if (objectValue(params, "outputByteLimit")) |lv| {
+        if (lv == .integer and lv.integer > 0) limit = @intCast(lv.integer);
+    }
+
+    return .{
+        .command = command,
+        .args = try args.toOwnedSlice(allocator),
+        .cwd = cwd,
+        .output_byte_limit = limit,
+    };
+}
+
+/// `{"terminalId":"<id>"}` — the `terminal/create` result.
+pub fn encodeTerminalCreated(allocator: std.mem.Allocator, terminal_id: []const u8) ![]u8 {
+    const id_quoted = try encodeJsonString(allocator, terminal_id);
+    defer allocator.free(id_quoted);
+    return std.fmt.allocPrint(allocator, "{{\"terminalId\":{s}}}", .{id_quoted});
+}
+
+/// `{"exitCode":<N|null>,"signal":null}` (owned). Signals aren't modeled: exec
+/// exit codes are the only completion signal the surface layer surfaces.
+fn encodeExitStatusObject(allocator: std.mem.Allocator, exit_code: ?u32) ![]u8 {
+    if (exit_code) |c| return std.fmt.allocPrint(allocator, "{{\"exitCode\":{d},\"signal\":null}}", .{c});
+    return allocator.dupe(u8, "{\"exitCode\":null,\"signal\":null}");
+}
+
+/// `terminal/output` result: `{output, truncated, exitStatus:null|{...}}`. Std-only
+/// on purpose — `exited`/`exit_code` are plain params (no types.zig import).
+pub fn encodeTerminalOutput(allocator: std.mem.Allocator, output: []const u8, truncated: bool, exited: bool, exit_code: ?u32) ![]u8 {
+    const out_quoted = try encodeJsonString(allocator, output);
+    defer allocator.free(out_quoted);
+    const trunc = if (truncated) "true" else "false";
+    if (!exited) {
+        return std.fmt.allocPrint(allocator, "{{\"output\":{s},\"truncated\":{s},\"exitStatus\":null}}", .{ out_quoted, trunc });
+    }
+    const es = try encodeExitStatusObject(allocator, exit_code);
+    defer allocator.free(es);
+    return std.fmt.allocPrint(allocator, "{{\"output\":{s},\"truncated\":{s},\"exitStatus\":{s}}}", .{ out_quoted, trunc, es });
+}
+
+/// `terminal/wait_for_exit` result: `{"exitStatus":{"exitCode":N,"signal":null}}`.
+pub fn encodeWaitForExit(allocator: std.mem.Allocator, exit_code: ?u32) ![]u8 {
+    const es = try encodeExitStatusObject(allocator, exit_code);
+    defer allocator.free(es);
+    return std.fmt.allocPrint(allocator, "{{\"exitStatus\":{s}}}", .{es});
+}
+
 fn parseValue(a: std.mem.Allocator, json: []const u8) !std.json.Parsed(std.json.Value) {
     return std.json.parseFromSlice(std.json.Value, a, json, .{});
 }
@@ -371,6 +470,64 @@ test "parsePermissionRequest and outcome encoding round-trip" {
     const sel = try encodePermissionSelected(a, "allow");
     defer a.free(sel);
     try std.testing.expectEqualStrings("{\"outcome\":{\"outcome\":\"selected\",\"optionId\":\"allow\"}}", sel);
+}
+
+test "parseTerminalCreate reads command/args/cwd/limit with defaults" {
+    const a = std.testing.allocator;
+    var p = try parseValue(a,
+        \\{"sessionId":"s1","command":"echo","args":["hello world","--flag"],"cwd":"/tmp","outputByteLimit":2048,"env":[{"name":"X","value":"1"}]}
+    );
+    defer p.deinit();
+    var params = try parseTerminalCreate(a, p.value);
+    defer params.deinit(a);
+    try std.testing.expectEqualStrings("echo", params.command);
+    try std.testing.expectEqual(@as(usize, 2), params.args.len);
+    try std.testing.expectEqualStrings("hello world", params.args[0]);
+    try std.testing.expectEqualStrings("--flag", params.args[1]);
+    try std.testing.expectEqualStrings("/tmp", params.cwd.?);
+    try std.testing.expectEqual(@as(u64, 2048), params.output_byte_limit);
+
+    // Defaults: no args, no cwd, no limit → empty slice / null / 0.
+    var p2 = try parseValue(a, "{\"command\":\"ls\"}");
+    defer p2.deinit();
+    var params2 = try parseTerminalCreate(a, p2.value);
+    defer params2.deinit(a);
+    try std.testing.expectEqualStrings("ls", params2.command);
+    try std.testing.expectEqual(@as(usize, 0), params2.args.len);
+    try std.testing.expect(params2.cwd == null);
+    try std.testing.expectEqual(@as(u64, 0), params2.output_byte_limit);
+
+    // Missing/empty command → error.
+    var p3 = try parseValue(a, "{\"args\":[\"x\"]}");
+    defer p3.deinit();
+    try std.testing.expectError(error.AcpTerminalNoCommand, parseTerminalCreate(a, p3.value));
+}
+
+test "terminal result encoders emit exact JSON" {
+    const a = std.testing.allocator;
+
+    const created = try encodeTerminalCreated(a, "term-1");
+    defer a.free(created);
+    try std.testing.expectEqualStrings("{\"terminalId\":\"term-1\"}", created);
+
+    // Not exited → exitStatus null; newline in output escaped.
+    const running = try encodeTerminalOutput(a, "line\n", false, false, null);
+    defer a.free(running);
+    try std.testing.expectEqualStrings("{\"output\":\"line\\n\",\"truncated\":false,\"exitStatus\":null}", running);
+
+    // Exited with code → exitStatus object; truncated flag set.
+    const done = try encodeTerminalOutput(a, "out", true, true, 0);
+    defer a.free(done);
+    try std.testing.expectEqualStrings("{\"output\":\"out\",\"truncated\":true,\"exitStatus\":{\"exitCode\":0,\"signal\":null}}", done);
+
+    // Exited without a known code → exitCode null.
+    const nocode = try encodeTerminalOutput(a, "x", false, true, null);
+    defer a.free(nocode);
+    try std.testing.expectEqualStrings("{\"output\":\"x\",\"truncated\":false,\"exitStatus\":{\"exitCode\":null,\"signal\":null}}", nocode);
+
+    const waited = try encodeWaitForExit(a, 7);
+    defer a.free(waited);
+    try std.testing.expectEqualStrings("{\"exitStatus\":{\"exitCode\":7,\"signal\":null}}", waited);
 }
 
 test "initialize/new/prompt param encoding and result parsing" {

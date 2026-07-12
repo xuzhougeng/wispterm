@@ -26,6 +26,13 @@ pub fn deinit(self: *Command) void {
     self.impl.deinit();
 }
 
+/// Best-effort termination of the child process (ACP `terminal/kill`). Does
+/// not reap — the IO reader/writer threads observe EOF/broken-pipe and call
+/// `Surface.markExited` as usual.
+pub fn kill(self: *Command) void {
+    self.impl.kill();
+}
+
 /// PID usable for an OS cwd query (proc_pidinfo / /proc), or null.
 pub fn cwdQueryId(self: *const Command) ?i32 {
     return self.impl.cwdQueryId();

@@ -43,6 +43,7 @@ pub const ToolClosedTab = ai_chat_types.ToolClosedTab;
 pub const SshProfileSaveArgs = ai_chat_types.SshProfileSaveArgs;
 pub const SavedSshProfile = ai_chat_types.SavedSshProfile;
 pub const ToolHost = ai_chat_types.ToolHost;
+pub const SurfaceExitInfo = ai_chat_types.SurfaceExitInfo;
 pub const ApprovalView = ai_chat_types.ApprovalView;
 pub const QuestionOption = ai_chat_types.QuestionOption;
 pub const QuestionView = ai_chat_types.QuestionView;

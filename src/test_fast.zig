@@ -308,7 +308,6 @@ test {
     _ = @import("acp/schema.zig");
     _ = @import("acp/client.zig");
     _ = @import("agent_tools/args.zig");
-    _ = @import("agent_tools/cli_agent.zig");
     _ = @import("agent_tools/mod.zig");
     _ = @import("agent_tools/mcp_config.zig");
     _ = @import("agent_tools/mcp_activate.zig");

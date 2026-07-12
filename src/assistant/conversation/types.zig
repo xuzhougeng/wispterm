@@ -272,6 +272,13 @@ pub const SavedSshProfile = struct {
     }
 };
 
+/// Snapshot of a surface's child-process exit state, for the ACP `terminal/*`
+/// capability to report command completion back to an external agent.
+pub const SurfaceExitInfo = struct {
+    exited: bool,
+    exit_code: ?u32,
+};
+
 pub const ToolHost = struct {
     ctx: *anyopaque,
     collectSnapshot: *const fn (*anyopaque, std.mem.Allocator) anyerror!ToolSnapshot,
@@ -288,6 +295,12 @@ pub const ToolHost = struct {
     uiScreenshot: ?*const fn (*anyopaque, std.mem.Allocator, UiScreenshotTarget, ?[]const u8, ?[]const u8) anyerror!UiScreenshotResult = null,
     focusTerminal: ?*const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!ToolSurface = null,
     reconnectTerminal: ?*const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!ToolSurface = null,
+    /// Poll a surface's child-process exit state (ACP `terminal/output` /
+    /// `terminal/wait_for_exit`). Only the real AppWindow host sets this.
+    surfaceExitStatus: ?*const fn (*anyopaque, []const u8, *anyopaque) anyerror!SurfaceExitInfo = null,
+    /// Kill a surface's child process (ACP `terminal/kill`). Only the real
+    /// AppWindow host sets this.
+    killSurfaceChild: ?*const fn (*anyopaque, []const u8, *anyopaque) anyerror!void = null,
 };
 
 pub const OwnedReplyContext = struct {

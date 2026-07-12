@@ -56,7 +56,6 @@ const static_definitions = [_]Definition{
     .{ .name = "webread", .label = "webread", .description = "Read a web page or local document into markdown via Jina Reader.", .category = .web },
     .{ .name = "pubmed", .label = "pubmed", .description = "Search PubMed biomedical literature.", .category = .web },
     .{ .name = "subagent", .label = "subagent", .description = "Delegate a self-contained research task to a background subagent.", .category = .agent },
-    .{ .name = "cli_agent", .label = "cli_agent", .description = "Delegate a self-contained task to an external CLI agent (codex).", .category = .agent },
     .{ .name = "send_attachment", .label = "send_attachment", .description = "Send a local file back to the active chat conversation (WeChat or Feishu).", .category = .integration },
     .{ .name = "get_system_time", .label = "get_system_time", .description = "Read the current local system time on demand.", .category = .agent },
     .{ .name = "memory_save", .label = "memory_save", .description = "Save a durable long-term memory.", .category = .memory },
