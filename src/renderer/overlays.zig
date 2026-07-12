@@ -33,6 +33,7 @@ const agent_history = @import("../agent/history.zig");
 const platform_dirs = @import("../platform/dirs.zig");
 const platform_open_url = @import("../platform/open_url.zig");
 const platform_pty_command = @import("../platform/pty_command.zig");
+const shell_integration = @import("../platform/shell_integration.zig");
 const update_check = @import("../update_check.zig");
 const keybind = @import("../keybind.zig");
 const overlay_keys = @import("overlay_keys.zig");
@@ -801,8 +802,7 @@ fn connectWeixinDirect() void {
         showStatusToast(i18n.s().toast_wechat_login_failed);
         return;
     };
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    AppWindow.applyUiEffect(.{ .needs_rebuild = true });
 }
 
 fn startWeixinDirect() void {
@@ -6393,7 +6393,12 @@ fn settingsHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, 
         return .cycle_theme;
     }
 
-    return switch (row - SETTINGS_CONTROL_ROW_START) {
+    const control_row = row - SETTINGS_CONTROL_ROW_START;
+    if (shell_integration.supported) {
+        if (control_row == 9) return .toggle_start_menu;
+        if (control_row == 10) return .toggle_startup;
+    }
+    return switch (control_row) {
         0 => .cycle_cursor_style,
         1 => .toggle_cursor_blink,
         2 => .toggle_focus_follows_mouse,
@@ -6403,9 +6408,9 @@ fn settingsHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, 
         6 => .cycle_language,
         7 => .toggle_restore_tabs,
         8 => .toggle_distill_suggest,
-        9 => .open_raw_config,
-        10 => .restore_defaults,
-        11 => .close,
+        9 + settings_page.SHELL_INTEGRATION_ROWS => .open_raw_config,
+        10 + settings_page.SHELL_INTEGRATION_ROWS => .restore_defaults,
+        11 + settings_page.SHELL_INTEGRATION_ROWS => .close,
         else => null,
     };
 }
@@ -6441,6 +6446,8 @@ fn executeSettingsAction(action: SettingsAction) void {
         .cycle_language => Config.setConfigValue(allocator, "language", nextLanguageSetting(cfg.language)) catch {},
         .toggle_restore_tabs => Config.setConfigValue(allocator, "restore-tabs-on-startup", if (cfg.@"restore-tabs-on-startup") "false" else "true") catch {},
         .toggle_distill_suggest => Config.setConfigValue(allocator, "ai-distill-suggest", if (cfg.@"ai-distill-suggest") "false" else "true") catch {},
+        .toggle_start_menu => shell_integration.setEnabled(allocator, .start_menu, !shell_integration.isEnabled(allocator, .start_menu)) catch {},
+        .toggle_startup => shell_integration.setEnabled(allocator, .startup, !shell_integration.isEnabled(allocator, .startup)) catch {},
         .open_raw_config => Config.openConfigInEditor(allocator),
         .restore_defaults => restoreDefaultsConfirmOpen(),
         .close => settingsPageClose(),
@@ -6452,7 +6459,7 @@ fn executeSettingsAction(action: SettingsAction) void {
     // cycle_theme already applies via cycleThemePreset; the excluded actions open
     // an editor/confirm dialog or close the page and write nothing to apply.
     switch (action) {
-        .cycle_theme, .cycle_theme_prev, .open_raw_config, .restore_defaults, .close => {},
+        .cycle_theme, .cycle_theme_prev, .toggle_start_menu, .toggle_startup, .open_raw_config, .restore_defaults, .close => {},
         else => AppWindow.reloadConfigImmediate(allocator),
     }
 }
@@ -6662,9 +6669,13 @@ pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 6, i18n.s().settings_language, languageSettingText(cfg.language), i18n.s().settings_hint_restart, true, focus == SETTINGS_CONTROL_ROW_START + 6);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 7, i18n.s().settings_restore_tabs, boolText(cfg.@"restore-tabs-on-startup"), "", true, focus == SETTINGS_CONTROL_ROW_START + 7);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 8, i18n.s().settings_distill_suggest, boolText(cfg.@"ai-distill-suggest"), "", true, focus == SETTINGS_CONTROL_ROW_START + 8);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 9, i18n.s().settings_raw_config, i18n.s().settings_value_open, i18n.s().settings_hint_advanced_editor, true, focus == SETTINGS_CONTROL_ROW_START + 9);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 10, i18n.s().settings_restore_defaults, "Enter", "", true, focus == SETTINGS_CONTROL_ROW_START + 10);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 11, i18n.s().settings_close, "Esc", "", true, focus == SETTINGS_CONTROL_ROW_START + 11);
+    if (shell_integration.supported) {
+        renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 9, i18n.s().settings_start_menu, boolText(shell_integration.isEnabled(allocator, .start_menu)), "", true, focus == SETTINGS_CONTROL_ROW_START + 9);
+        renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 10, i18n.s().settings_startup, boolText(shell_integration.isEnabled(allocator, .startup)), "", true, focus == SETTINGS_CONTROL_ROW_START + 10);
+    }
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 9 + settings_page.SHELL_INTEGRATION_ROWS, i18n.s().settings_raw_config, i18n.s().settings_value_open, i18n.s().settings_hint_advanced_editor, true, focus == SETTINGS_CONTROL_ROW_START + 9 + settings_page.SHELL_INTEGRATION_ROWS);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 10 + settings_page.SHELL_INTEGRATION_ROWS, i18n.s().settings_restore_defaults, "Enter", "", true, focus == SETTINGS_CONTROL_ROW_START + 10 + settings_page.SHELL_INTEGRATION_ROWS);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 11 + settings_page.SHELL_INTEGRATION_ROWS, i18n.s().settings_close, "Esc", "", true, focus == SETTINGS_CONTROL_ROW_START + 11 + settings_page.SHELL_INTEGRATION_ROWS);
 
     // Scrollbar indicator when not all rows fit (short windows). The list is
     // scrolled via keyboard/click focus-follow and the mouse wheel.

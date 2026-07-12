@@ -4,7 +4,6 @@ param(
     [string]$WebView2Version = '1.0.3912.50',
     [string]$ConPtyVersion = '1.24.260512001',
     [switch]$SkipBuild,
-    [switch]$SkipInstaller,
     [switch]$SkipCompatBundle,
     [switch]$SkipNativeD3D11Bundle,
     [switch]$DebugConsole,
@@ -218,11 +217,6 @@ if (-not $SkipNativeD3D11Bundle -and -not (Test-Path $nativeD3D11BinaryPath)) {
 $portableDir = Join-Path $resolvedOutputDir 'portable'
 $portableCompatDir = Join-Path $resolvedOutputDir 'portable-compat'
 $portableNativeD3D11Dir = Join-Path $resolvedOutputDir 'portable-native-d3d11'
-$installerDir = Join-Path $resolvedOutputDir 'installer'
-$stagingDir = Join-Path $installerDir 'staging'
-$setupExe = Join-Path $installerDir 'wispterm-setup.exe'
-$versionFile = Join-Path $stagingDir 'version.txt'
-$sedFile = Join-Path $installerDir 'wispterm-installer.sed'
 $webView2LoaderPath = $null
 $conPtyPair = $null
 
@@ -231,7 +225,7 @@ if (-not $SkipCompatBundle) {
     $conPtyPair = Get-ConPtyPair -RepoRoot $repoRoot -Version $ConPtyVersion
 }
 
-Remove-Item -Path $portableDir, $portableCompatDir, $portableNativeD3D11Dir, $installerDir -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path $portableDir, $portableCompatDir, $portableNativeD3D11Dir, (Join-Path $resolvedOutputDir 'installer') -Recurse -Force -ErrorAction SilentlyContinue
 
 Copy-PortablePayload -BinaryPath $binaryPath -TargetDir $portableDir -ReleaseVersion $releaseVersion
 if ($webView2LoaderPath) {
@@ -241,100 +235,6 @@ if (-not $SkipNativeD3D11Bundle) {
     Copy-PortablePayload -BinaryPath $nativeD3D11BinaryPath -TargetDir $portableNativeD3D11Dir -ReleaseVersion $releaseVersion
 }
 
-if ($SkipInstaller) {
-    Write-Host "Portable build: $(Join-Path $portableDir 'wispterm.exe')"
-    if ($webView2LoaderPath) {
-        Write-Host "Portable compat build: $(Join-Path $portableCompatDir 'wispterm.exe')"
-    }
-    if (-not $SkipNativeD3D11Bundle) {
-        Write-Host "Portable native D3D11 build: $(Join-Path $portableNativeD3D11Dir 'wispterm.exe')"
-    }
-    Write-Host 'Installer build skipped. Unsigned IExpress installers are prone to Windows Defender false positives.'
-    exit 0
-}
-
-New-Item -ItemType Directory -Path $installerDir, $stagingDir -Force | Out-Null
-
-Copy-Item -Path $binaryPath -Destination (Join-Path $stagingDir 'wispterm.exe') -Force
-$sourceAskPassHelper = Join-Path (Split-Path -Parent $binaryPath) 'wispterm-ssh-askpass.exe'
-if (-not (Test-Path $sourceAskPassHelper)) {
-    throw "Expected SSH askpass helper was not found: $sourceAskPassHelper"
-}
-Copy-Item -Path $sourceAskPassHelper -Destination (Join-Path $stagingDir 'wispterm-ssh-askpass.exe') -Force
-Copy-Item -Path (Join-Path $PSScriptRoot 'Install-WispTerm.ps1') -Destination (Join-Path $stagingDir 'Install-WispTerm.ps1') -Force
-Copy-Item -Path (Join-Path $PSScriptRoot 'install.cmd') -Destination (Join-Path $stagingDir 'install.cmd') -Force
-if ($webView2LoaderPath) {
-    Copy-Item -Path $webView2LoaderPath -Destination (Join-Path $stagingDir 'WebView2Loader.dll') -Force
-}
-Set-Content -Path $versionFile -Value $releaseVersion -Encoding ASCII
-
-$sedFiles = @(
-    'FILE0=wispterm.exe',
-    'FILE1=Install-WispTerm.ps1',
-    'FILE2=install.cmd',
-    'FILE3=version.txt',
-    'FILE4=wispterm-ssh-askpass.exe'
-)
-$sedSourceFiles = @(
-    '%FILE0%=',
-    '%FILE1%=',
-    '%FILE2%=',
-    '%FILE3%=',
-    '%FILE4%='
-)
-if ($webView2LoaderPath) {
-    $sedFiles += 'FILE5=WebView2Loader.dll'
-    $sedSourceFiles += '%FILE5%='
-}
-
-$sedBody = @"
-[Version]
-Class=IEXPRESS
-SEDVersion=3
-[Options]
-PackagePurpose=InstallApp
-ShowInstallProgramWindow=0
-HideExtractAnimation=1
-UseLongFileName=1
-InsideCompressed=1
-CAB_FixedSize=0
-CAB_ResvCodeSigning=0
-RebootMode=N
-InstallPrompt=
-DisplayLicense=
-FinishMessage=WispTerm has been installed to your user profile and added to the Start menu.
-TargetName=%TargetName%
-FriendlyName=%FriendlyName%
-AppLaunched=%AppLaunched%
-PostInstallCmd=<None>
-AdminQuietInstCmd=%AdminQuietInstCmd%
-UserQuietInstCmd=%UserQuietInstCmd%
-SourceFiles=SourceFiles
-[Strings]
-TargetName=$setupExe
-FriendlyName=WispTerm Setup
-AppLaunched=cmd.exe /c install.cmd
-AdminQuietInstCmd=cmd.exe /c install.cmd /quiet
-UserQuietInstCmd=cmd.exe /c install.cmd /quiet
-$($sedFiles -join "`r`n")
-[SourceFiles]
-SourceFiles0=$stagingDir\
-[SourceFiles0]
-$($sedSourceFiles -join "`r`n")
-"@
-
-Set-Content -Path $sedFile -Value $sedBody -Encoding ASCII
-
-Push-Location $installerDir
-try {
-    & iexpress.exe /N $sedFile
-    if ($LASTEXITCODE -ne 0) {
-        throw 'IExpress failed to create the installer.'
-    }
-} finally {
-    Pop-Location
-}
-
 Write-Host "Portable build: $(Join-Path $portableDir 'wispterm.exe')"
 if ($webView2LoaderPath) {
     Write-Host "Portable compat build: $(Join-Path $portableCompatDir 'wispterm.exe')"
@@ -342,4 +242,3 @@ if ($webView2LoaderPath) {
 if (-not $SkipNativeD3D11Bundle) {
     Write-Host "Portable native D3D11 build: $(Join-Path $portableNativeD3D11Dir 'wispterm.exe')"
 }
-Write-Host "Installer build: $setupExe"

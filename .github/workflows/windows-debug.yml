@@ -55,7 +55,7 @@ jobs:
         run: |
           $opt = "${{ github.event.inputs.optimize }}"
           zig build "-Doptimize=$opt" -Ddebug-console --fetch
-          powershell -ExecutionPolicy Bypass -File .\packaging\windows\package.ps1 -DebugConsole -Optimize $opt -SkipInstaller
+          powershell -ExecutionPolicy Bypass -File .\packaging\windows\package.ps1 -DebugConsole -Optimize $opt
 
       - name: Package debug zip
         shell: pwsh

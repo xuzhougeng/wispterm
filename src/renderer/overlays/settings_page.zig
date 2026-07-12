@@ -1,10 +1,12 @@
 const std = @import("std");
 const input_key = @import("../../input/key.zig");
 const Config = @import("../../config.zig");
+const shell_integration = @import("../../platform/shell_integration.zig");
 
 pub const SETTINGS_THEME_ROW: usize = 1;
 pub const SETTINGS_CONTROL_ROW_START: usize = 2;
-pub const SETTINGS_ROW_COUNT: usize = SETTINGS_CONTROL_ROW_START + 12;
+pub const SHELL_INTEGRATION_ROWS: usize = if (shell_integration.supported) 2 else 0;
+pub const SETTINGS_ROW_COUNT: usize = SETTINGS_CONTROL_ROW_START + 12 + SHELL_INTEGRATION_ROWS;
 
 pub const Action = enum {
     font_size_minus,
@@ -21,6 +23,8 @@ pub const Action = enum {
     cycle_language,
     toggle_restore_tabs,
     toggle_distill_suggest,
+    toggle_start_menu,
+    toggle_startup,
     open_raw_config,
     restore_defaults,
     close,
@@ -114,6 +118,10 @@ pub const State = struct {
     }
 
     pub fn focusPrimaryAction(self: *const State) ?Action {
+        if (shell_integration.supported) {
+            if (self.focus == SETTINGS_CONTROL_ROW_START + 9) return .toggle_start_menu;
+            if (self.focus == SETTINGS_CONTROL_ROW_START + 10) return .toggle_startup;
+        }
         return switch (self.focus) {
             0 => .font_size_plus,
             SETTINGS_THEME_ROW => .cycle_theme,
@@ -126,9 +134,9 @@ pub const State = struct {
             SETTINGS_CONTROL_ROW_START + 6 => .cycle_language,
             SETTINGS_CONTROL_ROW_START + 7 => .toggle_restore_tabs,
             SETTINGS_CONTROL_ROW_START + 8 => .toggle_distill_suggest,
-            SETTINGS_CONTROL_ROW_START + 9 => .open_raw_config,
-            SETTINGS_CONTROL_ROW_START + 10 => .restore_defaults,
-            SETTINGS_CONTROL_ROW_START + 11 => .close,
+            SETTINGS_CONTROL_ROW_START + 9 + SHELL_INTEGRATION_ROWS => .open_raw_config,
+            SETTINGS_CONTROL_ROW_START + 10 + SHELL_INTEGRATION_ROWS => .restore_defaults,
+            SETTINGS_CONTROL_ROW_START + 11 + SHELL_INTEGRATION_ROWS => .close,
             else => null,
         };
     }
@@ -173,6 +181,16 @@ test "settings page key navigation wraps and returns side-effect actions" {
     try std.testing.expectEqual(Action.font_size_plus, state.handleKey(.{ .key = .enter }).?);
     try std.testing.expectEqual(Action.font_size_minus, state.handleKey(.{ .key = .arrow_left }).?);
     try std.testing.expectEqual(Action.close, state.handleKey(.{ .key = .escape }).?);
+}
+
+test "settings page exposes shell integration rows only on Windows" {
+    try std.testing.expectEqual(if (shell_integration.supported) @as(usize, 2) else 0, SHELL_INTEGRATION_ROWS);
+    if (shell_integration.supported) {
+        var state = State{ .visible = true, .focus = SETTINGS_CONTROL_ROW_START + 9 };
+        try std.testing.expectEqual(Action.toggle_start_menu, state.focusPrimaryAction().?);
+        state.focus += 1;
+        try std.testing.expectEqual(Action.toggle_startup, state.focusPrimaryAction().?);
+    }
 }
 
 test "settings page first visible row keeps focus in short view" {

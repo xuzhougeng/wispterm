@@ -240,7 +240,7 @@ jobs:
           }
 
           Invoke-WithRetry -Name "zig dependency fetch" -Command { zig build -Doptimize=ReleaseFast --fetch }
-          Invoke-WithRetry -Name "windows packaging" -Command { powershell -ExecutionPolicy Bypass -File .\packaging\windows\package.ps1 -Version "$env:BETA_VERSION" -SkipInstaller }
+          Invoke-WithRetry -Name "windows packaging" -Command { powershell -ExecutionPolicy Bypass -File .\packaging\windows\package.ps1 -Version "$env:BETA_VERSION" }
 
       - name: Validate and zip portable
         shell: pwsh

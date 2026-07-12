@@ -529,12 +529,11 @@ OpenSSH error so regressions can be diagnosed without guessing.
 
 ### Windows
 
-WispTerm supports three portable Windows packages plus the local installer build:
+WispTerm supports three portable Windows packages:
 
 - `portable` - default OpenGL portable build, run directly without installation
 - `portable-compat` - OpenGL portable build for older Windows 10 machines: `WebView2Loader.dll` for the embedded browser plus a bundled modern ConPTY (`conpty.dll` + `OpenConsole.exe`) so TUI apps like Codex get mouse scrolling and scrollbars on old inbox conhosts
 - `portable-native-d3d11` - Windows native D3D11 feedback build; use the default `portable` package if it shows rendering issues
-- `wispterm-setup.exe` - installer build, installs to the current user's profile and creates a Start menu shortcut
 
 Build the artifacts with:
 
@@ -557,12 +556,12 @@ zig-out\dist\portable-compat\plugins\...
 zig-out\dist\portable-native-d3d11\wispterm.exe
 zig-out\dist\portable-native-d3d11\version.txt
 zig-out\dist\portable-native-d3d11\plugins\...
-zig-out\dist\installer\wispterm-setup.exe
 ```
 
-The installer does not require administrator rights. It installs WispTerm to
-`%LOCALAPPDATA%\Programs\WispTerm`, adds a Start menu entry, and registers an
-uninstall entry for the current user.
+The portable app can add or remove its native Start menu shortcut and enable or
+disable login startup from Settings. These actions use Windows shell APIs
+directly; no installer, PowerShell child process, or administrator rights are
+required.
 
 ### macOS
 
@@ -605,9 +604,8 @@ When WispTerm detects a newer release on Windows, it downloads the matching
 portable zip to the Downloads folder and reveals it in Explorer; unzip it over
 your existing install to update.
 
-The unsigned IExpress installer is not published for now because Windows
-Defender can quarantine it as a false positive. Use the default portable zip
-release asset; the `portable-compat` zip when using the embedded browser panel
+WispTerm does not build or publish a Windows installer. Use the default portable
+zip release asset; the `portable-compat` zip when using the embedded browser panel
 or on older Windows 10 machines (its bundled ConPTY restores TUI mouse support);
 or the `portable-native-d3d11` zip when intentionally testing the Windows native
 D3D11 renderer. If the native D3D11 package shows a black window, crash, missing

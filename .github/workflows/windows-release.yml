@@ -74,7 +74,7 @@ jobs:
           }
 
           Invoke-WithRetry -Name "zig dependency fetch" -Command { zig build -Doptimize=ReleaseFast --fetch }
-          Invoke-WithRetry -Name "windows packaging" -Command { powershell -ExecutionPolicy Bypass -File .\packaging\windows\package.ps1 -Version "${{ github.ref_name }}" -SkipInstaller }
+          Invoke-WithRetry -Name "windows packaging" -Command { powershell -ExecutionPolicy Bypass -File .\packaging\windows\package.ps1 -Version "${{ github.ref_name }}" }
 
       - name: Validate packaged outputs
         shell: pwsh
@@ -158,7 +158,7 @@ jobs:
         run: |
           # Dependencies were already fetched by the release build step above, so
           # package.ps1's -DebugConsole branch does the (single) debug build itself.
-          powershell -ExecutionPolicy Bypass -File .\packaging\windows\package.ps1 -DebugConsole -Optimize ReleaseSafe -SkipInstaller
+          powershell -ExecutionPolicy Bypass -File .\packaging\windows\package.ps1 -DebugConsole -Optimize ReleaseSafe
           if (!(Test-Path "zig-out\dist\portable-debug\wispterm.exe")) {
             throw "Debug bundle not found: zig-out\dist\portable-debug\wispterm.exe"
           }
@@ -252,7 +252,7 @@ jobs:
               "- Portable native D3D11: feedback zip archive using the Windows native D3D11 renderer; use the default Portable asset if you hit rendering issues",
               "- Diagnostic (debug): console build with on-disk logging + crash reports for troubleshooting (ReleaseSafe). See docs/windows-debug-build.md.",
               "",
-              "The unsigned IExpress setup executable is not published because Windows Defender can quarantine it as a false positive. Use one of the portable zip assets for now."
+              "Portable builds can add or remove WispTerm from Windows Search and enable or disable startup from Settings."
             ) -join "`n"
 
             $releaseNotesPath = Join-Path "release-notes" "$tag.md"
