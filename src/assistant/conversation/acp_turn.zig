@@ -17,6 +17,7 @@ const ai_chat = @import("session.zig");
 const proto = @import("protocol.zig");
 const types = @import("types.zig");
 const terminal_lease = @import("../../agent/terminal_lease.zig");
+const agent_history = @import("../../agent/history.zig");
 const acp_client = @import("../../acp/client.zig");
 const schema = @import("../../acp/schema.zig");
 
@@ -142,8 +143,9 @@ pub fn acpTurnThreadMain(request: *ChatRequest) void {
     const session = request.session;
     defer ai_chat.maybeAutoTitle(session);
 
-    // Sessions restored from history carry an empty acp_command (the record does
-    // not persist it). Fail with actionable guidance instead of a spawn crash.
+    // Sessions restored from history records written before acp_command was
+    // persisted carry an empty command. Fail with actionable guidance instead
+    // of a spawn crash.
     if (request.acp_command.len == 0) {
         ai_chat.failAssistantStream(session, null, "此 ACP 会话缺少启动命令（通常来自历史记录恢复）。请通过模型切换器（/model 或点击模型名）重新选择 ACP 配置后再继续。");
         return;
@@ -859,6 +861,46 @@ test "acp turn streams text, shows a tool card, and round-trips a permission" {
 
     try std.testing.expect(transcriptContains(session, .assistant, "hello world"));
     try std.testing.expect(transcriptContains(session, .tool, "[execute] run tests"));
+}
+
+test "acp turn works on a session restored from a history record" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+
+    // Minimal scripted agent: handshake, then one streamed chunk + end_turn.
+    const script =
+        \\while IFS= read -r line; do
+        \\  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+        \\  case "$line" in
+        \\    *'"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1}}\n' "$id";;
+        \\    *'"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1"}}\n' "$id";;
+        \\    *'"session/prompt"'*)
+        \\      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"restored ok"}}}}'
+        \\      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+        \\      ;;
+        \\  esac
+        \\done
+    ;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const original = try newAcpTestSession(a);
+    defer original.deinit();
+    try setScriptedAgent(a, tmp.dir, original, script);
+
+    // Persist → restore, as an app restart would (issue: restored ACP sessions
+    // lost acp_command and demanded a profile re-pick before the first turn).
+    var record = try original.toHistoryRecord(a);
+    defer agent_history.freeOwnedRecord(a, &record);
+    const session = try Session.initFromHistoryRecord(a, record);
+    defer session.deinit();
+    try std.testing.expectEqualStrings(original.acp_command, session.acp_command);
+
+    const req = try buildAcpRequest(a, session, "hello after restart");
+    var thread = try std.Thread.spawn(.{}, acpTurnThreadMain, .{req});
+    thread.join();
+
+    try std.testing.expect(transcriptContains(session, .assistant, "restored ok"));
 }
 
 test "agent-death unlock cancels blocked and late askUser callers" {

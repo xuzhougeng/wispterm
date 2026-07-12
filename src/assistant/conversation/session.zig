@@ -1359,6 +1359,11 @@ pub const Session = struct {
             @memcpy(session.working_dir_buf[0..record.cwd.len], record.cwd);
             session.working_dir_len = record.cwd.len;
         }
+        // Direct assignment: the mutex is held here and setAcpCommand would
+        // re-lock it; a fresh session's acp_command is empty, nothing to free.
+        if (record.acp_command.len > 0) {
+            session.acp_command = try allocator.dupe(u8, record.acp_command);
+        }
         for (record.messages) |msg| {
             var cloned_msg = Message{
                 .role = switch (msg.role) {
@@ -4548,6 +4553,8 @@ pub const Session = struct {
         errdefer allocator.free(reasoning_effort);
         const cwd = try allocator.dupe(u8, self.effectiveWorkingDirLocked() orelse "");
         errdefer allocator.free(cwd);
+        const acp_command = try allocator.dupe(u8, self.acp_command);
+        errdefer allocator.free(acp_command);
 
         return .{
             .session_id = session_id,
@@ -4568,6 +4575,7 @@ pub const Session = struct {
             .created_at = self.created_at_ms,
             .updated_at = self.updated_at_ms,
             .cwd = cwd,
+            .acp_command = acp_command,
             .messages = messages,
         };
     }
@@ -9630,6 +9638,32 @@ test "composer submit of free text answers a pending question as custom" {
 
     try std.testing.expect(runner.result == .custom);
     try std.testing.expectEqualStrings("neither, use C", runner.result.custom);
+}
+
+test "acp_command survives toHistoryRecord -> initFromHistoryRecord round-trip" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator,
+        "ACP",
+        "https://x",
+        "k",
+        "m",
+        "sys",
+        "disabled",
+        "low",
+        "true",
+        "true",
+    );
+    defer session.deinit();
+    session.setAcpCommand("npx codex-acp");
+
+    var record = try session.toHistoryRecord(allocator);
+    defer agent_history.freeOwnedRecord(allocator, &record);
+    try std.testing.expectEqualStrings("npx codex-acp", record.acp_command);
+
+    const restored = try Session.initFromHistoryRecord(allocator, record);
+    defer restored.deinit();
+    try std.testing.expectEqualStrings("npx codex-acp", restored.acp_command);
 }
 
 test "copilot flag survives toHistoryRecord -> initFromHistoryRecord round-trip" {
