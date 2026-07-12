@@ -4,6 +4,7 @@ const release_package = @import("release_package.zig");
 
 pub const latest_release_api_url = "https://api.github.com/repos/xuzhougeng/wispterm/releases/latest";
 pub const latest_release_page_url = "https://github.com/xuzhougeng/wispterm/releases/latest";
+pub const repo_url = "https://github.com/xuzhougeng/wispterm";
 pub const asset_name_buffer_len = 128;
 pub const asset_download_url_buffer_len = 512;
 
