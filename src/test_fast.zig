@@ -305,6 +305,8 @@ test {
     _ = @import("assistant/conversation/composer.zig");
     _ = @import("composer_detail_wrap.zig");
     _ = @import("assistant/conversation/presentation.zig");
+    _ = @import("acp/schema.zig");
+    _ = @import("acp/client.zig");
     _ = @import("agent_tools/args.zig");
     _ = @import("agent_tools/cli_agent.zig");
     _ = @import("agent_tools/mod.zig");
