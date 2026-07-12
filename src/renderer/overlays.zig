@@ -936,7 +936,13 @@ fn executeCommand(action: CommandAction) void {
         .run_memory_digest_now => {
             _ = AppWindow.runMemoryDigestNow();
         },
+        .star_repo => openRepoStar(),
     }
+}
+
+pub fn openRepoStar() void {
+    const allocator = AppWindow.g_allocator orelse return;
+    _ = platform_open_url.open(allocator, .{ .url = update_check.repo_url });
 }
 
 fn activeWeixinController() ?*weixin_qr_panel.Controller {

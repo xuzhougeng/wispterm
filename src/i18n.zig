@@ -937,6 +937,7 @@ pub fn commandTitle(action: CommandAction) ?[]const u8 {
         .open_port_forwarding => "端口转发",
         .split_preview => "分屏预览",
         .run_memory_digest_now => "立即运行记忆摘要",
+        .star_repo => "给项目点个 Star（赞一个）",
     };
 }
 
@@ -994,6 +995,7 @@ pub fn commandDetail(action: CommandAction) ?[]const u8 {
         .open_port_forwarding => "管理 SSH 端口转发规则",
         .split_preview => "在右侧打开预览面板",
         .run_memory_digest_now => "扫描 AI 对话记录并生成今日摘要",
+        .star_repo => "打开 WispTerm 的 GitHub 仓库,给它点个 Star",
     };
 }
 

@@ -52,6 +52,7 @@ pub const CommandAction = enum {
     open_port_forwarding,
     split_preview,
     run_memory_digest_now,
+    star_repo,
 };
 
 pub const CommandEntry = struct {
@@ -110,6 +111,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Port Forwarding", .detail = "Manage SSH port forwarding rules", .shortcut = "", .action = .open_port_forwarding },
     .{ .title = "Split Preview", .detail = "Open a preview panel on the right", .shortcut = "", .action = .split_preview },
     .{ .title = "Run Memory Digest Now", .detail = "Scan AI chat logs and generate today's digest", .shortcut = "", .action = .run_memory_digest_now },
+    .{ .title = "Star Me", .detail = "Open the WispTerm GitHub repo to give it a star", .shortcut = "", .action = .star_repo },
 };
 
 test "command center exposes generic integration prompt action only" {
