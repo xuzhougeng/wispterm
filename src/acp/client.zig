@@ -278,23 +278,25 @@ pub const Connection = struct {
         }
     }
 
-    fn respond(self: *Connection, id: i64, result_json: []const u8) !void {
+    /// `id_json` is the inbound request's id echoed verbatim as JSON text —
+    /// codex-acp uses UUID *string* ids, so no integer assumption here.
+    fn respond(self: *Connection, id_json: []const u8, result_json: []const u8) !void {
         const line = try std.fmt.allocPrint(
             self.allocator,
-            "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{s}}}\n",
-            .{ id, result_json },
+            "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{s}}}\n",
+            .{ id_json, result_json },
         );
         defer self.allocator.free(line);
         try self.writeAll(line);
     }
 
-    fn respondError(self: *Connection, id: i64, code: i64, message: []const u8) !void {
+    fn respondError(self: *Connection, id_json: []const u8, code: i64, message: []const u8) !void {
         const msg_quoted = try std.json.Stringify.valueAlloc(self.allocator, std.json.Value{ .string = message }, .{});
         defer self.allocator.free(msg_quoted);
         const line = try std.fmt.allocPrint(
             self.allocator,
-            "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"error\":{{\"code\":{d},\"message\":{s}}}}}\n",
-            .{ id, code, msg_quoted },
+            "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"error\":{{\"code\":{d},\"message\":{s}}}}}\n",
+            .{ id_json, code, msg_quoted },
         );
         defer self.allocator.free(line);
         try self.writeAll(line);
@@ -379,8 +381,9 @@ pub const Connection = struct {
         if (method_val) |mv| {
             if (mv != .string) return;
             if (id_val != null) {
-                // Inbound request: hand the raw line to a worker thread.
-                if (jsonIntId(id_val.?) != null) self.spawnInbound(trimmed);
+                // Inbound request: hand the raw line to a worker thread. Any id
+                // shape counts — codex-acp sends UUID string ids, not integers.
+                self.spawnInbound(trimmed);
             } else {
                 self.dispatchNotification(mv.string, obj.get("params"));
             }
@@ -450,7 +453,11 @@ fn inboundMain(self: *Connection, line: []u8) void {
     defer parsed.deinit();
     if (parsed.value != .object) return;
     const obj = parsed.value.object;
-    const id = jsonIntId(obj.get("id") orelse return) orelse return;
+    // Echo the id back verbatim as JSON text (integer or string — codex-acp
+    // uses UUID string ids); re-serializing the parsed value keeps it exact.
+    const id_val = obj.get("id") orelse return;
+    const id_json = std.json.Stringify.valueAlloc(self.allocator, id_val, .{}) catch return;
+    defer self.allocator.free(id_json);
     const method_val = obj.get("method") orelse return;
     if (method_val != .string) return;
     const params = obj.get("params") orelse std.json.Value{ .null = {} };
@@ -458,12 +465,12 @@ fn inboundMain(self: *Connection, line: []u8) void {
     if (self.isClosing()) return;
     const result = self.handler.onRequest(self.handler.ctx, self.allocator, method_val.string, params) catch |err| {
         if (self.isClosing()) return;
-        self.respondError(id, -32603, @errorName(err)) catch {};
+        self.respondError(id_json, -32603, @errorName(err)) catch {};
         return;
     };
     defer self.allocator.free(result);
     if (self.isClosing()) return;
-    self.respond(id, result) catch {};
+    self.respond(id_json, result) catch {};
 }
 
 fn jsonIntId(v: std.json.Value) ?i64 {
@@ -610,6 +617,41 @@ test "inbound request is dispatched and response written back" {
     recorder.mutex.lock();
     defer recorder.mutex.unlock();
     try std.testing.expectEqualStrings("ok", recorder.last_update_text.?);
+    try std.testing.expectEqualStrings("session/request_permission", recorder.last_method.?);
+}
+
+test "inbound request with a string id is echoed verbatim" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    // codex-acp (npm 0.16.0) sends UUID *string* ids on session/request_permission;
+    // our response must carry the same string id or codex waits forever.
+    const script =
+        \\while IFS= read -r line; do
+        \\  case "$line" in
+        \\    *'"session/prompt"'*)
+        \\      printf '%s\n' '{"jsonrpc":"2.0","id":"c44def3c-uuid","method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"t1","title":"Edit"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"}]}}'
+        \\      IFS= read -r reply
+        \\      case "$reply" in *'"id":"c44def3c-uuid"'*'"selected"'*) : ;; *) exit 9 ;; esac
+        \\      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}'
+        \\      ;;
+        \\  esac
+        \\done
+    ;
+    var recorder = TestHandler{};
+    defer recorder.deinit();
+    const conn = try Connection.spawn(a, &.{ "/bin/sh", "-c", script }, null, recorder.handler());
+    defer conn.deinit();
+
+    const p = try conn.beginCall("session/prompt", "{\"sessionId\":\"s1\",\"prompt\":[]}");
+    defer p.release();
+    try std.testing.expect(p.wait(5000));
+    // The prompt only completes if the script accepted our string-id response
+    // (otherwise it exits 9 without answering and take() fails).
+    const r = try p.take(a);
+    defer a.free(r);
+    try std.testing.expect(std.mem.indexOf(u8, r, "end_turn") != null);
+    recorder.mutex.lock();
+    defer recorder.mutex.unlock();
     try std.testing.expectEqualStrings("session/request_permission", recorder.last_method.?);
 }
 
