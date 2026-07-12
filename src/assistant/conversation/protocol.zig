@@ -740,7 +740,6 @@ pub fn builtinToolNameReserved(name: []const u8) bool {
         "webread",
         "pubmed",
         "subagent",
-        "cli_agent",
         "send_attachment",
         "get_system_time",
         "memory_save",
@@ -828,7 +827,6 @@ fn forEachToolSpec(
     try Filtered.emitTool(ctx, opts, "webread", "Read a web page or local file into clean markdown via Jina Reader. Pass an http(s):// URL to fetch a page, or a local file path (PDF, Word, Excel, PowerPoint) to upload and convert it. Use when you need the full content of one source, not a search.", "{\"url\":{\"type\":\"string\",\"description\":\"An http(s):// URL, or a local file path to upload.\"}}");
     try Filtered.emitTool(ctx, opts, "pubmed", "Search PubMed (NCBI) for biomedical and life-sciences literature and return matching articles with title, authors, journal, year, PMID, DOI, and abstract. Before calling, decompose the user's academic question into English keywords joined with PubMed boolean operators (AND/OR), then pass that as `query`. Use for scholarly/medical literature questions, not general web search.", "{\"query\":{\"type\":\"string\",\"description\":\"PubMed query: English keywords joined with AND/OR, e.g. metformin AND type 2 diabetes AND cardiovascular events.\"},\"max_results\":{\"type\":\"integer\",\"description\":\"Optional max number of articles (default 10, max 20).\"}}");
     try Filtered.emitTool(ctx, opts, "subagent", "Delegate a self-contained research or reading task to a background subagent with its own separate context window. The subagent can use websearch, webread, pubmed, read_file, terminal_list, terminal_snapshot, and wispterm_docs, then returns one final report; its intermediate tool output never enters this conversation. Use it whenever a task would pull large content here (full web pages, PDFs, multi-query searches). It cannot see this conversation or ask questions: put every needed detail (URLs, paths, constraints) and the expected report format into task.", "{\"task\":{\"type\":\"string\",\"description\":\"Complete self-contained task description: what to investigate or read, all needed context (URLs, paths, constraints), and what the final report must contain.\"}}");
-    try Filtered.emitToolWithRequired(ctx, opts, "cli_agent", "Delegate one self-contained coding or analysis task to an external CLI agent that works autonomously in the working directory with its own shell and file tools and full access. Available agents: codex. It cannot see this conversation or ask questions: put every needed detail (goal, files, constraints, expected output format) into task. Command progress streams into this chat; the tool returns the agent's final report. Prefer this over driving an interactive codex terminal when the task is self-contained.", "{\"agent\":{\"type\":\"string\",\"description\":\"Which CLI agent to run. Available: codex.\"},\"task\":{\"type\":\"string\",\"description\":\"Complete self-contained task description with all needed context.\"},\"cwd\":{\"type\":\"string\",\"description\":\"Optional working directory; defaults to the agent working directory.\"},\"timeout_ms\":{\"type\":\"integer\",\"description\":\"Optional timeout in milliseconds; default 600000, max 3600000.\"}}", &.{ "agent", "task" });
     try Filtered.emitTool(ctx, opts, "send_attachment", "Send a local file back to the active chat conversation (WeChat or Feishu) that triggered this agent request. Use only when the current request came from a chat channel; ordinary local chat has no reply context. Audio and voice files are sent as ordinary file attachments.", "{\"kind\":{\"type\":\"string\",\"description\":\"Attachment kind: file, image, or voice. Voice is accepted as an alias for file.\"},\"path\":{\"type\":\"string\",\"description\":\"Readable local file path to send.\"},\"display_name\":{\"type\":\"string\",\"description\":\"Optional filename shown in the chat for file attachments; defaults to the path basename.\"}}");
     if (opts.include_memory) {
         try Filtered.emitTool(ctx, opts, "memory_save", "Save a durable long-term memory so future sessions remember it. Use for stable user preferences, project conventions, and key decisions — not transient task details. tier=global for facts about the user/preferences; tier=project for facts about the current project/working directory.", "{\"tier\":{\"type\":\"string\",\"description\":\"global or project.\"},\"name\":{\"type\":\"string\",\"description\":\"Short stable slug handle (kebab-case). Reusing an existing name updates that memory.\"},\"description\":{\"type\":\"string\",\"description\":\"One-line summary shown in the resident index.\"},\"type\":{\"type\":\"string\",\"description\":\"Optional: user, feedback, project, or reference. Defaults to user.\"},\"body\":{\"type\":\"string\",\"description\":\"The full memory text.\"}}");
@@ -2253,18 +2251,13 @@ test "full toolset includes the subagent tool" {
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"task\"") != null);
 }
 
-test "full toolset includes cli_agent and subagent toolset excludes it" {
+test "toolset no longer includes cli_agent" {
     const a = std.testing.allocator;
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(a);
     try appendToolSchemas(a, &out, .{ .include_memory = false });
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"name\":\"cli_agent\"") != null);
-
-    var sub: std.ArrayListUnmanaged(u8) = .empty;
-    defer sub.deinit(a);
-    try appendToolSchemas(a, &sub, .{ .include_memory = false, .toolset = .subagent });
-    try std.testing.expect(std.mem.indexOf(u8, sub.items, "\"cli_agent\"") == null);
-    try std.testing.expect(builtinToolNameReserved("cli_agent"));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"name\":\"cli_agent\"") == null);
+    try std.testing.expect(!builtinToolNameReserved("cli_agent"));
 }
 
 test "ask_user appears in the full tool schema with question and options" {

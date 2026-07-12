@@ -130,7 +130,7 @@ pub const Connection = struct {
         // child fails (missing executable); the real error only surfaces via
         // waitForSpawn() draining the err_pipe. On that failure wait() re-throws
         // before cleanupStreams()/reaping, so close the pipe fds and reap the
-        // exited fork child ourselves or both leak (see cli_agent.zig:230-239).
+        // exited fork child ourselves or both leak.
         self.child.waitForSpawn() catch |err| {
             if (self.child.stdin) |*f| f.close();
             if (self.child.stdout) |*f| f.close();
