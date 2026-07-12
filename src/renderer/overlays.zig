@@ -4548,7 +4548,7 @@ fn cycleAiFormProtocol(forward: bool) void {
     // Landing on acp with no command yet: prefill the standard ACP adapter launch
     // command so the field isn't left blank-but-required.
     if (next == .acp and aiField(.command).len == 0) {
-        setAiDefault(.command, "npx @zed-industries/claude-code-acp");
+        setAiDefault(.command, "npx -y @zed-industries/claude-code-acp");
     }
 }
 
@@ -4569,7 +4569,7 @@ test "cycleAiFormProtocol prefills the acp launch command only when landing on a
     setAiDefault(.command, "");
     cycleAiFormProtocol(true);
     try std.testing.expectEqualStrings("acp", aiField(.protocol));
-    try std.testing.expectEqualStrings("npx @zed-industries/claude-code-acp", aiField(.command));
+    try std.testing.expectEqualStrings("npx -y @zed-industries/claude-code-acp", aiField(.command));
 
     // Cycling away from acp and back must not clobber a user-edited command.
     setAiDefault(.command, "custom-launcher");
@@ -4717,8 +4717,7 @@ fn saveAiFormProfile() ?usize {
     const allocator = AppWindow.g_allocator orelse return null;
     const base_url = aiField(.base_url);
     const model = aiField(.model);
-    if (base_url.len == 0 or model.len == 0) return null;
-    if (!isHttpUrlish(base_url)) return null;
+    if (!aiProfileInputsValid(aiField(.protocol), base_url, model, aiField(.command))) return null;
 
     const editing_existing = assistantProfiles().edit_index != AI_PROFILE_NONE;
     const idx = if (editing_existing)
@@ -4746,8 +4745,10 @@ fn saveAiFormProfile() ?usize {
         @memcpy(assistantProfiles().profiles[idx].fields[i][0..assistantProfiles().lens[i]], assistantProfiles().bufs[i][0..assistantProfiles().lens[i]]);
     }
     if (assistantProfiles().profiles[idx].lens[@intFromEnum(AiField.name)] == 0) {
-        const len = @min(model.len, AI_FIELD_MAX);
-        @memcpy(assistantProfiles().profiles[idx].fields[@intFromEnum(AiField.name)][0..len], model[0..len]);
+        // ACP profiles may have no model; name them after the launch command.
+        const fallback = if (model.len > 0) model else aiField(.command);
+        const len = @min(fallback.len, AI_FIELD_MAX);
+        @memcpy(assistantProfiles().profiles[idx].fields[@intFromEnum(AiField.name)][0..len], fallback[0..len]);
         assistantProfiles().profiles[idx].lens[@intFromEnum(AiField.name)] = len;
     }
 
@@ -4789,8 +4790,7 @@ fn spawnAiProfileWithAgentOverride(idx: usize, agent_override: ?[]const u8) bool
     const max_tokens = std.fmt.parseInt(u32, std.mem.trim(u8, aiProfileField(profile, .max_tokens), " \t"), 10) catch 8192;
     const vision_val = aiProfileField(profile, .vision);
     const command = aiProfileField(profile, .command);
-    if (base_url.len == 0 or model.len == 0) return false;
-    if (!isHttpUrlish(base_url)) return false;
+    if (!aiProfileInputsValid(protocol, base_url, model, command)) return false;
 
     sessionLauncherClose();
     return AppWindow.spawnAiChatTab(name, base_url, api_key, model, protocol, system_prompt, thinking, reasoning_effort, stream_val, agent_val, max_tokens, vision_val, command);
@@ -4810,8 +4810,7 @@ fn applyProfileToSession(session: *AppWindow.ai_chat.Session, idx: usize) bool {
     const max_tokens = std.fmt.parseInt(u32, std.mem.trim(u8, aiProfileField(profile, .max_tokens), " \t"), 10) catch 8192;
     const vision_val = aiProfileField(profile, .vision);
     const command = aiProfileField(profile, .command);
-    if (base_url.len == 0 or model.len == 0) return false;
-    if (!isHttpUrlish(base_url)) return false;
+    if (!aiProfileInputsValid(protocol, base_url, model, command)) return false;
     ai_chat.applyProviderProfile(session, base_url, api_key, model, protocol, thinking, reasoning_effort, max_tokens, vision_val);
     session.setAcpCommand(command);
     AppWindow.g_force_rebuild = true;
@@ -4874,8 +4873,7 @@ pub fn makeCopilotSessionForDefaultProfile() ?*ai_chat.Session {
     const max_tokens = std.fmt.parseInt(u32, std.mem.trim(u8, aiProfileField(profile, .max_tokens), " \t"), 10) catch 8192;
     const vision_val = aiProfileField(profile, .vision);
     const command = aiProfileField(profile, .command);
-    if (base_url.len == 0 or model.len == 0) return null;
-    if (!isHttpUrlish(base_url)) return null;
+    if (!aiProfileInputsValid(protocol, base_url, model, command)) return null;
     const allocator = AppWindow.g_allocator orelse return null;
     const session = ai_chat.Session.initWithVision(
         allocator,
@@ -5122,6 +5120,22 @@ fn cycleDefaultAiProfile(delta: i64) void {
 
 fn isHttpUrlish(value: []const u8) bool {
     return std.mem.startsWith(u8, value, "https://") or std.mem.startsWith(u8, value, "http://");
+}
+
+/// Gate for the fields a profile actually needs before save/connect. ACP
+/// profiles drive a local agent subprocess, so only the launch command
+/// matters; HTTP profiles need base_url + model.
+fn aiProfileInputsValid(protocol: []const u8, base_url: []const u8, model: []const u8, command: []const u8) bool {
+    if (ai_chat.ApiProtocol.parse(protocol) == .acp) return command.len > 0;
+    return base_url.len > 0 and model.len > 0 and isHttpUrlish(base_url);
+}
+
+test "aiProfileInputsValid exempts acp profiles from the base_url/model gate" {
+    try std.testing.expect(aiProfileInputsValid("acp", "", "", "npx @zed-industries/claude-code-acp"));
+    try std.testing.expect(!aiProfileInputsValid("acp", "https://x", "m", "")); // acp still needs a command
+    try std.testing.expect(!aiProfileInputsValid("", "", "gpt", ""));
+    try std.testing.expect(!aiProfileInputsValid("", "api.example.com", "gpt", "")); // scheme required
+    try std.testing.expect(aiProfileInputsValid("", "https://api.example.com", "gpt", ""));
 }
 
 fn loadAiProfiles() void {
@@ -5949,10 +5963,17 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
     }
 
     if (g_ai_form_visible) {
+        // ACP profiles don't use the HTTP fields: show a hint in the empty
+        // ones instead of hiding rows (focus/click routing is row-indexed).
+        const acp_form = ai_chat.ApiProtocol.parse(aiField(.protocol)) == .acp;
+        const acp_na = i18n.s().sl_ai_acp_not_needed;
+        const base_url_val = if (acp_form and aiField(.base_url).len == 0) acp_na else aiField(.base_url);
+        const api_key_val = if (acp_form and aiField(.api_key).len == 0) acp_na else aiField(.api_key);
+        const model_val = if (acp_form and aiField(.model).len == 0) acp_na else aiField(.model);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.name), i18n.s().sl_ai_profile_name, aiField(.name), false);
-        renderAiSessionField(layout, window_height, @intFromEnum(AiField.base_url), i18n.s().sl_ai_base_url, aiField(.base_url), false);
-        renderAiSessionField(layout, window_height, @intFromEnum(AiField.api_key), i18n.s().sl_ai_api_key, aiField(.api_key), true);
-        renderAiSessionField(layout, window_height, @intFromEnum(AiField.model), i18n.s().sl_ai_model, aiField(.model), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.base_url), i18n.s().sl_ai_base_url, base_url_val, false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.api_key), i18n.s().sl_ai_api_key, api_key_val, api_key_val.ptr != acp_na.ptr);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.model), i18n.s().sl_ai_model, model_val, false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.system_prompt), i18n.s().sl_ai_system, aiField(.system_prompt), false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.thinking), i18n.s().sl_ai_thinking, aiField(.thinking), false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.reasoning_effort), i18n.s().sl_ai_effort, aiField(.reasoning_effort), false);

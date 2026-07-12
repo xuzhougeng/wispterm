@@ -12,8 +12,10 @@ Windows, `~/Library/Application Support/wispterm/ai_profiles` on macOS, or
 on Linux — with fields hex encoded on disk.
 
 Copilot can speak OpenAI-compatible Chat Completions, the OpenAI Responses API,
-or the Anthropic Messages API. Set the profile Protocol field to
-`chat_completions` (default), `responses`, or `anthropic`:
+the Anthropic Messages API, or hand the whole conversation to an external agent
+over ACP (see [External Agents via ACP](#external-agents-via-acp)). Set the
+profile Protocol field to `chat_completions` (default), `responses`,
+`anthropic`, or `acp`:
 
 - `responses` profiles should use a base URL such as `https://api.openai.com/v1`
   or a full endpoint ending in `/responses`.
@@ -61,6 +63,55 @@ WispTerm asks the new model to summarize the prior transcript in the background
 and collapses the old turns into a `Conversation summary` card. You can keep
 typing while the summary runs; if the summary request fails, WispTerm keeps the
 full raw history instead.
+
+## External Agents via ACP
+
+Instead of calling a model API directly, an AI profile can launch an external
+coding agent (Claude Code, Codex, or any other [ACP](https://agentclientprotocol.com)
+server) as a subprocess and let it drive the conversation. WispTerm speaks the
+Agent Client Protocol over the agent's stdio: your messages become
+`session/prompt` turns, the agent's streamed replies and tool calls render in
+the normal chat transcript, and the agent process is reused across turns within
+the session.
+
+### Creating an ACP profile
+
+Open the AI profile form (session launcher → AI settings) and cycle the
+`Protocol` field to `acp`. An ACP profile only needs three fields:
+
+- **Profile name** — any label (falls back to the command if left empty).
+- **Protocol** — `acp`.
+- **Command** — the agent launch command, run through your shell.
+
+Base URL, API key, and model are not used — the form shows
+`(not needed for ACP)` in those fields and they can stay empty. The agent
+process brings its own model access and authentication (e.g. Claude Code uses
+your existing `claude` login).
+
+Two verified adapter commands:
+
+| Agent | Command |
+|-------|---------|
+| Claude Code | `npx -y @zed-industries/claude-code-acp` |
+| Codex | `npx -y @zed-industries/codex-acp` |
+
+Landing on `acp` in the Protocol field prefills the Claude Code command if the
+Command field is empty.
+
+### Permissions
+
+When the agent asks for permission (`session/request_permission`, e.g. before
+editing a file or running a command), WispTerm shows the question as a blocking
+prompt in the chat — pick an option to let the agent continue. Stopping the
+turn cancels the pending prompt.
+
+### Terminal capability
+
+On macOS and Linux, WispTerm advertises the ACP `terminal/*` capability: when
+the agent runs a command, it executes in a real WispTerm pane you can watch and
+scroll. On Windows this capability is currently disabled (agents fall back to
+their own command execution) until shell-argument escaping for `cmd.exe` is
+implemented.
 
 ## Sessions
 

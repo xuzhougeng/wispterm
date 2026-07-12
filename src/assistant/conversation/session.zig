@@ -1452,7 +1452,8 @@ pub const Session = struct {
     }
 
     pub fn missingApiKey(self: *const Session) bool {
-        return self.api_key_len == 0;
+        // ACP sessions drive a local agent subprocess — no API key involved.
+        return self.api_key_len == 0 and self.protocol != .acp;
     }
 
     /// Stash the `/model <name>` argument so the app-layer trigger can read it
@@ -2729,7 +2730,7 @@ pub const Session = struct {
             return;
         }
 
-        if (self.api_key_len == 0) {
+        if (self.missingApiKey()) {
             self.setStatusLocked("Missing API key. Edit the Copilot profile or set DEEPSEEK_API_KEY.");
             self.clearPendingReplyContextLocked();
             self.mutex.unlock();
@@ -3329,7 +3330,7 @@ pub const Session = struct {
             thread.join();
             self.mutex.lock();
         }
-        if (self.api_key_len == 0) {
+        if (self.missingApiKey()) {
             self.distill_suggestion_pending = false;
             self.clearSubmittedInputLocked();
             self.setStatusLocked("Missing API key. Edit the AI Chat profile or set DEEPSEEK_API_KEY.");
@@ -8121,6 +8122,12 @@ test "statusKind: missing api key maps to stopped" {
     // A freshly-constructed session has no API key.
     try std.testing.expect(session.missingApiKey());
     try std.testing.expectEqual(Session.StatusKind.stopped, session.statusKind());
+}
+
+test "missingApiKey: acp sessions never need an API key" {
+    var session = Session{ .allocator = std.testing.allocator };
+    session.protocol = .acp;
+    try std.testing.expect(!session.missingApiKey());
 }
 
 test "statusKind: idle error and stopped states map to stopped" {
