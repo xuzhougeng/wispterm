@@ -345,11 +345,19 @@ threadlocal var g_command_palette_history_revision: u64 = 0;
 const PALETTE_FADE_IN_MS: i64 = 140;
 const PALETTE_FADE_OUT_MS: i64 = 100;
 const PALETTE_HL_MS: i64 = 120;
-threadlocal var g_palette_opened_at_ms: i64 = 0;
-threadlocal var g_palette_closing_at_ms: i64 = 0;
-threadlocal var g_palette_hl_from: f32 = -1; // -1 = snap to target on next frame
-threadlocal var g_palette_hl_target: f32 = -1;
-threadlocal var g_palette_hl_start_ms: i64 = 0;
+
+/// All time-based overlay animation state (palette fade/slide/highlight plus
+/// the per-overlay AutoFade table), aggregated into one global so the
+/// global-state guard ceiling stays flat.
+const OverlayAnim = struct {
+    palette_opened_at_ms: i64 = 0,
+    palette_closing_at_ms: i64 = 0,
+    hl_from: f32 = -1, // -1 = snap to target on next frame
+    hl_target: f32 = -1,
+    hl_start_ms: i64 = 0,
+    auto_fades: [std.enums.values(AutoFadeId).len]AutoFade = @splat(.{}),
+};
+threadlocal var g_overlay_anim: OverlayAnim = .{};
 
 fn animProgress(elapsed_ms: i64, duration_ms: i64) f32 {
     if (elapsed_ms <= 0) return 0;
@@ -363,23 +371,23 @@ fn easeOutCubic(t: f32) f32 {
 }
 
 fn paletteHighlightCurrent(now_ms: i64) f32 {
-    const e = easeOutCubic(animProgress(now_ms - g_palette_hl_start_ms, PALETTE_HL_MS));
-    return g_palette_hl_from + (g_palette_hl_target - g_palette_hl_from) * e;
+    const e = easeOutCubic(animProgress(now_ms - g_overlay_anim.hl_start_ms, PALETTE_HL_MS));
+    return g_overlay_anim.hl_from + (g_overlay_anim.hl_target - g_overlay_anim.hl_from) * e;
 }
 
 /// Advance the highlight-bar animation toward `target` (a display-row index)
 /// and return the current animated position.
 fn paletteHighlightPos(now_ms: i64, target: f32) f32 {
-    if (g_palette_hl_from < 0) {
-        g_palette_hl_from = target;
-        g_palette_hl_target = target;
-        g_palette_hl_start_ms = now_ms;
+    if (g_overlay_anim.hl_from < 0) {
+        g_overlay_anim.hl_from = target;
+        g_overlay_anim.hl_target = target;
+        g_overlay_anim.hl_start_ms = now_ms;
         return target;
     }
-    if (g_palette_hl_target != target) {
-        g_palette_hl_from = paletteHighlightCurrent(now_ms);
-        g_palette_hl_target = target;
-        g_palette_hl_start_ms = now_ms;
+    if (g_overlay_anim.hl_target != target) {
+        g_overlay_anim.hl_from = paletteHighlightCurrent(now_ms);
+        g_overlay_anim.hl_target = target;
+        g_overlay_anim.hl_start_ms = now_ms;
     }
     return paletteHighlightCurrent(now_ms);
 }
@@ -401,19 +409,75 @@ fn drawPaletteHighlight(
     renderRoundedQuadAlpha(slot0.selected_fill.x, y, slot0.selected_fill.w, slot0.selected_fill.h, 5, color, alpha);
 }
 
+/// Frame-driven fade for overlay open/close transitions. Detects visibility
+/// edges at render time — no open/close call-site hooks needed. The overlay's
+/// render function feeds its visible flag to autoFade() every frame and draws
+/// with the returned factor via ui_pipeline.g_ui_fade; anyOverlayActive polls
+/// animating() so frames keep coming while a transition runs.
+const AutoFade = struct {
+    was_visible: bool = false,
+    opened_at: i64 = 0,
+    closing_at: i64 = 0,
+
+    const IN_MS: i64 = 140;
+    const OUT_MS: i64 = 100;
+
+    /// Advance with this frame's visibility; returns the fade factor to draw
+    /// with, or null when the overlay is fully hidden.
+    fn frame(self: *AutoFade, visible: bool, now: i64) ?f32 {
+        if (visible and !self.was_visible) {
+            self.opened_at = now;
+            self.closing_at = 0;
+        } else if (!visible and self.was_visible) {
+            self.closing_at = now;
+        }
+        self.was_visible = visible;
+        if (visible) return easeOutCubic(animProgress(now - self.opened_at, IN_MS));
+        if (self.closing_at != 0) {
+            if (now - self.closing_at < OUT_MS)
+                return 1.0 - animProgress(now - self.closing_at, OUT_MS);
+            self.closing_at = 0;
+        }
+        return null;
+    }
+
+    fn animating(self: *const AutoFade, now: i64) bool {
+        if (self.was_visible) return now - self.opened_at < IN_MS;
+        return self.closing_at != 0 and now - self.closing_at < OUT_MS;
+    }
+};
+
+const AutoFadeId = enum {
+    session_launcher,
+    settings_page,
+    mcp_servers,
+    jupyter_picker,
+    copilot_picker,
+    whats_new,
+    window_close_confirm,
+    restore_defaults_confirm,
+    integration_prompt,
+    transfer_cancel_confirm,
+};
+
+/// Per-frame entry point for an overlay's open/close fade (see AutoFade).
+fn autoFade(id: AutoFadeId, visible: bool) ?f32 {
+    return g_overlay_anim.auto_fades[@intFromEnum(id)].frame(visible, std.time.milliTimestamp());
+}
+
 /// Whether a palette animation still needs per-frame repaints. Consulted by
 /// anyOverlayActive; settles (returns false) once every animation finished.
 fn commandPaletteAnimActive(now: i64) bool {
     const state = commandPaletteState();
     if (state.visible) {
-        if (now - g_palette_opened_at_ms < PALETTE_FADE_IN_MS) return true;
-        if (g_palette_hl_from >= 0 and g_palette_hl_target != g_palette_hl_from and
-            now - g_palette_hl_start_ms < PALETTE_HL_MS) return true;
+        if (now - g_overlay_anim.palette_opened_at_ms < PALETTE_FADE_IN_MS) return true;
+        if (g_overlay_anim.hl_from >= 0 and g_overlay_anim.hl_target != g_overlay_anim.hl_from and
+            now - g_overlay_anim.hl_start_ms < PALETTE_HL_MS) return true;
         return false;
     }
-    if (g_palette_closing_at_ms != 0) {
-        if (!state.isHistoryMode() and now - g_palette_closing_at_ms < PALETTE_FADE_OUT_MS) return true;
-        g_palette_closing_at_ms = 0;
+    if (g_overlay_anim.palette_closing_at_ms != 0) {
+        if (!state.isHistoryMode() and now - g_overlay_anim.palette_closing_at_ms < PALETTE_FADE_OUT_MS) return true;
+        g_overlay_anim.palette_closing_at_ms = 0;
     }
     return false;
 }
@@ -438,9 +502,9 @@ fn commandPaletteOpenWithMode(mode: CommandPaletteMode) void {
     freeSnippets(); // re-read snippet files on each open so edits show without restart
     snippetsState().loaded = false;
     if (!commandPaletteState().visible) {
-        g_palette_opened_at_ms = std.time.milliTimestamp();
-        g_palette_closing_at_ms = 0;
-        g_palette_hl_from = -1;
+        g_overlay_anim.palette_opened_at_ms = std.time.milliTimestamp();
+        g_overlay_anim.palette_closing_at_ms = 0;
+        g_overlay_anim.hl_from = -1;
     }
     var state = commandCenterStateSnapshot();
     state.commandPaletteOpenWithMode(mode);
@@ -452,7 +516,7 @@ pub fn commandPaletteOpen() void {
 }
 
 pub fn commandPaletteClose() void {
-    if (commandPaletteState().visible) g_palette_closing_at_ms = std.time.milliTimestamp();
+    if (commandPaletteState().visible) g_overlay_anim.palette_closing_at_ms = std.time.milliTimestamp();
     var state = commandCenterStateSnapshot();
     state.commandPaletteClose();
     commandCenterStateCommit(state);
@@ -1821,7 +1885,9 @@ const copilot_picker = @import("../assistant/sidebar/picker.zig");
 
 /// Render the multi-server Jupyter picker overlay.
 pub fn renderJupyterPicker(window_width: f32, window_height: f32) void {
-    if (!jupyter_picker.isVisible()) return;
+    const fade = autoFade(.jupyter_picker, jupyter_picker.isVisible()) orelse return;
+    ui_pipeline.g_ui_fade = fade;
+    defer ui_pipeline.g_ui_fade = 1.0;
     const n = jupyter_picker.count();
     if (n == 0) return;
 
@@ -1889,7 +1955,9 @@ pub fn renderJupyterPicker(window_width: f32, window_height: f32) void {
 
 /// Render the Copilot conversation picker overlay (mirror of renderJupyterPicker).
 pub fn renderCopilotPicker(window_width: f32, window_height: f32) void {
-    if (!copilot_picker.isVisible()) return;
+    const fade = autoFade(.copilot_picker, copilot_picker.isVisible()) orelse return;
+    ui_pipeline.g_ui_fade = fade;
+    defer ui_pipeline.g_ui_fade = 1.0;
     const total = copilot_picker.rowCount(); // conversations + "+ New" row
     if (total == 0) return;
 
@@ -2093,9 +2161,9 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
     const palette_visible = commandPaletteState().visible;
     // Closed palettes keep drawing their (preserved) contents while the
     // fade-out runs. History mode skips the fade: its rows are freed on close.
-    const closing = !palette_visible and g_palette_closing_at_ms != 0 and
+    const closing = !palette_visible and g_overlay_anim.palette_closing_at_ms != 0 and
         !commandPaletteState().isHistoryMode() and
-        now_ms - g_palette_closing_at_ms < PALETTE_FADE_OUT_MS;
+        now_ms - g_overlay_anim.palette_closing_at_ms < PALETTE_FADE_OUT_MS;
     if (!palette_visible and !closing) return;
     if (palette_visible) commandPaletteSyncAgentHistoryRows();
 
@@ -2112,11 +2180,11 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
     var fade: f32 = 1.0;
     var slide: f32 = 0.0;
     if (palette_visible) {
-        const t = easeOutCubic(animProgress(now_ms - g_palette_opened_at_ms, PALETTE_FADE_IN_MS));
+        const t = easeOutCubic(animProgress(now_ms - g_overlay_anim.palette_opened_at_ms, PALETTE_FADE_IN_MS));
         fade = t;
         slide = -8.0 * paletteDpiScale() * (1.0 - t); // drop in from slightly above the rest position
     } else {
-        fade = 1.0 - animProgress(now_ms - g_palette_closing_at_ms, PALETTE_FADE_OUT_MS);
+        fade = 1.0 - animProgress(now_ms - g_overlay_anim.palette_closing_at_ms, PALETTE_FADE_OUT_MS);
     }
 
     var layout = commandPaletteLayout(window_width, window_height, top_offset);
@@ -5897,7 +5965,9 @@ fn renderFeishuConfigForm(layout: SessionLayout, window_height: f32) void {
 }
 
 pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: f32) void {
-    if (!sessionLauncherVisible()) return;
+    const fade = autoFade(.session_launcher, sessionLauncherVisible()) orelse return;
+    ui_pipeline.g_ui_fade = fade;
+    defer ui_pipeline.g_ui_fade = 1.0;
 
     const layout = sessionLayout(window_width, window_height, top_offset);
     const box_y = @round(window_height - layout.box_top_px - layout.box_h);
@@ -6376,7 +6446,9 @@ fn renderMcpFormView(window_width: f32, window_height: f32, top_offset: f32) voi
 }
 
 pub fn renderMcpServers(window_width: f32, window_height: f32, top_offset: f32) void {
-    if (!mcpServersVisible()) return;
+    const fade = autoFade(.mcp_servers, mcpServersVisible()) orelse return;
+    ui_pipeline.g_ui_fade = fade;
+    defer ui_pipeline.g_ui_fade = 1.0;
     const st = mcpState();
     switch (st.view) {
         .list => renderMcpListView(window_width, window_height, top_offset),
@@ -6717,7 +6789,9 @@ fn renderSettingsRow(layout: SettingsLayout, window_height: f32, row: usize, tit
 }
 
 pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32) void {
-    if (!settingsPageVisible()) return;
+    const fade = autoFade(.settings_page, settingsPageVisible()) orelse return;
+    ui_pipeline.g_ui_fade = fade;
+    defer ui_pipeline.g_ui_fade = 1.0;
     const allocator = AppWindow.g_allocator orelse return;
     const focus = settingsState().focus;
 
@@ -7876,7 +7950,9 @@ pub fn showCloseShortcutConfirm(duration_ms: i64) void {
 }
 
 pub fn renderWindowCloseConfirm(window_width: f32, window_height: f32) void {
-    if (!windowCloseConfirmVisible()) return;
+    const fade = autoFade(.window_close_confirm, windowCloseConfirmVisible()) orelse return;
+    ui_pipeline.g_ui_fade = fade;
+    defer ui_pipeline.g_ui_fade = 1.0;
 
     const layout = windowCloseConfirmLayout(window_width, window_height);
     const panel_y = @round(window_height - layout.panel_top_px - layout.panel_h);
@@ -7950,7 +8026,9 @@ pub fn renderWindowCloseConfirm(window_width: f32, window_height: f32) void {
 }
 
 pub fn renderRestoreDefaultsConfirm(window_width: f32, window_height: f32) void {
-    if (!restoreDefaultsConfirmVisible()) return;
+    const fade = autoFade(.restore_defaults_confirm, restoreDefaultsConfirmVisible()) orelse return;
+    ui_pipeline.g_ui_fade = fade;
+    defer ui_pipeline.g_ui_fade = 1.0;
 
     // Reuses the window-close panel/button geometry; close_* is the Restore
     // button, cancel_* is Cancel.
@@ -8028,7 +8106,9 @@ fn integrationPromptClampedScroll(total_lines: usize, visible_rows: usize) usize
 }
 
 pub fn renderIntegrationPrompt(window_width: f32, window_height: f32) void {
-    if (!g_integration_prompt_visible) return;
+    const fade = autoFade(.integration_prompt, g_integration_prompt_visible) orelse return;
+    ui_pipeline.g_ui_fade = fade;
+    defer ui_pipeline.g_ui_fade = 1.0;
 
     const layout = integrationPromptLayout(window_width, window_height);
     const panel_y = @round(window_height - layout.panel_top_px - layout.panel_h);
@@ -8120,7 +8200,9 @@ pub fn renderIntegrationPrompt(window_width: f32, window_height: f32) void {
 }
 
 pub fn renderTransferCancelConfirm(window_width: f32, window_height: f32) void {
-    if (!transferCancelConfirmVisible()) return;
+    const fade = autoFade(.transfer_cancel_confirm, transferCancelConfirmVisible()) orelse return;
+    ui_pipeline.g_ui_fade = fade;
+    defer ui_pipeline.g_ui_fade = 1.0;
 
     const layout = transferCancelConfirmLayout(window_width, window_height);
     const panel_y = @round(window_height - layout.panel_top_px - layout.panel_h);
@@ -8323,6 +8405,11 @@ pub fn anyOverlayActive(now: i64) bool {
 
     // Command palette: open fade-in / close fade-out / highlight slide.
     if (commandPaletteAnimActive(now)) return true;
+
+    // Overlay open/close fades (session launcher, settings, pickers, ...).
+    for (&g_overlay_anim.auto_fades) |*af| {
+        if (af.animating(now)) return true;
+    }
 
     // FPS 叠层开启时每秒刷新
     if (g_debug_fps) return true;
@@ -8531,7 +8618,9 @@ fn renderWhatsNewBody(
 }
 
 pub fn renderWhatsNew(window_width: f32, window_height: f32) void {
-    if (!g_whats_new_visible) return;
+    const fade = autoFade(.whats_new, g_whats_new_visible) orelse return;
+    ui_pipeline.g_ui_fade = fade;
+    defer ui_pipeline.g_ui_fade = 1.0;
 
     const line_h = whatsNewLineHeight();
     const layout = whatsNewLayout(window_width, window_height);

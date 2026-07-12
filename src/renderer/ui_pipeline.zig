@@ -248,10 +248,28 @@ pub fn fillQuad(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
     fillQuadAlpha(x, y, w, h, color, 1.0);
 }
 
+/// Global fade multiplier for overlay open/close transitions. Overlay
+/// renderers set this around their draw calls (restoring to 1.0 afterwards);
+/// quads blend toward the theme background and glyphs dim by the same factor.
+pub threadlocal var g_ui_fade: f32 = 1.0;
+
+/// Blend a glyph color toward the theme background by the global UI fade.
+fn fadeGlyphColor(color: [3]f32) [3]f32 {
+    const f = g_ui_fade;
+    if (f >= 1.0) return color;
+    const bg = AppWindow.g_theme.background;
+    return .{
+        color[0] * f + bg[0] * (1 - f),
+        color[1] * f + bg[1] * (1 - f),
+        color[2] * f + bg[2] * (1 - f),
+    };
+}
+
 /// Solid color quad. Preserves the alpha trick:
 /// blends `color` toward g_theme.background by `alpha` and draws opaque via the
 /// solid texture (no BlendFunc needed — alpha is baked into the color channel).
-pub fn fillQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha: f32) void {
+pub fn fillQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha_in: f32) void {
+    const alpha = alpha_in * g_ui_fade;
     const bg = AppWindow.g_theme.background;
     const r = color[0] * alpha + bg[0] * (1 - alpha);
     const g = color[1] * alpha + bg[1] * (1 - alpha);
@@ -285,7 +303,8 @@ pub fn fillQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha: f32) 
 }
 
 /// Grayscale/text glyph via the text pipeline (atlas .r as alpha, modulated by color).
-pub fn drawGlyph(rect: Rect, uv: Uv, tex: Texture, color: [3]f32) void {
+pub fn drawGlyph(rect: Rect, uv: Uv, tex: Texture, color_in: [3]f32) void {
+    const color = fadeGlyphColor(color_in);
     if (comptime batching_supported) {
         if (batch.program != 0) {
             batcher().push(tex.handle, .{
@@ -322,7 +341,7 @@ pub fn drawColorGlyph(rect: Rect, uv: Uv, tex: Texture, opacity: f32) void {
     emoji.use();
     emoji.bindVao();
     emoji.setProjection(); // viewport-derived ortho on the emoji program (Pipeline.setProjection)
-    emoji.setFloat("opacity", opacity);
+    emoji.setFloat("opacity", opacity * g_ui_fade);
     gpu.state.setBlendMode(.premultiplied);
     tex.bind(0);
     quad.upload(std.mem.sliceAsBytes(verts[0..]));
