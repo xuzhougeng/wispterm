@@ -132,10 +132,19 @@ fn parseToolCall(allocator: std.mem.Allocator, update: std.json.Value) !ToolCall
 
     var terminal_id: ?[]u8 = null;
     errdefer if (terminal_id) |t| allocator.free(t);
-    const content_text = if (objectValue(update, "content")) |content|
-        try flattenContent(allocator, content, &terminal_id)
-    else
-        try allocator.dupe(u8, "");
+    const content_text = blk: {
+        if (objectValue(update, "content")) |content| {
+            const text = try flattenContent(allocator, content, &terminal_id);
+            if (text.len > 0) break :blk text;
+            allocator.free(text);
+        }
+        // codex-acp (@zed-industries/codex-acp) 把 exec 输出放在非标准的
+        // rawOutput.stdout 而不是 ACP content 块里；content 为空时兜底取它。
+        if (objectValue(update, "rawOutput")) |raw| {
+            if (objectString(raw, "stdout")) |stdout| break :blk try allocator.dupe(u8, stdout);
+        }
+        break :blk try allocator.dupe(u8, "");
+    };
     errdefer allocator.free(content_text);
 
     return .{
@@ -424,6 +433,29 @@ test "parseSessionUpdate extracts tool_call with terminal content" {
     try std.testing.expectEqualStrings("run tests", u.tool_call.title);
     try std.testing.expectEqualStrings("term-abc", u.tool_call.terminal_id);
     try std.testing.expectEqualStrings("execute", u.tool_call.kind);
+}
+
+test "parseToolCall falls back to codex-acp rawOutput.stdout when content is empty" {
+    const a = std.testing.allocator;
+    // 真实 codex-acp 0.16.0 线型（.superpowers/sdd/task-9a-compat-report.md M2）：
+    // 输出只在 rawOutput，无 content 数组。
+    var p = try parseValue(a,
+        \\{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"call_9PGuxzv17qY02vZMUwpMtOac","status":"completed","rawOutput":{"stdout":"hello\n","stderr":"","aggregated_output":"hello\n","exit_code":0}}}
+    );
+    defer p.deinit();
+    var u = parseSessionUpdate(a, p.value) orelse return error.TestExpectedUpdate;
+    defer u.deinit(a);
+    try std.testing.expectEqualStrings("hello\n", u.tool_call_update.content_text);
+    try std.testing.expectEqualStrings("completed", u.tool_call_update.status);
+
+    // 标准 content 非空时仍优先，rawOutput 不覆盖。
+    var p2 = try parseValue(a,
+        \\{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"t1","content":[{"type":"text","text":"from content"}],"rawOutput":{"stdout":"from raw"}}}
+    );
+    defer p2.deinit();
+    var upd2 = parseSessionUpdate(a, p2.value) orelse return error.TestExpectedUpdate;
+    defer upd2.deinit(a);
+    try std.testing.expectEqualStrings("from content", upd2.tool_call.content_text);
 }
 
 test "parseSessionUpdate tolerates unknown variants and malformed params" {
