@@ -6,7 +6,62 @@ const shell_integration = @import("../../platform/shell_integration.zig");
 pub const SETTINGS_THEME_ROW: usize = 1;
 pub const SETTINGS_CONTROL_ROW_START: usize = 2;
 pub const SHELL_INTEGRATION_ROWS: usize = if (shell_integration.supported) 2 else 0;
-pub const SETTINGS_ROW_COUNT: usize = SETTINGS_CONTROL_ROW_START + 12 + SHELL_INTEGRATION_ROWS;
+pub const SETTINGS_RAW_CONFIG_ROW: usize = SETTINGS_CONTROL_ROW_START + 9 + SHELL_INTEGRATION_ROWS;
+pub const SETTINGS_RESTORE_DEFAULTS_ROW: usize = SETTINGS_CONTROL_ROW_START + 10 + SHELL_INTEGRATION_ROWS;
+
+pub const Category = enum {
+    general,
+    appearance,
+    ai,
+    system,
+};
+
+const GENERAL_ROWS = [_]usize{
+    SETTINGS_CONTROL_ROW_START + 3, // shell
+    SETTINGS_CONTROL_ROW_START + 6, // language
+    SETTINGS_CONTROL_ROW_START + 7, // restore tabs
+    SETTINGS_RAW_CONFIG_ROW,
+    SETTINGS_RESTORE_DEFAULTS_ROW,
+};
+const APPEARANCE_ROWS = [_]usize{
+    0, // font size
+    SETTINGS_THEME_ROW,
+    SETTINGS_CONTROL_ROW_START + 0, // cursor style
+    SETTINGS_CONTROL_ROW_START + 1, // cursor blink
+    SETTINGS_CONTROL_ROW_START + 2, // focus follows mouse
+};
+const AI_ROWS = [_]usize{
+    SETTINGS_CONTROL_ROW_START + 4, // default AI
+    SETTINGS_CONTROL_ROW_START + 5, // WeChat direct
+    SETTINGS_CONTROL_ROW_START + 8, // distill suggestions
+};
+const SYSTEM_ROWS = [_]usize{
+    SETTINGS_CONTROL_ROW_START + 9, // Start menu
+    SETTINGS_CONTROL_ROW_START + 10, // startup
+};
+
+pub fn categoryCount() usize {
+    return if (shell_integration.supported) 4 else 3;
+}
+
+pub fn categoryAt(index: usize) ?Category {
+    return switch (index) {
+        0 => .general,
+        1 => .appearance,
+        2 => .ai,
+        3 => if (shell_integration.supported) .system else null,
+        else => null,
+    };
+}
+
+pub fn categoryRows(category: Category) []const usize {
+    return switch (category) {
+        .general => GENERAL_ROWS[0..],
+        .appearance => APPEARANCE_ROWS[0..],
+        .ai => AI_ROWS[0..],
+        .system => if (shell_integration.supported) SYSTEM_ROWS[0..] else &.{},
+    };
+}
 
 pub const Action = enum {
     font_size_minus,
@@ -27,20 +82,47 @@ pub const Action = enum {
     toggle_startup,
     open_raw_config,
     restore_defaults,
-    close,
+    select_general,
+    select_appearance,
+    select_ai,
+    select_system,
 };
 
 pub const State = struct {
     visible: bool = false,
-    focus: usize = SETTINGS_THEME_ROW,
+    category: Category = .general,
+    focus: usize = GENERAL_ROWS[0],
     cfg_dirty: bool = true,
     cfg_loaded: bool = false,
     cfg_cache: Config = .{},
 
     pub fn open(self: *State) void {
         self.visible = true;
-        self.focus = SETTINGS_THEME_ROW;
+        self.selectCategory(.general);
         self.cfg_dirty = true;
+    }
+
+    pub fn selectCategory(self: *State, category: Category) void {
+        const rows = categoryRows(category);
+        if (rows.len == 0) return;
+        self.category = category;
+        self.focus = rows[0];
+    }
+
+    pub fn focusIndex(self: *const State) usize {
+        const rows = categoryRows(self.category);
+        for (rows, 0..) |row, idx| {
+            if (row == self.focus) return idx;
+        }
+        return 0;
+    }
+
+    fn moveFocus(self: *State, delta: isize) void {
+        const rows = categoryRows(self.category);
+        if (rows.len == 0) return;
+        const current: isize = @intCast(self.focusIndex());
+        const count: isize = @intCast(rows.len);
+        self.focus = rows[@intCast(@mod(current + delta, count))];
     }
 
     pub fn close(self: *State, allocator: ?std.mem.Allocator) void {
@@ -85,13 +167,13 @@ pub const State = struct {
 
     pub fn handleKey(self: *State, ev: input_key.KeyEvent) ?Action {
         switch (ev.key) {
-            .escape => return .close,
+            .escape => return null,
             .arrow_down, .tab => {
-                self.focus = (self.focus + 1) % SETTINGS_ROW_COUNT;
+                self.moveFocus(1);
                 return null;
             },
             .arrow_up => {
-                self.focus = if (self.focus == 0) SETTINGS_ROW_COUNT - 1 else self.focus - 1;
+                self.moveFocus(-1);
                 return null;
             },
             .arrow_left => return self.focusLeftAction(),
@@ -104,17 +186,18 @@ pub const State = struct {
     pub fn handleScroll(self: *State, delta_y: f64) void {
         if (!self.visible) return;
         if (delta_y > 0) {
-            if (self.focus > 0) self.focus -= 1;
+            self.moveFocus(-1);
         } else if (delta_y < 0) {
-            if (self.focus + 1 < SETTINGS_ROW_COUNT) self.focus += 1;
+            self.moveFocus(1);
         }
     }
 
     pub fn firstVisibleRow(self: *const State, visible_rows: usize) usize {
-        if (visible_rows == 0 or SETTINGS_ROW_COUNT <= visible_rows) return 0;
-        const focus = @min(self.focus, SETTINGS_ROW_COUNT - 1);
+        const row_count = categoryRows(self.category).len;
+        if (visible_rows == 0 or row_count <= visible_rows) return 0;
+        const focus = @min(self.focusIndex(), row_count - 1);
         if (focus < visible_rows) return 0;
-        return @min(focus - visible_rows + 1, SETTINGS_ROW_COUNT - visible_rows);
+        return @min(focus - visible_rows + 1, row_count - visible_rows);
     }
 
     pub fn focusPrimaryAction(self: *const State) ?Action {
@@ -136,7 +219,6 @@ pub const State = struct {
             SETTINGS_CONTROL_ROW_START + 8 => .toggle_distill_suggest,
             SETTINGS_CONTROL_ROW_START + 9 + SHELL_INTEGRATION_ROWS => .open_raw_config,
             SETTINGS_CONTROL_ROW_START + 10 + SHELL_INTEGRATION_ROWS => .restore_defaults,
-            SETTINGS_CONTROL_ROW_START + 11 + SHELL_INTEGRATION_ROWS => .close,
             else => null,
         };
     }
@@ -159,28 +241,29 @@ pub const State = struct {
     }
 };
 
-test "settings page state open resets focus and marks config dirty" {
+test "settings page state open resets to General and marks config dirty" {
     var state = State{ .visible = false, .focus = 4, .cfg_dirty = false };
 
     state.open();
 
     try std.testing.expect(state.visible);
-    try std.testing.expectEqual(SETTINGS_THEME_ROW, state.focus);
+    try std.testing.expectEqual(Category.general, state.category);
+    try std.testing.expectEqual(GENERAL_ROWS[0], state.focus);
     try std.testing.expect(state.cfg_dirty);
 }
 
-test "settings page key navigation wraps and returns side-effect actions" {
-    var state = State{ .visible = true, .focus = 0 };
+test "settings page key navigation wraps within the selected category" {
+    var state = State{ .visible = true, .category = .appearance, .focus = APPEARANCE_ROWS[0] };
 
     try std.testing.expectEqual(@as(?Action, null), state.handleKey(.{ .key = .arrow_up }));
-    try std.testing.expectEqual(SETTINGS_ROW_COUNT - 1, state.focus);
+    try std.testing.expectEqual(APPEARANCE_ROWS[APPEARANCE_ROWS.len - 1], state.focus);
 
     try std.testing.expectEqual(@as(?Action, null), state.handleKey(.{ .key = .arrow_down }));
-    try std.testing.expectEqual(@as(usize, 0), state.focus);
+    try std.testing.expectEqual(APPEARANCE_ROWS[0], state.focus);
 
     try std.testing.expectEqual(Action.font_size_plus, state.handleKey(.{ .key = .enter }).?);
     try std.testing.expectEqual(Action.font_size_minus, state.handleKey(.{ .key = .arrow_left }).?);
-    try std.testing.expectEqual(Action.close, state.handleKey(.{ .key = .escape }).?);
+    try std.testing.expectEqual(@as(?Action, null), state.handleKey(.{ .key = .escape }));
 }
 
 test "settings page exposes shell integration rows only on Windows" {
@@ -193,13 +276,15 @@ test "settings page exposes shell integration rows only on Windows" {
     }
 }
 
-test "settings page first visible row keeps focus in short view" {
-    var state = State{ .visible = true, .focus = SETTINGS_ROW_COUNT - 1 };
+test "settings page category selection scopes visible rows" {
+    var state = State{ .visible = true };
+    state.selectCategory(.ai);
+    state.focus = AI_ROWS[AI_ROWS.len - 1];
 
-    const scroll = state.firstVisibleRow(3);
+    const scroll = state.firstVisibleRow(2);
 
-    try std.testing.expect(scroll <= state.focus);
-    try std.testing.expect(state.focus < scroll + 3);
+    try std.testing.expectEqual(Category.ai, state.category);
+    try std.testing.expectEqual(@as(usize, 1), scroll);
 }
 
 test "settings page deinit frees loaded cache after reload invalidation" {

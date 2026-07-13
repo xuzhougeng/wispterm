@@ -23,11 +23,10 @@ const Frozen = struct {
 };
 
 const monoliths = [_]Frozen{
-    // Ceilings re-tightened to the current actual after the `/btw` overlay
-    // adoption: input runtime fields and conversation UI triggers are grouped,
-    // while overlay-owned state now includes What's New and BTW.
+    // Ceilings re-tightened to the current actual after the settings-tab and
+    // `/btw` adoption passes grouped input, conversation, and overlay state.
     .{ .name = "AppWindow.zig", .source = @embedFile("../AppWindow.zig"), .ceiling = 66 },
-    .{ .name = "input.zig", .source = @embedFile("../input.zig"), .ceiling = 49 },
+    .{ .name = "input.zig", .source = @embedFile("../input.zig"), .ceiling = 48 },
     .{ .name = "renderer/overlays.zig", .source = @embedFile("../renderer/overlays.zig"), .ceiling = 33 },
     .{ .name = "assistant/conversation/session.zig", .source = @embedFile("../assistant/conversation/session.zig"), .ceiling = 16 },
 };

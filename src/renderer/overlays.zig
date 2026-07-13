@@ -937,8 +937,7 @@ fn executeCommand(action: CommandAction) void {
                 if (AppWindow.tab.splitIntoPreview(gpa)) |pane| {
                     _ = AppWindow.tab.focusPreviewPane(pane);
                 }
-                AppWindow.g_force_rebuild = true;
-                AppWindow.g_cells_valid = false;
+                AppWindow.applyUiEffect(.repaint);
             }
         },
         .run_memory_digest_now => {
@@ -6596,14 +6595,15 @@ const SETTINGS_THEME_PRESETS = [_]ThemePreset{
 const SettingsAction = settings_page.Action;
 const SETTINGS_THEME_ROW = settings_page.SETTINGS_THEME_ROW;
 const SETTINGS_CONTROL_ROW_START = settings_page.SETTINGS_CONTROL_ROW_START;
-const SETTINGS_ROW_COUNT = settings_page.SETTINGS_ROW_COUNT;
 const SettingsLayout = settings_page_layout.Layout;
 
 pub fn settingsPageVisible() bool {
-    return settingsState().visible;
+    const active = AppWindow.activeTab() orelse return false;
+    return settingsState().visible and active.kind == .settings;
 }
 
 pub fn settingsPageOpen() void {
+    if (!AppWindow.openSettingsTab()) return;
     var state = commandCenterStateSnapshot();
     state.settingsPageOpen();
     commandCenterStateCommit(state);
@@ -6620,6 +6620,7 @@ fn settingsCfg(allocator: std.mem.Allocator) *Config {
 }
 
 pub fn settingsPageClose() void {
+    if (settingsPageVisible()) AppWindow.closeFocusedSplit();
     settingsState().close(AppWindow.g_allocator);
 }
 
@@ -6629,48 +6630,54 @@ pub fn settingsPageHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
     return .repaint;
 }
 
-pub fn settingsPageContainsPoint(xpos: f64, ypos: f64, window_width: f32, window_height: f32, top_offset: f32) bool {
-    const layout = settingsLayout(window_width, window_height, top_offset);
-    const x: f32 = @floatCast(xpos);
-    const y: f32 = @floatCast(ypos);
-    return layout.containsPoint(x, y);
-}
-
-pub fn settingsPageExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_height: f32, top_offset: f32) bool {
-    const action = settingsHitTest(xpos, ypos, window_width, window_height, top_offset) orelse return false;
+pub fn settingsPageExecuteAt(xpos: f64, ypos: f64, window_height: f32, top_offset: f32, content_x: f32, content_width: f32) bool {
+    const action = settingsHitTest(xpos, ypos, window_height, top_offset, content_x, content_width) orelse return false;
     executeSettingsAction(action);
     return true;
 }
 
 fn settingsRowCapacity(content_height: f32, base_h: f32, row_h: f32) usize {
-    return settings_page_layout.rowCapacity(content_height, base_h, row_h, SETTINGS_ROW_COUNT);
+    return settings_page_layout.rowCapacity(content_height, base_h, row_h, settings_page.categoryRows(settingsState().category).len);
 }
 
 fn settingsFirstVisibleRow(visible_rows: usize) usize {
-    return settings_page_layout.firstVisibleRow(settingsState().focus, visible_rows, SETTINGS_ROW_COUNT);
+    const state = settingsState();
+    return settings_page_layout.firstVisibleRow(state.focusIndex(), visible_rows, settings_page.categoryRows(state.category).len);
 }
 
-fn settingsLayout(window_width: f32, window_height: f32, top_offset: f32) SettingsLayout {
+fn settingsLayout(window_height: f32, top_offset: f32, content_x: f32, content_width: f32) SettingsLayout {
+    const state = settingsState();
+    const rows = settings_page.categoryRows(state.category);
     return settings_page_layout.compute(.{
-        .window_width = window_width,
         .window_height = window_height,
         .top_offset = top_offset,
+        .content_x = content_x,
+        .content_width = content_width,
         .cell_height = font.g_titlebar_cell_height,
-        .focus = settingsState().focus,
-        .row_count = SETTINGS_ROW_COUNT,
+        .focus_index = state.focusIndex(),
+        .row_count = rows.len,
+        .category_count = settings_page.categoryCount(),
     });
 }
 
-fn settingsHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, top_offset: f32) ?SettingsAction {
-    const layout = settingsLayout(window_width, window_height, top_offset);
+fn settingsHitTest(xpos: f64, ypos: f64, window_height: f32, top_offset: f32, content_x: f32, content_width: f32) ?SettingsAction {
+    const layout = settingsLayout(window_height, top_offset, content_x, content_width);
     const x: f32 = @floatCast(xpos);
     const y: f32 = @floatCast(ypos);
 
-    if (layout.hitClose(x, y)) {
-        return .close;
+    if (layout.categoryAt(x, y)) |index| {
+        return switch (settings_page.categoryAt(index) orelse return null) {
+            .general => .select_general,
+            .appearance => .select_appearance,
+            .ai => .select_ai,
+            .system => .select_system,
+        };
     }
 
-    const row = layout.rowAt(x, y) orelse return null;
+    const row_index = layout.rowAt(x, y) orelse return null;
+    const rows = settings_page.categoryRows(settingsState().category);
+    if (row_index >= rows.len) return null;
+    const row = rows[row_index];
     settingsState().focus = row;
 
     if (row == 0) {
@@ -6701,15 +6708,21 @@ fn settingsHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, 
         8 => .toggle_distill_suggest,
         9 + settings_page.SHELL_INTEGRATION_ROWS => .open_raw_config,
         10 + settings_page.SHELL_INTEGRATION_ROWS => .restore_defaults,
-        11 + settings_page.SHELL_INTEGRATION_ROWS => .close,
         else => null,
     };
 }
 
 fn executeSettingsAction(action: SettingsAction) void {
-    if (action == .close) {
-        settingsPageClose();
-        return;
+    switch (action) {
+        .select_general => settingsState().selectCategory(.general),
+        .select_appearance => settingsState().selectCategory(.appearance),
+        .select_ai => settingsState().selectCategory(.ai),
+        .select_system => settingsState().selectCategory(.system),
+        else => {},
+    }
+    switch (action) {
+        .select_general, .select_appearance, .select_ai, .select_system => return,
+        else => {},
     }
 
     const allocator = AppWindow.g_allocator orelse return;
@@ -6741,7 +6754,7 @@ fn executeSettingsAction(action: SettingsAction) void {
         .toggle_startup => shell_integration.setEnabled(allocator, .startup, !shell_integration.isEnabled(allocator, .startup)) catch {},
         .open_raw_config => Config.openConfigInEditor(allocator),
         .restore_defaults => restoreDefaultsConfirmOpen(),
-        .close => settingsPageClose(),
+        .select_general, .select_appearance, .select_ai, .select_system => unreachable,
     }
     settingsPageReloadCfg();
 
@@ -6750,7 +6763,8 @@ fn executeSettingsAction(action: SettingsAction) void {
     // cycle_theme already applies via cycleThemePreset; the excluded actions open
     // an editor/confirm dialog or close the page and write nothing to apply.
     switch (action) {
-        .cycle_theme, .cycle_theme_prev, .toggle_start_menu, .toggle_startup, .open_raw_config, .restore_defaults, .close => {},
+        .cycle_theme, .cycle_theme_prev, .toggle_start_menu, .toggle_startup, .open_raw_config, .restore_defaults => {},
+        .select_general, .select_appearance, .select_ai, .select_system => unreachable,
         else => AppWindow.reloadConfigImmediate(allocator),
     }
 }
@@ -6862,92 +6876,133 @@ fn languageSettingText(setting: i18n.LanguageSetting) []const u8 {
     };
 }
 
-fn renderSettingsRow(layout: SettingsLayout, window_height: f32, row: usize, title: []const u8, value: []const u8, hint: []const u8, clickable: bool, selected: bool) void {
-    const visible = layout.visibleRow(window_height, row) orelse return;
+fn settingsCategoryLabel(category: settings_page.Category) []const u8 {
+    return switch (i18n.lang()) {
+        .en => switch (category) {
+            .general => "General",
+            .appearance => "Appearance",
+            .ai => "AI & Integrations",
+            .system => "System",
+        },
+        .zh_CN => switch (category) {
+            .general => "常规",
+            .appearance => "外观",
+            .ai => "AI 与集成",
+            .system => "系统",
+        },
+    };
+}
+
+fn settingsRowDescription(row: usize) []const u8 {
+    const zh = i18n.lang() == .zh_CN;
+    if (shell_integration.supported) {
+        if (row == SETTINGS_CONTROL_ROW_START + 9) return if (zh) "在 Windows 开始菜单中显示 WispTerm" else "Show WispTerm in the Windows Start menu";
+        if (row == SETTINGS_CONTROL_ROW_START + 10) return if (zh) "登录系统后自动启动 WispTerm" else "Launch WispTerm when you sign in";
+    }
+    return switch (row) {
+        0 => if (zh) "调整终端内容的显示字号" else "Adjust the terminal text size",
+        SETTINGS_THEME_ROW => if (zh) "选择终端和应用界面的配色主题" else "Choose the terminal and app color theme",
+        SETTINGS_CONTROL_ROW_START + 0 => if (zh) "选择终端光标的形状" else "Choose the terminal cursor shape",
+        SETTINGS_CONTROL_ROW_START + 1 => if (zh) "控制光标是否闪烁" else "Control whether the cursor blinks",
+        SETTINGS_CONTROL_ROW_START + 2 => if (zh) "鼠标移动时自动切换面板焦点" else "Move panel focus with the pointer",
+        SETTINGS_CONTROL_ROW_START + 3 => if (zh) "设置新标签页使用的默认 Shell" else "Set the default shell for new tabs",
+        SETTINGS_CONTROL_ROW_START + 4 => if (zh) "选择新建 AI 会话使用的配置" else "Choose the profile for new AI sessions",
+        SETTINGS_CONTROL_ROW_START + 5 => if (zh) "允许微信消息直接进入当前会话" else "Allow WeChat messages into the active session",
+        SETTINGS_CONTROL_ROW_START + 6 => if (zh) "选择 WispTerm 的界面语言" else "Choose the WispTerm interface language",
+        SETTINGS_CONTROL_ROW_START + 7 => if (zh) "启动时恢复上次打开的标签页" else "Restore previously open tabs at launch",
+        SETTINGS_CONTROL_ROW_START + 8 => if (zh) "在合适时建议将工作流沉淀为技能" else "Suggest reusable skills from completed work",
+        settings_page.SETTINGS_RAW_CONFIG_ROW => if (zh) "在编辑器中打开完整配置文件" else "Open the complete config file in your editor",
+        settings_page.SETTINGS_RESTORE_DEFAULTS_ROW => if (zh) "移除自定义设置并恢复默认值" else "Remove custom settings and restore defaults",
+        else => "",
+    };
+}
+
+fn renderSettingsRow(layout: SettingsLayout, window_height: f32, row_index: usize, title: []const u8, value: []const u8, selected: bool) void {
+    const visible = layout.visibleRow(window_height, row_index) orelse return;
     const gl_y = visible.gl_y;
-    const x = layout.box_x + 18;
-    const w = layout.box_w - 36;
+    const x = layout.content_x;
+    const w = layout.content_w;
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
     const accent = AppWindow.g_theme.cursor_color;
-    const active = std.mem.eql(u8, value, "active");
+    const muted = mixColor(bg, fg, 0.56);
+    const title_x = x + 20;
+    const right_edge = x + w - 18;
+    const title_y = textYFromTop(window_height, visible.top_px + 10);
+    const detail_y = textYFromTop(window_height, visible.top_px + 10 + overlayLineHeight());
+    var title_max_w = w - 40;
 
-    if (clickable) {
-        const row_color = if (selected) mixColor(bg, accent, 0.24) else if (active) mixColor(bg, accent, 0.18) else mixColor(bg, fg, 0.055);
-        ui_pipeline.fillQuadAlpha(x, gl_y + 3, w, layout.row_h - 6, row_color, if (selected) 0.72 else if (active) 0.44 else 0.82);
-        if (selected) ui_pipeline.fillQuadAlpha(x, gl_y + 3, 3, layout.row_h - 6, accent, 0.82);
+    if (selected) {
+        ui_pipeline.fillQuadAlpha(x + 2, gl_y + 2, w - 4, layout.row_h - 4, mixColor(bg, accent, 0.16), 0.64);
+        ui_pipeline.fillQuadAlpha(x + 2, gl_y + 8, 3, layout.row_h - 16, accent, 0.82);
     }
-
-    const text_y = rowTextY(gl_y, layout.row_h);
-    const title_color = if (selected or active) mixColor(fg, accent, 0.18) else fg;
-    const title_x = x + 12;
-    const right_edge = layout.box_x + layout.box_w - 36;
-    var title_max_w = w - 24;
-    var value_x = right_edge;
-
     if (value.len > 0) {
-        const value_w = measureTitlebarText(value);
-        const value_max_w = @min(value_w, @max(0.0, right_edge - title_x - 150));
-        value_x = @round(right_edge - value_max_w);
-        title_max_w = @min(title_max_w, value_x - title_x - 18);
-        const value_color = if (selected or active) accent else mixColor(bg, fg, 0.78);
-        renderTitlebarTextLimited(value, value_x, text_y, value_color, value_max_w);
+        const value_w = @min(210.0, measureTitlebarText(value) + 24);
+        const value_x = @round(right_edge - value_w);
+        const control_h = @round(@max(32.0, font.g_titlebar_cell_height + 10.0));
+        const pill_y = gl_y + @round((layout.row_h - control_h) / 2);
+        renderRoundedQuadAlpha(value_x, pill_y, value_w, control_h, 9, mixColor(bg, fg, 0.09), 0.92);
+        renderTitlebarTextLimited(value, value_x + 12, rowTextY(pill_y, control_h), if (selected) accent else mixColor(bg, fg, 0.82), value_w - 24);
+        title_max_w = @max(1.0, value_x - title_x - 18);
     }
 
-    if (hint.len > 0) {
-        const preferred_hint_x = title_x + @max(160.0, measureTitlebarText(title) + 28.0);
-        const hint_x = @min(preferred_hint_x, value_x - 60);
-        const hint_max_w = value_x - hint_x - 18;
-        title_max_w = @min(title_max_w, hint_x - title_x - 18);
-        if (hint_max_w > font.g_titlebar_cell_width * 4) {
-            renderTitlebarTextLimited(hint, hint_x, text_y, mixColor(bg, fg, 0.55), hint_max_w);
-        }
+    if (visible.visible_index > 0) {
+        ui_pipeline.fillQuadAlpha(x + 18, gl_y + layout.row_h - 1, w - 36, 1, mixColor(bg, fg, 0.14), 0.62);
     }
 
-    renderTitlebarTextLimited(title, title_x, text_y, title_color, title_max_w);
+    renderTitlebarTextLimited(title, title_x, title_y, if (selected) mixColor(fg, accent, 0.16) else fg, title_max_w);
+    renderTitlebarTextLimited(settingsRowDescription(settings_page.categoryRows(settingsState().category)[row_index]), title_x, detail_y, muted, title_max_w);
 }
 
-pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32) void {
-    const fade = autoFade(.settings_page, settingsPageVisible()) orelse return;
-    ui_pipeline.g_ui_fade = fade;
-    defer ui_pipeline.g_ui_fade = 1.0;
+pub fn renderSettingsPage(window_height: f32, top_offset: f32, content_x: f32, content_width: f32) void {
+    if (!settingsPageVisible()) return;
     const allocator = AppWindow.g_allocator orelse return;
-    const focus = settingsState().focus;
+    const state = settingsState();
+    const focus = state.focus;
 
     const cfg = settingsCfg(allocator);
 
-    const layout = settingsLayout(window_width, window_height, top_offset);
-    const box_y = @round(window_height - layout.box_top_px - layout.box_h);
+    const layout = settingsLayout(window_height, top_offset, content_x, content_width);
+    const page_y = @round(window_height - layout.page_top_px - layout.page_h);
 
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
     const accent = AppWindow.g_theme.cursor_color;
-    const panel_color = mixColor(bg, fg, 0.035);
-    const border_color = mixColor(bg, accent, 0.24);
+    const panel_color = mixColor(bg, fg, 0.042);
+    const border_color = mixColor(bg, fg, 0.16);
     const muted_color = mixColor(bg, fg, 0.58);
 
-    ui_pipeline.fillQuadAlpha(0, 0, window_width, window_height, .{ 0.0, 0.0, 0.0 }, 0.16);
-    renderRoundedQuadAlpha(layout.box_x - 1, box_y - 1, layout.box_w + 2, layout.box_h + 2, 11, border_color, 0.24);
-    renderRoundedQuadAlpha(layout.box_x, box_y, layout.box_w, layout.box_h, 10, panel_color, 0.96);
+    ui_pipeline.fillQuadAlpha(layout.page_x, page_y, layout.page_w, layout.page_h, mixColor(bg, fg, 0.012), 1.0);
+    ui_pipeline.fillQuadAlpha(layout.page_x, page_y, layout.nav_w, layout.page_h, mixColor(bg, fg, 0.025), 0.96);
+    ui_pipeline.fillQuadAlpha(layout.page_x + layout.nav_w - 1, page_y, 1, layout.page_h, border_color, 0.72);
 
-    const title_y = textYFromTop(window_height, layout.box_top_px + 18);
-    const subtitle_y = textYFromTop(window_height, layout.box_top_px + 18 + overlayLineHeight());
-    renderTitlebarText(i18n.s().settings_title, layout.box_x + 24, title_y, mixColor(fg, accent, 0.14));
-    renderTitlebarTextLimited(i18n.s().settings_subtitle, layout.box_x + 24, subtitle_y, muted_color, layout.box_w - 96);
-    renderTitlebarText("Esc", layout.box_x + layout.box_w - 52, title_y, mixColor(bg, fg, 0.72));
+    const nav_title_y = textYFromTop(window_height, layout.page_top_px + 24);
+    const nav_label_y = textYFromTop(window_height, layout.page_top_px + 68);
+    renderTitlebarText(i18n.s().settings_title, layout.page_x + 24, nav_title_y, mixColor(fg, accent, 0.10));
+    renderTitlebarText(if (i18n.lang() == .zh_CN) "偏好设置" else "PREFERENCES", layout.page_x + 24, nav_label_y, muted_color);
 
-    var font_buf: [24]u8 = undefined;
-    const font_value = std.fmt.bufPrint(&font_buf, "-  {d}  +", .{cfg.@"font-size"}) catch "";
-    renderSettingsRow(layout, window_height, 0, i18n.s().settings_font_size, font_value, "", true, focus == 0);
+    for (0..settings_page.categoryCount()) |idx| {
+        const category = settings_page.categoryAt(idx) orelse continue;
+        const item_top = layout.nav_item_top_px + layout.nav_item_h * @as(f32, @floatFromInt(idx));
+        const item_y = @round(window_height - item_top - layout.nav_item_h);
+        const selected = category == state.category;
+        if (selected) {
+            renderRoundedQuadAlpha(layout.page_x + 12, item_y + 3, layout.nav_w - 24, layout.nav_item_h - 6, 9, mixColor(bg, accent, 0.15), 0.82);
+            ui_pipeline.fillQuadAlpha(layout.page_x + 14, item_y + 10, 3, layout.nav_item_h - 20, accent, 0.84);
+        }
+        renderTitlebarTextLimited(settingsCategoryLabel(category), layout.page_x + 28, rowTextY(item_y, layout.nav_item_h), if (selected) mixColor(fg, accent, 0.16) else mixColor(bg, fg, 0.76), layout.nav_w - 48);
+    }
 
-    var theme_buf: [96]u8 = undefined;
-    const theme_value = std.fmt.bufPrint(&theme_buf, "< {s} >", .{currentThemePresetLabel(cfg)}) catch currentThemePresetLabel(cfg);
-    renderSettingsRow(layout, window_height, SETTINGS_THEME_ROW, i18n.s().settings_theme, theme_value, "", true, focus == SETTINGS_THEME_ROW);
+    const page_title_y = textYFromTop(window_height, layout.page_top_px + 28);
+    const subtitle_y = textYFromTop(window_height, layout.page_top_px + 28 + overlayLineHeight());
+    renderTitlebarText(settingsCategoryLabel(state.category), layout.content_x, page_title_y, mixColor(fg, accent, 0.10));
+    renderTitlebarTextLimited(i18n.s().settings_subtitle, layout.content_x, subtitle_y, muted_color, layout.content_w);
 
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 0, i18n.s().settings_cursor_style, cursorStyleText(cfg.@"cursor-style"), "", true, focus == SETTINGS_CONTROL_ROW_START + 0);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 1, i18n.s().settings_cursor_blink, boolText(cfg.@"cursor-style-blink"), "", true, focus == SETTINGS_CONTROL_ROW_START + 1);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 2, i18n.s().settings_focus_follows_mouse, boolText(cfg.@"focus-follows-mouse"), "", true, focus == SETTINGS_CONTROL_ROW_START + 2);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 3, i18n.s().settings_shell, cfg.shell, "", true, focus == SETTINGS_CONTROL_ROW_START + 3);
+    const card_h = layout.row_h * @as(f32, @floatFromInt(layout.visible_rows));
+    const card_y = @round(window_height - layout.row_top_px - card_h);
+    renderRoundedQuadAlpha(layout.content_x - 1, card_y - 1, layout.content_w + 2, card_h + 2, 11, border_color, 0.66);
+    renderRoundedQuadAlpha(layout.content_x, card_y, layout.content_w, card_h, 10, panel_color, 0.96);
+
     loadAiProfiles();
     const ai_default_value = if (assistantProfiles().profile_count > 0)
         aiProfileField(&assistantProfiles().profiles[defaultAiProfileIndex()], .name)
@@ -6957,33 +7012,69 @@ pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32
         aiProfileModeLabel(&assistantProfiles().profiles[defaultAiProfileIndex()])
     else
         i18n.s().settings_hint_add_profiles;
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 4, i18n.s().settings_default_ai, ai_default_value, ai_default_hint, true, focus == SETTINGS_CONTROL_ROW_START + 4);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 5, i18n.s().settings_weixin_direct, boolText(cfg.@"weixin-direct-enabled"), "", true, focus == SETTINGS_CONTROL_ROW_START + 5);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 6, i18n.s().settings_language, languageSettingText(cfg.language), i18n.s().settings_hint_restart, true, focus == SETTINGS_CONTROL_ROW_START + 6);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 7, i18n.s().settings_restore_tabs, boolText(cfg.@"restore-tabs-on-startup"), "", true, focus == SETTINGS_CONTROL_ROW_START + 7);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 8, i18n.s().settings_distill_suggest, boolText(cfg.@"ai-distill-suggest"), "", true, focus == SETTINGS_CONTROL_ROW_START + 8);
-    if (shell_integration.supported) {
-        renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 9, i18n.s().settings_start_menu, boolText(shell_integration.isEnabled(allocator, .start_menu)), "", true, focus == SETTINGS_CONTROL_ROW_START + 9);
-        renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 10, i18n.s().settings_startup, boolText(shell_integration.isEnabled(allocator, .startup)), "", true, focus == SETTINGS_CONTROL_ROW_START + 10);
+    _ = ai_default_hint;
+
+    const rows = settings_page.categoryRows(state.category);
+    for (rows, 0..) |row, row_index| {
+        var font_buf: [24]u8 = undefined;
+        var theme_buf: [96]u8 = undefined;
+        const title: []const u8 = if (shell_integration.supported and row == SETTINGS_CONTROL_ROW_START + 9)
+            i18n.s().settings_start_menu
+        else if (shell_integration.supported and row == SETTINGS_CONTROL_ROW_START + 10)
+            i18n.s().settings_startup
+        else switch (row) {
+            0 => i18n.s().settings_font_size,
+            SETTINGS_THEME_ROW => i18n.s().settings_theme,
+            SETTINGS_CONTROL_ROW_START + 0 => i18n.s().settings_cursor_style,
+            SETTINGS_CONTROL_ROW_START + 1 => i18n.s().settings_cursor_blink,
+            SETTINGS_CONTROL_ROW_START + 2 => i18n.s().settings_focus_follows_mouse,
+            SETTINGS_CONTROL_ROW_START + 3 => i18n.s().settings_shell,
+            SETTINGS_CONTROL_ROW_START + 4 => i18n.s().settings_default_ai,
+            SETTINGS_CONTROL_ROW_START + 5 => i18n.s().settings_weixin_direct,
+            SETTINGS_CONTROL_ROW_START + 6 => i18n.s().settings_language,
+            SETTINGS_CONTROL_ROW_START + 7 => i18n.s().settings_restore_tabs,
+            SETTINGS_CONTROL_ROW_START + 8 => i18n.s().settings_distill_suggest,
+            settings_page.SETTINGS_RAW_CONFIG_ROW => i18n.s().settings_raw_config,
+            settings_page.SETTINGS_RESTORE_DEFAULTS_ROW => i18n.s().settings_restore_defaults,
+            else => "",
+        };
+        const value: []const u8 = if (shell_integration.supported and row == SETTINGS_CONTROL_ROW_START + 9)
+            boolText(shell_integration.isEnabled(allocator, .start_menu))
+        else if (shell_integration.supported and row == SETTINGS_CONTROL_ROW_START + 10)
+            boolText(shell_integration.isEnabled(allocator, .startup))
+        else switch (row) {
+            0 => std.fmt.bufPrint(&font_buf, "-  {d}  +", .{cfg.@"font-size"}) catch "",
+            SETTINGS_THEME_ROW => std.fmt.bufPrint(&theme_buf, "{s}", .{currentThemePresetLabel(cfg)}) catch currentThemePresetLabel(cfg),
+            SETTINGS_CONTROL_ROW_START + 0 => cursorStyleText(cfg.@"cursor-style"),
+            SETTINGS_CONTROL_ROW_START + 1 => boolText(cfg.@"cursor-style-blink"),
+            SETTINGS_CONTROL_ROW_START + 2 => boolText(cfg.@"focus-follows-mouse"),
+            SETTINGS_CONTROL_ROW_START + 3 => cfg.shell,
+            SETTINGS_CONTROL_ROW_START + 4 => ai_default_value,
+            SETTINGS_CONTROL_ROW_START + 5 => boolText(cfg.@"weixin-direct-enabled"),
+            SETTINGS_CONTROL_ROW_START + 6 => languageSettingText(cfg.language),
+            SETTINGS_CONTROL_ROW_START + 7 => boolText(cfg.@"restore-tabs-on-startup"),
+            SETTINGS_CONTROL_ROW_START + 8 => boolText(cfg.@"ai-distill-suggest"),
+            settings_page.SETTINGS_RAW_CONFIG_ROW => i18n.s().settings_value_open,
+            settings_page.SETTINGS_RESTORE_DEFAULTS_ROW => "Enter",
+            else => "",
+        };
+        renderSettingsRow(layout, window_height, row_index, title, value, focus == row);
     }
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 9 + settings_page.SHELL_INTEGRATION_ROWS, i18n.s().settings_raw_config, i18n.s().settings_value_open, i18n.s().settings_hint_advanced_editor, true, focus == SETTINGS_CONTROL_ROW_START + 9 + settings_page.SHELL_INTEGRATION_ROWS);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 10 + settings_page.SHELL_INTEGRATION_ROWS, i18n.s().settings_restore_defaults, "Enter", "", true, focus == SETTINGS_CONTROL_ROW_START + 10 + settings_page.SHELL_INTEGRATION_ROWS);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 11 + settings_page.SHELL_INTEGRATION_ROWS, i18n.s().settings_close, "Esc", "", true, focus == SETTINGS_CONTROL_ROW_START + 11 + settings_page.SHELL_INTEGRATION_ROWS);
 
     // Scrollbar indicator when not all rows fit (short windows). The list is
     // scrolled via keyboard/click focus-follow and the mouse wheel.
-    if (layout.visible_rows < SETTINGS_ROW_COUNT) {
-        const total: f32 = @floatFromInt(SETTINGS_ROW_COUNT);
+    if (layout.visible_rows < rows.len) {
+        const total: f32 = @floatFromInt(rows.len);
         const vis: f32 = @floatFromInt(layout.visible_rows);
         const track_h = layout.row_h * vis;
         const track_top_px = layout.row_top_px;
         const sb_w: f32 = 3;
-        const sb_x = layout.box_x + layout.box_w - sb_w - 7;
+        const sb_x = layout.content_x + layout.content_w - sb_w - 7;
         const track_gl_y = @round(window_height - track_top_px - track_h);
         ui_pipeline.fillQuadAlpha(sb_x, track_gl_y, sb_w, track_h, mixColor(bg, fg, 0.25), 0.30);
 
         const thumb_h = @max(24.0, @round(track_h * vis / total));
-        const max_scroll_f: f32 = @floatFromInt(SETTINGS_ROW_COUNT - layout.visible_rows);
+        const max_scroll_f: f32 = @floatFromInt(rows.len - layout.visible_rows);
         const scroll_f: f32 = @floatFromInt(layout.scroll);
         const thumb_offset = if (max_scroll_f > 0) @round((track_h - thumb_h) * (scroll_f / max_scroll_f)) else 0;
         const thumb_gl_y = @round(window_height - (track_top_px + thumb_offset) - thumb_h);
@@ -7277,9 +7368,55 @@ pub fn showTransferToast(
     if (status != .in_progress) transferCancelConfirmClose();
 }
 
+const SettingsPageTestContext = struct {
+    tabs: [AppWindow.tab.MAX_TABS]?*AppWindow.tab.TabState,
+    tab_count: usize,
+    active_tab: usize,
+    allocator: ?std.mem.Allocator,
+    should_close: bool,
+
+    fn restore(self: SettingsPageTestContext) void {
+        settingsState().close(AppWindow.g_allocator);
+        AppWindow.tab.g_tabs = self.tabs;
+        AppWindow.tab.g_tab_count = self.tab_count;
+        if (self.tab_count > 0) AppWindow.tab.switchTab(self.active_tab);
+        AppWindow.g_allocator = self.allocator;
+        AppWindow.g_should_close = self.should_close;
+    }
+};
+
+fn beginSettingsPageTest(settings_tab: *AppWindow.tab.TabState) SettingsPageTestContext {
+    var active_tab: usize = 0;
+    if (AppWindow.activeTab()) |active| {
+        for (0..AppWindow.tab.g_tab_count) |idx| {
+            const candidate = AppWindow.tab.g_tabs[idx] orelse continue;
+            if (candidate != active) continue;
+            active_tab = idx;
+            break;
+        }
+    }
+    const saved = SettingsPageTestContext{
+        .tabs = AppWindow.tab.g_tabs,
+        .tab_count = AppWindow.tab.g_tab_count,
+        .active_tab = active_tab,
+        .allocator = AppWindow.g_allocator,
+        .should_close = AppWindow.g_should_close,
+    };
+    settingsState().close(AppWindow.g_allocator);
+    settings_tab.* = .{ .kind = .settings, .tree = .empty };
+    AppWindow.g_allocator = std.testing.allocator;
+    AppWindow.tab.g_tabs = .{null} ** AppWindow.tab.MAX_TABS;
+    AppWindow.tab.g_tabs[0] = settings_tab;
+    AppWindow.tab.g_tab_count = 1;
+    AppWindow.tab.switchTab(0);
+    return saved;
+}
+
 test "overlays: command center Settings command opens settings page" {
+    var settings_tab: AppWindow.tab.TabState = undefined;
+    const ctx = beginSettingsPageTest(&settings_tab);
+    defer ctx.restore();
     commandPaletteOpen();
-    defer settingsPageClose();
     defer commandPaletteClose();
 
     executeCommand(.open_settings);
@@ -7289,8 +7426,10 @@ test "overlays: command center Settings command opens settings page" {
 }
 
 test "overlays: settings page state is owned by OverlayState" {
+    var settings_tab: AppWindow.tab.TabState = undefined;
+    const ctx = beginSettingsPageTest(&settings_tab);
+    defer ctx.restore();
     settingsPageOpen();
-    defer settingsPageClose();
 
     try std.testing.expect(overlayState().settings.visible);
     try std.testing.expect(settingsPageVisible());
@@ -7347,12 +7486,10 @@ test "overlays: sticky transfer toast does not keep render gate active forever" 
     try std.testing.expect(!anyOverlayActive(after_deadline));
 }
 
-test "overlays: settings page escape closes without allocator" {
-    const previous_allocator = AppWindow.g_allocator;
-    defer settingsPageClose();
-    defer AppWindow.g_allocator = previous_allocator;
-
-    AppWindow.g_allocator = null;
+test "overlays: settings tab escape is consumed without closing the page" {
+    var settings_tab: AppWindow.tab.TabState = undefined;
+    const ctx = beginSettingsPageTest(&settings_tab);
+    defer ctx.restore();
     settingsPageOpen();
 
     const effect = settingsPageHandleKey(.{ .key = .escape });
@@ -7360,7 +7497,7 @@ test "overlays: settings page escape closes without allocator" {
     try std.testing.expect(effect.consumed);
     try std.testing.expect(effect.needs_rebuild);
     try std.testing.expect(effect.cells_invalid);
-    try std.testing.expect(!settingsPageVisible());
+    try std.testing.expect(settingsPageVisible());
 }
 
 test "macOS UI smoke: command center opens settings and settings writes config" {
@@ -7389,13 +7526,12 @@ test "macOS UI smoke: command center opens settings and settings writes config" 
         );
     }
 
-    const previous_allocator = AppWindow.g_allocator;
-    defer AppWindow.g_allocator = previous_allocator;
-    AppWindow.g_allocator = allocator;
+    var settings_tab: AppWindow.tab.TabState = undefined;
+    const ctx = beginSettingsPageTest(&settings_tab);
+    defer ctx.restore();
 
     commandPaletteOpen();
     defer commandPaletteClose();
-    defer settingsPageClose();
 
     for ("settings") |c| commandPaletteInsertChar(c);
     try std.testing.expect(commandPaletteVisible());
@@ -7404,7 +7540,7 @@ test "macOS UI smoke: command center opens settings and settings writes config" 
     try std.testing.expect(!commandPaletteVisible());
     try std.testing.expect(settingsPageVisible());
 
-    _ = settingsPageHandleKey(.{ .key = .arrow_up });
+    executeSettingsAction(.select_appearance);
     _ = settingsPageHandleKey(.{ .key = .arrow_right });
 
     const config_path = try std.fs.path.join(allocator, &.{ config_dir, "config" });
@@ -7440,12 +7576,11 @@ test "macOS UI smoke: settings toggles WeChat direct" {
         );
     }
 
-    const previous_allocator = AppWindow.g_allocator;
-    defer AppWindow.g_allocator = previous_allocator;
-    AppWindow.g_allocator = allocator;
+    var settings_tab: AppWindow.tab.TabState = undefined;
+    const ctx = beginSettingsPageTest(&settings_tab);
+    defer ctx.restore();
 
     settingsPageOpen();
-    defer settingsPageClose();
 
     executeSettingsAction(.toggle_weixin_direct);
 
@@ -7458,33 +7593,36 @@ test "macOS UI smoke: settings toggles WeChat direct" {
 }
 
 test "overlays: settings page caps visible rows and scrolls to keep focus visible on short windows" {
-    const row_h = overlayRowHeight(42);
-    const header_h = @round(18 + overlayLineHeight() * 2 + 12);
-    const footer_h = @round(@max(52.0, overlayTextHeight() + 28.0));
-    const base_h = header_h + footer_h;
+    const row_h = settings_page_layout.settingsRowHeight(font.g_titlebar_cell_height);
+    const base_h: f32 = 128;
+    const rows = settings_page.categoryRows(.appearance);
 
     // A tall window fits every row, so no scrolling is needed.
-    try std.testing.expectEqual(SETTINGS_ROW_COUNT, settingsRowCapacity(2000, base_h, row_h));
+    settingsState().selectCategory(.appearance);
+    try std.testing.expectEqual(rows.len, settingsRowCapacity(2000, base_h, row_h));
 
-    // The reported short window (~522px tall) cannot fit all rows.
-    const short_rows = settingsRowCapacity(522, base_h, row_h);
+    // A compact window cannot fit the full category card.
+    const short_rows = settingsRowCapacity(300, base_h, row_h);
     try std.testing.expect(short_rows >= 1);
-    try std.testing.expect(short_rows < SETTINGS_ROW_COUNT);
+    try std.testing.expect(short_rows < rows.len);
 
+    const saved_category = settingsState().category;
     const saved_focus = settingsState().focus;
-    defer settingsState().focus = saved_focus;
+    defer {
+        settingsState().category = saved_category;
+        settingsState().focus = saved_focus;
+    }
 
     // Focus near the top keeps the list pinned to the top.
-    settingsState().focus = 0;
+    settingsState().focus = rows[0];
     try std.testing.expectEqual(@as(usize, 0), settingsFirstVisibleRow(short_rows));
 
-    // Focusing the last row (the close action that was clipped in the report)
-    // scrolls just far enough to reveal it as the bottom visible row.
-    settingsState().focus = SETTINGS_ROW_COUNT - 1;
+    // Focusing the last row scrolls just far enough to reveal it.
+    settingsState().focus = rows[rows.len - 1];
     const scroll = settingsFirstVisibleRow(short_rows);
-    try std.testing.expectEqual(SETTINGS_ROW_COUNT - short_rows, scroll);
-    try std.testing.expect(settingsState().focus >= scroll);
-    try std.testing.expect(settingsState().focus < scroll + short_rows);
+    try std.testing.expectEqual(rows.len - short_rows, scroll);
+    try std.testing.expect(settingsState().focusIndex() >= scroll);
+    try std.testing.expect(settingsState().focusIndex() < scroll + short_rows);
 }
 
 test "overlays: command center mouse wheel moves selection without wrapping" {
@@ -7607,8 +7745,8 @@ test "overlays: short-window overlay boxes stay within the window" {
     // A window far too short to hold the full box must still keep the panel
     // inside the content area (never paint past the bottom edge).
     {
-        const layout = settingsLayout(800, 120, 0);
-        try std.testing.expect(layout.box_top_px + layout.box_h <= 120);
+        const layout = settingsLayout(120, 0, 0, 800);
+        try std.testing.expect(layout.page_top_px + layout.page_h <= 120);
     }
     {
         sessionLauncherOpen();
@@ -7944,8 +8082,9 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     try std.testing.expect(anyBlockingOverlayVisible());
     commandPaletteState().visible = false;
 
+    // Settings is now a page-type tab, not a modal that blocks native panels.
     settingsState().visible = true;
-    try std.testing.expect(anyBlockingOverlayVisible());
+    try std.testing.expect(!anyBlockingOverlayVisible());
     settingsState().visible = false;
 
     whatsNewState().visible = true;
@@ -8492,12 +8631,11 @@ pub fn whatsNewVisible() bool {
 /// webview would otherwise occlude. The webview is an OS-level control
 /// composited ABOVE the GPU surface, so in full mode it covers the entire
 /// content area — including these modals. Callers (browser_panel.sync) hide the
-/// webview while this holds so the command center, settings, confirm dialogs,
-/// etc. stay visible.
+/// webview while this holds so command palettes and confirm dialogs stay
+/// visible. Settings is a page tab now, not a blocking overlay.
 pub fn anyBlockingOverlayVisible() bool {
     return btwConversationVisible() or
         commandPaletteVisible() or
-        settingsPageVisible() or
         sessionLauncherVisible() or
         whatsNewVisible() or
         integrationPromptVisible() or
