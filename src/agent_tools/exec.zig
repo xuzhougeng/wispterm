@@ -258,6 +258,8 @@ fn agentAppDisplayName(app: agent_detector.App) []const u8 {
         .none => "terminal app",
         .codex => "Codex",
         .claude_code => "Claude Code",
+        // In-app sessions never appear on a PTY surface; arm exists for exhaustiveness.
+        .assistant => "Copilot",
     };
 }
 
@@ -266,6 +268,7 @@ fn agentAppReplName(app: agent_detector.App) []const u8 {
         .none => "plain",
         .codex => "codex",
         .claude_code => "claude_code",
+        .assistant => "assistant",
     };
 }
 

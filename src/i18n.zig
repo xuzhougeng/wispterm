@@ -13,6 +13,9 @@ pub const Strings = struct {
     /// 预留给未来的语言选择 UI；当前仅用于演示 catalog 与测试，生产代码暂未读取。
     language_name: []const u8,
     toast_wechat_not_connected: []const u8,
+    // —— Agent 注意力通知（终端 OSC 7748 边沿 + in-app AI 会话回合边沿）——
+    notif_agent_done: []const u8,
+    notif_agent_attention: []const u8,
     toast_wechat_poller_started: []const u8,
     toast_wechat_poller_stopped: []const u8,
     toast_wechat_direct_disabled: []const u8,
@@ -278,6 +281,8 @@ pub const Strings = struct {
 const en = Strings{
     .language_name = "English",
     .toast_wechat_not_connected = "WeChat not connected",
+    .notif_agent_done = "Finished — your turn",
+    .notif_agent_attention = "Waiting for your approval",
     .toast_wechat_poller_started = "WeChat poller started",
     .toast_wechat_poller_stopped = "WeChat poller stopped",
     .toast_wechat_direct_disabled = "WeChat direct disabled",
@@ -532,6 +537,8 @@ const en = Strings{
 const zh_CN = Strings{
     .language_name = "中文",
     .toast_wechat_not_connected = "微信未连接",
+    .notif_agent_done = "任务完成，轮到你了",
+    .notif_agent_attention = "等待你的批准",
     .toast_wechat_poller_started = "微信轮询已启动",
     .toast_wechat_poller_stopped = "微信轮询已停止",
     .toast_wechat_direct_disabled = "微信直连已禁用",

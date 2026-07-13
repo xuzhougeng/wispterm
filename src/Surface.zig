@@ -414,6 +414,14 @@ initial_cwd_path_len: usize = 0,
 // markers; app identity may also be seeded from the foreground command.
 agent_detection: agent_detector.Detection = .{},
 
+/// Last agent state seen by the main loop's notification poll (edge detection;
+/// UI thread only — see AppWindow.pollAgentMarker).
+agent_notify_prev_state: agent_detector.State = .none,
+/// When a `done` edge was staged (ms since epoch); 0 = none. The notification
+/// only fires if the agent is still done `notification.agent_done_quiet_ms`
+/// later — goal-loop agents bounce done→running between milestones.
+agent_done_staged_ms: i64 = 0,
+
 // ============================================================================
 // VT stream
 // ============================================================================

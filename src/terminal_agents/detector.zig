@@ -4,12 +4,26 @@ pub const App = enum {
     none,
     codex,
     claude_code,
+    /// In-app AI session (AI-chat tab / copilot sidebar), not a PTY agent.
+    /// Lets tab badges reuse Detection for those sessions.
+    assistant,
 
     pub fn label(self: App) []const u8 {
         return switch (self) {
             .none => "none",
             .codex => "codex",
             .claude_code => "claude_code",
+            .assistant => "assistant",
+        };
+    }
+
+    /// Human-facing name for notification titles.
+    pub fn displayName(self: App) []const u8 {
+        return switch (self) {
+            .none => "Agent",
+            .codex => "Codex",
+            .claude_code => "Claude Code",
+            .assistant => "Copilot",
         };
     }
 };
@@ -220,6 +234,7 @@ pub fn appFromLabel(s: []const u8) ?App {
     if (std.mem.eql(u8, s, "none")) return .none;
     if (std.mem.eql(u8, s, "codex")) return .codex;
     if (std.mem.eql(u8, s, "claude_code")) return .claude_code;
+    if (std.mem.eql(u8, s, "assistant")) return .assistant;
     return null;
 }
 
@@ -297,6 +312,15 @@ test "appFromCommand maps known agents" {
     try std.testing.expectEqual(App.claude_code, appFromCommand("claude"));
     try std.testing.expectEqual(App.codex, appFromCommand("/usr/bin/codex"));
     try std.testing.expectEqual(App.none, appFromCommand("bash"));
+}
+
+test "assistant App round-trips its label and has a display name" {
+    try std.testing.expectEqualStrings("assistant", App.assistant.label());
+    try std.testing.expectEqual(App.assistant, appFromLabel("assistant").?);
+    try std.testing.expectEqualStrings("Copilot", App.assistant.displayName());
+    try std.testing.expectEqualStrings("Claude Code", App.claude_code.displayName());
+    try std.testing.expectEqualStrings("Codex", App.codex.displayName());
+    try std.testing.expectEqualStrings("Agent", App.none.displayName());
 }
 
 test "aggregate prefers the most attention-worthy state" {

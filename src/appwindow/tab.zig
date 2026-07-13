@@ -25,9 +25,21 @@ const platform_pty_command = @import("../platform/pty_command.zig");
 const Pty = @import("../platform/pty.zig").Pty;
 const active_tab_state = @import("active_tab.zig");
 const i18n = @import("../i18n.zig");
+const agent_detector = @import("../terminal_agents/detector.zig");
 
 const CursorStyle = Config.CursorStyle;
 const Selection = Surface.Selection;
+
+/// Map an in-app AI session's live flags onto the terminal-agent badge
+/// vocabulary: pending approval/question beats an inflight turn; the sticky
+/// `attention_done` badge (set by AppWindow on an unseen turn end) shows last.
+fn sessionAgentState(session: *ai_chat.Session) agent_detector.State {
+    if (session.approvalView() != null or session.questionView() != null)
+        return .waiting_approval;
+    if (session.requestState().inflight) return .running;
+    if (session.attention_done) return .done;
+    return .none;
+}
 
 // ============================================================================
 // Constants
@@ -126,6 +138,43 @@ pub const TabState = struct {
         }
         const surface = self.focusedSurface() orelse return "wispterm";
         return surface.getTitle();
+    }
+
+    /// Aggregate agent state across this tab for the titlebar badge/dot:
+    /// terminal panes' OSC 7748 detections plus in-app AI sessions (AI-chat
+    /// tab session / copilot sidebar session). Returns a synthetic Detection
+    /// (visible() true) or a blank one when nothing is active.
+    pub fn agentDetection(self: *TabState) agent_detector.Detection {
+        var states_buf: [64]agent_detector.State = undefined;
+        var len: usize = 0;
+        // Source the badge's app from a pane that actually has a visible agent
+        // (NOT the focused surface — it may be a plain shell while a
+        // split-sibling runs the agent).
+        var app: agent_detector.App = .none;
+        var it = self.tree.surfaces();
+        while (it.next()) |entry| {
+            if (len >= states_buf.len) break;
+            const det = entry.surface.agent_detection;
+            if (det.visible()) {
+                states_buf[len] = det.state;
+                len += 1;
+                if (app == .none) app = det.app;
+            }
+        }
+        const sessions = [_]?*ai_chat.Session{ self.ai_chat_session, self.copilot_session };
+        for (sessions) |maybe| {
+            const session = maybe orelse continue;
+            const st = sessionAgentState(session);
+            if (st != .none and len < states_buf.len) {
+                states_buf[len] = st;
+                len += 1;
+                if (app == .none) app = .assistant;
+            }
+        }
+        if (len == 0) return .{};
+        const agg = agent_detector.aggregate(states_buf[0..len]);
+        if (agg == .none) return .{};
+        return .{ .app = app, .state = agg, .confidence = 100 };
     }
 
     pub fn deinit(self: *TabState, allocator: std.mem.Allocator) void {

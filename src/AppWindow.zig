@@ -31,6 +31,7 @@ const platform_global_hotkey = @import("platform/global_hotkey.zig");
 const platform_menu = @import("platform/menu.zig");
 const platform_notifications = @import("platform/notifications.zig");
 const notif_mod = @import("notification.zig");
+const agent_detector = @import("terminal_agents/detector.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const copilot_hint_gate = @import("assistant/sidebar/hint_gate.zig");
 const platform_window_state = @import("platform/window_state.zig");
@@ -6845,12 +6846,7 @@ fn handleNotification(surface: *Surface, is_active_surface: bool) void {
             continue;
         }
 
-        // Lazy authorization request (macOS): first time we'd want a toast,
-        // ask once. This delivery falls back to badge until the user answers.
-        if (native_toast and !g_notif_auth_requested) {
-            platform_notifications.requestNotificationAuth();
-            g_notif_auth_requested = true;
-        }
+        ensureNotifAuthRequested(native_toast);
 
         const auth: notif_mod.AuthStatus = @enumFromInt(
             @intFromEnum(platform_notifications.notificationAuthStatus()),
@@ -6866,18 +6862,7 @@ fn handleNotification(surface: *Surface, is_active_surface: bool) void {
         switch (route) {
             .none => {},
             .toast => {
-                var title_z: [notif_mod.max_title + 1]u8 = undefined;
-                var body_z: [notif_mod.max_body + 1]u8 = undefined;
-                const t = item.title();
-                const b = item.body();
-                @memcpy(title_z[0..t.len], t);
-                title_z[t.len] = 0;
-                @memcpy(body_z[0..b.len], b);
-                body_z[b.len] = 0;
-                platform_notifications.showDesktopNotification(
-                    title_z[0..t.len :0],
-                    body_z[0..b.len :0],
-                );
+                showToastZ(item.title(), item.body());
                 surface.bell_indicator = true; // also badge the tab
                 surface.bell_indicator_time = now;
                 surface.last_notif_hash = h;
@@ -6904,6 +6889,121 @@ fn handleNotification(surface: *Surface, is_active_surface: bool) void {
             }
         }
     }
+}
+
+/// Lazy authorization request (macOS): first time we'd want a toast, ask once.
+/// Deliveries fall back to badge until the user answers.
+fn ensureNotifAuthRequested(native_toast: bool) void {
+    if (native_toast and !g_notif_auth_requested) {
+        platform_notifications.requestNotificationAuth();
+        g_notif_auth_requested = true;
+    }
+}
+
+/// Z-terminate title/body (truncating to the notification limits) and show a
+/// native toast. Caller has already routed via `notif_mod.decideRoute`.
+fn showToastZ(title: []const u8, body: []const u8) void {
+    var title_z: [notif_mod.max_title + 1]u8 = undefined;
+    var body_z: [notif_mod.max_body + 1]u8 = undefined;
+    const t = title[0..@min(title.len, notif_mod.max_title)];
+    const b = body[0..@min(body.len, notif_mod.max_body)];
+    @memcpy(title_z[0..t.len], t);
+    title_z[t.len] = 0;
+    @memcpy(body_z[0..b.len], b);
+    body_z[b.len] = 0;
+    platform_notifications.showDesktopNotification(
+        title_z[0..t.len :0],
+        body_z[0..b.len :0],
+    );
+}
+
+/// Per-frame OSC 7748 edge poll for one surface: a terminal agent that stops
+/// for approval/input notifies immediately; `done` goes through a quiet window
+/// (goal-loop agents bounce done→running between milestones). Notifications
+/// are pushed into the surface's own notif queue, so they inherit the whole
+/// existing pipeline — rate limit/dedup (vs. the hook's own OSC 777, typically
+/// in the same burst), focus suppression, and the desktop-notifications gate.
+fn pollAgentMarker(surface: *Surface) void {
+    const det = surface.agent_detection;
+    const cur: agent_detector.State = if (det.visible()) det.state else .none;
+    const now = std.time.milliTimestamp();
+    if (cur != surface.agent_notify_prev_state) {
+        switch (notif_mod.agentMarkerAction(surface.agent_notify_prev_state, cur)) {
+            .none => {},
+            .notify_attention => surface.notif_queue.push(
+                notif_mod.makeItem(det.app.displayName(), i18n.s().notif_agent_attention),
+            ),
+            .stage_done => surface.agent_done_staged_ms = now,
+        }
+        if (cur != .done) surface.agent_done_staged_ms = 0;
+        surface.agent_notify_prev_state = cur;
+    }
+    if (surface.agent_done_staged_ms != 0 and cur == .done and
+        now - surface.agent_done_staged_ms >= notif_mod.agent_done_quiet_ms)
+    {
+        const staged = surface.agent_done_staged_ms;
+        surface.agent_done_staged_ms = 0;
+        // The hook's own OSC 777 (richer, custom text) may have announced this
+        // completion already — it arrives in the same burst as the marker,
+        // but our synthetic fires past the rate-limit window. Let it win.
+        if (!notif_mod.doneAlreadyAnnounced(surface.last_notif_time, staged)) {
+            surface.notif_queue.push(
+                notif_mod.makeItem(det.app.displayName(), i18n.s().notif_agent_done),
+            );
+        }
+    }
+}
+
+/// Per-frame attention poll for one in-app AI session (AI-chat tab / copilot
+/// sidebar). Edge-triggered: entering waiting notifies "needs approval"; a
+/// turn ending notifies "finished" unless the user stopped it. `is_viewing`
+/// means the user is looking at this conversation right now (its tab is
+/// active; for copilot the sidebar is also open) — combined with window focus
+/// it suppresses the toast and the sticky done badge, Orca-style.
+fn pollSessionAttention(session: *ai_chat.Session, is_viewing: bool) void {
+    if (session.closing.load(.acquire)) return;
+
+    const viewing_now = window_focused and is_viewing;
+    if (viewing_now) session.attention_done = false;
+
+    const waiting = session.approvalView() != null or session.questionView() != null;
+    const cur: notif_mod.SessionPhase = if (waiting)
+        .waiting
+    else if (session.requestState().inflight)
+        .running
+    else
+        .idle;
+
+    const prev = session.ui_attention_phase;
+    if (cur == prev) return;
+    session.ui_attention_phase = cur;
+
+    const edge = notif_mod.sessionEdge(prev, cur, session.ui_stop_seen);
+    if (cur == .idle) session.ui_stop_seen = false;
+    switch (edge) {
+        .none => {},
+        .finished => {
+            if (!viewing_now) session.attention_done = true;
+            deliverSessionToast(session, i18n.s().notif_agent_done, is_viewing);
+        },
+        // The live waiting state itself badges the tab (tab.agentDetection),
+        // so only the toast needs delivering here.
+        .needs_attention => deliverSessionToast(session, i18n.s().notif_agent_attention, is_viewing),
+    }
+}
+
+fn deliverSessionToast(session: *ai_chat.Session, body: []const u8, is_viewing: bool) void {
+    if (!g_desktop_notifications) return;
+    const native_toast = platform_notifications.supports_desktop_notifications;
+    ensureNotifAuthRequested(native_toast);
+    const auth: notif_mod.AuthStatus = @enumFromInt(
+        @intFromEnum(platform_notifications.notificationAuthStatus()),
+    );
+    const route = notif_mod.decideRoute(true, native_toast, auth, window_focused, is_viewing);
+    if (route != .toast) return; // .badge is covered by attention_done / live state
+    const session_title = session.title();
+    const title = if (session_title.len > 0) session_title else i18n.s().sl_ai_agent;
+    showToastZ(title, body);
 }
 
 /// Internal main loop - called by AppWindow.run() after init() has set up globals.
@@ -7519,13 +7619,15 @@ fn runMainLoop(self: *AppWindow) !void {
         // output no longer triggers frames, so these must not depend on one.
         for (0..tab.g_tab_count) |ti| {
             if (tab.g_tabs[ti]) |tb| {
+                const tab_active = ti == active_tab_state.g_active_tab;
                 var it = tb.tree.surfaces();
                 while (it.next()) |entry| {
                     if (entry.surface.bell_pending.swap(false, .acquire)) {
-                        handleBell(entry.surface, win, ti == active_tab_state.g_active_tab);
+                        handleBell(entry.surface, win, tab_active);
                     }
+                    pollAgentMarker(entry.surface);
                     {
-                        const is_active_surface = (ti == active_tab_state.g_active_tab) and
+                        const is_active_surface = tab_active and
                             (if (tb.focusedSurface()) |fs| fs == entry.surface else false);
                         handleNotification(entry.surface, is_active_surface);
                     }
@@ -7534,6 +7636,10 @@ fn runMainLoop(self: *AppWindow) !void {
                         entry.surface.allocator.free(text);
                     }
                 }
+                // In-app AI sessions: turn-end / needs-approval attention edges.
+                if (tb.ai_chat_session) |s| pollSessionAttention(s, tab_active);
+                if (tb.copilot_session) |s|
+                    pollSessionAttention(s, tab_active and tb.copilot_visible);
             }
         }
 

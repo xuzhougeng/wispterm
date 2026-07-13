@@ -7,6 +7,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ai_chat_input_text = @import("input_text.zig");
+const notification = @import("../../notification.zig");
 const input_key = @import("../../input/key.zig");
 const platform_agent_prompt = @import("../../platform/agent_prompt.zig");
 const platform_process = @import("../../platform/process.zig");
@@ -1078,6 +1079,13 @@ pub const Session = struct {
     history_on_change: ?HistoryChangeHook = null,
     request_inflight: bool = false,
     request_stopping: bool = false,
+    // —— UI 线程注意力跟踪（AppWindow.pollSessionAttention 每帧读写）——
+    // ui_attention_phase：上一帧观察到的相位，用于边沿检测。
+    // attention_done：「回合在你没看着时完成了」的粘性徽标，看到该 tab 即清除。
+    // ui_stop_seen：本回合内用户按过 Stop → 结束时静默（对应 Orca 的 interrupted）。
+    ui_attention_phase: notification.SessionPhase = .idle,
+    attention_done: bool = false,
+    ui_stop_seen: bool = false,
     request_thread: ?std.Thread = null,
     title_thread: ?std.Thread = null,
     pending_reply_context: ?OwnedReplyContext = null,
@@ -2056,6 +2064,7 @@ pub const Session = struct {
             return;
         }
         self.request_stopping = true;
+        self.ui_stop_seen = true;
         self.setStatusLocked("Stopping...");
     }
 

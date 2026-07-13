@@ -976,33 +976,18 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
         }
 
         // Per-tab aggregate agent-state dot — bottom-center of the tab strip.
-        // Collects all panes' visible agent states, aggregates them, draws a
-        // small filled dot if any pane has a visible agent. The dot sits on the
+        // Aggregates terminal panes' agent states plus in-app AI sessions and
+        // draws a small filled dot if anything is active. The dot sits on the
         // bottom border so it's unobtrusive (2px tall, 6px wide pill shape).
-        {
-            var states_buf: [64]agent_detector.State = undefined;
-            var states_len: usize = 0;
-            if (tab.g_tabs[tab_idx]) |tb| {
-                var it = tb.tree.surfaces();
-                while (it.next()) |entry| {
-                    if (states_len >= states_buf.len) break;
-                    const det = entry.surface.agent_detection;
-                    if (det.visible()) {
-                        states_buf[states_len] = det.state;
-                        states_len += 1;
-                    }
-                }
-            }
-            if (states_len > 0) {
-                const agg = agent_detector.aggregate(states_buf[0..states_len]);
-                if (agg != .none) {
-                    const dot_color = agentBadgeColor(agg);
-                    const dot_w: f32 = 6;
-                    const dot_h: f32 = 2;
-                    const dot_x = cursor_x + (tab_w - dot_w) / 2;
-                    const dot_y = tb_top; // bottom edge of titlebar in GL coords
-                    ui_pipeline.fillQuad(dot_x, dot_y, dot_w, dot_h, dot_color);
-                }
+        if (tab.g_tabs[tab_idx]) |tb| {
+            const det = tb.agentDetection();
+            if (det.visible()) {
+                const dot_color = agentBadgeColor(det.state);
+                const dot_w: f32 = 6;
+                const dot_h: f32 = 2;
+                const dot_x = cursor_x + (tab_w - dot_w) / 2;
+                const dot_y = tb_top; // bottom edge of titlebar in GL coords
+                ui_pipeline.fillQuad(dot_x, dot_y, dot_w, dot_h, dot_color);
             }
         }
 
@@ -1169,40 +1154,11 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
             }
         }
 
-        // Use aggregate of all panes' visible states so the sidebar badge
-        // reflects the most attention-worthy agent across all split panes,
-        // not just the focused one.
+        // Use aggregate of all panes' visible states (plus in-app AI sessions)
+        // so the sidebar badge reflects the most attention-worthy agent across
+        // all split panes, not just the focused one.
         const detection = if (!tab.g_tab_rename_active) blk: {
-            if (tab.g_tabs[tab_idx]) |t| {
-                var states_buf: [64]agent_detector.State = undefined;
-                var states_len: usize = 0;
-                // Source the badge's app from a pane that actually has a visible
-                // agent (NOT the focused surface — it may be a plain shell while a
-                // split-sibling runs the agent). visible() requires app != .none,
-                // so this guarantees the synthetic Detection below is visible.
-                var agg_app: agent_detector.App = .none;
-                var it = t.tree.surfaces();
-                while (it.next()) |entry| {
-                    if (states_len >= states_buf.len) break;
-                    const det = entry.surface.agent_detection;
-                    if (det.visible()) {
-                        states_buf[states_len] = det.state;
-                        states_len += 1;
-                        if (agg_app == .none) agg_app = det.app;
-                    }
-                }
-                if (states_len > 0) {
-                    const agg_state = agent_detector.aggregate(states_buf[0..states_len]);
-                    if (agg_state != .none) {
-                        // Build a synthetic Detection so the existing badge renderer works.
-                        break :blk agent_detector.Detection{
-                            .state = agg_state,
-                            .app = agg_app,
-                            .confidence = 100,
-                        };
-                    }
-                }
-            }
+            if (tab.g_tabs[tab_idx]) |t| break :blk t.agentDetection();
             break :blk agent_detector.Detection{};
         } else agent_detector.Detection{};
         const show_agent_badge = detection.visible();
