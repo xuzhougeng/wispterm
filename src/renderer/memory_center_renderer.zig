@@ -89,10 +89,11 @@ pub fn hitTest(
     const layout = computeLayout(@round(x), @round(@max(1.0, width)));
     const top = @round(titlebar_offset);
     const src_top = sourceRowsTop(top, cell_h);
+    const source_row_h = sourceRowHeight(cell_h);
     const sources = [_]memory_center.Source{ .remembered, .digest };
     for (sources, 0..) |source, i| {
-        const row_top = src_top + @as(f32, @floatFromInt(i)) * SOURCE_ROW_H;
-        if (rectContains(mx, my, layout.left_x, row_top, layout.left_w, SOURCE_ROW_H)) return .{ .source = source };
+        const row_top = src_top + @as(f32, @floatFromInt(i)) * source_row_h;
+        if (rectContains(mx, my, layout.left_x, row_top, layout.left_w, source_row_h)) return .{ .source = source };
     }
 
     // While a digest run reports progress the list renders a status line, not
@@ -181,21 +182,22 @@ fn renderSources(
     _ = draw.renderTextLimited(i18n.s().memory_center_title, layout.left_x + PAD_X, yTextFromTop(draw, window_height, top + 11), fg, layout.left_w - PAD_X * 2);
 
     const src_top = sourceRowsTop(top, draw.cell_h);
+    const source_row_h = sourceRowHeight(draw.cell_h);
     _ = draw.renderTextLimited(i18n.s().memory_center_source, layout.left_x + PAD_X, yTextFromTop(draw, window_height, src_top - draw.cell_h - 8), muted, layout.left_w - PAD_X * 2);
     const sources = [_]memory_center.Source{ .remembered, .digest };
     for (sources, 0..) |source, i| {
-        const row_top = src_top + @as(f32, @floatFromInt(i)) * SOURCE_ROW_H;
+        const row_top = src_top + @as(f32, @floatFromInt(i)) * source_row_h;
         const active = session.source == source;
         if (active) {
-            draw.fillQuadAlpha(layout.left_x, yFromTop(window_height, row_top, SOURCE_ROW_H), layout.left_w, SOURCE_ROW_H, selected_bg, 0.92);
-            draw.fillQuad(layout.left_x, yFromTop(window_height, row_top, SOURCE_ROW_H), 4, SOURCE_ROW_H, accent);
+            draw.fillQuadAlpha(layout.left_x, yFromTop(window_height, row_top, source_row_h), layout.left_w, source_row_h, selected_bg, 0.92);
+            draw.fillQuad(layout.left_x, yFromTop(window_height, row_top, source_row_h), 4, source_row_h, accent);
         }
         var count_buf: [16]u8 = undefined;
         const count_text = std.fmt.bufPrint(&count_buf, "{d}", .{if (session.snapshot) |snap| snap.count(source) else 0}) catch "";
         const count_w = countColumnWidth(count_text, draw.glyphAdvance);
         const count_x = layout.left_x + layout.left_w - PAD_X - count_w;
         const label_x = layout.left_x + PAD_X + 6;
-        const text_y = yTextFromTop(draw, window_height, row_top + 9);
+        const text_y = yTextFromTop(draw, window_height, row_top + (source_row_h - draw.cell_h) / 2);
         const label_color = if (active) fg else muted;
         _ = draw.renderTextLimited(sourceLabel(source), label_x, text_y, label_color, @max(0, count_x - label_x - SMALL_GAP));
         _ = draw.renderTextLimited(count_text, count_x, text_y, muted, count_w);
@@ -465,6 +467,10 @@ fn sourceRowsTop(top: f32, cell_h: f32) f32 {
     return top + headerHeight(cell_h) + cell_h + 28;
 }
 
+fn sourceRowHeight(cell_h: f32) f32 {
+    return @max(SOURCE_ROW_H, cell_h + 14);
+}
+
 fn rowHeight(cell_h: f32) f32 {
     return @max(ROW_H, cell_h * 2 + 22);
 }
@@ -525,4 +531,15 @@ test "memory center renderer exposes the empty-state digest action" {
 test "memory center renderer wraps body text" {
     try std.testing.expectEqual(@as(usize, 2), wrappedLineCount("alpha beta", 48, testAdvance));
     try std.testing.expectEqual(@as(usize, 2), wrappedLineCount("alpha\nbeta", 200, testAdvance));
+}
+
+test "memory center source rows grow with large UI text" {
+    const cell_heights = [_]f32{ 16, 24, 32, 40 };
+    for (cell_heights) |cell_h| {
+        const row_h = sourceRowHeight(cell_h);
+        const text_top = (row_h - cell_h) / 2;
+        try std.testing.expect(row_h >= cell_h + 14);
+        try std.testing.expect(text_top >= 0);
+        try std.testing.expect(text_top + cell_h <= row_h);
+    }
 }
