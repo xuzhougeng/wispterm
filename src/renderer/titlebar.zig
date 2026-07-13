@@ -21,13 +21,13 @@ const keybind = @import("../keybind.zig");
 const Character = font.Character;
 
 pub const CaptionButtonType = enum { minimize, maximize, close };
-pub const SIDEBAR_WIDTH: f32 = 220;
-pub const SIDEBAR_MIN_WIDTH: f32 = 160;
-pub const SIDEBAR_MAX_WIDTH: f32 = 720;
-pub const SIDEBAR_MIN_CONTENT_WIDTH: f32 = 240;
-pub const SIDEBAR_RESIZE_HIT_WIDTH: f32 = 8;
+pub const SIDEBAR_WIDTH: f32 = 48;
+pub const SIDEBAR_HIDDEN_INDICATOR_W: f32 = 8;
 pub const SIDEBAR_ROW_H: f32 = 42;
-pub const SIDEBAR_HEADER_H: f32 = 46;
+pub const SIDEBAR_TOOLTIP_DWELL_MS: i64 = 350;
+
+threadlocal var g_sidebar_tooltip_hovered_tab: ?usize = null;
+threadlocal var g_sidebar_tooltip_hover_since: i64 = 0;
 pub const TITLEBAR_TOGGLE_W: f32 = 46;
 // On macOS the native menu bar (WispTerm › Settings…, command palette) replaces
 // these in-titlebar buttons, so they collapse to zero width and are not drawn.
@@ -49,18 +49,12 @@ pub fn titlebarLeftReserved() f32 {
     const scale = if (dpi > 0) dpi / 96.0 else 1.0;
     return @round(TITLEBAR_LEFT_RESERVED_LOGICAL * scale);
 }
-pub threadlocal var g_sidebar_width: f32 = SIDEBAR_WIDTH;
-
 pub fn sidebarWidth() f32 {
-    return if (tab.g_sidebar_visible) g_sidebar_width else 0;
+    return if (tab.g_sidebar_visible) SIDEBAR_WIDTH else SIDEBAR_HIDDEN_INDICATOR_W;
 }
 
 pub fn sidebarRowHeight() f32 {
     return @max(SIDEBAR_ROW_H, @round(font.g_titlebar_cell_height + 22));
-}
-
-pub fn sidebarHeaderHeight() f32 {
-    return @max(SIDEBAR_HEADER_H, @round(font.g_titlebar_cell_height + 24));
 }
 
 pub fn titlebarHeight() f32 {
@@ -92,21 +86,6 @@ fn currentWindowIsMaximized() bool {
     return window_backend.isMaximized(win);
 }
 
-pub fn sidebarMaxWidthForWindow(window_width: f32) f32 {
-    return titlebar_layout.sidebarMaxWidthForWindow(window_width, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_CONTENT_WIDTH);
-}
-
-pub fn clampSidebarWidth(width: f32, window_width: f32) f32 {
-    return titlebar_layout.clampSidebarWidth(width, SIDEBAR_MIN_WIDTH, sidebarMaxWidthForWindow(window_width));
-}
-
-pub fn setSidebarWidth(width: f32, window_width: f32) bool {
-    const next = clampSidebarWidth(width, window_width);
-    if (next == g_sidebar_width) return false;
-    g_sidebar_width = next;
-    return true;
-}
-
 fn blend(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
     return titlebar_layout.blend(a, b, t);
 }
@@ -116,12 +95,6 @@ fn titlebarTextWidth(text: []const u8) f32 {
     var width: f32 = 0;
     _ = collectTextCodepoints(text, &codepoints, &width);
     return width;
-}
-
-fn sidebarTabNumberWidth() f32 {
-    var max_prefix_buf: [8]u8 = undefined;
-    const max_prefix = std.fmt.bufPrint(&max_prefix_buf, "{d}", .{tab.MAX_TABS}) catch "99";
-    return @max(@as(f32, 24), @ceil(titlebarTextWidth(max_prefix)) + 4);
 }
 
 pub fn agentBadgeColor(state: agent_detector.State) [3]f32 {
@@ -386,6 +359,17 @@ pub fn renderBellEmoji(x: f32, y: f32, opacity: f32) void {
         font.g_color_atlas_texture,
         opacity,
     );
+}
+
+/// Map a tab kind to its sidebar icon codepoint.
+pub fn sidebarTabKindIcon(tab_state: *const tab.TabState) u32 {
+    return switch (tab_state.kind) {
+        .terminal => 0x2B22,          // ⬢ black hexagon
+        .ai_chat => 0x2727,            // ✧ white four-pointed star
+        .ai_history => 0x23F1,         // ⏱ stopwatch
+        .skill_center => 0x26A1,       // ⚡ high voltage
+        .port_forwarding => 0x21CC,    // ⇌ rightwards harpoon over leftwards harpoon
+    };
 }
 
 /// Render an icon glyph centered within a button rect, using the icon atlas.
@@ -1042,57 +1026,37 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
     }
 }
 
-/// Render the left tab sidebar. The top titlebar remains separate so native
-/// caption hit-testing stays simple.
+/// Render the left tab sidebar — fixed-width icon bar with popup tooltips.
+/// Each tab shows its kind icon; the new-tab (+) button sits below the tabs.
+/// When hidden, renders a thin vertical indicator bar with colored segments.
 pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) void {
     _ = window_width;
-    if (!tab.g_sidebar_visible) return;
-    const sidebar_w = sidebarWidth();
+    const side_h = window_height - titlebar_h;
+    if (side_h <= 0) return;
 
+    if (!tab.g_sidebar_visible) {
+        renderSidebarHiddenIndicator(window_height, titlebar_h, side_h);
+        return;
+    }
+
+    const sidebar_w = SIDEBAR_WIDTH;
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
     const accent = AppWindow.g_theme.cursor_color;
     const sidebar_bg = blend(bg, fg, 0.035);
     const hover_bg = blend(bg, fg, 0.09);
-    const active_bg = blend(bg, accent, 0.16);
-    const border_color = blend(bg, .{ 0.0, 0.0, 0.0 }, 0.20);
-    const text_active = fg;
-    const text_inactive = blend(bg, fg, 0.88);
-    const muted = blend(bg, fg, 0.76);
-    const header_text = blend(bg, fg, 0.84);
+    const active_bg = blend(bg, accent, 0.14);
+    const border_color = blend(bg, .{ 0.0, 0.0, 0.0 }, 0.18);
 
-    const side_h = window_height - titlebar_h;
-    if (side_h <= 0) return;
-
-    const half_resize_hit = SIDEBAR_RESIZE_HIT_WIDTH / 2;
-    const resize_hovered = mouseInRect(sidebar_w - half_resize_hit, titlebar_h, SIDEBAR_RESIZE_HIT_WIDTH, window_height - titlebar_h);
-    const edge_color = if (resize_hovered) blend(bg, accent, 0.38) else border_color;
-
+    // Background + right edge border
     gl_init.renderQuad(0, 0, sidebar_w, side_h, sidebar_bg);
-    gl_init.renderQuad(sidebar_w - 1, 0, if (resize_hovered) 2 else 1, side_h, edge_color);
+    gl_init.renderQuad(sidebar_w - 1, 0, 1, side_h, border_color);
 
-    const header_top_px = titlebar_h;
-    const header_h = sidebarHeaderHeight();
-    const row_h_full = sidebarRowHeight();
-    const header_y = window_height - header_top_px - header_h;
-    const plus_btn_w: f32 = 42;
-    const plus_x = sidebar_w - plus_btn_w - 6;
-    const plus_hovered = mouseInRect(plus_x, header_top_px, plus_btn_w, header_h);
-    if (plus_hovered) {
-        gl_init.renderQuad(plus_x, header_y + 4, plus_btn_w, header_h - 8, hover_bg);
-    }
-    _ = renderTextLimited("Tabs", 14, header_y + (header_h - font.g_titlebar_cell_height) / 2, header_text, sidebar_w - plus_btn_w - 26);
-    renderPlusIcon(plus_x, header_y, plus_btn_w, header_h, text_active);
-    gl_init.renderQuad(0, header_y, sidebar_w, 1, border_color);
-
+    const row_h = sidebarRowHeight();
+    const list_top_px = titlebar_h + 6;
     const now_ms = std.time.milliTimestamp();
-    const dt: f32 = if (tab.g_last_frame_time_ms > 0)
-        @as(f32, @floatFromInt(now_ms - tab.g_last_frame_time_ms)) / 1000.0
-    else
-        0.016;
-    tab.g_last_frame_time_ms = now_ms;
 
-    const list_top_px = titlebar_h + header_h + 6;
+    // Reset text hit regions
     for (0..tab.MAX_TABS) |tab_idx| {
         tab.g_tab_text_x_start[tab_idx] = 0;
         tab.g_tab_text_x_end[tab_idx] = 0;
@@ -1100,151 +1064,292 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
         tab.g_tab_text_y_end[tab_idx] = 0;
     }
 
-    const number_x: f32 = 14;
-    const number_w = sidebarTabNumberWidth();
-    const title_x = number_x + number_w + 8;
+    // Track which tab the mouse is over (for tooltip)
+    var current_hovered_tab: ?usize = null;
 
+    // Render each tab row
     for (0..tab.g_tab_count) |tab_idx| {
-        const row_top_px = list_top_px + @as(f32, @floatFromInt(tab_idx)) * row_h_full;
+        const row_top_px = list_top_px + @as(f32, @floatFromInt(tab_idx)) * row_h;
         if (row_top_px >= window_height) break;
-        const row_h = @min(row_h_full, window_height - row_top_px);
-        const row_y = window_height - row_top_px - row_h;
+        const row_h_actual = @min(row_h, window_height - row_top_px);
+        const row_y = window_height - row_top_px - row_h_actual;
+        const is_active = tab_idx == active_tab_state.g_active_tab;
+        const row_hovered = mouseInRect(0, row_top_px, sidebar_w, row_h_actual);
+
+        if (row_hovered) current_hovered_tab = tab_idx;
+
+        // Row background
+        if (is_active) {
+            gl_init.renderQuad(0, row_y, sidebar_w, row_h_actual, active_bg);
+            // Left accent bar
+            gl_init.renderQuad(0, row_y + 6, 3, row_h_actual - 12, accent);
+        } else if (row_hovered) {
+            gl_init.renderQuad(0, row_y, sidebar_w, row_h_actual, hover_bg);
+        }
+
+        // Render tab kind icon centered in row
+        if (tab.g_tabs[tab_idx]) |t| {
+            const icon_cp = if (t.kind == .terminal) terminalTabIcon(tab_idx) else sidebarTabKindIcon(t);
+            const icon_y = row_y + (row_h_actual - font.g_titlebar_cell_height) / 2;
+            renderTitlebarChar(icon_cp, (sidebar_w - titlebarGlyphAdvance(icon_cp)) / 2, icon_y, fg);
+        }
+
+        // Agent state dot at bottom of row
+        if (tab.g_tabs[tab_idx]) |t| {
+            var states_buf: [8]agent_detector.State = undefined;
+            var states_len: usize = 0;
+            var it = t.tree.surfaces();
+            while (it.next()) |entry| {
+                if (states_len >= states_buf.len) break;
+                const det = entry.surface.agent_detection;
+                if (det.visible()) {
+                    states_buf[states_len] = det.state;
+                    states_len += 1;
+                }
+            }
+            if (states_len > 0) {
+                const agg_state = agent_detector.aggregate(states_buf[0..states_len]);
+                if (agg_state != .none) {
+                    const dot_color = agentBadgeColor(agg_state);
+                    const dot_w: f32 = 4;
+                    const dot_h: f32 = 2;
+                    gl_init.renderQuad((sidebar_w - dot_w) / 2, row_y + 3, dot_w, dot_h, dot_color);
+                }
+            }
+        }
+
+        // Record text bounds for potential double-click (icon area)
+        tab.g_tab_text_x_start[tab_idx] = 0;
+        tab.g_tab_text_x_end[tab_idx] = sidebar_w;
+        tab.g_tab_text_y_start[tab_idx] = row_top_px;
+        tab.g_tab_text_y_end[tab_idx] = row_top_px + row_h_actual;
+    }
+
+    // Render + (new tab) button below tabs
+    const plus_row_top = list_top_px + @as(f32, @floatFromInt(tab.g_tab_count)) * row_h;
+    if (plus_row_top < window_height) {
+        const plus_row_h = @min(row_h, window_height - plus_row_top);
+        const plus_y = window_height - plus_row_top - plus_row_h;
+        const plus_hovered = mouseInRect(0, plus_row_top, sidebar_w, plus_row_h);
+
+        if (plus_hovered) {
+            gl_init.renderQuad(0, plus_y, sidebar_w, plus_row_h, hover_bg);
+        }
+
+        // Separator line above plus button
+        gl_init.renderQuad(4, plus_y + plus_row_h, sidebar_w - 8, 1, border_color);
+
+        const plus_btn_w: f32 = sidebar_w;
+        renderPlusIcon(0, plus_y, plus_btn_w, plus_row_h, blend(bg, fg, 0.70));
+    }
+
+    // Update tooltip hover tracking
+    if (current_hovered_tab != g_sidebar_tooltip_hovered_tab) {
+        g_sidebar_tooltip_hovered_tab = current_hovered_tab;
+        g_sidebar_tooltip_hover_since = if (current_hovered_tab != null) now_ms else 0;
+    }
+}
+
+/// Best-effort read of git branch name from `cwd/.git/HEAD`.
+/// Returns the branch name if parseable, or empty slice. Never allocates.
+fn readGitBranch(cwd: []const u8) []const u8 {
+    const suffix = "/.git/HEAD";
+    var path_buf: [1024]u8 = undefined;
+    if (cwd.len + suffix.len > path_buf.len) return "";
+    @memcpy(path_buf[0..cwd.len], cwd);
+    @memcpy(path_buf[cwd.len..][0..suffix.len], suffix);
+    const path = path_buf[0 .. cwd.len + suffix.len];
+
+    var file = std.fs.openFileAbsolute(path, .{ .mode = .read_only }) catch return "";
+    defer file.close();
+
+    var buf: [512]u8 = undefined;
+    const n = file.readAll(&buf) catch return "";
+    if (n < 5) return "";
+    const content = buf[0..n];
+
+    const prefix = "ref: refs/heads/";
+    if (content.len < prefix.len or !std.mem.startsWith(u8, content, prefix)) return "";
+    var branch = content[prefix.len..];
+    while (branch.len > 0 and (branch[branch.len - 1] == '\n' or branch[branch.len - 1] == '\r')) {
+        branch = branch[0 .. branch.len - 1];
+    }
+    return branch;
+}
+
+/// Render the sidebar tooltip overlay — called during the overlay pass (after
+/// terminal content) so the popup isn't overwritten by cell rendering.
+pub fn renderSidebarTooltipOverlay(window_height: f32, titlebar_h: f32) void {
+    if (!tab.g_sidebar_visible) return;
+    const ht = g_sidebar_tooltip_hovered_tab orelse return;
+    const now_ms = std.time.milliTimestamp();
+    if (now_ms - g_sidebar_tooltip_hover_since < SIDEBAR_TOOLTIP_DWELL_MS) return;
+
+    if (tab.g_tabs[ht]) |t| {
+        const row_h = sidebarRowHeight();
+        const list_top_px = titlebar_h + 6;
+        const row_top = list_top_px + @as(f32, @floatFromInt(ht)) * row_h;
+        const gl_y_center = window_height - row_top - row_h / 2;
+
+        const bg = AppWindow.g_theme.background;
+        const fg = AppWindow.g_theme.foreground;
+        const accent = AppWindow.g_theme.cursor_color;
+        const sidebar_bg = blend(bg, fg, 0.035);
+
+        renderSidebarTooltip(t, SIDEBAR_WIDTH, gl_y_center, sidebar_bg, fg, accent);
+    }
+}
+
+/// Terminal tab icon — cycles through a series of Unicode geometric shapes
+/// so different terminal tabs have visually distinct icons.
+fn terminalTabIcon(tab_index: usize) u32 {
+    const icons = [_]u32{
+        0x1FA99, // 🪙 coin (金 metal)
+        0x1F332, // 🌲 evergreen tree (木 wood)
+        0x1F4A7, // 💦 water wave (水 water)
+        0x1F525, // 🔥 fire (火 fire)
+        0x1F30D, // 🌍 earth globe (土 earth)
+    };
+    return icons[tab_index % icons.len];
+}
+
+/// Render the sidebar tooltip popup with the sidebar panel background (opaque).
+/// Shows title, working directory path, and git branch for terminal tabs.
+fn renderSidebarTooltip(tab_state: *const tab.TabState, anchor_x: f32, anchor_y_center: f32, bg_color: [3]f32, fg_color: [3]f32, accent: [3]f32) void {
+    const title = tab_state.getTitle();
+    if (title.len == 0) return;
+
+    const pad_x: f32 = 12;
+    const pad_y: f32 = 10;
+    const line_gap: f32 = 4;
+    const gap: f32 = 6;
+    const cell_h = font.g_titlebar_cell_height;
+
+    // Collect tooltip lines
+    var lines: [4][]const u8 = undefined;
+    var line_count: usize = 0;
+    lines[line_count] = title;
+    line_count += 1;
+
+    // Path and git branch for terminal tabs
+    if (tab_state.kind == .terminal) {
+        if (tab_state.focusedSurface()) |surface| {
+            var cwd_buf: [1024]u8 = undefined;
+            const cwd_slice = if (surface.getCwd()) |cwd| blk: {
+                const n = @min(cwd.len, cwd_buf.len);
+                @memcpy(cwd_buf[0..n], cwd[0..n]);
+                break :blk cwd_buf[0..n];
+            } else if (surface.getInitialCwd()) |icwd| blk: {
+                const n = @min(icwd.len, cwd_buf.len);
+                @memcpy(cwd_buf[0..n], icwd[0..n]);
+                break :blk cwd_buf[0..n];
+            } else blk: {
+                break :blk "";
+            };
+            lines[line_count] = cwd_slice;
+            line_count += 1;
+
+            // Git branch from cwd (using the fetched cwd)
+            if (cwd_slice.len > 0) {
+                const branch = readGitBranch(cwd_slice);
+                if (branch.len > 0) {
+                    lines[line_count] = branch;
+                    line_count += 1;
+                }
+            }
+        }
+    }
+
+    if (line_count == 0) return;
+
+    // Measure each line
+    var line_widths: [4]f32 = undefined;
+    var max_w: f32 = 0;
+    for (0..line_count) |i| {
+        line_widths[i] = 0;
+        var view = std.unicode.Utf8View.init(lines[i]) catch {
+            for (lines[i]) |ch| line_widths[i] += titlebarGlyphAdvance(@intCast(ch));
+            max_w = @max(max_w, line_widths[i]);
+            continue;
+        };
+        var it = view.iterator();
+        while (it.nextCodepoint()) |cp| line_widths[i] += titlebarGlyphAdvance(cp);
+        max_w = @max(max_w, line_widths[i]);
+    }
+
+    const text_h = cell_h * @as(f32, @floatFromInt(line_count)) + line_gap * @max(0, @as(f32, @floatFromInt(line_count - 1)));
+    const box_w = max_w + pad_x * 2;
+    const box_h = text_h + pad_y * 2;
+    const box_x = anchor_x + gap;
+    const box_y = anchor_y_center - box_h / 2;
+
+    // Tooltip background — sidebar panel color, fully opaque
+    gl_init.renderQuad(box_x - 1, box_y - 1, box_w + 2, box_h + 2, accent);
+    gl_init.renderQuad(box_x, box_y, box_w, box_h, bg_color);
+
+    // Draw text lines
+    var draw_y = box_y + pad_y;
+    for (0..line_count) |i| {
+        const color = if (i == 0) fg_color else accent;
+        var draw_x = box_x + pad_x + (max_w - line_widths[i]) / 2; // center each line
+        var view = std.unicode.Utf8View.init(lines[i]) catch {
+            for (lines[i]) |ch| {
+                renderTitlebarChar(@intCast(ch), draw_x, draw_y, color);
+                draw_x += titlebarGlyphAdvance(@intCast(ch));
+            }
+            continue;
+        };
+        var it = view.iterator();
+        while (it.nextCodepoint()) |cp| {
+            renderTitlebarChar(cp, draw_x, draw_y, color);
+            draw_x += titlebarGlyphAdvance(cp);
+        }
+        draw_y += cell_h + line_gap;
+    }
+}
+
+/// Render a 4px vertical indicator bar on the left edge when sidebar is hidden.
+/// Each tab gets a colored segment; the active tab uses cursor/accent color.
+fn renderSidebarHiddenIndicator(window_height: f32, titlebar_h: f32, side_h: f32) void {
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const accent = AppWindow.g_theme.cursor_color;
+
+    const indicator_w = SIDEBAR_HIDDEN_INDICATOR_W;
+    const bar_bg = blend(bg, fg, 0.015);
+    gl_init.renderQuad(0, 0, indicator_w, side_h, bar_bg);
+
+    const row_h = sidebarRowHeight();
+    const list_top = titlebar_h + 6;
+    const num_tabs = tab.g_tab_count;
+
+    const seg_w: f32 = 2;
+    const seg_x = (indicator_w - seg_w) / 2;
+
+    for (0..num_tabs) |tab_idx| {
+        const row_top_px = list_top + @as(f32, @floatFromInt(tab_idx)) * row_h;
+        if (row_top_px >= window_height) break;
         const is_active = tab_idx == active_tab_state.g_active_tab;
 
-        const row_hovered = mouseInRect(0, row_top_px, sidebar_w, row_h);
+        const seg_y = window_height - row_top_px;
+        const seg_h = row_h * 0.5;
+        const seg_offset = (row_h - seg_h) / 2;
 
         if (is_active) {
-            gl_init.renderQuad(0, row_y, sidebar_w, row_h, active_bg);
-            gl_init.renderQuad(0, row_y + 6, 3, row_h - 12, AppWindow.g_theme.cursor_color);
-        } else if (row_hovered) {
-            gl_init.renderQuad(0, row_y, sidebar_w, row_h, hover_bg);
-        }
-
-        if (tab.g_tab_count > 1) {
-            if (row_hovered) {
-                tab.g_tab_close_opacity[tab_idx] = @min(1.0, tab.g_tab_close_opacity[tab_idx] + tab.TAB_CLOSE_FADE_SPEED * dt);
-            } else {
-                tab.g_tab_close_opacity[tab_idx] = @max(0.0, tab.g_tab_close_opacity[tab_idx] - tab.TAB_CLOSE_FADE_SPEED * dt);
-            }
+            gl_init.renderQuad(seg_x, seg_y - seg_h - seg_offset, seg_w, seg_h, accent);
         } else {
-            tab.g_tab_close_opacity[tab_idx] = 0;
+            const dim = blend(bg, fg, 0.20);
+            gl_init.renderQuad(seg_x, seg_y - seg_h - seg_offset, seg_w, seg_h, dim);
         }
+    }
 
-        if (tab.g_tabs[tab_idx]) |tb| {
-            if (tb.focusedSurface()) |surface| {
-                if (surface.bell_indicator) {
-                    surface.bell_opacity = @min(1.0, surface.bell_opacity + tab.TAB_CLOSE_FADE_SPEED * dt);
-                    if (is_active and surface.bell_opacity >= 1.0 and now_ms - surface.bell_indicator_time >= 1000) {
-                        surface.bell_indicator = false;
-                    }
-                } else {
-                    surface.bell_opacity = @max(0.0, surface.bell_opacity - tab.TAB_CLOSE_FADE_SPEED * dt);
-                }
-            }
-        }
-
-        var prefix_buf: [8]u8 = undefined;
-        const prefix = std.fmt.bufPrint(&prefix_buf, "{d}", .{tab_idx + 1}) catch "";
-        const text_y = row_y + (row_h - font.g_titlebar_cell_height) / 2;
-        _ = renderTextLimited(prefix, number_x, text_y, if (is_active) text_active else muted, number_w);
-
-        const title = if (tab.g_tab_rename_active and tab_idx == tab.g_tab_rename_idx)
-            tab.g_tab_rename_buf[0..tab.g_tab_rename_len]
-        else if (tab.g_tabs[tab_idx]) |t|
-            t.getTitle()
-        else
-            "New Tab";
-
-        const close_opacity = tab.g_tab_close_opacity[tab_idx];
-        const close_btn_x = sidebar_w - tab.TAB_CLOSE_BTN_W - 4;
-        var right_content_x = close_btn_x - 4;
-        // Use aggregate of all panes' visible states so the sidebar badge
-        // reflects the most attention-worthy agent across all split panes,
-        // not just the focused one.
-        const detection = if (!tab.g_tab_rename_active) blk: {
-            if (tab.g_tabs[tab_idx]) |t| {
-                var states_buf: [64]agent_detector.State = undefined;
-                var states_len: usize = 0;
-                // Source the badge's app from a pane that actually has a visible
-                // agent (NOT the focused surface — it may be a plain shell while a
-                // split-sibling runs the agent). visible() requires app != .none,
-                // so this guarantees the synthetic Detection below is visible.
-                var agg_app: agent_detector.App = .none;
-                var it = t.tree.surfaces();
-                while (it.next()) |entry| {
-                    if (states_len >= states_buf.len) break;
-                    const det = entry.surface.agent_detection;
-                    if (det.visible()) {
-                        states_buf[states_len] = det.state;
-                        states_len += 1;
-                        if (agg_app == .none) agg_app = det.app;
-                    }
-                }
-                if (states_len > 0) {
-                    const agg_state = agent_detector.aggregate(states_buf[0..states_len]);
-                    if (agg_state != .none) {
-                        // Build a synthetic Detection so the existing badge renderer works.
-                        break :blk agent_detector.Detection{
-                            .state = agg_state,
-                            .app = agg_app,
-                            .confidence = 100,
-                        };
-                    }
-                }
-            }
-            break :blk agent_detector.Detection{};
-        } else agent_detector.Detection{};
-        const show_agent_badge = detection.visible();
-        var agent_badge_x: f32 = 0;
-        var agent_badge_w: f32 = 0;
-        if (show_agent_badge) {
-            const badge_text_w = titlebarTextWidth(detection.badge());
-            agent_badge_w = @max(@as(f32, 18), badge_text_w + 10);
-            agent_badge_x = right_content_x - agent_badge_w;
-            right_content_x = agent_badge_x - 6;
-        }
-
-        const bell_opacity: f32 = if (tab.g_tabs[tab_idx]) |t| (if (t.focusedSurface()) |s| s.bell_opacity else 0) else 0;
-        const show_bell = bell_opacity > 0.01;
-        const bell_x = right_content_x - 20;
-        if (show_bell) right_content_x = bell_x - 4;
-
-        const title_max_w = right_content_x - title_x - 8;
-        const title_color = if (is_active) text_active else text_inactive;
-        const text_end = renderTextLimited(title, title_x, text_y, title_color, title_max_w);
-
-        if (tab.g_tab_rename_active and tab_idx == tab.g_tab_rename_idx and AppWindow.g_cursor_blink_visible) {
-            gl_init.renderQuad(@min(text_end + 1, title_x + title_max_w), text_y, 1, font.g_titlebar_cell_height, text_active);
-        }
-
-        if (show_bell) {
-            renderBellEmoji(bell_x, text_y, bell_opacity);
-        }
-        if (show_agent_badge) {
-            _ = renderAgentBadge(detection, agent_badge_x, text_y, is_active);
-        }
-
-        if (close_opacity > 0.01 and tab.g_tab_count > 1) {
-            const close_hovered = row_hovered and blk: {
-                const mx = mouseX() orelse break :blk false;
-                break :blk mx >= close_btn_x and mx < close_btn_x + tab.TAB_CLOSE_BTN_W;
-            };
-            const raw_color = if (close_hovered) text_active else muted;
-            const close_color = [3]f32{
-                raw_color[0] * close_opacity + sidebar_bg[0] * (1 - close_opacity),
-                raw_color[1] * close_opacity + sidebar_bg[1] * (1 - close_opacity),
-                raw_color[2] * close_opacity + sidebar_bg[2] * (1 - close_opacity),
-            };
-            if (close_hovered) {
-                gl_init.renderQuad(close_btn_x + 6, row_y + 10, 20, 20, blend(bg, fg, 0.14));
-            }
-            renderCloseIcon(close_btn_x, row_y, tab.TAB_CLOSE_BTN_W, row_h, close_color);
-        }
-
-        tab.g_tab_text_x_start[tab_idx] = title_x;
-        tab.g_tab_text_x_end[tab_idx] = text_end;
-        tab.g_tab_text_y_start[tab_idx] = row_top_px;
-        tab.g_tab_text_y_end[tab_idx] = row_top_px + row_h;
+    // Plus indicator: smaller, subtler segment
+    const plus_top = list_top + @as(f32, @floatFromInt(num_tabs)) * row_h;
+    if (plus_top < window_height) {
+        const plus_seg_h = row_h * 0.25;
+        const plus_y = window_height - plus_top;
+        const dim = blend(bg, fg, 0.08);
+        gl_init.renderQuad(seg_x, plus_y - plus_seg_h, seg_w, plus_seg_h, dim);
     }
 }
 

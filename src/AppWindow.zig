@@ -3756,8 +3756,6 @@ pub fn handleActiveSurfaceChangeWithinTab() void {
 
 fn clearUiStateOnTabChange() void {
     input.g_selecting = false;
-    input.g_sidebar_resize_hover = false;
-    input.g_sidebar_resize_dragging = false;
     input.g_explorer_resize_hover = false;
     input.g_explorer_resize_dragging = false;
     input.g_browser_resize_hover = false;
@@ -4400,6 +4398,90 @@ pub fn closeFocusedSplit() void {
             g_should_close = true;
         },
         .no_op => {},
+    }
+}
+
+/// Close a specific split pane (by handle) in the tab at `tab_idx`, without
+/// touching the active tab or stealing focus. Used by `sweepExitedSurfaces`
+/// to auto-close a pane whose terminal process has exited. Mirrors the
+/// side-effect bookkeeping of `closeFocusedSplit`.
+pub fn closeSplitAt(tab_idx: usize, handle: SplitTree.Node.Handle) void {
+    const allocator = g_allocator orelse return;
+    if (tab_idx >= tab.g_tab_count) return;
+    const t = tab.g_tabs[tab_idx] orelse return;
+    // tmux owns pane lifetime; its bridge drives removal.
+    if (t.tmux_window_id != null) return;
+
+    var closing_surface_id: ?[16]u8 = null;
+    {
+        var it = t.tree.surfaces();
+        while (it.next()) |entry| {
+            if (entry.handle == handle) {
+                closing_surface_id = entry.surface.remote_id;
+                break;
+            }
+        }
+    }
+
+    switch (tab.closeSplitAt(allocator, t, handle)) {
+        .closed_split => {
+            if (closing_surface_id) |*source_id| html_server.stopForSurfaceId(source_id);
+            requestImmediateLayoutResize();
+        },
+        .closed_tab => {
+            file_explorer.onTabClosed(tab_idx);
+            browser_panel.onTabClosed(tab_idx);
+            clearUiStateOnTabChange();
+        },
+        .close_window => {
+            split_layout.invalidateCachedRects();
+            cell_renderer.g_current_render_surface = null;
+            g_should_close = true;
+        },
+        .no_op => {},
+    }
+}
+
+/// Per-frame sweep that closes any terminal pane whose process has exited.
+/// Skips tmux-backed tabs (the tmux bridge owns pane lifetime) and virtual
+/// surfaces (no real child process). At most one closure happens per frame so
+/// tab indices never shift mid-sweep. Mutates UI state, so callers rely on the
+/// event-driven render gate (we set the two rebuild globals here).
+fn sweepExitedSurfaces() void {
+    var closed_any = false;
+    var ti: usize = 0;
+    while (ti < tab.g_tab_count) : (ti += 1) {
+        const t = tab.g_tabs[ti] orelse continue;
+        if (t.tmux_window_id != null) continue;
+        if (t.kind != .terminal) continue;
+
+        var it = t.tree.surfaces();
+        var close_handle: ?SplitTree.Node.Handle = null;
+        while (it.next()) |entry| {
+            // The ReadThread marks `exited` when the PTY output pipe closes, but
+            // on Windows ConPTY the conhost keeps that pipe alive after the child
+            // exits, so the pipe never breaks. Poll the process handle with a
+            // non-blocking wait to detect a real process exit and mirror it onto
+            // `exited`. Virtual surfaces (no child) are skipped by `hasProcess`.
+            if (!entry.surface.exited.load(.acquire) and entry.surface.command.hasProcess()) {
+                if (entry.surface.command.wait(false) catch null) |_| {
+                    entry.surface.exited.store(true, .release);
+                }
+            }
+            if (entry.surface.exited.load(.acquire) and entry.surface.command.hasProcess()) {
+                close_handle = entry.handle;
+                break;
+            }
+        }
+        if (close_handle) |handle| {
+            closeSplitAt(ti, handle);
+            closed_any = true;
+            break; // indices may have shifted; finish on the next frame
+        }
+    }
+    if (closed_any) {
+        g_force_rebuild = true;
+        g_cells_valid = false;
     }
 }
 
@@ -8058,6 +8140,9 @@ fn runMainLoop(self: *AppWindow) !void {
         // Catch up agent detections deferred by the IO-thread throttle.
         flushAgentDetectionSweep();
 
+        // Auto-close terminal panes whose process has exited.
+        sweepExitedSurfaces();
+
         // Handle bells, notifications, and OSC 52 clipboard writes staged by
         // the IO threads. This runs before the render gate: background-tab
         // output no longer triggers frames, so these must not depend on one.
@@ -8388,6 +8473,7 @@ fn runMainLoop(self: *AppWindow) !void {
         // per-split viewport and the post-process framebuffer paths above — and
         // after terminal content, occupying the exclusive right slot.
         renderAiCopilotPanel(fb_width, fb_height, titlebar_offset);
+        titlebar.renderSidebarTooltipOverlay(@floatFromInt(fb_height), titlebar_offset);
         overlays.renderBrowserUrlBar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         if (copilot_hint_gate.handleEligible(g_copilot_hint, aiCopilotVisible(), isActiveTabTerminal(), anyRightDockPanelVisible())) {
             if (!g_copilot_shimmer_checked) {
