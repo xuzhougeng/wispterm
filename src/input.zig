@@ -476,10 +476,28 @@ test "input: command center child escape returns to command center" {
 test "input: settings page arrow navigation requests a repaint" {
     try skipUnlessInputRendererShard();
     const previous_keybinds = AppWindow.g_keybinds;
-    defer AppWindow.g_keybinds = previous_keybinds;
-    defer overlays.settingsPageClose();
+    const previous_allocator = AppWindow.g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_should_close = AppWindow.g_should_close;
+    var settings_tab = tab.TabState{ .kind = .settings, .tree = .empty };
+    defer {
+        overlays.settingsPageClose();
+        AppWindow.g_keybinds = previous_keybinds;
+        AppWindow.g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        AppWindow.g_should_close = previous_should_close;
+    }
 
     AppWindow.g_keybinds = keybind.Set.defaults();
+    AppWindow.g_allocator = std.testing.allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tabs[0] = &settings_tab;
+    tab.g_tab_count = 1;
+    active_tab_state.g_active_tab = 0;
     overlays.settingsPageOpen();
     try std.testing.expect(overlays.settingsPageVisible());
 
@@ -494,10 +512,28 @@ test "input: settings page arrow navigation requests a repaint" {
 test "input: settings page dispatchKey returns repaint effect" {
     try skipUnlessInputRendererShard();
     const previous_keybinds = AppWindow.g_keybinds;
-    defer AppWindow.g_keybinds = previous_keybinds;
-    defer overlays.settingsPageClose();
+    const previous_allocator = AppWindow.g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_should_close = AppWindow.g_should_close;
+    var settings_tab = tab.TabState{ .kind = .settings, .tree = .empty };
+    defer {
+        overlays.settingsPageClose();
+        AppWindow.g_keybinds = previous_keybinds;
+        AppWindow.g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        AppWindow.g_should_close = previous_should_close;
+    }
 
     AppWindow.g_keybinds = keybind.Set.defaults();
+    AppWindow.g_allocator = std.testing.allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tabs[0] = &settings_tab;
+    tab.g_tab_count = 1;
+    active_tab_state.g_active_tab = 0;
     overlays.settingsPageOpen();
 
     const effect = dispatchKey(arrow_down_event);
@@ -1963,7 +1999,6 @@ pub threadlocal var g_browser_resize_hover: bool = false; // Mouse is over the e
 pub threadlocal var g_browser_resize_dragging: bool = false; // Currently dragging the browser edge
 pub threadlocal var g_ai_copilot_resize_hover: bool = false; // Mouse is over the AI copilot left edge
 pub threadlocal var g_ai_copilot_resize_dragging: bool = false; // Currently dragging the AI copilot edge
-pub threadlocal var g_url_open_mode: link_open.Mode = .embedded;
 
 /// Whether the AI copilot sidebar currently owns keyboard/mouse focus. Set by
 /// AppWindow.toggleAiCopilot; full key/mouse routing lands in a later task.
@@ -2186,7 +2221,7 @@ pub fn toggleBrowserPanel() void {
     const allocator = AppWindow.g_allocator orelse return;
     const parent = AppWindow.currentNativeHandle();
     const surface = AppWindow.activeSurface();
-    if (g_url_open_mode == .system_browser and !browser_panel.isVisibleForActiveTab()) {
+    if (link_open.current_mode == .system_browser and !browser_panel.isVisibleForActiveTab()) {
         const target = browser_panel.externalUrlForSurface(allocator, browser_panel.DEFAULT_URL, surface) orelse return;
         defer allocator.free(target);
         _ = platform_open_url.open(allocator, .{ .url = target });
@@ -4896,11 +4931,11 @@ fn openUrl(surface: *Surface, url: []const u8) bool {
 
     const handle = AppWindow.currentNativeHandle();
     const embedded_available = browser_panel.embeddedBrowserAvailable();
-    const destination = link_open.destinationForUrlClick(embedded_available, g_url_open_mode);
+    const destination = link_open.destinationForUrlClick(embedded_available, link_open.current_mode);
     preview_diagnostics.debug("url", &.{
         .{ .key = "stage", .value = "open" },
         .{ .key = "launch", .value = @tagName(surface.launch_kind) },
-        .{ .key = "mode", .value = @tagName(g_url_open_mode) },
+        .{ .key = "mode", .value = @tagName(link_open.current_mode) },
         .{ .key = "embedded_available", .value = if (embedded_available) "true" else "false" },
         .{ .key = "destination", .value = @tagName(destination) },
         .{ .key = "target", .value = target },
@@ -5456,22 +5491,6 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
         }
         return;
     }
-    if (overlays.settingsPageVisible()) {
-        if (ev.button == .left and ev.action == .press) {
-            const win = AppWindow.g_window orelse return;
-            const fb = window_backend.framebufferSize(win);
-            const w_f: f32 = @floatFromInt(fb.width);
-            const h_f: f32 = @floatFromInt(fb.height);
-            const top_offset: f32 = @floatCast(titlebarHeight());
-            const xpos: f64 = @floatFromInt(ev.x);
-            const ypos: f64 = @floatFromInt(ev.y);
-            if (overlays.settingsPageExecuteAt(xpos, ypos, w_f, h_f, top_offset)) return;
-            if (!overlays.settingsPageContainsPoint(xpos, ypos, w_f, h_f, top_offset)) {
-                overlays.settingsPageClose();
-            }
-        }
-        return;
-    }
     if (overlays.commandPaletteVisible()) {
         if (ev.button == .left and ev.action == .press) {
             const win = AppWindow.g_window orelse return;
@@ -5722,6 +5741,23 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
 
             if (tab.g_sidebar_visible and xpos < @as(f64, @floatCast(titlebar.sidebarWidth()))) {
                 handleSidebarPress(xpos, ypos);
+                return;
+            }
+
+            if (overlays.settingsPageVisible()) {
+                const win = AppWindow.g_window orelse return;
+                const fb = window_backend.framebufferSize(win);
+                const content_x = AppWindow.leftPanelsWidth();
+                const content_width = @max(1, @as(f32, @floatFromInt(fb.width)) - content_x - AppWindow.rightPanelsWidthForWindow(fb.width));
+                _ = overlays.settingsPageExecuteAt(
+                    xpos,
+                    ypos,
+                    @floatFromInt(fb.height),
+                    @floatCast(titlebarHeight()),
+                    content_x,
+                    content_width,
+                );
+                requestInputRepaint();
                 return;
             }
 

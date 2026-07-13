@@ -24,12 +24,12 @@ const Frozen = struct {
 
 const monoliths = [_]Frozen{
     // Ceilings re-tightened to the current actual after the adoption passes.
-    // input.zig dropped 73->50 via action/query API adoption;
+    // input.zig dropped 73->49 via action/query API adoption;
     // overlays.zig dropped 47->39 by moving command-palette fields into
     // OverlayState. AppWindow (67) and assistant/conversation/session.zig (20)
     // are at their actual.
     .{ .name = "AppWindow.zig", .source = @embedFile("../AppWindow.zig"), .ceiling = 67 },
-    .{ .name = "input.zig", .source = @embedFile("../input.zig"), .ceiling = 50 },
+    .{ .name = "input.zig", .source = @embedFile("../input.zig"), .ceiling = 49 },
     .{ .name = "renderer/overlays.zig", .source = @embedFile("../renderer/overlays.zig"), .ceiling = 39 },
     .{ .name = "assistant/conversation/session.zig", .source = @embedFile("../assistant/conversation/session.zig"), .ceiling = 20 },
 };

@@ -80,6 +80,7 @@ const ssh_error = @import("ssh/error.zig");
 const i18n = @import("i18n.zig");
 pub const tab = @import("appwindow/tab.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
+const link_open = @import("link_open.zig");
 const tmux_controller = @import("appwindow/tmux_controller.zig");
 const memory_digest_scheduler = @import("memory_digest/scheduler.zig");
 const memory_center_session = @import("memory_center/session.zig");
@@ -229,7 +230,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     g_copy_on_select = app.copy_on_select;
     g_copilot_hint = app.copilot_hint;
     g_right_click_action = app.right_click_action;
-    input.g_url_open_mode = app.url_open_mode;
+    link_open.current_mode = app.url_open_mode;
     g_ssh_legacy_algorithms = app.ssh_legacy_algorithms;
     tab.g_ssh_legacy_algorithms = app.ssh_legacy_algorithms;
     g_weixin_notify_forward = app.weixin_notify_forward;
@@ -2146,6 +2147,20 @@ fn renderPortForwardingFrame(active_tab: *TabState, fb_width: c_int, fb_height: 
     );
 }
 
+fn renderSettingsFrame(fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
+    gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
+    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    clearWithBackground(fb_width, fb_height);
+    titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    overlays.renderSettingsPage(
+        @floatFromInt(fb_height),
+        titlebar_offset,
+        left_panels_w,
+        @max(1, @as(f32, @floatFromInt(fb_width)) - left_panels_w - right_panels_w),
+    );
+}
+
 /// Renderer accessor: library entry metadata at index i (read under the session lock).
 fn scEntryItemAt(ctx: *anyopaque, i: usize) skill_center_renderer.ListItem {
     const m: *const skill_center.PanelModel = @ptrCast(@alignCast(ctx));
@@ -3993,8 +4008,7 @@ fn clearUiStateOnTabChange() void {
     syncVisibleFileExplorerForActiveTab(false);
     syncActiveSurfaceCaches();
     requestImmediateLayoutResize();
-    g_force_rebuild = true;
-    g_cells_valid = false;
+    applyUiEffect(.repaint);
 }
 
 /// Convert the active surface's CWD from a WSL guest path to a platform-native path.
@@ -4338,6 +4352,14 @@ pub fn spawnSkillCenterTab() bool {
 pub fn spawnPortForwardingTab() bool {
     const allocator = g_allocator orelse return false;
     if (!tab.spawnPortForwardingTab(allocator)) return false;
+    clearUiStateOnTabChange();
+    markUiDirty();
+    return true;
+}
+
+pub fn openSettingsTab() bool {
+    const allocator = g_allocator orelse return false;
+    if (!tab.openSettingsTab(allocator)) return false;
     clearUiStateOnTabChange();
     markUiDirty();
     return true;
@@ -4931,6 +4953,8 @@ fn renderResizeFrame(width: i32, height: i32) void {
                 renderSkillCenterFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .port_forwarding) {
                 renderPortForwardingFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (active_tab.kind == .settings) {
+                renderSettingsFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (split_layout.soleTerminalSurface()) |surface| {
                 // Single surface: simple render path
                 const rend = &surface.surface_renderer;
@@ -5046,7 +5070,6 @@ fn renderResizeFrame(width: i32, height: i32) void {
     overlays.renderCommandPalette(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderJupyterPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderCopilotPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
-    overlays.renderSettingsPage(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderSessionLauncher(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderMcpServers(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     weixin_qr_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -5266,7 +5289,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     g_copy_on_select = cfg.@"copy-on-select";
     g_copilot_hint = cfg.@"copilot-hint";
     g_right_click_action = cfg.@"right-click-action";
-    input.g_url_open_mode = cfg.@"url-open-mode";
+    link_open.current_mode = cfg.@"url-open-mode";
     g_ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";
     g_desktop_notifications = cfg.@"desktop-notifications";
     g_confirm_close_running_program = cfg.@"confirm-close-running-program";
@@ -7639,7 +7662,7 @@ fn runMainLoop(self: *AppWindow) !void {
             control_api.syncPanes(allocator);
             control_api.syncUiState(allocator);
             syncImeCaretPosition(win, split_count);
-            if (active_tab.kind != .ai_chat and active_tab.kind != .ai_history and active_tab.kind != .memory_center and active_tab.kind != .skill_center and active_tab.kind != .port_forwarding and synchronizedOutputPendingForVisibleSplits(split_count)) {
+            if (active_tab.kind != .ai_chat and active_tab.kind != .ai_history and active_tab.kind != .memory_center and active_tab.kind != .skill_center and active_tab.kind != .port_forwarding and active_tab.kind != .settings and synchronizedOutputPendingForVisibleSplits(split_count)) {
                 // Block instead of spinning at ~1kHz: the IO thread posts a
                 // wakeup when the application ends synchronized output (or new
                 // output arrives), and the timeout bounds the watchdog check.
@@ -7659,6 +7682,8 @@ fn runMainLoop(self: *AppWindow) !void {
                 renderSkillCenterFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .port_forwarding) {
                 renderPortForwardingFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (active_tab.kind == .settings) {
+                renderSettingsFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (post_process.g_post_enabled and activeSurface() != null) {
                 // Post-processing path: only render focused surface for now.
                 // (With no focused terminal — e.g. a preview pane focused — fall
@@ -7881,7 +7906,6 @@ fn runMainLoop(self: *AppWindow) !void {
         overlays.renderCommandPalette(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderJupyterPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderCopilotPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
-        overlays.renderSettingsPage(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderSessionLauncher(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderMcpServers(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         weixin_qr_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);

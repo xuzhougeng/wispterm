@@ -83,6 +83,7 @@ pub const TabState = struct {
         memory_center,
         skill_center,
         port_forwarding,
+        settings,
     };
 
     /// Get the focused surface in this tab, or null if tree is empty
@@ -123,6 +124,9 @@ pub const TabState = struct {
         }
         if (self.kind == .port_forwarding) {
             return i18n.s().pf_title;
+        }
+        if (self.kind == .settings) {
+            return i18n.s().settings_title;
         }
         const surface = self.focusedSurface() orelse return "wispterm";
         return surface.getTitle();
@@ -170,6 +174,7 @@ pub const TabState = struct {
                     self.port_forwarding_session = null;
                 }
             },
+            .settings => {},
         }
     }
 };
@@ -770,6 +775,55 @@ pub fn spawnPortForwardingTab(allocator: std.mem.Allocator) bool {
     active_tab_state.g_active_tab = g_tab_count;
     g_tab_count += 1;
     return true;
+}
+
+/// Open the singleton Settings page as a normal tab. Repeated invocations
+/// switch to the existing page instead of creating duplicate Settings tabs.
+pub fn openSettingsTab(allocator: std.mem.Allocator) bool {
+    for (0..g_tab_count) |idx| {
+        const existing = g_tabs[idx] orelse continue;
+        if (existing.kind != .settings) continue;
+        switchTab(idx);
+        return true;
+    }
+    if (g_tab_count >= MAX_TABS) return false;
+
+    const t = allocator.create(TabState) catch return false;
+    t.* = .{ .kind = .settings, .tree = .empty };
+
+    g_tabs[g_tab_count] = t;
+    active_tab_state.g_active_tab = g_tab_count;
+    g_tab_count += 1;
+    return true;
+}
+
+test "settings tab is singleton and carries the localized title" {
+    const saved_tabs = g_tabs;
+    const saved_count = g_tab_count;
+    const saved_active = active_tab_state.g_active_tab;
+    defer {
+        g_tabs = saved_tabs;
+        g_tab_count = saved_count;
+        active_tab_state.g_active_tab = saved_active;
+    }
+
+    g_tabs = .{null} ** MAX_TABS;
+    g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+
+    try std.testing.expect(openSettingsTab(std.testing.allocator));
+    const first = g_tabs[0].?;
+    defer {
+        first.deinit(std.testing.allocator);
+        std.testing.allocator.destroy(first);
+    }
+    try std.testing.expectEqual(@as(usize, 1), g_tab_count);
+    try std.testing.expectEqual(TabState.Kind.settings, first.kind);
+    try std.testing.expectEqualStrings(i18n.s().settings_title, first.getTitle());
+
+    try std.testing.expect(openSettingsTab(std.testing.allocator));
+    try std.testing.expectEqual(@as(usize, 1), g_tab_count);
+    try std.testing.expect(g_tabs[0].? == first);
 }
 
 /// Active tab's Skill Center session, or null if the active tab isn't one.
@@ -1420,6 +1474,7 @@ pub fn commitTabRename() void {
                     .memory_center => {},
                     .skill_center => {},
                     .port_forwarding => {},
+                    .settings => {},
                 }
             }
         }
@@ -1923,6 +1978,7 @@ fn applyRestoredTabMetadata(t: *TabState, snap: *const session_persist.TabSnap) 
         .memory_center => {},
         .skill_center => {},
         .port_forwarding => {},
+        .settings => {},
     }
 }
 
