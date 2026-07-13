@@ -42,6 +42,7 @@ pub const Layout = struct {
     keys_width: f32,
     action_width: f32,
     line_height: f32,
+    entry_h: f32,
     entry_count: usize,
 
     pub fn entry(self: Layout, idx: usize) ?Entry {
@@ -54,8 +55,9 @@ pub const Layout = struct {
         const col_x = @round(self.box_x + self.pad_x + @as(f32, @floatFromInt(col)) * (self.column_width + self.column_gap));
         return .{
             .keys_x = col_x,
-            .action_x = @round(col_x + self.keys_width + self.pair_gap),
-            .y = @round(self.first_entry_y - @as(f32, @floatFromInt(row)) * self.line_height),
+            .action_x = col_x,
+            .keys_y = @round(self.first_entry_y - @as(f32, @floatFromInt(row)) * self.entry_h),
+            .action_y = @round(self.first_entry_y - self.line_height - @as(f32, @floatFromInt(row)) * self.entry_h),
             .keys_width = self.keys_width,
             .action_width = self.action_width,
         };
@@ -65,7 +67,8 @@ pub const Layout = struct {
 pub const Entry = struct {
     keys_x: f32,
     action_x: f32,
-    y: f32,
+    keys_y: f32,
+    action_y: f32,
     keys_width: f32,
     action_width: f32,
 };
@@ -73,21 +76,24 @@ pub const Entry = struct {
 pub fn compute(input: Input) Layout {
     const pad_x: f32 = 24;
     const pad_y: f32 = 18;
-    const pair_gap_base: f32 = 48;
     const column_gap: f32 = 38;
     const heading_gap: f32 = 16;
     const hint_gap: f32 = 12;
     const content_height = @max(1.0, input.window_height - input.top_offset);
     const available_height = @max(input.line_height, content_height - 24.0);
     const fixed_height = pad_y * 2 + input.text_height + heading_gap + hint_gap + input.text_height;
-    const available_entry_height = @max(input.line_height, available_height - fixed_height);
-    const rows_fit: usize = @max(1, @as(usize, @intFromFloat(@floor(available_entry_height / input.line_height))));
+    // A shortcut and its description occupy separate rows. This removes the
+    // brittle two-column key/action split that cut both halves at normal
+    // desktop widths (notably Option+Left and "Close panel / tab…").
+    const entry_h = input.line_height * 2.0;
+    const available_entry_height = @max(entry_h, available_height - fixed_height);
+    const rows_fit: usize = @max(1, @as(usize, @intFromFloat(@floor(available_entry_height / entry_h))));
 
     var columns: usize = (input.entry_count + rows_fit - 1) / rows_fit;
     columns = @min(@max(columns, 1), MAX_COLUMNS);
     const rows_per_column = (input.entry_count + columns - 1) / columns;
-    const entries_height = input.line_height * @as(f32, @floatFromInt(rows_per_column));
-    const pair_width = input.max_keys_width + pair_gap_base + input.max_action_width;
+    const entries_height = entry_h * @as(f32, @floatFromInt(rows_per_column));
+    const pair_width = @max(input.max_keys_width, input.max_action_width);
     const desired_box_width = @round(@max(
         input.heading_width + pad_x * 2,
         @max(input.hint_width + pad_x * 2, pair_width * @as(f32, @floatFromInt(columns)) + column_gap * @as(f32, @floatFromInt(columns - 1)) + pad_x * 2),
@@ -102,9 +108,9 @@ pub fn compute(input: Input) Layout {
     const inner_w = @max(1.0, box_width - pad_x * 2);
     const total_column_gap = column_gap * @as(f32, @floatFromInt(columns - 1));
     const column_width = @max(1.0, (inner_w - total_column_gap) / @as(f32, @floatFromInt(columns)));
-    const pair_gap = @min(pair_gap_base, @max(18.0, column_width * 0.08));
-    const keys_width = @min(input.max_keys_width, column_width * 0.48);
-    const action_width = @max(1.0, column_width - keys_width - pair_gap);
+    const pair_gap: f32 = 0;
+    const keys_width = column_width;
+    const action_width = column_width;
     const hint_max_width = box_width - pad_x * 2;
 
     return .{
@@ -128,6 +134,7 @@ pub fn compute(input: Input) Layout {
         .keys_width = keys_width,
         .action_width = action_width,
         .line_height = input.line_height,
+        .entry_h = entry_h,
         .entry_count = input.entry_count,
     };
 }
@@ -189,9 +196,13 @@ test "entry placement advances down rows then across columns" {
     const next_column = layout.entry(layout.rows_per_column).?;
 
     try std.testing.expectEqual(first.keys_x, second.keys_x);
-    try std.testing.expectEqual(first.y - layout.line_height, second.y);
+    try std.testing.expectEqual(first.keys_y - layout.entry_h, second.keys_y);
+    try std.testing.expectEqual(first.keys_y - layout.line_height, first.action_y);
+    try std.testing.expectEqual(first.keys_x, first.action_x);
+    try std.testing.expectEqual(layout.column_width, first.keys_width);
+    try std.testing.expectEqual(layout.column_width, first.action_width);
     try std.testing.expect(next_column.keys_x > first.keys_x);
-    try std.testing.expectEqual(first.y, next_column.y);
+    try std.testing.expectEqual(first.keys_y, next_column.keys_y);
     try std.testing.expectEqual(@as(?Entry, null), layout.entry(24));
 }
 

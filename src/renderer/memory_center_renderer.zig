@@ -1,6 +1,8 @@
 const std = @import("std");
+const i18n = @import("../i18n.zig");
 const memory_center = @import("../memory_center/session.zig");
 const panel_draw = @import("panel_draw.zig");
+const ui_patterns = @import("ui_patterns.zig");
 
 const HEADER_H: f32 = 54;
 const ROW_H: f32 = 54;
@@ -23,7 +25,15 @@ pub const Hit = union(enum) {
     none,
     source: memory_center.Source,
     row: usize,
+    run_digest,
     detail,
+};
+
+const EmptyActionRect = struct {
+    x: f32,
+    top: f32,
+    w: f32,
+    h: f32,
 };
 
 pub fn computeLayout(x: f32, width: f32) Layout {
@@ -32,18 +42,20 @@ pub fn computeLayout(x: f32, width: f32) Layout {
         return .{ .left_x = x, .left_w = 0, .list_x = x, .list_w = 0, .detail_x = x, .detail_w = 0 };
     }
 
-    const min_left_w: f32 = 260;
+    // A workbench source column must fit a full source label plus its count.
+    // The old 320px cap clipped "AI Remembered" at the default Retina scale.
+    const min_left_w: f32 = 300;
     const min_list_w: f32 = 300;
     const min_detail_w: f32 = 180;
     const min_total = min_left_w + min_list_w + min_detail_w;
     const left_w = if (available < min_total)
         available * (min_left_w / min_total)
     else
-        @min(@max(available * 0.20, min_left_w), 320);
+        @min(@max(available * 0.22, min_left_w), 400);
     const list_w = if (available < min_total)
         available * (min_list_w / min_total)
     else
-        @min(@max(available * 0.34, min_list_w), 460);
+        @min(@max(available * 0.33, min_list_w), 460);
     return .{
         .left_x = x,
         .left_w = left_w,
@@ -56,7 +68,8 @@ pub fn computeLayout(x: f32, width: f32) Layout {
 
 pub fn listVisibleCapacity(window_height: f32, titlebar_offset: f32, cell_h: f32) usize {
     const top = @round(titlebar_offset);
-    const content_h = @round(@max(1.0, window_height - top));
+    const footer_h = ui_patterns.workbenchFooterHeight(cell_h);
+    const content_h = @round(@max(1.0, window_height - top - footer_h));
     const visible_h = @max(0, content_h - headerHeight(cell_h));
     return @intFromFloat(@max(0, @floor(visible_h / rowHeight(cell_h))));
 }
@@ -80,6 +93,13 @@ pub fn hitTest(
     for (sources, 0..) |source, i| {
         const row_top = src_top + @as(f32, @floatFromInt(i)) * SOURCE_ROW_H;
         if (rectContains(mx, my, layout.left_x, row_top, layout.left_w, SOURCE_ROW_H)) return .{ .source = source };
+    }
+
+    // While a digest run reports progress the list renders a status line, not
+    // the empty-state action. Keep hit testing aligned with that visible UI.
+    if (session.count() == 0 and session.status().len == 0) {
+        const action = emptyActionRect(layout, top, cell_h);
+        if (rectContains(mx, my, action.x, action.top, action.w, action.h)) return .run_digest;
     }
 
     const row_h = rowHeight(cell_h);
@@ -126,6 +146,8 @@ pub fn render(
     const selected_bg = mixColor(bg, accent, 0.18);
 
     const layout = computeLayout(content_x, content_w);
+    const footer_h = ui_patterns.workbenchFooterHeight(draw.cell_h);
+    const content_bottom = ui_patterns.workbenchFooterTop(window_height, top, footer_h);
     draw.fillQuad(content_x, 0, content_w, content_h, bg);
     draw.fillQuadAlpha(layout.left_x, 0, layout.left_w, content_h, panel, 0.96);
     draw.fillQuadAlpha(layout.list_x, 0, layout.list_w, content_h, panel_soft, 0.98);
@@ -133,10 +155,11 @@ pub fn render(
     draw.fillQuad(layout.list_x, 0, 1, content_h, line);
     draw.fillQuad(layout.detail_x, 0, 1, content_h, line);
 
-    renderSources(draw, session, layout, window_height, top, content_h, fg, muted, accent, panel_strong, line, selected_bg);
+    renderSources(draw, session, layout, window_height, top, fg, muted, accent, panel_strong, line, selected_bg);
     renderList(draw, session, layout, window_height, top, fg, muted, accent, selected_bg, line);
-    renderDetail(draw, session, layout, window_height, top, content_h, fg, muted, accent, panel_strong, line);
-    renderDigestNotification(draw, session, layout, window_height, top);
+    renderDetail(draw, session, layout, window_height, content_bottom, top, fg, muted, accent, panel_strong, line);
+    renderDigestNotification(draw, session, layout, window_height, content_bottom, top);
+    renderWorkbenchFooter(draw, content_x, content_w, window_height, content_bottom, footer_h, muted, line);
 }
 
 fn renderSources(
@@ -145,7 +168,6 @@ fn renderSources(
     layout: Layout,
     window_height: f32,
     top: f32,
-    content_h: f32,
     fg: [3]f32,
     muted: [3]f32,
     accent: [3]f32,
@@ -156,10 +178,10 @@ fn renderSources(
     const header_h = headerHeight(draw.cell_h);
     draw.fillQuadAlpha(layout.left_x, yFromTop(window_height, top, header_h), layout.left_w, header_h, panel_strong, 0.9);
     draw.fillQuad(layout.left_x, yFromTop(window_height, top + header_h, 1), layout.left_w, 1, line);
-    _ = draw.renderTextLimited("Memory Center", layout.left_x + PAD_X, yTextFromTop(draw, window_height, top + 11), fg, layout.left_w - PAD_X * 2);
+    _ = draw.renderTextLimited(i18n.s().memory_center_title, layout.left_x + PAD_X, yTextFromTop(draw, window_height, top + 11), fg, layout.left_w - PAD_X * 2);
 
     const src_top = sourceRowsTop(top, draw.cell_h);
-    _ = draw.renderTextLimited("SOURCE", layout.left_x + PAD_X, yTextFromTop(draw, window_height, src_top - draw.cell_h - 8), muted, layout.left_w - PAD_X * 2);
+    _ = draw.renderTextLimited(i18n.s().memory_center_source, layout.left_x + PAD_X, yTextFromTop(draw, window_height, src_top - draw.cell_h - 8), muted, layout.left_w - PAD_X * 2);
     const sources = [_]memory_center.Source{ .remembered, .digest };
     for (sources, 0..) |source, i| {
         const row_top = src_top + @as(f32, @floatFromInt(i)) * SOURCE_ROW_H;
@@ -175,16 +197,18 @@ fn renderSources(
         const label_x = layout.left_x + PAD_X + 6;
         const text_y = yTextFromTop(draw, window_height, row_top + 9);
         const label_color = if (active) fg else muted;
-        _ = draw.renderTextLimited(source.label(), label_x, text_y, label_color, @max(0, count_x - label_x - SMALL_GAP));
+        _ = draw.renderTextLimited(sourceLabel(source), label_x, text_y, label_color, @max(0, count_x - label_x - SMALL_GAP));
         _ = draw.renderTextLimited(count_text, count_x, text_y, muted, count_w);
     }
-
-    _ = draw.renderTextLimited("Tab / Left / Right switches source", layout.left_x + PAD_X, 12 + draw.cell_h + 6, muted, layout.left_w - PAD_X * 2);
-    _ = draw.renderTextLimited("D runs digest - Up / Down selects", layout.left_x + PAD_X, 12, muted, layout.left_w - PAD_X * 2);
-    _ = content_h;
 }
 
-fn renderDigestNotification(draw: DrawContext, session: *const memory_center.Session, layout: Layout, window_height: f32, top: f32) void {
+fn renderWorkbenchFooter(draw: DrawContext, content_x: f32, content_w: f32, window_height: f32, footer_top: f32, footer_h: f32, muted: [3]f32, line: [3]f32) void {
+    draw.fillQuadAlpha(content_x, yFromTop(window_height, footer_top, footer_h), content_w, footer_h, mixColor(draw.bg, draw.fg, 0.035), 0.98);
+    draw.fillQuad(content_x, yFromTop(window_height, footer_top, 1), content_w, 1, line);
+    _ = draw.renderTextLimited(i18n.s().memory_footer, content_x + PAD_X, yTextFromTop(draw, window_height, footer_top + (footer_h - draw.cell_h) / 2), muted, content_w - PAD_X * 2);
+}
+
+fn renderDigestNotification(draw: DrawContext, session: *const memory_center.Session, layout: Layout, window_height: f32, content_bottom: f32, top: f32) void {
     const notification = session.digestNotification() orelse return;
     const accent: [3]f32 = switch (notification.status) {
         .in_progress => .{ 0.56, 0.82, 1.0 },
@@ -193,14 +217,26 @@ fn renderDigestNotification(draw: DrawContext, session: *const memory_center.Ses
         .skipped => .{ 1.0, 0.72, 0.28 },
     };
     const pad: f32 = 12;
-    const h = draw.cell_h + pad;
-    const w = @min(layout.detail_w - pad * 2, 460);
+    // Digest status belongs to the workbench, not only the narrow detail
+    // column. Borrow the list + detail span so progress and result messages
+    // keep their full wording instead of disappearing at the right edge.
+    const left = layout.list_x + pad;
+    const available_w = layout.detail_x + layout.detail_w - left - pad;
+    const w = @min(640.0, available_w);
     if (w <= 0) return;
+    const text_w = w - pad * 2;
+    const rows = @max(@as(usize, 1), wrappedLineCount(notification.message, text_w, draw.glyphAdvance));
+    const line_h = draw.cell_h + 3;
+    const h = @as(f32, @floatFromInt(rows)) * line_h + pad * 2;
     const x = layout.detail_x + layout.detail_w - w - pad;
-    const y_top = @max(top + 4, window_height - h - pad);
+    const y_top = @max(top + 4, content_bottom - h - pad);
     draw.fillQuadAlpha(x, yFromTop(window_height, y_top, h), w, h, mixColor(draw.bg, accent, 0.16), 0.96);
     draw.fillQuad(x, yFromTop(window_height, y_top, h), 3, h, accent);
-    _ = draw.renderTextLimited(notification.message, x + pad, yTextFromTop(draw, window_height, y_top + 6), accent, w - pad * 2);
+    var it = LineWrap{ .text = notification.message, .max_w = text_w, .advance = draw.glyphAdvance };
+    var row: usize = 0;
+    while (it.next()) |line| : (row += 1) {
+        _ = draw.renderTextLimited(line, x + pad, yTextFromTop(draw, window_height, y_top + pad + @as(f32, @floatFromInt(row)) * line_h), accent, text_w);
+    }
 }
 
 fn renderList(
@@ -221,7 +257,7 @@ fn renderList(
 
     const count = session.count();
     var header_buf: [96]u8 = undefined;
-    const header = std.fmt.bufPrint(&header_buf, "{s} ({d})", .{ session.source.label(), count }) catch session.source.label();
+    const header = std.fmt.bufPrint(&header_buf, "{s} ({d})", .{ sourceLabel(session.source), count }) catch sourceLabel(session.source);
     _ = draw.renderTextLimited(header, layout.list_x + PAD_X, yTextFromTop(draw, window_height, top + 11), fg, layout.list_w - PAD_X * 2);
 
     const status = session.status();
@@ -231,7 +267,8 @@ fn renderList(
     }
 
     if (count == 0) {
-        _ = draw.renderTextLimited("No memory in this source.", layout.list_x + PAD_X, yTextFromTop(draw, window_height, top + header_h + 24), muted, layout.list_w - PAD_X * 2);
+        _ = draw.renderTextLimited(i18n.s().memory_empty_title, layout.list_x + PAD_X, yTextFromTop(draw, window_height, top + header_h + 24), fg, layout.list_w - PAD_X * 2);
+        renderEmptyAction(draw, layout, window_height, top, accent);
         return;
     }
 
@@ -272,13 +309,37 @@ fn renderList(
     }
 }
 
+fn emptyActionRect(layout: Layout, top: f32, cell_h: f32) EmptyActionRect {
+    const header_h = headerHeight(cell_h);
+    return .{
+        .x = layout.list_x + PAD_X,
+        .top = top + header_h + cell_h + 56,
+        .w = @max(1.0, @min(240.0, layout.list_w - PAD_X * 2)),
+        .h = @max(34.0, cell_h + 12),
+    };
+}
+
+fn renderEmptyAction(draw: DrawContext, layout: Layout, window_height: f32, top: f32, accent: [3]f32) void {
+    const rect = emptyActionRect(layout, top, draw.cell_h);
+    const y = yFromTop(window_height, rect.top, rect.h);
+    draw.fillQuadAlpha(rect.x, y, rect.w, rect.h, mixColor(draw.bg, accent, 0.22), 0.98);
+    _ = draw.renderTextLimited(i18n.s().memory_empty_action, rect.x + 12, y + (rect.h - draw.cell_h) / 2, accent, rect.w - 24);
+}
+
+fn sourceLabel(source: memory_center.Source) []const u8 {
+    return switch (source) {
+        .remembered => i18n.s().memory_source_remembered,
+        .digest => i18n.s().memory_source_digest,
+    };
+}
+
 fn renderDetail(
     draw: DrawContext,
     session: *memory_center.Session,
     layout: Layout,
     window_height: f32,
+    content_bottom: f32,
     top: f32,
-    content_h: f32,
     fg: [3]f32,
     muted: [3]f32,
     accent: [3]f32,
@@ -288,11 +349,14 @@ fn renderDetail(
     const header_h = headerHeight(draw.cell_h);
     draw.fillQuadAlpha(layout.detail_x, yFromTop(window_height, top, header_h), layout.detail_w, header_h, panel_strong, 0.82);
     draw.fillQuad(layout.detail_x, yFromTop(window_height, top + header_h, 1), layout.detail_w, 1, line);
-    _ = draw.renderTextLimited("Memory Detail", layout.detail_x + PAD_X, yTextFromTop(draw, window_height, top + 11), fg, layout.detail_w - PAD_X * 2);
+    _ = draw.renderTextLimited(i18n.s().memory_center_detail, layout.detail_x + PAD_X, yTextFromTop(draw, window_height, top + 11), fg, layout.detail_w - PAD_X * 2);
 
     const row = session.selectedRow() orelse {
-        _ = draw.renderTextLimited("Select a memory row", layout.detail_x + PAD_X, yTextFromTop(draw, window_height, top + header_h + 24), muted, layout.detail_w - PAD_X * 2);
-        _ = content_h;
+        const empty_detail = if (session.count() == 0)
+            i18n.s().memory_detail_empty
+        else
+            i18n.s().memory_detail_select;
+        _ = draw.renderTextLimited(empty_detail, layout.detail_x + PAD_X, yTextFromTop(draw, window_height, top + header_h + 24), muted, layout.detail_w - PAD_X * 2);
         return;
     };
 
@@ -300,7 +364,7 @@ fn renderDetail(
     _ = draw.renderTextLimited(row.title, layout.detail_x + PAD_X, yTextFromTop(draw, window_height, y), fg, layout.detail_w - PAD_X * 2);
     y += draw.cell_h + 8;
     var meta_buf: [192]u8 = undefined;
-    const meta = std.fmt.bufPrint(&meta_buf, "{s} / {s}", .{ row.source.label(), row.scope }) catch row.scope;
+    const meta = std.fmt.bufPrint(&meta_buf, "{s} / {s}", .{ sourceLabel(row.source), row.scope }) catch row.scope;
     _ = draw.renderTextLimited(meta, layout.detail_x + PAD_X, yTextFromTop(draw, window_height, y), accent, layout.detail_w - PAD_X * 2);
     y += draw.cell_h + 8;
     if (row.detail.len > 0) {
@@ -315,12 +379,12 @@ fn renderDetail(
     const line_h = draw.cell_h + 4;
     const wrap_w = @max(1.0, layout.detail_w - PAD_X * 2);
     const total = wrappedLineCount(row.body, wrap_w, draw.glyphAdvance);
-    const visible: usize = @intFromFloat(@max(0, @floor((window_height - y) / line_h)));
+    const visible: usize = @intFromFloat(@max(0, @floor((content_bottom - y) / line_h)));
     session.detail_scroll = clampScroll(session.detail_scroll, total, visible);
-    renderBody(draw, row.body, layout, window_height, y, fg, muted, session.detail_scroll);
+    renderBody(draw, row.body, layout, window_height, content_bottom, y, fg, muted, session.detail_scroll);
 }
 
-fn renderBody(draw: DrawContext, body: []const u8, layout: Layout, window_height: f32, top: f32, fg: [3]f32, muted: [3]f32, scroll_lines: usize) void {
+fn renderBody(draw: DrawContext, body: []const u8, layout: Layout, window_height: f32, content_bottom: f32, top: f32, fg: [3]f32, muted: [3]f32, scroll_lines: usize) void {
     if (body.len == 0) {
         _ = draw.renderTextLimited("(empty)", layout.detail_x + PAD_X, yTextFromTop(draw, window_height, top), muted, layout.detail_w - PAD_X * 2);
         return;
@@ -333,7 +397,7 @@ fn renderBody(draw: DrawContext, body: []const u8, layout: Layout, window_height
     var drew_any = false;
     while (it.next()) |line| {
         if (line_index >= scroll_lines) {
-            if (top_px + line_h > window_height) return;
+            if (top_px + line_h > content_bottom) return;
             _ = draw.renderTextLimited(std.mem.trim(u8, line, "\r"), layout.detail_x + PAD_X, yTextFromTop(draw, window_height, top_px), fg, wrap_w);
             top_px += line_h;
             drew_any = true;
@@ -445,6 +509,17 @@ test "memory center renderer computes stable three-column layout" {
     try std.testing.expect(layout.list_w >= 300);
     try std.testing.expect(layout.detail_w > 0);
     try std.testing.expectEqual(@as(f32, layout.left_x + layout.left_w), layout.list_x);
+}
+
+test "memory center renderer exposes the empty-state digest action" {
+    const session = memory_center.Session{};
+    const layout = computeLayout(0, 1200);
+    const rect = emptyActionRect(layout, 40, 20);
+    const hit = hitTest(&session, 800, 40, 0, 1200, 20, rect.x + 4, rect.top + 4);
+    switch (hit) {
+        .run_digest => {},
+        else => return error.ExpectedDigestAction,
+    }
 }
 
 test "memory center renderer wraps body text" {

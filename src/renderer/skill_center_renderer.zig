@@ -11,7 +11,9 @@ pub const DrawContext = panel_draw.DrawContext;
 const HEADER_H: f32 = 54;
 const ROW_H: f32 = 30;
 const PAD_X: f32 = 16;
-const LEGEND_H: f32 = 36;
+// Action legends are instructional content, not a disposable one-line status.
+// Three rows keep the full key map readable at large fonts and narrow panels.
+const LEGEND_H: f32 = 72;
 
 pub const ListItem = struct {
     label: []const u8,
@@ -76,7 +78,7 @@ fn rowHeight(cell_h: f32) f32 {
     return @max(ROW_H, cell_h + 12);
 }
 fn legendHeight(cell_h: f32) f32 {
-    return @max(LEGEND_H, cell_h + 18);
+    return @max(LEGEND_H, cell_h * 3 + 16);
 }
 
 const DrawRect = struct {
@@ -582,7 +584,15 @@ fn renderTextPreview(
 fn renderLegend(draw: DrawContext, legend: []const u8, layout: PanelLayout, muted: [3]f32, line: [3]f32) void {
     const footer = layout.footer(draw.cell_h);
     draw.fillQuad(footer.rule.x, footer.rule.y, footer.rule.w, footer.rule.h, line);
-    _ = draw.renderTextLimited(legend, layout.content_x + PAD_X, footer.text_y, muted, layout.content_w - PAD_X * 2);
+    const text_w = layout.content_w - PAD_X * 2;
+    const cols = wrapCols(text_w, draw.glyphAdvance('M'));
+    var it = WrapIter{ .content = legend, .cols = cols };
+    var line_index: usize = 0;
+    while (it.next()) |display_line| : (line_index += 1) {
+        if (line_index >= 3) break;
+        const y = (layout.legend_h - draw.cell_h - 6) - @as(f32, @floatFromInt(line_index)) * (draw.cell_h + 2);
+        _ = draw.renderTextLimited(display_line, layout.content_x + PAD_X, y, muted, text_w);
+    }
 }
 
 // --- Tests ---

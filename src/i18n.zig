@@ -52,6 +52,19 @@ pub const Strings = struct {
     settings_value_open: []const u8,
     settings_value_none: []const u8,
     settings_lang_auto: []const u8,
+    settings_workbench_footer: []const u8,
+
+    // —— 记忆中心工作台 ——
+    memory_center_title: []const u8,
+    memory_center_source: []const u8,
+    memory_center_detail: []const u8,
+    memory_source_remembered: []const u8,
+    memory_source_digest: []const u8,
+    memory_empty_title: []const u8,
+    memory_empty_action: []const u8,
+    memory_detail_empty: []const u8,
+    memory_detail_select: []const u8,
+    memory_footer: []const u8,
 
     // —— 会话启动器 & AI 智能体对话框 ——
     sl_new_session: []const u8,
@@ -318,6 +331,18 @@ const en = Strings{
     .settings_value_open = "open",
     .settings_value_none = "(none)",
     .settings_lang_auto = "Auto",
+    .settings_workbench_footer = "Changes save automatically   Esc: close settings",
+
+    .memory_center_title = "Memory Center",
+    .memory_center_source = "SOURCE",
+    .memory_center_detail = "Memory Detail",
+    .memory_source_remembered = "AI Remembered",
+    .memory_source_digest = "Memory Digest",
+    .memory_empty_title = "No memories yet",
+    .memory_empty_action = "Run Memory Digest",
+    .memory_detail_empty = "No memory selected.",
+    .memory_detail_select = "Select a memory row to inspect it.",
+    .memory_footer = "Tab / Left / Right: source   Up / Down: select   D: run digest",
 
     .sl_new_session = "New Session",
     .sl_ai_agent = "Copilot",
@@ -574,6 +599,18 @@ const zh_CN = Strings{
     .settings_value_open = "打开",
     .settings_value_none = "（无）",
     .settings_lang_auto = "自动",
+    .settings_workbench_footer = "配置自动保存   Esc：关闭设置",
+
+    .memory_center_title = "记忆中心",
+    .memory_center_source = "来源",
+    .memory_center_detail = "记忆详情",
+    .memory_source_remembered = "AI 记忆",
+    .memory_source_digest = "记忆摘要",
+    .memory_empty_title = "暂无记忆",
+    .memory_empty_action = "运行记忆摘要",
+    .memory_detail_empty = "尚未选中记忆。",
+    .memory_detail_select = "选择一条记忆以查看详情。",
+    .memory_footer = "Tab / 左 / 右：切换来源   上 / 下：选择   D：运行摘要",
 
     .sl_new_session = "新建会话",
     .sl_ai_agent = "副驾",

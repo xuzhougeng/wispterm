@@ -1596,6 +1596,7 @@ fn paletteDpiScale() f32 {
 }
 
 const platform_display = @import("../platform/display.zig");
+const ui_patterns = @import("ui_patterns.zig");
 
 pub const ImeCaretPx = struct { x: f32, y: f32, h: f32 };
 
@@ -5761,8 +5762,7 @@ fn sessionFirstVisibleRow(selection: usize, visible_rows: usize, row_count: usiz
 fn sessionLayout(window_width: f32, window_height: f32, top_offset: f32) SessionLayout {
     const content_height = @max(1, window_height - top_offset);
     const min_box_w: f32 = if (g_ssh_form_visible or g_ssh_list_visible or g_ai_form_visible or g_ai_list_visible) 460 else 360;
-    const max_box_w = @max(260.0, @min(760.0, window_width - 48.0));
-    const box_w: f32 = @round(@min(@max(min_box_w, sessionDesiredBoxWidth()), max_box_w));
+    const box_w = ui_patterns.modalWidth(window_width, min_box_w, sessionDesiredBoxWidth(), 760, 24);
     const row_h = overlayRowHeight(38);
     const header_h = @round(18 + overlayLineHeight() * 2 + 12);
     const filter_h = if (g_ssh_list_visible) overlayControlHeight(42) else 0;
@@ -6917,7 +6917,37 @@ fn settingsRowDescription(row: usize) []const u8 {
     };
 }
 
-fn renderSettingsRow(layout: SettingsLayout, window_height: f32, row_index: usize, title: []const u8, value: []const u8, selected: bool) void {
+const SettingsControlKind = enum {
+    adjuster,
+    toggle,
+    choice,
+    action,
+};
+
+fn settingsControlKind(row: usize) SettingsControlKind {
+    if (shell_integration.supported and (row == SETTINGS_CONTROL_ROW_START + 9 or row == SETTINGS_CONTROL_ROW_START + 10)) return .toggle;
+    return switch (row) {
+        0 => .adjuster,
+        SETTINGS_THEME_ROW,
+        SETTINGS_CONTROL_ROW_START + 0,
+        SETTINGS_CONTROL_ROW_START + 3,
+        SETTINGS_CONTROL_ROW_START + 4,
+        SETTINGS_CONTROL_ROW_START + 6,
+        => .choice,
+        SETTINGS_CONTROL_ROW_START + 1,
+        SETTINGS_CONTROL_ROW_START + 2,
+        SETTINGS_CONTROL_ROW_START + 5,
+        SETTINGS_CONTROL_ROW_START + 7,
+        SETTINGS_CONTROL_ROW_START + 8,
+        => .toggle,
+        settings_page.SETTINGS_RAW_CONFIG_ROW,
+        settings_page.SETTINGS_RESTORE_DEFAULTS_ROW,
+        => .action,
+        else => .action,
+    };
+}
+
+fn renderSettingsRow(layout: SettingsLayout, window_height: f32, row: usize, row_index: usize, title: []const u8, value: []const u8, selected: bool) void {
     const visible = layout.visibleRow(window_height, row_index) orelse return;
     const gl_y = visible.gl_y;
     const x = layout.content_x;
@@ -6937,12 +6967,42 @@ fn renderSettingsRow(layout: SettingsLayout, window_height: f32, row_index: usiz
         ui_pipeline.fillQuadAlpha(x + 2, gl_y + 8, 3, layout.row_h - 16, accent, 0.82);
     }
     if (value.len > 0) {
-        const value_w = @min(210.0, measureTitlebarText(value) + 24);
+        const kind = settingsControlKind(row);
+        const max_value_w: f32 = switch (kind) {
+            .toggle => 96,
+            .adjuster => 152,
+            .choice => 360,
+            .action => 180,
+        };
+        const min_value_w: f32 = switch (kind) {
+            .toggle => 76,
+            .adjuster => 118,
+            .choice => 132,
+            .action => 96,
+        };
+        const trailing_w: f32 = switch (kind) {
+            .choice, .action => 26,
+            .adjuster, .toggle => 12,
+        };
+        const value_w = @min(max_value_w, @max(min_value_w, measureTitlebarText(value) + 24 + trailing_w));
         const value_x = @round(right_edge - value_w);
         const control_h = @round(@max(32.0, font.g_titlebar_cell_height + 10.0));
         const pill_y = gl_y + @round((layout.row_h - control_h) / 2);
-        renderRoundedQuadAlpha(value_x, pill_y, value_w, control_h, 9, mixColor(bg, fg, 0.09), 0.92);
-        renderTitlebarTextLimited(value, value_x + 12, rowTextY(pill_y, control_h), if (selected) accent else mixColor(bg, fg, 0.82), value_w - 24);
+        const is_on = std.mem.eql(u8, value, i18n.s().settings_value_on);
+        const control_bg = if (kind == .toggle and is_on) mixColor(bg, accent, 0.20) else mixColor(bg, fg, 0.09);
+        renderRoundedQuadAlpha(value_x, pill_y, value_w, control_h, 9, control_bg, 0.92);
+        const value_color = if (selected) accent else mixColor(bg, fg, 0.82);
+        if (kind == .toggle) {
+            const knob_d: f32 = @max(16.0, control_h - 12.0);
+            const knob_x = if (is_on) value_x + value_w - knob_d - 7 else value_x + 7;
+            renderRoundedQuadAlpha(knob_x, pill_y + (control_h - knob_d) / 2, knob_d, knob_d, knob_d / 2, if (is_on) accent else mixColor(bg, fg, 0.42), 0.96);
+            _ = renderTitlebarTextLimited(value, value_x + 12, rowTextY(pill_y, control_h), value_color, value_w - knob_d - 24);
+        } else {
+            _ = renderTitlebarTextLimited(value, value_x + 12, rowTextY(pill_y, control_h), value_color, value_w - 20 - trailing_w);
+            if (kind == .choice or kind == .action) {
+                renderTitlebarText(">", value_x + value_w - 18, rowTextY(pill_y, control_h), mixColor(bg, fg, 0.60));
+            }
+        }
         title_max_w = @max(1.0, value_x - title_x - 18);
     }
 
@@ -7058,7 +7118,7 @@ pub fn renderSettingsPage(window_height: f32, top_offset: f32, content_x: f32, c
             settings_page.SETTINGS_RESTORE_DEFAULTS_ROW => "Enter",
             else => "",
         };
-        renderSettingsRow(layout, window_height, row_index, title, value, focus == row);
+        renderSettingsRow(layout, window_height, row, row_index, title, value, focus == row);
     }
 
     // Scrollbar indicator when not all rows fit (short windows). The list is
@@ -7080,6 +7140,13 @@ pub fn renderSettingsPage(window_height: f32, top_offset: f32, content_x: f32, c
         const thumb_gl_y = @round(window_height - (track_top_px + thumb_offset) - thumb_h);
         ui_pipeline.fillQuadAlpha(sb_x, thumb_gl_y, sb_w, thumb_h, accent, 0.55);
     }
+
+    const footer_h = ui_patterns.workbenchFooterHeight(font.g_titlebar_cell_height);
+    const footer_top = ui_patterns.workbenchFooterTop(window_height, layout.page_top_px, footer_h);
+    const footer_y = @round(window_height - footer_top - footer_h);
+    ui_pipeline.fillQuadAlpha(layout.page_x, footer_y, layout.page_w, footer_h, mixColor(bg, fg, 0.030), 0.98);
+    ui_pipeline.fillQuadAlpha(layout.page_x, footer_y + footer_h - 1, layout.page_w, 1, border_color, 0.68);
+    renderTitlebarTextLimited(i18n.s().settings_workbench_footer, layout.content_x, rowTextY(footer_y, footer_h), muted_color, layout.content_w);
 }
 
 /// Mouse-wheel handling for the settings page. The list scrolls by moving the
@@ -8346,12 +8413,52 @@ pub fn renderRestoreDefaultsConfirm(window_width: f32, window_height: f32) void 
     renderTitlebarTextStrong(cancel_label, layout.cancel_x + (layout.cancel_w - measureTitlebarText(cancel_label)) / 2, rowTextY(cancel_y, layout.cancel_h), body);
 }
 
-fn integrationPromptLineCount(text: []const u8) usize {
-    if (text.len == 0) return 0;
-    var lines: usize = 1;
-    for (text) |ch| {
-        if (ch == '\n') lines += 1;
+/// Display-line iterator for the integration prompt. The prompt is prose and
+/// code-like snippets, so wrap at a preceding space when possible and fall
+/// back to codepoint boundaries for URLs or long identifiers.
+const IntegrationPromptWrap = struct {
+    text: []const u8,
+    max_w: f32,
+    pos: usize = 0,
+
+    fn next(self: *IntegrationPromptWrap) ?[]const u8 {
+        if (self.pos >= self.text.len or self.max_w <= 0) return null;
+        const start = self.pos;
+        var i = start;
+        var width: f32 = 0;
+        var last_space: ?usize = null;
+        while (i < self.text.len) {
+            const seq_len = std.unicode.utf8ByteSequenceLength(self.text[i]) catch 1;
+            const end = @min(i + seq_len, self.text.len);
+            const cp = std.unicode.utf8Decode(self.text[i..end]) catch 0xFFFD;
+            if (cp == '\n') {
+                self.pos = end;
+                return self.text[start..i];
+            }
+            const advance = titlebar.titlebarGlyphAdvance(cp);
+            if (width + advance > self.max_w and i > start) {
+                if (last_space) |space| {
+                    if (space > start) {
+                        self.pos = space + 1;
+                        return self.text[start..space];
+                    }
+                }
+                self.pos = i;
+                return self.text[start..i];
+            }
+            if (cp == ' ') last_space = i;
+            width += advance;
+            i = end;
+        }
+        self.pos = self.text.len;
+        return self.text[start..];
     }
+};
+
+fn integrationPromptLineCount(text: []const u8, max_w: f32) usize {
+    var it = IntegrationPromptWrap{ .text = text, .max_w = max_w };
+    var lines: usize = 0;
+    while (it.next()) |_| lines += 1;
     return lines;
 }
 
@@ -8406,7 +8513,15 @@ pub fn renderIntegrationPrompt(window_width: f32, window_height: f32) void {
     const text_right = layout.panel_x + layout.panel_w - pad;
     renderTitlebarTextStrongLimited("Install Integration", text_x, title_y, fg, text_right - text_x);
     const subtitle_y = title_y - overlayTextHeight() - 14;
-    renderTitlebarTextLimited("Copy this prompt into Codex, Claude Code, or another agent.", text_x, subtitle_y, body, text_right - text_x);
+    const subtitle = "Copy this prompt into Codex, Claude Code, or another agent.";
+    const subtitle_w = text_right - text_x;
+    const subtitle_line_h = @round(@max(overlayTextHeight(), 20.0));
+    var subtitle_it = IntegrationPromptWrap{ .text = subtitle, .max_w = subtitle_w };
+    var subtitle_rows: usize = 0;
+    while (subtitle_it.next()) |line| : (subtitle_rows += 1) {
+        if (subtitle_rows >= 2) break;
+        renderTitlebarTextLimited(line, text_x, subtitle_y - subtitle_line_h * @as(f32, @floatFromInt(subtitle_rows)), body, subtitle_w);
+    }
 
     const footer_y = copy_y + layout.close_h + 20;
     ui_pipeline.fillQuadAlpha(layout.panel_x + 5, footer_y, layout.panel_w - 5, 1, quiet_border, 0.46);
@@ -8414,7 +8529,7 @@ pub fn renderIntegrationPrompt(window_width: f32, window_height: f32) void {
     const prompt_x = layout.panel_x + pad;
     const prompt_y = footer_y + 18;
     const prompt_w = layout.panel_w - pad * 2;
-    const prompt_top = subtitle_y - 22;
+    const prompt_top = subtitle_y - subtitle_line_h * @as(f32, @floatFromInt(@max(@as(usize, 1), subtitle_rows))) - 12;
     const prompt_h = @max(72.0, prompt_top - prompt_y);
     renderRoundedQuadAlpha(prompt_x - 1, prompt_y - 1, prompt_w + 2, prompt_h + 2, 8, quiet_border, 0.55);
     renderRoundedQuadAlpha(prompt_x, prompt_y, prompt_w, prompt_h, 7, prompt_box, 0.96);
@@ -8423,18 +8538,19 @@ pub fn renderIntegrationPrompt(window_width: f32, window_height: f32) void {
     const line_h = @round(@max(22.0, overlayTextHeight() + 6.0));
     const available_h = @max(line_h, prompt_h - 18.0);
     const visible_rows: usize = @intFromFloat(@max(1.0, @floor(available_h / line_h)));
-    const total_lines = integrationPromptLineCount(prompt);
+    const text_w = prompt_w - 24;
+    const total_lines = integrationPromptLineCount(prompt, text_w);
     const scroll = integrationPromptClampedScroll(total_lines, visible_rows);
     g_integration_prompt_scroll = @intCast(scroll);
 
     var drawn: usize = 0;
     var line_index: usize = 0;
-    var it = std.mem.splitScalar(u8, prompt, '\n');
+    var it = IntegrationPromptWrap{ .text = prompt, .max_w = text_w };
     while (it.next()) |line| {
         if (line_index >= scroll and drawn < visible_rows) {
             const row_y = prompt_y + prompt_h - 9.0 - line_h * @as(f32, @floatFromInt(drawn + 1));
             if (row_y < prompt_y + 6.0) break;
-            renderTitlebarTextLimited(line, prompt_x + 12, rowTextY(row_y, line_h), body, prompt_w - 24);
+            renderTitlebarTextLimited(line, prompt_x + 12, rowTextY(row_y, line_h), body, text_w);
             drawn += 1;
         }
         line_index += 1;
@@ -8742,7 +8858,15 @@ fn whatsNewButtonMetrics() whats_new_model.ButtonMetrics {
 }
 
 fn whatsNewLayout(window_width: f32, window_height: f32) whats_new_model.Layout {
-    return whats_new_model.computeLayoutWithButtons(window_width, window_height, whatsNewLineHeight(), whatsNewButtonMetrics());
+    const notes = whatsNewNotes();
+    var summary_buf: [512]u8 = undefined;
+    const summary = whats_new_model.summaryText(&summary_buf, notes);
+    const panel_w = @round(@min(@max(@as(f32, 320), window_width - 80), @as(f32, 860)));
+    const content_w = @max(1.0, panel_w - 68.0);
+    const advance = @max(@as(f32, 1), titlebar.titlebarGlyphAdvance('M'));
+    const summary_cols: usize = @max(whats_new_model.MIN_WRAP_COLS, @as(usize, @intFromFloat(@floor(content_w / advance))));
+    const summary_rows = whats_new_model.lineRows(summary.len, summary_cols);
+    return whats_new_model.computeLayoutWithHeaderRows(window_width, window_height, whatsNewLineHeight(), whatsNewButtonMetrics(), summary_rows);
 }
 
 fn topRectY(window_height: f32, rect: whats_new_model.Rect) f32 {
@@ -8806,6 +8930,23 @@ fn renderWhatsNewWrappedLine(
     return true;
 }
 
+fn whatsNewBodyRows(notes: []const u8, wrap_cols: usize, indented_wrap_cols: usize) usize {
+    var total: usize = 0;
+    var in_code = false;
+    var it = std.mem.splitScalar(u8, notes, '\n');
+    while (it.next()) |raw| {
+        var cbuf: [1024]u8 = undefined;
+        const cleaned = md.cleanedLine(&cbuf, raw, in_code);
+        if (cleaned.style == .fence) in_code = !in_code;
+        const cols = switch (cleaned.style) {
+            .list, .quote, .code => indented_wrap_cols,
+            else => wrap_cols,
+        };
+        total += whats_new_model.lineRows(cleaned.text.len, cols);
+    }
+    return total;
+}
+
 fn whatsNewHighlightsRows(highlights: whats_new_model.Highlights, wrap_cols: usize) usize {
     if (highlights.len == 0) return 0;
     var total: usize = whats_new_model.lineRows("Highlights".len, wrap_cols);
@@ -8821,6 +8962,7 @@ fn renderWhatsNewHighlights(
     window_height: f32,
     highlights: whats_new_model.Highlights,
     wrap_cols: usize,
+    indented_wrap_cols: usize,
     line_h: f32,
     rows_state: *WhatsNewRows,
     heading_color: [3]f32,
@@ -8834,7 +8976,7 @@ fn renderWhatsNewHighlights(
     while (i < highlights.len) : (i += 1) {
         var line_buf: [512]u8 = undefined;
         const line = std.fmt.bufPrint(&line_buf, "* {s}", .{highlights.items[i]}) catch highlights.items[i];
-        if (!renderWhatsNewWrappedLine(layout, window_height, line, layout.content.x + 16, mixColor(body, accent, 0.08), false, wrap_cols, line_h, rows_state)) return false;
+        if (!renderWhatsNewWrappedLine(layout, window_height, line, layout.content.x + 16, mixColor(body, accent, 0.08), false, indented_wrap_cols, line_h, rows_state)) return false;
     }
     return renderWhatsNewWrappedLine(layout, window_height, "", layout.content.x, body, false, wrap_cols, line_h, rows_state);
 }
@@ -8844,6 +8986,7 @@ fn renderWhatsNewBody(
     window_height: f32,
     notes: []const u8,
     wrap_cols: usize,
+    indented_wrap_cols: usize,
     line_h: f32,
     rows_state: *WhatsNewRows,
     heading_color: [3]f32,
@@ -8871,7 +9014,11 @@ fn renderWhatsNewBody(
             else => body,
         };
         const strong = cleaned.style == .heading;
-        if (!renderWhatsNewWrappedLine(layout, window_height, cleaned.text, x, color, strong, wrap_cols, line_h, rows_state)) return;
+        const line_cols = switch (cleaned.style) {
+            .list, .quote, .code => indented_wrap_cols,
+            else => wrap_cols,
+        };
+        if (!renderWhatsNewWrappedLine(layout, window_height, cleaned.text, x, color, strong, line_cols, line_h, rows_state)) return;
     }
 }
 
@@ -8925,7 +9072,16 @@ pub fn renderWhatsNew(window_width: f32, window_height: f32) void {
         const summary = whats_new_model.summaryText(&summary_buf, notes);
         if (summary.len > 0) {
             const subtitle_top = title_top + overlayTextHeight() + 12;
-            renderTitlebarTextLimited(summary, layout.content.x, textYFromTop(window_height, subtitle_top), body, header_right - layout.content.x);
+            const summary_w = header_right - layout.content.x;
+            const summary_adv = @max(@as(f32, 1), titlebar.titlebarGlyphAdvance('M'));
+            const summary_cols: usize = @max(whats_new_model.MIN_WRAP_COLS, @as(usize, @intFromFloat(@floor(summary_w / summary_adv))));
+            const rows = whats_new_model.lineRows(summary.len, summary_cols);
+            var row: usize = 0;
+            while (row < rows) : (row += 1) {
+                const start = row * summary_cols;
+                const end = @min(summary.len, start + summary_cols);
+                renderTitlebarTextLimited(summary[start..end], layout.content.x, textYFromTop(window_height, subtitle_top + @as(f32, @floatFromInt(row)) * line_h), body, summary_w);
+            }
         }
     }
 
@@ -8935,6 +9091,8 @@ pub fn renderWhatsNew(window_width: f32, window_height: f32) void {
         const adv = @max(@as(f32, 1), titlebar.titlebarGlyphAdvance('M'));
         var wrap_cols: usize = @intFromFloat(layout.content.w / adv);
         if (wrap_cols < whats_new_model.MIN_WRAP_COLS) wrap_cols = whats_new_model.MIN_WRAP_COLS;
+        var indented_wrap_cols: usize = @intFromFloat(@max(1.0, (layout.content.w - 16.0) / adv));
+        if (indented_wrap_cols < whats_new_model.MIN_WRAP_COLS) indented_wrap_cols = whats_new_model.MIN_WRAP_COLS;
 
         const body_notes = whats_new_model.bodyNotes(notes);
         var summary_buf: [512]u8 = undefined;
@@ -8942,13 +9100,13 @@ pub fn renderWhatsNew(window_width: f32, window_height: f32) void {
         var highlights_buf: [512]u8 = undefined;
         const highlights = whats_new_model.highlightClauses(&highlights_buf, summary);
 
-        const total = whatsNewHighlightsRows(highlights, wrap_cols) + whats_new_model.totalRows(body_notes, wrap_cols);
+        const total = whatsNewHighlightsRows(highlights, indented_wrap_cols) + whatsNewBodyRows(body_notes, wrap_cols, indented_wrap_cols);
         const scroll = whats_new_model.clampScroll(whatsNewState().scroll, total, layout.visible_rows);
         whatsNewState().scroll = @intCast(scroll);
 
         var rows_state: WhatsNewRows = .{ .scroll = scroll };
-        if (renderWhatsNewHighlights(layout, window_height, highlights, wrap_cols, line_h, &rows_state, heading, accent, body)) {
-            renderWhatsNewBody(layout, window_height, body_notes, wrap_cols, line_h, &rows_state, heading, body, muted);
+        if (renderWhatsNewHighlights(layout, window_height, highlights, wrap_cols, indented_wrap_cols, line_h, &rows_state, heading, accent, body)) {
+            renderWhatsNewBody(layout, window_height, body_notes, wrap_cols, indented_wrap_cols, line_h, &rows_state, heading, body, muted);
         }
     }
 

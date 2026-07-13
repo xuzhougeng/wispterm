@@ -4,6 +4,7 @@
 //! category rail on the left and a centered settings card on the right.
 
 const std = @import("std");
+const ui_patterns = @import("../ui_patterns.zig");
 
 pub const Input = struct {
     window_height: f32,
@@ -137,7 +138,12 @@ pub fn compute(input: Input) Layout {
     const row_h = settingsRowHeight(input.cell_height);
     const header_h = @round(@max(104.0, textHeight(input.cell_height) * 2.0 + 56.0));
     const bottom_pad: f32 = 24;
-    const visible_rows = rowCapacity(page_h, header_h + bottom_pad, row_h, input.row_count);
+    // The footer is a persistent part of the Settings workbench, rather than
+    // an overlay on the last row. Reserve its band here so short windows
+    // scroll content above it instead of hiding the final control.
+    const footer_h = ui_patterns.workbenchFooterHeight(input.cell_height);
+    const content_h = @max(1.0, page_h - footer_h);
+    const visible_rows = rowCapacity(content_h, header_h + bottom_pad, row_h, input.row_count);
     const scroll = firstVisibleRow(input.focus_index, visible_rows, input.row_count);
 
     return .{
@@ -192,6 +198,8 @@ test "settings tab layout keeps focused rows visible in short windows" {
     try std.testing.expect(layout.visible_rows >= 1);
     try std.testing.expect(layout.visible_rows < layout.row_count);
     try std.testing.expect(layout.focusVisible(4));
+    const last = layout.visibleRow(330, layout.scroll + layout.visible_rows - 1).?;
+    try std.testing.expect(last.top_px + layout.row_h <= 330 - ui_patterns.workbenchFooterHeight(20));
 }
 
 test "settings tab hit testing maps content rows and font buttons" {

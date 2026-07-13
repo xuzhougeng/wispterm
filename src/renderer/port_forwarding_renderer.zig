@@ -4,7 +4,7 @@ const form_mod = @import("../port_forward/forwarding.zig");
 
 const HEADER_H: f32 = 54;
 const ROW_H: f32 = 52;
-const LEGEND_H: f32 = 36;
+const LEGEND_H: f32 = 72;
 const PAD_X: f32 = 16;
 const COL_GAP: f32 = 10;
 const DIRECTION_W: f32 = 78;
@@ -216,7 +216,28 @@ fn rowHeight(cell_h: f32) f32 {
 }
 
 fn legendHeight(cell_h: f32) f32 {
-    return @max(LEGEND_H, cell_h + 18);
+    return @max(LEGEND_H, cell_h * 3 + 16);
+}
+
+const RowColumns = struct {
+    direction_w: f32,
+    auto_w: f32,
+    status_w: f32,
+
+    fn total(self: RowColumns) f32 {
+        return self.direction_w + self.auto_w + self.status_w + COL_GAP * 2;
+    }
+};
+
+fn rowColumns(draw: DrawContext) RowColumns {
+    const a = @max(1.0, draw.glyphAdvance('M'));
+    return .{
+        // These labels are semantic state, so fixed pixel slots are unsafe
+        // once the terminal UI font grows. Size from the longest label.
+        .direction_w = @max(DIRECTION_W, a * 8), // Reverse
+        .auto_w = @max(AUTO_W, a * 7), // Manual
+        .status_w = @max(STATUS_W, a * 8), // Stopped
+    };
 }
 
 fn yFromTop(window_height: f32, top_px: f32, h: f32) f32 {
@@ -319,7 +340,8 @@ fn renderRow(
     }
     draw.fillQuadAlpha(content_x, row_y, content_w, 1, line, 0.45);
 
-    const right_w = DIRECTION_W + AUTO_W + STATUS_W + COL_GAP * 2;
+    const columns = rowColumns(draw);
+    const right_w = columns.total();
     const show_columns = content_w >= PAD_X * 2 + right_w + 120;
     const right_x = content_x + content_w - PAD_X - right_w;
     const text_x = content_x + PAD_X;
@@ -332,11 +354,11 @@ fn renderRow(
 
     if (show_columns) {
         var x = right_x;
-        _ = draw.renderTextLimited(directionLabel(row.rule.direction), x, primary_y, muted, DIRECTION_W);
-        x += DIRECTION_W + COL_GAP;
-        _ = draw.renderTextLimited(autoLabel(row.auto_start), x, primary_y, muted, AUTO_W);
-        x += AUTO_W + COL_GAP;
-        _ = draw.renderTextLimited(statusLabel(row.status), x, primary_y, statusColor(row.status, fg, muted, accent), STATUS_W);
+        _ = draw.renderTextLimited(directionLabel(row.rule.direction), x, primary_y, muted, columns.direction_w);
+        x += columns.direction_w + COL_GAP;
+        _ = draw.renderTextLimited(autoLabel(row.auto_start), x, primary_y, muted, columns.auto_w);
+        x += columns.auto_w + COL_GAP;
+        _ = draw.renderTextLimited(statusLabel(row.status), x, primary_y, statusColor(row.status, fg, muted, accent), columns.status_w);
     }
 
     var listen_buf: [96]u8 = undefined;
@@ -452,9 +474,55 @@ fn renderLegend(draw: DrawContext, legend: []const u8, content_x: f32, content_w
     const text_x = content_x + PAD_X;
     const content_right = content_x + content_w - PAD_X;
     draw.fillQuad(content_x, legend_h, content_w, 1, line);
-    const text_y = (legend_h - draw.cell_h) / 2;
-    _ = draw.renderTextLimited(legend, text_x, text_y, muted, clampedTextWidth(text_x, content_right, content_w - PAD_X * 2));
+    const text_w = clampedTextWidth(text_x, content_right, content_w - PAD_X * 2);
+    var it = TextWrap{ .text = legend, .max_w = text_w, .advance = draw.glyphAdvance };
+    var line_index: usize = 0;
+    while (it.next()) |display_line| : (line_index += 1) {
+        if (line_index >= 3) break;
+        const text_y = legend_h - draw.cell_h - 6 - @as(f32, @floatFromInt(line_index)) * (draw.cell_h + 2);
+        _ = draw.renderTextLimited(display_line, text_x, text_y, muted, text_w);
+    }
 }
+
+const TextWrap = struct {
+    text: []const u8,
+    max_w: f32,
+    advance: *const fn (u32) f32,
+    pos: usize = 0,
+
+    fn next(self: *TextWrap) ?[]const u8 {
+        if (self.pos >= self.text.len or self.max_w <= 0) return null;
+        const start = self.pos;
+        var i = start;
+        var width: f32 = 0;
+        var last_space: ?usize = null;
+        while (i < self.text.len) {
+            const seq_len = std.unicode.utf8ByteSequenceLength(self.text[i]) catch 1;
+            const end = @min(i + seq_len, self.text.len);
+            const cp = std.unicode.utf8Decode(self.text[i..end]) catch 0xFFFD;
+            if (cp == '\n') {
+                self.pos = end;
+                return self.text[start..i];
+            }
+            const w = self.advance(cp);
+            if (width + w > self.max_w and i > start) {
+                if (last_space) |space| {
+                    if (space > start) {
+                        self.pos = space + 1;
+                        return self.text[start..space];
+                    }
+                }
+                self.pos = i;
+                return self.text[start..i];
+            }
+            if (cp == ' ') last_space = i;
+            width += w;
+            i = end;
+        }
+        self.pos = self.text.len;
+        return self.text[start..];
+    }
+};
 
 test "port_forwarding_renderer: status labels" {
     try std.testing.expectEqualStrings("Stopped", statusLabel(StatusKind.stopped));

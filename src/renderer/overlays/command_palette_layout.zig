@@ -9,6 +9,7 @@
 //! passes them in, then uses the returned numbers exactly as before.
 
 const std = @import("std");
+const ui_patterns = @import("../ui_patterns.zig");
 
 /// Hard cap on rows the palette ever renders at once. Must match the scratch
 /// buffer size in overlays.zig.
@@ -112,7 +113,13 @@ pub fn compute(
     // Ghostty: maxWidth 500 logical points, anchored a small gap below the
     // top of the content area rather than vertically centered. All layout
     // math is in physical pixels, so the point-based widths scale by DPI.
-    const box_w = @round(@min(@max(420 * scale, window_width - 64 * scale), 500 * scale));
+    const box_w = ui_patterns.modalWidth(
+        window_width,
+        420 * scale,
+        500 * scale,
+        500 * scale,
+        32 * scale,
+    );
     const row_h = rowHeight(cell_height, 36);
     const filter_h = controlHeight(cell_height, 48);
     const top_gap = @max(16.0, content_height * 0.05);
@@ -228,11 +235,11 @@ test "row capacity is at least one row even when cramped" {
     try std.testing.expectEqual(@as(usize, 1), rowCapacity(80, 200, row_h));
 }
 
-test "layout box width clamps between 420 and 500" {
+test "layout box width clamps to the viewport gutters and palette maximum" {
     const cell: f32 = 20;
-    // Narrow window (width-64 < 420) -> min width 420.
+    // Narrow windows stay inside their 32px gutters rather than overflowing.
     const narrow = compute(460, 800, 0, cell, 5, 1.0);
-    try std.testing.expectEqual(@as(f32, 420), narrow.box_w);
+    try std.testing.expectEqual(@as(f32, 460 - 64), narrow.box_w);
     // Wide window -> capped at 500.
     const wide = compute(2000, 800, 0, cell, 5, 1.0);
     try std.testing.expectEqual(@as(f32, 500), wide.box_w);

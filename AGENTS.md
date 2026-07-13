@@ -10,6 +10,20 @@ Windows is the **primary and default development target** (`x86_64-windows-gnu`)
 
 WispTerm is split into a platform-agnostic **core** (terminal state, IO, rendering) and a per-platform **host** (window, event loop, input) that drives the core through a narrow surface API. The host interface is `src/platform/window_backend.zig`; OS facilities go through capability facades in `src/platform/`. The named contract — what the host implements, what services it supplies, and the invariants that keep the seam intact — is documented in [docs/architecture.md](docs/architecture.md). Read it before touching the platform boundary or starting a port.
 
+### UI presentation styles
+
+WispTerm has exactly three application UI styles. Choose one before adding a screen; do not create a fourth ad-hoc overlay shape. The shared geometry contract is `src/renderer/ui_patterns.zig`. It is intentionally pure and is included in the fast test suite.
+
+| Style | Use for | Required structure | Examples |
+|---|---|---|---|
+| **Command palette** | Find-and-run actions with no persistent form state | Search field, filtered and scrollable action list, visible selection, shortcut/meta column, Escape closes. Keep it transient; do not put multi-step configuration here. | Command Center, Copilot History picker |
+| **Form dialog** | Small configuration, profile editing, confirmation, and launch choices | Centered constrained dialog, title plus one-line instruction, aligned rows/fields, explicit primary and cancel/close actions. Must fit inside viewport gutters at every size. | New Session, AI/SSH/MCP forms |
+| **Workbench page** | Persistent tab-owned tools with browsing, status, or multi-column content | Header, content region, and a full-width footer/status band. Empty states explain why the page is empty and name the next action. Keyboard hints and non-blocking status belong in the footer/status band, never squeezed into a content column. | Settings, Memory Center, Skill Center, Port Forwarding, Agent History |
+
+This follows Ghostty's separation of its command palette dialog from its persistent window/tab shell: Ghostty's palette has a search entry and a scrollable rich list with shortcut metadata, while tabs live in a stable window container. WispTerm uses its GPU renderer rather than GTK, but should preserve that same separation of transient command execution, form input, and persistent workspace state.
+
+When changing a UI page, verify: full labels are visible or deliberately ellipsized with a way to reveal them; the localized UI language is consistent (proper names/model IDs may remain literal); state is placed next to its owner; and the page requests a repaint through `UiEffect` after input changes.
+
 ## Cohesion and coupling
 
 These are the **primary** architectural criteria. File length is a symptom, not the rule.

@@ -46,7 +46,7 @@ const STOP_BUTTON_H: f32 = 28;
 const STATUS_DOT_D: f32 = 9;
 const STATUS_DOT_HIT: f32 = 28;
 const COMPACT_STATUS_TRAILING_RESERVE: f32 = 36;
-const MODE_SLOT_W: f32 = 76;
+const MODE_SLOT_W: f32 = 84;
 const INPUT_SCROLLBAR_GUTTER: f32 = 10;
 const INPUT_SCROLLBAR_W: f32 = 4;
 const INPUT_SCROLLBAR_PAD: f32 = 7;
@@ -207,9 +207,18 @@ pub fn render(
     ui_pipeline.fillQuadAlpha(frame.header.x, frame.header.y, frame.header.w, frame.header.h, panel, 0.95);
     ui_pipeline.fillQuadAlpha(frame.header_rule.x, frame.header_rule.y, frame.header_rule.w, frame.header_rule.h, line, 0.8);
     const permission = ai_chat.agentPermission();
-    const chip_x = permissionChipX(x, w);
+    // A compact Copilot only renders a status dot, but the generic permission
+    // layout used to reserve a full status-text slot here. That left barely a
+    // handful of pixels for both the model and the Agent label. Anchor the
+    // chip beside the dot in compact mode and give the model the reclaimed
+    // header width.
+    const chip_x = if (compact)
+        x + w - LINE_PAD_X - COMPACT_STATUS_TRAILING_RESERVE - 12 - PERMISSION_CHIP_W
+    else
+        permissionChipX(x, w);
     const mode_text = if (session.agent_enabled) "Agent" else "Chat";
-    const mode_x = @max(x + LINE_PAD_X, chip_x - MODE_SLOT_W - 8);
+    const mode_slot_w = @max(MODE_SLOT_W, titlebarTextWidth(mode_text) + 20);
+    const mode_x = @max(x + LINE_PAD_X, chip_x - mode_slot_w - 8);
 
     // Model label fills the space left of the mode slot; it is hidden when the
     // panel (e.g. the narrow copilot sidebar) is too tight to show it without
@@ -219,7 +228,7 @@ pub fn render(
     if (model_limit > 24) {
         _ = titlebar.renderTextLimited(session.model(), model_x, header_y + 10, mixColor(fg, accent, 0.12), model_limit);
     }
-    _ = titlebar.renderTextLimited(mode_text, mode_x, header_y + 10, mixColor(fg, accent, 0.18), MODE_SLOT_W);
+    _ = titlebar.renderTextLimited(mode_text, mode_x, header_y + 10, mixColor(fg, accent, 0.18), mode_slot_w);
 
     const perm_text = permissionDisplayName(permission);
     const perm_color = switch (permission) {

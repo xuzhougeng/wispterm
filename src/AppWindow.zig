@@ -2944,6 +2944,7 @@ pub fn memoryCenterHandleMousePress(xpos: f64, ypos: f64) bool {
     switch (hit) {
         .source => |source| session.setSource(source),
         .row => |idx| session.selectIndex(idx),
+        .run_digest => _ = runMemoryDigestFromCenter(),
         .detail => {},
         .none => return false,
     }
@@ -2970,7 +2971,7 @@ pub fn memoryCenterHandleMouseWheel(xpos: i32, ypos: i32, delta: i32) bool {
     const direction: isize = if (delta > 0) -1 else 1;
     switch (hit) {
         .detail => session.scrollDetailBy(direction * 3),
-        .source, .row, .none => session.moveSelection(direction),
+        .source, .row, .run_digest, .none => session.moveSelection(direction),
     }
     markUiDirty();
     return true;

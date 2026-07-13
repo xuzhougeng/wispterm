@@ -182,21 +182,34 @@ fn fallbackCodepoint(byte: u8) u32 {
 }
 
 fn renderFallbackBytesLimited(text: []const u8, x: f32, y: f32, color: [3]f32, max_w: f32) f32 {
+    var total_w: f32 = 0;
+    for (text) |byte| total_w += titlebarGlyphAdvance(fallbackCodepoint(byte));
+    if (total_w <= max_w) {
+        var full_x = x;
+        for (text) |byte| {
+            const cp = fallbackCodepoint(byte);
+            renderTitlebarChar(cp, full_x, y, color);
+            full_x += titlebarGlyphAdvance(cp);
+        }
+        return full_x;
+    }
+
     var cursor_x = x;
+    const ellipsis: u32 = 0x2026;
+    const ellipsis_w = titlebarGlyphAdvance(ellipsis);
     for (text) |byte| {
         const cp = fallbackCodepoint(byte);
         const adv = titlebarGlyphAdvance(cp);
-        if (cursor_x + adv > x + max_w) {
-            const ellipsis: u32 = 0x2026;
-            const ellipsis_w = titlebarGlyphAdvance(ellipsis);
-            if (cursor_x + ellipsis_w <= x + max_w) {
-                renderTitlebarChar(ellipsis, cursor_x, y, color);
-                cursor_x += ellipsis_w;
-            }
-            break;
-        }
+        // Reserve the ellipsis before drawing the final visible glyph. The
+        // old post-overflow check often had no pixels left for it, leaving a
+        // hard-cut label in narrow sidebars and compact panel headers.
+        if (cursor_x + adv + ellipsis_w > x + max_w) break;
         renderTitlebarChar(cp, cursor_x, y, color);
         cursor_x += adv;
+    }
+    if (cursor_x + ellipsis_w <= x + max_w) {
+        renderTitlebarChar(ellipsis, cursor_x, y, color);
+        cursor_x += ellipsis_w;
     }
     return cursor_x;
 }
@@ -229,22 +242,33 @@ fn collectTextCodepoints(text: []const u8, codepoints: []u32, text_width: *f32) 
 pub fn renderTextLimited(text: []const u8, x: f32, y: f32, color: [3]f32, max_w: f32) f32 {
     if (max_w <= 0) return x;
 
+    var total_w: f32 = 0;
+    var measure_view = std.unicode.Utf8View.init(text) catch return renderFallbackBytesLimited(text, x, y, color, max_w);
+    var measure_it = measure_view.iterator();
+    while (measure_it.nextCodepoint()) |cp| total_w += titlebarGlyphAdvance(cp);
+
     var cursor_x = x;
-    var view = std.unicode.Utf8View.init(text) catch return renderFallbackBytesLimited(text, x, y, color, max_w);
+    var view = std.unicode.Utf8View.init(text) catch unreachable;
     var it = view.iterator();
+    if (total_w <= max_w) {
+        while (it.nextCodepoint()) |cp| {
+            renderTitlebarChar(cp, cursor_x, y, color);
+            cursor_x += titlebarGlyphAdvance(cp);
+        }
+        return cursor_x;
+    }
+
+    const ellipsis: u32 = 0x2026;
+    const ellipsis_w = titlebarGlyphAdvance(ellipsis);
     while (it.nextCodepoint()) |cp| {
         const adv = titlebarGlyphAdvance(cp);
-        if (cursor_x + adv > x + max_w) {
-            const ellipsis: u32 = 0x2026;
-            const ellipsis_w = titlebarGlyphAdvance(ellipsis);
-            if (cursor_x + ellipsis_w <= x + max_w) {
-                renderTitlebarChar(ellipsis, cursor_x, y, color);
-                cursor_x += ellipsis_w;
-            }
-            break;
-        }
+        if (cursor_x + adv + ellipsis_w > x + max_w) break;
         renderTitlebarChar(cp, cursor_x, y, color);
         cursor_x += adv;
+    }
+    if (cursor_x + ellipsis_w <= x + max_w) {
+        renderTitlebarChar(ellipsis, cursor_x, y, color);
+        cursor_x += ellipsis_w;
     }
     return cursor_x;
 }

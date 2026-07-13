@@ -258,8 +258,8 @@ pub fn renderStartupShortcutsOverlay(window_width: f32, window_height: f32, top_
         var keys_buf: [256]u8 = undefined;
         const keys = startupShortcutKeys(entry, &keys_buf);
         const item = layout.entry(idx) orelse continue;
-        renderTitlebarTextLimited(keys, item.keys_x, item.y, keys_color, item.keys_width);
-        renderTitlebarTextLimited(localizedAction(entry), item.action_x, item.y, action_color, item.action_width);
+        renderTitlebarTextLimited(keys, item.keys_x, item.keys_y, keys_color, item.keys_width);
+        renderTitlebarTextLimited(localizedAction(entry), item.action_x, item.action_y, action_color, item.action_width);
     }
 
     renderTitlebarTextLimited(hint, layout.hint_x, layout.hint_y, hint_color, layout.hint_max_width);

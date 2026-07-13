@@ -10,7 +10,9 @@
 const std = @import("std");
 
 pub const DEFAULT_WIDTH: f32 = 480;
-pub const MIN_WIDTH: f32 = 320;
+// 320px left the model, Agent mode, permission chip, and status dot fighting
+// for one header row. Keep enough width for their labels to remain legible.
+pub const MIN_WIDTH: f32 = 380;
 pub const MAX_WIDTH: f32 = 1200;
 pub const MIN_CONTENT_WIDTH: f32 = 320;
 pub const RESIZE_HIT_WIDTH: f32 = 12;

@@ -195,6 +195,7 @@ test {
     _ = @import("renderer/overlays/command_palette_input.zig");
     _ = @import("renderer/overlays/command_palette_layout.zig");
     _ = @import("renderer/overlays/btw_conversation.zig");
+    _ = @import("renderer/ui_patterns.zig");
     _ = @import("renderer/overlays/startup_shortcuts_layout.zig");
     _ = @import("renderer/overlays/settings_page_layout.zig");
     _ = @import("renderer/overlays/settings_page.zig");

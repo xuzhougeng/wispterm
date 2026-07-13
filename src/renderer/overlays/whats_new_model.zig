@@ -216,13 +216,21 @@ pub fn computeLayout(window_w: f32, window_h: f32, row_h: f32) Layout {
 /// Centered modal layout with caller-supplied button widths. The renderer uses
 /// measured label widths here so centered text cannot escape the panel.
 pub fn computeLayoutWithButtons(window_w: f32, window_h: f32, row_h: f32, buttons: ButtonMetrics) Layout {
+    return computeLayoutWithHeaderRows(window_w, window_h, row_h, buttons, 1);
+}
+
+/// Variant for release notes whose summary needs more than one display row.
+/// Keeping the full summary in the header avoids treating it as a clipped
+/// decoration; the scrollable body receives only the remaining release notes.
+pub fn computeLayoutWithHeaderRows(window_w: f32, window_h: f32, row_h: f32, buttons: ButtonMetrics, summary_rows: usize) Layout {
     const panel_w = @round(@min(@max(@as(f32, 320), window_w - 80), @as(f32, 860)));
     const panel_h = @round(@min(@max(@as(f32, 360), window_h - 80), @as(f32, 620)));
     const panel_x = @round((window_w - panel_w) / 2);
     const panel_y = @round((window_h - panel_h) / 2);
 
     const pad: f32 = 34;
-    const header_h = @round(@max(@as(f32, 86), row_h * 2 + 34));
+    const summary_row_count: f32 = @floatFromInt(@max(@as(usize, 1), summary_rows));
+    const header_h = @round(@max(@as(f32, 86), row_h * (summary_row_count + 1) + 34));
     const footer_h = @round(@max(@as(f32, 58), row_h + 30));
     const content_top = panel_y + header_h + 18;
     const footer_y = panel_y + panel_h - footer_h;
@@ -340,6 +348,13 @@ test "computeLayout exposes header content footer bands and top close button" {
         layout.title_close_btn.x + layout.title_close_btn.w / 2,
         layout.title_close_btn.y + layout.title_close_btn.h / 2,
     ));
+}
+
+test "computeLayoutWithHeaderRows reserves every summary row above content" {
+    const layout = computeLayoutWithHeaderRows(1200, 800, 24, .{}, 4);
+    try std.testing.expect(layout.header.h >= 24 * 5 + 34);
+    try std.testing.expect(layout.content.y >= layout.header.y + layout.header.h + 18);
+    try std.testing.expect(layout.visible_rows >= 1);
 }
 
 test "computeLayout places GitHub action on the left side of the footer" {
