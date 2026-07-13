@@ -6893,6 +6893,23 @@ fn settingsCategoryLabel(category: settings_page.Category) []const u8 {
     };
 }
 
+fn settingsCategoryDescription(category: settings_page.Category) []const u8 {
+    return switch (i18n.lang()) {
+        .en => switch (category) {
+            .general => "Startup, language, and configuration",
+            .appearance => "Typography, theme, and cursor behavior",
+            .ai => "Profiles and assistant integrations",
+            .system => "Desktop integration and startup behavior",
+        },
+        .zh_CN => switch (category) {
+            .general => "启动、语言与配置管理",
+            .appearance => "字体、主题与光标行为",
+            .ai => "配置文件与智能助手集成",
+            .system => "桌面集成与启动方式",
+        },
+    };
+}
+
 fn settingsRowDescription(row: usize) []const u8 {
     const zh = i18n.lang() == .zh_CN;
     if (shell_integration.supported) {
@@ -6963,7 +6980,6 @@ fn renderSettingsRow(layout: SettingsLayout, window_height: f32, row: usize, row
     var title_max_w = w - 40;
 
     if (selected) {
-        ui_pipeline.fillQuadAlpha(x + 2, gl_y + 2, w - 4, layout.row_h - 4, mixColor(bg, accent, 0.16), 0.64);
         ui_pipeline.fillQuadAlpha(x + 2, gl_y + 8, 3, layout.row_h - 16, accent, 0.82);
     }
     if (value.len > 0) {
@@ -6984,23 +7000,27 @@ fn renderSettingsRow(layout: SettingsLayout, window_height: f32, row: usize, row
             .choice, .action => 26,
             .adjuster, .toggle => 12,
         };
-        const value_w = @min(max_value_w, @max(min_value_w, measureTitlebarText(value) + 24 + trailing_w));
+        const value_w = if (kind == .toggle)
+            46.0
+        else
+            @min(max_value_w, @max(min_value_w, measureTitlebarText(value) + 24 + trailing_w));
         const value_x = @round(right_edge - value_w);
-        const control_h = @round(@max(32.0, font.g_titlebar_cell_height + 10.0));
+        const control_h = if (kind == .toggle) 24.0 else @round(@max(32.0, font.g_titlebar_cell_height + 10.0));
         const pill_y = gl_y + @round((layout.row_h - control_h) / 2);
         const is_on = std.mem.eql(u8, value, i18n.s().settings_value_on);
-        const control_bg = if (kind == .toggle and is_on) mixColor(bg, accent, 0.20) else mixColor(bg, fg, 0.09);
-        renderRoundedQuadAlpha(value_x, pill_y, value_w, control_h, 9, control_bg, 0.92);
+        if (kind == .toggle) {
+            const track_color = if (is_on) mixColor(bg, accent, 0.40) else mixColor(bg, fg, 0.18);
+            renderRoundedQuadAlpha(value_x, pill_y, value_w, control_h, control_h / 2, track_color, 0.96);
+        }
         const value_color = if (selected) accent else mixColor(bg, fg, 0.82);
         if (kind == .toggle) {
-            const knob_d: f32 = @max(16.0, control_h - 12.0);
-            const knob_x = if (is_on) value_x + value_w - knob_d - 7 else value_x + 7;
+            const knob_d: f32 = control_h - 6;
+            const knob_x = if (is_on) value_x + value_w - knob_d - 3 else value_x + 3;
             renderRoundedQuadAlpha(knob_x, pill_y + (control_h - knob_d) / 2, knob_d, knob_d, knob_d / 2, if (is_on) accent else mixColor(bg, fg, 0.42), 0.96);
-            _ = renderTitlebarTextLimited(value, value_x + 12, rowTextY(pill_y, control_h), value_color, value_w - knob_d - 24);
         } else {
-            _ = renderTitlebarTextLimited(value, value_x + 12, rowTextY(pill_y, control_h), value_color, value_w - 20 - trailing_w);
+            _ = renderTitlebarTextLimited(value, value_x, rowTextY(pill_y, control_h), value_color, value_w - trailing_w);
             if (kind == .choice or kind == .action) {
-                renderTitlebarText(">", value_x + value_w - 18, rowTextY(pill_y, control_h), mixColor(bg, fg, 0.60));
+                renderTitlebarText(">", value_x + value_w - 12, rowTextY(pill_y, control_h), mixColor(bg, fg, 0.60));
             }
         }
         title_max_w = @max(1.0, value_x - title_x - 18);
@@ -7046,7 +7066,6 @@ pub fn renderSettingsPage(window_height: f32, top_offset: f32, content_x: f32, c
         const item_y = @round(window_height - item_top - layout.nav_item_h);
         const selected = category == state.category;
         if (selected) {
-            renderRoundedQuadAlpha(layout.page_x + 12, item_y + 3, layout.nav_w - 24, layout.nav_item_h - 6, 9, mixColor(bg, accent, 0.15), 0.82);
             ui_pipeline.fillQuadAlpha(layout.page_x + 14, item_y + 10, 3, layout.nav_item_h - 20, accent, 0.84);
         }
         renderTitlebarTextLimited(settingsCategoryLabel(category), layout.page_x + 28, rowTextY(item_y, layout.nav_item_h), if (selected) mixColor(fg, accent, 0.16) else mixColor(bg, fg, 0.76), layout.nav_w - 48);
@@ -7055,7 +7074,8 @@ pub fn renderSettingsPage(window_height: f32, top_offset: f32, content_x: f32, c
     const page_title_y = textYFromTop(window_height, layout.page_top_px + 28);
     const subtitle_y = textYFromTop(window_height, layout.page_top_px + 28 + overlayLineHeight());
     renderTitlebarText(settingsCategoryLabel(state.category), layout.content_x, page_title_y, mixColor(fg, accent, 0.10));
-    renderTitlebarTextLimited(i18n.s().settings_subtitle, layout.content_x, subtitle_y, muted_color, layout.content_w);
+    renderTitlebarTextLimited(settingsCategoryDescription(state.category), layout.content_x, subtitle_y, muted_color, layout.content_w);
+    ui_pipeline.fillQuadAlpha(layout.content_x, @round(window_height - layout.row_top_px), layout.content_w, 1, border_color, 0.52);
 
     loadAiProfiles();
     const ai_default_value = if (assistantProfiles().profile_count > 0)
