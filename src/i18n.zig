@@ -331,7 +331,7 @@ const en = Strings{
     .settings_value_open = "open",
     .settings_value_none = "(none)",
     .settings_lang_auto = "Auto",
-    .settings_workbench_footer = "Changes save automatically   Esc: close settings",
+    .settings_workbench_footer = "Changes save automatically   Up/Down: navigate   Left/Right: adjust",
 
     .memory_center_title = "Memory Center",
     .memory_center_source = "SOURCE",
@@ -599,7 +599,7 @@ const zh_CN = Strings{
     .settings_value_open = "打开",
     .settings_value_none = "（无）",
     .settings_lang_auto = "自动",
-    .settings_workbench_footer = "配置自动保存   Esc：关闭设置",
+    .settings_workbench_footer = "配置自动保存   ↑↓：浏览   ←→：调整",
 
     .memory_center_title = "记忆中心",
     .memory_center_source = "来源",
