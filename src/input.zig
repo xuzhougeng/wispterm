@@ -46,6 +46,7 @@ const Surface = @import("Surface.zig");
 const SplitTree = @import("split_tree.zig");
 const PreviewPane = @import("preview_pane.zig");
 const PreviewImageDrag = @import("input/preview_image_drag.zig");
+const preview_close_button = @import("input/preview_close_button.zig");
 const selection_unit = @import("selection_unit.zig");
 const Selection = Surface.Selection;
 const CellPos = struct { col: usize, row: usize };
@@ -703,6 +704,12 @@ threadlocal var g_panel_swap_start_y: f64 = 0;
 // old right-dock image drag). All state and the drag-lifetime pane ref live in
 // the tested state machine; input.zig only routes press/move/release into it.
 threadlocal var g_preview_image_drag: PreviewImageDrag = .{};
+
+// Mouse-drag text selection inside a text/markdown preview pane. Set on mouse
+// down, cleared on mouse up. The renderer draws selection highlights using the
+// pane's selection state; the mouse move handler extends it.
+threadlocal var g_preview_text_selecting: bool = false;
+
 threadlocal var g_scrollbar_drag_surface: ?*Surface = null;
 threadlocal var g_scrollbar_drag_view_y: f32 = 0;
 threadlocal var g_scrollbar_drag_view_h: f32 = 0;
@@ -718,8 +725,6 @@ threadlocal var g_ai_transcript_select_chat: ?*AppWindow.ai_chat.Session = null;
 threadlocal var g_ai_transcript_select_auto_copy: bool = false;
 threadlocal var g_port_forwarding_suppress_command_char: ?u21 = null;
 threadlocal var g_skill_center_suppress_command_char: ?u21 = null;
-pub threadlocal var g_sidebar_resize_hover: bool = false; // Mouse is over the sidebar resize edge
-pub threadlocal var g_sidebar_resize_dragging: bool = false; // Currently dragging the sidebar edge
 pub threadlocal var g_explorer_resize_hover: bool = false; // Mouse is over the file explorer resize edge
 pub threadlocal var g_explorer_resize_dragging: bool = false; // Currently dragging the file explorer edge
 pub threadlocal var g_browser_resize_hover: bool = false; // Mouse is over the embedded browser edge
@@ -844,8 +849,6 @@ pub fn cancelTransientMouseState(win: anytype) void {
     g_divider_dragging = false;
     g_divider_drag_handle = null;
     g_divider_drag_layout = null;
-    g_sidebar_resize_hover = false;
-    g_sidebar_resize_dragging = false;
     g_explorer_resize_hover = false;
     g_explorer_resize_dragging = false;
     g_browser_resize_hover = false;
@@ -1067,6 +1070,46 @@ fn closePreviewPaneByHandle(handle: SplitTree.Node.Handle) void {
     AppWindow.closeFocusedSplit();
     AppWindow.g_force_rebuild = true;
     AppWindow.g_cells_valid = false;
+}
+
+/// Map a window y-coordinate to a source text line index inside a preview pane.
+/// Uses the renderer-cached line heights for pixel-accurate hit-testing, and
+/// falls back to a proportional estimate when the heights are stale or absent.
+fn previewLineAtY(p: *PreviewPane, rect: split_layout.SplitRect, window_y: f64) usize {
+    const panel_top: f32 = @floatFromInt(rect.y);
+    const panel_h: f32 = @floatFromInt(rect.height);
+    const y: f32 = @floatFromInt(@as(i32, @intFromFloat(@floor(window_y))));
+    const body_top = panel_top + preview_close_button.HEADER_HEIGHT + 18; // + PAD_Y
+    const body_h = panel_h - preview_close_button.HEADER_HEIGHT - 44 - 36; // - FOOTER_HEIGHT - 2*PAD_Y
+    if (body_h <= 0) return 0;
+    const body_origin = body_top - p.scroll_offset;
+    if (y < body_origin) return 0;
+    if (p.line_heights.len == 0 or p.line_heights.generation != p.content_generation) {
+        const count = previewLineCount(p);
+        if (count <= 1) return 0;
+        const total_h = p.max_scroll + body_h;
+        if (total_h <= 0) return 0;
+        const frac = (y - body_origin) / total_h;
+        return @min(count - 1, @max(0, @as(usize, @intFromFloat(frac * @as(f32, @floatFromInt(count))))));
+    }
+    var cumulative: f32 = 0;
+    for (p.line_heights.buf[0..p.line_heights.len], 0..) |h, i| {
+        const top = body_origin + cumulative;
+        const bottom = top + h;
+        if (y >= top and y < bottom) return i;
+        cumulative += h;
+    }
+    return p.line_heights.len - 1;
+}
+
+fn previewLineCount(p: *const PreviewPane) usize {
+    const source = p.sourceText();
+    if (source.len == 0) return 0;
+    var count: usize = 1;
+    for (source) |ch| {
+        if (ch == '\n') count += 1;
+    }
+    return count;
 }
 
 /// Close a tab via a pointer gesture (middle-click or the × button), honoring
@@ -1456,12 +1499,7 @@ fn processSizeChange(win: anytype) void {
         "input-size-change client={}x{} dpi={} font_dpi={} cell={d:.2}x{d:.2} term={}x{}",
         .{ size.width, size.height, window_backend.effectiveDpi(win), font.g_dpi, font.cell_width, font.cell_height, AppWindow.term_cols, AppWindow.term_rows },
     );
-    if (titlebar.setSidebarWidth(titlebar.g_sidebar_width, @floatFromInt(size.width))) {
-        syncSidebarWidthToBackend(win);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
-    }
-
+    syncSidebarWidthToBackend(win);
     syncGridFromWindowSize(size.width, size.height);
 }
 
@@ -1729,7 +1767,20 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
         .toggle_maximize => toggleMaximize(),
         .font_size => |delta| adjustFontSize(delta),
         // Late
-        .copy => copySelectionToClipboard(),
+        .copy => {
+            if (AppWindow.focusedPreviewPane()) |p| {
+                if (p.hasSelection()) {
+                    const text = p.selectedText();
+                    if (text.len > 0 and copyTextToClipboard(text)) {
+                        overlays.showCopyToast(text.len);
+                        AppWindow.g_force_rebuild = true;
+                        AppWindow.g_cells_valid = false;
+                        return true;
+                    }
+                }
+            }
+            copySelectionToClipboard();
+        },
         .paste => {
             if (AppWindow.activeAiChat()) |chat| {
                 pasteFromClipboardIntoAiChat(chat);
@@ -2268,9 +2319,25 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 },
                 platform_input.key_home => p.scrollBy(-1_000_000),
                 platform_input.key_end => p.scrollBy(1_000_000),
+                platform_input.key_escape => {
+                    AppWindow.closeFocusedSplit();
+                    return;
+                },
                 else => consumed = false,
             }
             if (consumed) {
+                AppWindow.g_force_rebuild = true;
+                AppWindow.g_cells_valid = false;
+                return;
+            }
+        }
+    }
+
+    // Ctrl+A with a focused text preview selects all text.
+    if (AppWindow.focusedPreviewPane()) |p| {
+        if (ev.ctrl and !ev.shift and !ev.alt and !ev.super and ev.key_code == 0x41) {
+            if (!p.kind.isRaster()) {
+                p.selectAll();
                 AppWindow.g_force_rebuild = true;
                 AppWindow.g_cells_valid = false;
                 return;
@@ -2436,11 +2503,8 @@ fn sidebarLayout() hit_test.SidebarLayout {
         .visible = tab.g_sidebar_visible,
         .titlebar_h = titlebarHeight(),
         .width = @floatCast(titlebar.sidebarWidth()),
-        .header_h = @floatCast(titlebar.sidebarHeaderHeight()),
         .row_h = @floatCast(titlebar.sidebarRowHeight()),
         .tab_count = tab.g_tab_count,
-        .resize_hit_width = @floatCast(titlebar.SIDEBAR_RESIZE_HIT_WIDTH),
-        .close_btn_w = @floatCast(tab.TAB_CLOSE_BTN_W),
     };
 }
 
@@ -2503,31 +2567,11 @@ fn hitTestSidebarPlusButton(xpos: f64, ypos: f64) bool {
     return hit_test.sidebarPlusButton(sidebarLayout(), xpos, ypos);
 }
 
-fn hitTestSidebarTabCloseButton(xpos: f64, ypos: f64, tab_idx: usize) bool {
-    return hit_test.sidebarTabCloseButton(sidebarLayout(), xpos, ypos, tab_idx);
-}
-
 fn shouldStartSidebarTabRename(xpos: f64, ypos: f64, tab_idx: usize) bool {
     if (tab_idx >= tab.g_tab_count) return false;
     const layout = sidebarLayout();
     if (hit_test.sidebarPlusButton(layout, xpos, ypos)) return false;
-    if (hit_test.sidebarResizeHandle(layout, xpos, ypos)) return false;
-    if (hit_test.sidebarTabCloseButton(layout, xpos, ypos, tab_idx)) return false;
     return true;
-}
-
-fn hitTestSidebarResizeHandle(xpos: f64, ypos: f64) bool {
-    return hit_test.sidebarResizeHandle(sidebarLayout(), xpos, ypos);
-}
-
-fn applySidebarWidthFromMouse(xpos: f64) void {
-    const win = AppWindow.g_window orelse return;
-    const size = clientSize(win);
-    if (!titlebar.setSidebarWidth(@floatCast(xpos), @floatFromInt(size.width))) return;
-    syncGridFromWindow(win);
-    syncSidebarWidthToBackend(win);
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
 }
 
 fn hitTestFileExplorer(xpos: f64, ypos: f64) bool {
@@ -3081,6 +3125,13 @@ fn handleTopbarPress(xpos: f64) void {
         return;
     }
 
+    const folder_x = toggle_end;
+    const folder_end: f64 = folder_x + @as(f64, titlebar.TITLEBAR_FOLDER_W);
+    if (xpos >= folder_x and xpos < folder_end) {
+        toggleFileExplorer();
+        return;
+    }
+
     if (hitTestCopilotButton(xpos, titlebarHeight() / 2)) {
         AppWindow.toggleAiCopilot();
         return;
@@ -3100,16 +3151,11 @@ fn handleSidebarPress(xpos: f64, ypos: f64) void {
     if (tab.g_tab_rename_active) tab.commitTabRename();
 
     if (hitTestSidebarPlusButton(xpos, ypos)) {
-        overlays.sessionLauncherOpen();
+        _ = AppWindow.spawnConfiguredLocalShellTab();
         return;
     }
 
     if (hitTestSidebarTab(xpos, ypos)) |tab_idx| {
-        if (tab.g_tab_count > 1 and tab.g_tab_close_opacity[tab_idx] > 0.1 and hitTestSidebarTabCloseButton(xpos, ypos, tab_idx)) {
-            resetSidebarTabDragState();
-            tab.g_tab_close_pressed = tab_idx;
-            return;
-        }
         beginSidebarTabPotentialDrag(tab_idx, xpos, ypos);
         AppWindow.switchTab(tab_idx);
     }
@@ -4046,7 +4092,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
         if (ypos < titlebar_h) {
             if (hitTestConfigButton(xpos, ypos)) {
                 overlays.settingsPageOpen();
-            } else if (xpos >= @as(f64, titlebar.titlebarLeftReserved() + titlebar.TITLEBAR_TOGGLE_W)) {
+            } else if (xpos >= @as(f64, titlebar.titlebarLeftReserved() + titlebar.TITLEBAR_TOGGLE_W + titlebar.TITLEBAR_FOLDER_W)) {
                 // Double-clicking on bare titlebar (not on the toggle, and not
                 // on the macOS traffic-light strip) zooms / unzooms.
                 toggleMaximize();
@@ -4102,6 +4148,16 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
     // Ctrl+right-click (Cmd on macOS) over a local terminal opens the file under
     // the cursor in the OS default app; otherwise follow the configured action.
     if (ev.button == .right and ev.action == .release) {
+        // Right-click on sidebar tab closes it (same as middle-click / × button)
+        if (hitTestSidebarTab(@floatFromInt(ev.x), @floatFromInt(ev.y))) |tab_idx| {
+            requestCloseTabGesture(tab_idx);
+            return;
+        }
+        // Right-click on sidebar + opens session launcher
+        if (hitTestSidebarPlusButton(@floatFromInt(ev.x), @floatFromInt(ev.y))) {
+            overlays.sessionLauncherOpen();
+            return;
+        }
         if (openInEditorAtRightClick(ev)) return;
         handleConfiguredRightClick();
         return;
@@ -4152,12 +4208,6 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             }
             const over_browser_url_bar = hitTestBrowserUrlBar(xpos, ypos);
             if (!over_browser_url_bar) blurBrowserUrlBarIfFocused();
-            if (hitTestSidebarResizeHandle(xpos, ypos)) {
-                g_sidebar_resize_dragging = true;
-                g_sidebar_resize_hover = true;
-                platform_cursor.set(.size_we);
-                return;
-            }
             if (hitTestFileExplorerResizeHandle(xpos, ypos)) {
                 g_explorer_resize_dragging = true;
                 g_explorer_resize_hover = true;
@@ -4554,8 +4604,22 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             AppWindow.g_cells_valid = false;
                         }
                         if (AppWindow.g_allocator) |gpa| {
-                            if (g_preview_image_drag.begin(gpa, p, xpos, ypos))
+                            if (g_preview_image_drag.begin(gpa, p, xpos, ypos)) {
                                 platform_cursor.set(.size_all);
+                            } else if (!p.kind.isRaster() and p.load_status == .ready) {
+                                // Start text line selection in non-raster previews.
+                                // Clear any previous selection first, then begin.
+                                p.clearSelection();
+                                if (split_layout.rectForPreview(p)) |rect| {
+                                    const line = previewLineAtY(p, rect, xpos);
+                                    if (line < previewLineCount(p)) {
+                                        p.beginSelection(line);
+                                        g_preview_text_selecting = true;
+                                        AppWindow.g_force_rebuild = true;
+                                        AppWindow.g_cells_valid = false;
+                                    }
+                                }
+                            }
                         }
                         return;
                     },
@@ -4566,6 +4630,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             handleTerminalSelectionPress(ev, xpos, ypos);
         } else {
             // Mouse up
+            g_preview_text_selecting = false;
             if (g_preview_image_drag.active()) {
                 releasePreviewImageDrag();
                 platform_cursor.set(.arrow);
@@ -4588,12 +4653,6 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 AppWindow.g_force_rebuild = true;
                 AppWindow.g_cells_valid = false;
                 platform_cursor.set(.arrow);
-                return;
-            }
-            if (g_sidebar_resize_dragging) {
-                g_sidebar_resize_dragging = false;
-                g_sidebar_resize_hover = hitTestSidebarResizeHandle(xpos, ypos);
-                platform_cursor.set(if (g_sidebar_resize_hover) .size_we else .arrow);
                 return;
             }
             if (g_explorer_resize_dragging) {
@@ -4635,15 +4694,6 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             }
 
             if (finishSidebarTabDrag()) {
-                return;
-            }
-
-            // Handle close button release — close tab if still on the close button
-            if (tab.g_tab_close_pressed) |pressed_idx| {
-                tab.g_tab_close_pressed = null;
-                if (pressed_idx < tab.g_tab_count and hitTestSidebarTabCloseButton(xpos, ypos, pressed_idx)) {
-                    requestCloseTabGesture(pressed_idx);
-                }
                 return;
             }
 
@@ -4828,11 +4878,6 @@ fn updateAiTranscriptSelectionDrag(chat: *AppWindow.ai_chat.Session, xpos: f64, 
 fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
     const xpos: f64 = @floatFromInt(ev.x);
     const ypos: f64 = @floatFromInt(ev.y);
-    if (g_sidebar_resize_dragging) {
-        applySidebarWidthFromMouse(xpos);
-        platform_cursor.set(.size_we);
-        return;
-    }
     if (g_explorer_resize_dragging) {
         applyExplorerWidthFromMouse(xpos);
         platform_cursor.set(.size_we);
@@ -4866,6 +4911,21 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
     if (g_preview_image_drag.active()) {
         if (g_preview_image_drag.move(xpos, ypos)) AppWindow.g_force_rebuild = true;
         platform_cursor.set(.size_all);
+        return;
+    }
+    // Mouse-drag text selection inside a text/markdown preview pane. Extended
+    // while the button is held and the cursor moves over the same preview.
+    if (g_preview_text_selecting) {
+        if (AppWindow.focusedPreviewPane()) |p| {
+            if (split_layout.rectForPreview(p)) |rect| {
+                const line = previewLineAtY(p, rect, xpos);
+                if (line < previewLineCount(p)) {
+                    p.extendSelection(line);
+                    AppWindow.g_force_rebuild = true;
+                    AppWindow.g_cells_valid = false;
+                }
+            }
+        }
         return;
     }
     // Alt-drag panel swap: track the drop target / dim the source. Owns the move
@@ -4957,15 +5017,6 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         if (hitTestAiCopilotCloseButton(xpos, ypos)) {
             platform_cursor.set(.arrow);
             return;
-        }
-        const over_sidebar_resize = hitTestSidebarResizeHandle(xpos, ypos);
-        if (over_sidebar_resize) {
-            platform_cursor.set(.size_we);
-            g_sidebar_resize_hover = true;
-            return;
-        } else if (g_sidebar_resize_hover) {
-            platform_cursor.set(.arrow);
-            g_sidebar_resize_hover = false;
         }
         const over_explorer_resize = hitTestFileExplorerResizeHandle(xpos, ypos);
         if (over_explorer_resize) {

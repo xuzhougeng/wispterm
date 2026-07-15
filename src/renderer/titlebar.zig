@@ -29,6 +29,7 @@ pub const SIDEBAR_TOOLTIP_DWELL_MS: i64 = 350;
 threadlocal var g_sidebar_tooltip_hovered_tab: ?usize = null;
 threadlocal var g_sidebar_tooltip_hover_since: i64 = 0;
 pub const TITLEBAR_TOGGLE_W: f32 = 46;
+pub const TITLEBAR_FOLDER_W: f32 = 46;
 // On macOS the native menu bar (WispTerm › Settings…, command palette) replaces
 // these in-titlebar buttons, so they collapse to zero width and are not drawn.
 pub const TITLEBAR_CONFIG_W: f32 = if (builtin.os.tag == .macos) 0 else 46;
@@ -254,6 +255,19 @@ fn renderFallbackCopilotIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void
     gl_init.renderQuad(bx + 3, by - 3, stroke, 3, color); // tail
 }
 
+fn renderFallbackFolderIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    const bw: f32 = 14;
+    const bh: f32 = 10;
+    const bx = cx - bw / 2;
+    const by = cy - bh / 2;
+    // Folder tab (top-left flap)
+    gl_init.renderQuad(bx, by + 2, bw, bh, color);
+    // Folder tab flap
+    gl_init.renderQuad(bx + 1, by, 5, 3, color);
+}
+
 fn renderPlusIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
     if (font.icon_face != null) {
         if (font.loadIconGlyph(font_backend.titlebarIconGlyph(.add))) |ch| {
@@ -302,10 +316,12 @@ pub fn renderTitlebarChar(codepoint: u32, x: f32, y: f32, color: [3]f32) void {
         const scale = font.g_titlebar_cell_height / @as(f32, @floatFromInt(ch.size_y));
         const w = @as(f32, @floatFromInt(ch.size_x)) * scale;
         const h = @as(f32, @floatFromInt(ch.size_y)) * scale;
+        const x0 = x + @as(f32, @floatFromInt(ch.bearing_x)) * scale;
+        const y0 = y + font.g_titlebar_baseline - @as(f32, @floatFromInt(ch.size_y - ch.bearing_y)) * scale;
         const atlas_size = if (font.g_color_atlas) |a| @as(f32, @floatFromInt(a.size)) else 512.0;
         const uv = font.glyphUV(ch.region, atlas_size);
         ui_pipeline.drawColorGlyph(
-            .{ .x = x, .y = y, .w = w, .h = h },
+            .{ .x = x0, .y = y0, .w = w, .h = h },
             .{ .u0 = uv.u0, .v0 = uv.v0, .u1 = uv.u1, .v1 = uv.v1 },
             font.g_color_atlas_texture,
             1.0,
@@ -439,6 +455,21 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
             renderFallbackMenuIcon(toggle_x, tb_top, TITLEBAR_TOGGLE_W, titlebar_h, icon_color);
         }
 
+        const folder_x = toggle_x + TITLEBAR_TOGGLE_W;
+        const folder_hovered = mouseInTitlebarRange(titlebar_h, folder_x, folder_x + TITLEBAR_FOLDER_W);
+        if (folder_hovered) {
+            gl_init.renderQuad(folder_x, tb_top, TITLEBAR_FOLDER_W, titlebar_h, hover_bg);
+        }
+        if (font.icon_face != null) {
+            if (font.loadIconGlyph(0xE8B7)) |ch| {
+                renderIconGlyph(ch, folder_x, tb_top, TITLEBAR_FOLDER_W, titlebar_h, icon_color, 1.0);
+            } else {
+                renderFallbackFolderIcon(folder_x, tb_top, TITLEBAR_FOLDER_W, titlebar_h, icon_color);
+            }
+        } else {
+            renderFallbackFolderIcon(folder_x, tb_top, TITLEBAR_FOLDER_W, titlebar_h, icon_color);
+        }
+
         const top_caption_btn_w = window_backend.caption_button_visual_style.width;
         const top_caption_area_w: f32 = top_caption_btn_w * 3;
         const top_btn_h: f32 = titlebar_h;
@@ -499,7 +530,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
         if (tab.activeTab()) |active_tab| {
             const title = active_tab.getTitle();
             const text_y = tb_top + (titlebar_h - font.g_titlebar_cell_height) / 2;
-            const text_x = titlebarLeftReserved() + TITLEBAR_TOGGLE_W + 10;
+            const text_x = titlebarLeftReserved() + TITLEBAR_TOGGLE_W + TITLEBAR_FOLDER_W + 10;
             _ = renderTextLimited(title, text_x, text_y, blend(bg, fg, 0.90), copilot_x - text_x - 12);
         }
 
@@ -1089,7 +1120,10 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
 
         // Render tab kind icon centered in row
         if (tab.g_tabs[tab_idx]) |t| {
-            const icon_cp = if (t.kind == .terminal) terminalTabIcon(tab_idx) else sidebarTabKindIcon(t);
+            if (t.kind == .terminal and t.terminal_icon == null) {
+                t.terminal_icon = allocateTerminalIcon();
+            }
+            const icon_cp = if (t.kind == .terminal) terminalTabIcon(t.terminal_icon.?) else sidebarTabKindIcon(t);
             const icon_y = row_y + (row_h_actual - font.g_titlebar_cell_height) / 2;
             renderTitlebarChar(icon_cp, (sidebar_w - titlebarGlyphAdvance(icon_cp)) / 2, icon_y, fg);
         }
@@ -1151,8 +1185,9 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
 }
 
 /// Best-effort read of git branch name from `cwd/.git/HEAD`.
-/// Returns the branch name if parseable, or empty slice. Never allocates.
-fn readGitBranch(cwd: []const u8) []const u8 {
+/// Writes into `out_buf` and returns a slice of it if parseable, or empty slice.
+/// Never allocates.
+fn readGitBranch(cwd: []const u8, out_buf: []u8) []const u8 {
     const suffix = "/.git/HEAD";
     var path_buf: [1024]u8 = undefined;
     if (cwd.len + suffix.len > path_buf.len) return "";
@@ -1163,10 +1198,9 @@ fn readGitBranch(cwd: []const u8) []const u8 {
     var file = std.fs.openFileAbsolute(path, .{ .mode = .read_only }) catch return "";
     defer file.close();
 
-    var buf: [512]u8 = undefined;
-    const n = file.readAll(&buf) catch return "";
+    const n = file.readAll(out_buf) catch return "";
     if (n < 5) return "";
-    const content = buf[0..n];
+    const content = out_buf[0..n];
 
     const prefix = "ref: refs/heads/";
     if (content.len < prefix.len or !std.mem.startsWith(u8, content, prefix)) return "";
@@ -1200,17 +1234,34 @@ pub fn renderSidebarTooltipOverlay(window_height: f32, titlebar_h: f32) void {
     }
 }
 
-/// Terminal tab icon — cycles through a series of Unicode geometric shapes
-/// so different terminal tabs have visually distinct icons.
-fn terminalTabIcon(tab_index: usize) u32 {
+/// Allocate the next free 五行 terminal icon index.
+/// Scans all active tabs and returns the first icon not currently in use.
+fn allocateTerminalIcon() u8 {
+    var in_use: [5]bool = .{ false } ** 5;
+    for (tab.g_tabs[0..tab.g_tab_count]) |maybe_tab| {
+        if (maybe_tab) |t| {
+            if (t.terminal_icon) |idx| {
+                if (idx < 5) in_use[idx] = true;
+            }
+        }
+    }
+    for (&in_use, 0..) |used, i| {
+        if (!used) return @intCast(i);
+    }
+    return @as(u8, @intCast(0)); // all used — cycle back to 0
+}
+
+/// Terminal tab icon from the 五行 emoji series.
+/// `icon_idx` is the per-tab assigned index (0–4).
+fn terminalTabIcon(icon_idx: u8) u32 {
     const icons = [_]u32{
         0x1FA99, // 🪙 coin (金 metal)
         0x1F332, // 🌲 evergreen tree (木 wood)
-        0x1F4A7, // 💦 water wave (水 water)
+        0x1F30A, // 🌊 water wave (水 water)
         0x1F525, // 🔥 fire (火 fire)
         0x1F30D, // 🌍 earth globe (土 earth)
     };
-    return icons[tab_index % icons.len];
+    return icons[@min(@as(usize, @intCast(icon_idx)), icons.len - 1)];
 }
 
 /// Render the sidebar tooltip popup with the sidebar panel background (opaque).
@@ -1251,7 +1302,8 @@ fn renderSidebarTooltip(tab_state: *const tab.TabState, anchor_x: f32, anchor_y_
 
             // Git branch from cwd (using the fetched cwd)
             if (cwd_slice.len > 0) {
-                const branch = readGitBranch(cwd_slice);
+                var branch_buf: [512]u8 = undefined;
+                const branch = readGitBranch(cwd_slice, &branch_buf);
                 if (branch.len > 0) {
                     lines[line_count] = branch;
                     line_count += 1;
@@ -1291,7 +1343,7 @@ fn renderSidebarTooltip(tab_state: *const tab.TabState, anchor_x: f32, anchor_y_
     var draw_y = box_y + pad_y;
     for (0..line_count) |i| {
         const color = if (i == 0) fg_color else accent;
-        var draw_x = box_x + pad_x + (max_w - line_widths[i]) / 2; // center each line
+        var draw_x = box_x + pad_x;
         var view = std.unicode.Utf8View.init(lines[i]) catch {
             for (lines[i]) |ch| {
                 renderTitlebarChar(@intCast(ch), draw_x, draw_y, color);
