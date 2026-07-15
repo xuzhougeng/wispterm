@@ -684,6 +684,9 @@ pub threadlocal var g_divider_hover: bool = false; // Mouse is over a divider
 // hovering, or null. The renderer brightens that pane's button; updated on
 // mouse-move. Just a hover hint — clicks are hit-tested independently.
 pub threadlocal var g_preview_close_hover: ?SplitTree.Node.Handle = null;
+/// Non-zero when the mouse is over the sidebar toggle or folder icon in the
+/// titlebar; used by handleMouseMove to trigger a re-render on hover changes.
+threadlocal var g_titlebar_button_hover: u2 = 0;
 pub threadlocal var g_divider_dragging: bool = false; // Currently dragging a divider
 pub threadlocal var g_divider_drag_handle: ?SplitTree.Node.Handle = null; // Handle of the split node being resized
 pub threadlocal var g_divider_drag_layout: ?SplitTree.Split.Layout = null; // horizontal or vertical
@@ -872,6 +875,7 @@ pub fn cancelTransientMouseState(win: anytype) void {
     g_ai_transcript_selecting = false;
     g_ai_transcript_select_chat = null;
     g_ai_transcript_select_auto_copy = false;
+    g_titlebar_button_hover = 0;
     window_backend.clearTransientInput(win);
 }
 
@@ -5140,6 +5144,22 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
     const new_close_hover = if (!g_selecting) split_layout.previewCloseButtonAtPoint(ev.x, ev.y) else null;
     if (new_close_hover != g_preview_close_hover) {
         g_preview_close_hover = new_close_hover;
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+    }
+
+    // Titlebar icon hover: trigger a render when the mouse enters or leaves the
+    // toggle/folder icon area so the highlight updates without waiting for idle.
+    if (ypos < @as(f64, @floatCast(titlebar.titlebarHeight()))) {
+        const tbx: f64 = @floatCast(titlebar.titlebarLeftReserved());
+        const new_thover = if (xpos >= tbx and xpos < tbx + titlebar.TITLEBAR_TOGGLE_W + titlebar.TITLEBAR_FOLDER_W) @as(u2, 1) else 0;
+        if (new_thover != g_titlebar_button_hover) {
+            g_titlebar_button_hover = new_thover;
+            AppWindow.g_force_rebuild = true;
+            AppWindow.g_cells_valid = false;
+        }
+    } else if (g_titlebar_button_hover != 0) {
+        g_titlebar_button_hover = 0;
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
     }
