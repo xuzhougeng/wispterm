@@ -1924,10 +1924,9 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
                     return HTCLIENT;
                 }
 
-                // The top bar no longer contains tabs. Only the left sidebar
-                // toggle and settings button are client-handled; the rest is
-                // draggable caption area.
-                if (pt.x < 46) {
+                // Client-handled titlebar buttons: sidebar toggle (0..46) and
+                // folder icon (46..92). The rest is draggable caption area.
+                if (pt.x < 92) {
                     return HTCLIENT;
                 }
 
