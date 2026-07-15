@@ -129,33 +129,10 @@ pub fn isKnown(name: []const u8) bool {
     return catalogDisableable(name) != null;
 }
 
-/// Sidebar Copilot is scoped to the tab and split surfaces it was opened on.
-/// These tools change the tab set; regular Agent/Copilot-tab sessions keep the
-/// full catalog. Host-local exec is restricted separately only for remote tabs.
-pub fn isSidebarRestricted(name: []const u8) bool {
-    return std.mem.eql(u8, name, "ssh_profile_connect") or
-        std.mem.eql(u8, name, "tab_new") or
-        std.mem.eql(u8, name, "tab_close");
-}
-
-pub fn isHostLocalCommand(name: []const u8) bool {
-    return std.mem.eql(u8, name, platform_process.localCommandToolName());
-}
-
 fn catalogDisableable(name: []const u8) ?bool {
     if (std.mem.eql(u8, name, platform_process.localCommandToolName())) return true;
     if (platform_pty_command.wslSessionToolsEnabled() and std.mem.eql(u8, name, platform_pty_command.wslSessionToolName())) return true;
     return definitionDisableable(&static_definitions, name);
-}
-
-test "first_party_tools: sidebar restrictions keep terminal work in the bound tab" {
-    try std.testing.expect(isHostLocalCommand(platform_process.localCommandToolName()));
-    try std.testing.expect(!isSidebarRestricted(platform_process.localCommandToolName()));
-    try std.testing.expect(isSidebarRestricted("ssh_profile_connect"));
-    try std.testing.expect(isSidebarRestricted("tab_new"));
-    try std.testing.expect(isSidebarRestricted("tab_close"));
-    try std.testing.expect(!isSidebarRestricted("terminal_select"));
-    try std.testing.expect(!isSidebarRestricted("ssh_session_exec"));
 }
 
 fn definitionDisableable(definitions: []const Definition, name: []const u8) ?bool {

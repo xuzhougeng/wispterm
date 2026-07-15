@@ -578,40 +578,6 @@ fn cloneStringList(allocator: std.mem.Allocator, list: []const []const u8) ![]co
     return out;
 }
 
-fn cloneDisabledFirstPartyTools(allocator: std.mem.Allocator, list: []const []const u8, copilot: bool, remote_bound: bool) ![]const []const u8 {
-    if (!copilot) return cloneStringList(allocator, list);
-
-    const restrictions = [_][]const u8{
-        "ssh_profile_connect",
-        "tab_new",
-        "tab_close",
-        platform_process.localCommandToolName(),
-    };
-    var restricted_count: usize = 0;
-    for (restrictions, 0..) |name, index| {
-        if (index == restrictions.len - 1 and !remote_bound) continue;
-        if (!first_party_tools.isDisabledName(list, name)) restricted_count += 1;
-    }
-
-    const out = try allocator.alloc([]const u8, list.len + restricted_count);
-    var written: usize = 0;
-    errdefer {
-        for (out[0..written]) |item| allocator.free(item);
-        allocator.free(out);
-    }
-    for (list) |item| {
-        out[written] = try allocator.dupe(u8, item);
-        written += 1;
-    }
-    for (restrictions, 0..) |name, index| {
-        if (index == restrictions.len - 1 and !remote_bound) continue;
-        if (first_party_tools.isDisabledName(list, name)) continue;
-        out[written] = try allocator.dupe(u8, name);
-        written += 1;
-    }
-    return out;
-}
-
 fn freeDynamicToolSpecsSlice(allocator: std.mem.Allocator, specs: []ai_chat_protocol.DynamicToolSpec) void {
     freeOwnedDynamicToolSpecs(allocator, specs);
 }
@@ -4488,13 +4454,7 @@ pub const Session = struct {
         const mcp_tools = try cloneMcpTools(self.allocator, mcp_registry.cachedTools());
         var mcp_tools_owned = true;
         errdefer if (mcp_tools_owned) freeOwnedMcpTools(self.allocator, mcp_tools);
-        const remote_bound = blk: {
-            if (!self.copilot or self.bound_surface_id_len == 0) break :blk false;
-            const snapshot = tool_snapshot orelse break :blk false;
-            const surface = agent_terminal.findSurface(snapshot, self.boundSurfaceId()) orelse break :blk false;
-            break :blk surface.is_ssh or surface.is_wsl;
-        };
-        const disabled_first_party_tools = try cloneDisabledFirstPartyTools(self.allocator, settings.disabled_first_party_tools, self.copilot, remote_bound);
+        const disabled_first_party_tools = try cloneStringList(self.allocator, settings.disabled_first_party_tools);
         var disabled_first_party_tools_owned = true;
         errdefer if (disabled_first_party_tools_owned) freeOwnedStringList(self.allocator, disabled_first_party_tools);
         const schedule_session_id = try self.allocator.dupe(u8, self.sessionId());
@@ -9105,9 +9065,11 @@ test "copilot request appends bound-terminal snapshot to latest user message" {
 
     const json = try ai_chat_request.buildRequestJson(allocator, request);
     defer allocator.free(json);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"tab_new\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"tab_close\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"ssh_profile_connect\"") == null);
+    // Side Copilot keeps the full enabled tool catalog (issue #567): only the
+    // Skill Center disabled list removes first-party tools.
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"tab_new\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"tab_close\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"ssh_profile_connect\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"terminal_select\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"ssh_session_exec\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, platform_process.localCommandToolName()) != null);

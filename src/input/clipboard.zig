@@ -628,7 +628,12 @@ pub fn pasteImageIntoAiChat(chat: *AppWindow.ai_chat.Session) void {
     const allocator = AppWindow.g_allocator orelse return;
     const owner = clipboardOwner() orelse return;
 
-    const image_path = platform_clipboard.readImageAsPngTemp(allocator, owner) orelse return;
+    const image_path = platform_clipboard.readImageAsPngTemp(allocator, owner) orelse {
+        // No image on the clipboard — fall back to pasting clipboard text into
+        // the composer so Ctrl+Shift+V never silently does nothing (issue #568).
+        pasteFromClipboardIntoAiChat(chat);
+        return;
+    };
     defer allocator.free(image_path);
     // The temp PNG belongs to us once read; remove it either way.
     defer std.fs.deleteFileAbsolute(image_path) catch {};
@@ -672,7 +677,12 @@ pub fn pasteImageFromClipboard() void {
     const allocator = AppWindow.g_allocator orelse return;
     const owner = clipboardOwner() orelse return;
 
-    const image_path = platform_clipboard.readImageAsPngTemp(allocator, owner) orelse return;
+    const image_path = platform_clipboard.readImageAsPngTemp(allocator, owner) orelse {
+        // No image on the clipboard — fall back to a plain text paste so
+        // Ctrl+Shift+V behaves like paste in other terminals (issue #568).
+        pasteFromClipboard();
+        return;
+    };
     defer allocator.free(image_path);
 
     _ = pasteSavedClipboardImage(surface, allocator, image_path);

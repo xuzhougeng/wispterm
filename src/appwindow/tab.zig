@@ -659,6 +659,10 @@ pub fn spawnAiChatSession(allocator: std.mem.Allocator, session: *ai_chat.Sessio
     if (g_tab_count >= MAX_TABS) return false;
 
     const t = allocator.create(TabState) catch return false;
+    // A session hosted in its own tab is never a Side Copilot, even when the
+    // history record it was restored from was sidebar-born (issue #567) —
+    // presentation reflects where the session lives now.
+    session.setPresentation(.chat_tab);
     installAiChatHistoryHook(session);
     t.kind = .ai_chat;
     t.tree = .empty;

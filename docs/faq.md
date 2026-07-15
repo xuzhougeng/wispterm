@@ -65,6 +65,33 @@ To confirm a background tool is responsible, select text with **Shift + arrow
 keys** (keyboard only, no mouse): if that does *not* trigger the interrupt, a
 pointing-device/selection utility is the cause.
 
+## How Do I Copy and Paste Inside tmux (or Other Mouse-Mode Programs)?
+
+When tmux runs with `set -g mouse on` (or a full-screen app enables mouse
+tracking), WispTerm forwards mouse presses and drags to the program, so a plain
+drag drives tmux's own copy mode instead of selecting text in WispTerm. That is
+by design — and every part of the normal copy/paste workflow still works:
+
+- **Select: hold Shift while dragging.** Shift bypasses the program's mouse
+  mode and makes a normal WispTerm selection, exactly like other terminals.
+  Shift-click extends the selection from the previous anchor.
+- **Copy: `Ctrl+Shift+C`** (macOS: `Cmd+C`) copies the current selection to the
+  system clipboard. `copy-on-select = true` in the config copies automatically
+  as soon as you finish selecting.
+- **Paste: `Ctrl+V`** (macOS: `Cmd+V`) pastes clipboard text into the terminal,
+  tmux included. `Ctrl+Shift+V` pastes an image from the clipboard and falls
+  back to a text paste when the clipboard holds no image.
+- **Right-click:** set `right-click-action = copy-or-paste` in the config to
+  make right-click copy the selection (or paste when nothing is selected).
+  Inside tmux with mouse mode on, a plain right-click is forwarded to tmux
+  (which shows tmux's own menu); hold **Shift and right-click** to use
+  WispTerm's configured action instead.
+- **Copy from tmux's own copy mode:** WispTerm applies OSC 52 clipboard writes,
+  so text yanked with tmux's internal copy mode can land on the system
+  clipboard — put `set -g set-clipboard on` in `.tmux.conf` on the remote host
+  (over SSH, the remote `TERM` must advertise clipboard support; tmux ≥ 3.2 with
+  `set -as terminal-features ',*:clipboard'` works with any `TERM`).
+
 ## Why Is WispTerm Laggy or Black on a Low-Spec PC (Weak Integrated GPU)?
 
 On Windows, WispTerm presents frames through a DXGI flip-model swapchain by
