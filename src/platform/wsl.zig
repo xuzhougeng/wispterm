@@ -117,6 +117,23 @@ fn defaultDistroName() ?[]const u8 {
     }
     Static.cached = true;
 
+    // Probe WSL availability first. On a machine where the WSL feature is not
+    // enabled, `wsl.exe --status` exits non-zero or pops an interactive window;
+    // we bail before hitting the heavier `--list --quiet` path. The hidden-window
+    // flag keeps the popup suppressed in both cases.
+    {
+        var probe = std.process.Child.init(&.{ "wsl.exe", "--status" }, std.heap.page_allocator);
+        probe.stdout_behavior = .Ignore;
+        probe.stderr_behavior = .Ignore;
+        probe.create_no_window = true;
+        probe.spawn() catch return null;
+        const term = probe.wait() catch return null;
+        switch (term) {
+            .Exited => |code| if (code != 0) return null,
+            else => return null,
+        }
+    }
+
     var child = std.process.Child.init(&.{ "wsl.exe", "--list", "--quiet" }, std.heap.page_allocator);
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Ignore;

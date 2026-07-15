@@ -63,6 +63,11 @@ pub const TabState = struct {
     /// on one tab from appearing on another tab.
     copilot_visible: bool = false,
 
+    /// Assigned 五行 icon index in `terminalTabIcon` series. Lazily allocated
+    /// on first render; follows the tab across reorder/close without cycling on
+    /// position. `null` for non-terminal tabs or before first render.
+    terminal_icon: ?u8 = null,
+
     /// tmux control-mode window id this tab mirrors (Phase 3c-2), or null for a
     /// normal local tab. `tmux_owner` is the controller/bridge that owns this
     /// tab; tmux window ids are only unique within a connection. Set by
@@ -1115,12 +1120,26 @@ pub const CloseResult = enum {
     no_op,
 };
 
-/// Close the focused split. Returns what happened so the caller can handle side effects.
-pub fn closeFocusedSplit(allocator: std.mem.Allocator) CloseResult {
-    const t = activeTab() orelse return .no_op;
+/// Find the index of a tab pointer in the global tab array.
+fn tabIndex(target: *const TabState) ?usize {
+    var i: usize = 0;
+    while (i < g_tab_count) : (i += 1) {
+        if (g_tabs[i]) |t| {
+            if (t == target) return i;
+        }
+    }
+    return null;
+}
+
+/// Close a specific split pane (by handle) in the given tab. Returns what
+/// happened so the caller can handle side effects. This is the building block
+/// for `closeFocusedSplit` and for auto-closing a pane whose terminal process
+/// has exited (see `AppWindow.sweepExitedSurfaces`).
+pub fn closeSplitAt(allocator: std.mem.Allocator, t: *TabState, handle: SplitTree.Node.Handle) CloseResult {
     if (t.kind != .terminal) {
         if (g_tab_count <= 1) return .close_window;
-        closeTab(active_tab_state.g_active_tab, allocator);
+        const idx = tabIndex(t) orelse return .no_op;
+        closeTab(idx, allocator);
         return .closed_tab;
     }
 
@@ -1128,14 +1147,22 @@ pub fn closeFocusedSplit(allocator: std.mem.Allocator) CloseResult {
         if (g_tab_count <= 1) {
             return .close_window;
         } else {
-            closeTab(active_tab_state.g_active_tab, allocator);
+            const idx = tabIndex(t) orelse return .no_op;
+            closeTab(idx, allocator);
             return .closed_tab;
         }
     }
 
-    const next_focus = t.tree.goto(allocator, t.focused, .next_wrapped) catch null;
+    // Guard against a stale handle (terminal or preview) that is no longer in the tree.
+    if (handle.idx() >= t.tree.nodes.len) return .no_op;
+    switch (t.tree.nodes[handle.idx()]) {
+        .leaf => {},
+        .split => return .no_op,
+    }
 
-    const new_tree = t.tree.remove(allocator, t.focused) catch {
+    const next_focus = t.tree.goto(allocator, handle, .next_wrapped) catch null;
+
+    const new_tree = t.tree.remove(allocator, handle) catch {
         std.debug.print("Failed to remove split from tree\n", .{});
         return .no_op;
     };
@@ -1148,32 +1175,41 @@ pub fn closeFocusedSplit(allocator: std.mem.Allocator) CloseResult {
         if (g_tab_count <= 1) {
             return .close_window;
         } else {
-            closeTab(active_tab_state.g_active_tab, allocator);
+            const idx = tabIndex(t) orelse return .no_op;
+            closeTab(idx, allocator);
             return .closed_tab;
         }
     }
 
-    // Find valid focus in new tree
-    var it = t.tree.surfaces();
-    if (it.next()) |entry| {
-        if (next_focus) |nf| {
-            if (nf != t.focused and @intFromEnum(nf) < t.tree.nodes.len) {
-                t.focused = nf;
+    // Restore focus if we just closed the focused pane.
+    if (t.focused == handle) {
+        var it = t.tree.surfaces();
+        if (it.next()) |entry| {
+            if (next_focus) |nf| {
+                if (nf != handle and @intFromEnum(nf) < t.tree.nodes.len) {
+                    t.focused = nf;
+                } else {
+                    t.focused = entry.handle;
+                }
             } else {
                 t.focused = entry.handle;
             }
         } else {
-            t.focused = entry.handle;
+            // No terminal remains (preview-only tab): focus the first leaf pane so
+            // keyboard routing still targets a real pane, never the root split node.
+            var pit = t.tree.panes();
+            t.focused = if (pit.next()) |pane_entry| pane_entry.handle else .root;
         }
-    } else {
-        // No terminal remains (preview-only tab): focus the first leaf pane so
-        // keyboard routing still targets a real pane, never the root split node.
-        var pit = t.tree.panes();
-        t.focused = if (pit.next()) |pane_entry| pane_entry.handle else .root;
     }
 
     std.debug.print("Split closed, new focused handle: {}, tree nodes: {}\n", .{ @intFromEnum(t.focused), t.tree.nodes.len });
     return .closed_split;
+}
+
+/// Close the focused split. Returns what happened so the caller can handle side effects.
+pub fn closeFocusedSplit(allocator: std.mem.Allocator) CloseResult {
+    const t = activeTab() orelse return .no_op;
+    return closeSplitAt(allocator, t, t.focused);
 }
 
 /// Navigate to a split in the given direction. Returns true if focus changed.
