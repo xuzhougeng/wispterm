@@ -120,6 +120,7 @@ fn defaultDistroName() ?[]const u8 {
     var child = std.process.Child.init(&.{ "wsl.exe", "--list", "--quiet" }, std.heap.page_allocator);
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Ignore;
+    child.create_no_window = true;
     child.spawn() catch return null;
 
     const stdout = child.stdout orelse {
