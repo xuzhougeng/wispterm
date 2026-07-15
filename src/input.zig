@@ -684,9 +684,9 @@ pub threadlocal var g_divider_hover: bool = false; // Mouse is over a divider
 // hovering, or null. The renderer brightens that pane's button; updated on
 // mouse-move. Just a hover hint — clicks are hit-tested independently.
 pub threadlocal var g_preview_close_hover: ?SplitTree.Node.Handle = null;
-/// Non-zero when the mouse is over the sidebar toggle or folder icon in the
-/// titlebar; used by handleMouseMove to trigger a re-render on hover changes.
-threadlocal var g_titlebar_button_hover: u2 = 0;
+/// Track which titlebar icon the mouse is over (0 = none, 1 = toggle, 2 = folder)
+/// so that handleMouseMove can trigger a re-render when the hovered icon changes.
+threadlocal var g_titlebar_button_hover: u8 = 0;
 pub threadlocal var g_divider_dragging: bool = false; // Currently dragging a divider
 pub threadlocal var g_divider_drag_handle: ?SplitTree.Node.Handle = null; // Handle of the split node being resized
 pub threadlocal var g_divider_drag_layout: ?SplitTree.Split.Layout = null; // horizontal or vertical
@@ -5148,11 +5148,18 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         AppWindow.g_cells_valid = false;
     }
 
-    // Titlebar icon hover: trigger a render when the mouse enters or leaves the
-    // toggle/folder icon area so the highlight updates without waiting for idle.
+    // Titlebar icon hover: trigger a render when hovered button changes so the
+    // highlight updates without waiting for idle or cursor blink.
     if (ypos < @as(f64, @floatCast(titlebar.titlebarHeight()))) {
         const tbx: f64 = @floatCast(titlebar.titlebarLeftReserved());
-        const new_thover = if (xpos >= tbx and xpos < tbx + titlebar.TITLEBAR_TOGGLE_W + titlebar.TITLEBAR_FOLDER_W) @as(u2, 1) else 0;
+        const toggle_end = tbx + titlebar.TITLEBAR_TOGGLE_W;
+        const folder_end = toggle_end + titlebar.TITLEBAR_FOLDER_W;
+        const new_thover: u8 = if (xpos >= tbx and xpos < toggle_end)
+            1 // sidebar toggle
+        else if (xpos >= toggle_end and xpos < folder_end)
+            2 // folder icon
+        else
+            0;
         if (new_thover != g_titlebar_button_hover) {
             g_titlebar_button_hover = new_thover;
             AppWindow.g_force_rebuild = true;
