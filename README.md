@@ -270,7 +270,7 @@ MIT
 ## Citation
 
 Xu, Z.-G. (2026). *WispTerm* (Version 1.33.0) [Computer software]. Zenodo.
-https://doi.org/10.5281/zenodo.20660542
+https://doi.org/10.5281/zenodo.20660541
 
 Copyable acknowledgment template:
 
@@ -280,5 +280,5 @@ analysis, remote computing workflows, reproducible command-line processing, and
 the organization of related literature and analysis code.
 
 Xu, Z.-G. (2026). WispTerm (Version 1.33.0) [Computer software]. Zenodo.
-https://doi.org/10.5281/zenodo.20660542
+https://doi.org/10.5281/zenodo.20660541
 ```
