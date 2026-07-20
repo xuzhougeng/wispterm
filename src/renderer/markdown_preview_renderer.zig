@@ -1069,6 +1069,12 @@ fn cleanInline(buf: *[1024]u8, text: []const u8) []const u8 {
                 continue;
             }
         }
+        if (ch == '_' and isIntrawordUnderscore(text, i)) {
+            buf[pos] = ch;
+            pos += 1;
+            i += 1;
+            continue;
+        }
         if (ch == '*' or ch == '_' or ch == '`' or ch == '\r' or ch == '\n' or ch == 0x1b) {
             i += 1;
             continue;
@@ -1078,6 +1084,14 @@ fn cleanInline(buf: *[1024]u8, text: []const u8) []const u8 {
         i += 1;
     }
     return std.mem.trim(u8, buf[0..pos], " \t");
+}
+
+fn isIntrawordUnderscore(text: []const u8, index: usize) bool {
+    return index > 0 and index + 1 < text.len and isWordByte(text[index - 1]) and isWordByte(text[index + 1]);
+}
+
+fn isWordByte(ch: u8) bool {
+    return std.ascii.isAlphanumeric(ch) or ch == '_';
 }
 
 const Link = struct { label: []const u8, end: usize };

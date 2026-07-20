@@ -202,6 +202,12 @@ pub fn cleanInline(buf: []u8, text: []const u8) []const u8 {
                 continue;
             }
         }
+        if (ch == '_' and isIntrawordUnderscore(text, i)) {
+            buf[pos] = ch;
+            pos += 1;
+            i += 1;
+            continue;
+        }
         if (ch == '*' or ch == '_' or ch == '`' or ch == '\r' or ch == '\n' or ch == 0x1b) {
             i += 1;
             continue;
@@ -211,6 +217,14 @@ pub fn cleanInline(buf: []u8, text: []const u8) []const u8 {
         i += 1;
     }
     return std.mem.trim(u8, buf[0..pos], " \t");
+}
+
+fn isIntrawordUnderscore(text: []const u8, index: usize) bool {
+    return index > 0 and index + 1 < text.len and isWordByte(text[index - 1]) and isWordByte(text[index + 1]);
+}
+
+fn isWordByte(ch: u8) bool {
+    return std.ascii.isAlphanumeric(ch) or ch == '_';
 }
 
 pub fn parseMarkdownLink(text: []const u8, bracket: usize) ?Link {
@@ -413,6 +427,12 @@ test "allocDisplayText strips inline emphasis and code spans" {
     const out = try allocDisplayText(testing.allocator, "**生成的完整 `Markdown`**");
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("生成的完整 Markdown\n", out);
+}
+
+test "allocDisplayText preserves underscores inside identifiers" {
+    const out = try allocDisplayText(testing.allocator, "`delegation_runtime.rs` and ssh_hosts.rs");
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("delegation_runtime.rs and ssh_hosts.rs\n", out);
 }
 
 test "allocDisplayText collapses links to label" {
