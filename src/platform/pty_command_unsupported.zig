@@ -113,6 +113,13 @@ pub const Command = struct {
         }
     }
 
+    /// True when this command actually spawned a child process. Virtual PTYs
+    /// (preview panes, etc.) leave `pid` at -1, so this distinguishes a real
+    /// terminal session from a virtual one.
+    pub fn hasProcess(self: *const Command) bool {
+        return self.pid > 0;
+    }
+
     /// PID usable for an OS cwd query (proc_pidinfo / /proc), or null.
     pub fn cwdQueryId(self: *const Command) ?i32 {
         return if (self.pid > 0) @intCast(self.pid) else null;

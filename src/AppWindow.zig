@@ -35,6 +35,7 @@ const platform_menu = @import("platform/menu.zig");
 const platform_notifications = @import("platform/notifications.zig");
 const notif_mod = @import("notification.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
+const single_instance = @import("platform/single_instance.zig");
 const copilot_hint_gate = @import("copilot_hint_gate.zig");
 const platform_window_state = @import("platform/window_state.zig");
 const platform_wsl = @import("platform/wsl.zig");
@@ -531,6 +532,16 @@ fn loopInjector(session_id: []const u8, prompt: []const u8) ai_loop_store.Inject
 // Initial CWD for this window (used when spawning the first tab)
 threadlocal var g_initial_cwd_buf: platform_pty_command.CwdBuffer = undefined;
 threadlocal var g_initial_cwd_len: usize = 0;
+
+/// Check the single-instance IPC server for a pending cwd forwarded from a
+/// second instance. If one exists, convert it to the native Cwd type and
+/// return it. Caller must free the returned slice (if non-null).
+fn tryTakeSingleInstanceCwd(allocator: std.mem.Allocator, cwd_buf: *platform_pty_command.CwdBuffer) platform_pty_command.Cwd {
+    const srv = single_instance.getActiveServer() orelse return null;
+    const utf8_cwd = srv.tryTakeCwd() orelse return null;
+    defer allocator.free(utf8_cwd);
+    return platform_pty_command.cwdFromUtf8(cwd_buf, utf8_cwd);
+}
 
 // Tracks whether session restore has been attempted this process. We only
 // try to restore tabs from session.json once — for the first window. New
@@ -7939,8 +7950,11 @@ fn runMainLoop(self: *AppWindow) !void {
     // No resize will be needed because term_cols/term_rows match
     // what setScreenSize will compute from the window size.
     {
+        // Prioritised cwd resolution: CLI/spawn override > single-instance IPC > process default.
         const initial_cwd: platform_pty_command.Cwd = if (g_initial_cwd_len > 0)
             @ptrCast(&g_initial_cwd_buf)
+        else if (tryTakeSingleInstanceCwd(allocator, &g_initial_cwd_buf)) |cwd|
+            cwd
         else
             null;
         g_initial_cwd_len = 0; // Clear after use
@@ -8068,6 +8082,15 @@ fn runMainLoop(self: *AppWindow) !void {
         if (self.app.port_forward_manager.tick() and activePortForwarding() != null) {
             g_force_rebuild = true;
             g_cells_valid = false;
+        }
+
+        // Check for incoming single-instance cwd forwarded from a second instance.
+        // Open a new tab in the received directory.
+        if (tryTakeSingleInstanceCwd(allocator, &g_initial_cwd_buf)) |cwd| {
+            if (spawnTabWithCwd(allocator, cwd)) {
+                g_force_rebuild = true;
+                g_cells_valid = false;
+            }
         }
 
         // Process pending resize (coalesced, like Ghostty)

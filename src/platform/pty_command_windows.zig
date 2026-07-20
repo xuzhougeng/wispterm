@@ -625,6 +625,13 @@ pub const Command = struct {
         }
     }
 
+    /// True when this command actually spawned a child process. Virtual PTYs
+    /// (preview panes, etc.) leave `process` at INVALID_HANDLE_VALUE, so this
+    /// distinguishes a real terminal session from a virtual one.
+    pub fn hasProcess(self: *const Command) bool {
+        return self.process != INVALID_HANDLE_VALUE;
+    }
+
     /// No POSIX-style pid cwd query on Windows (local preview uses OSC 7).
     pub fn cwdQueryId(self: *const Command) ?i32 {
         _ = self;

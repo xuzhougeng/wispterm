@@ -4152,9 +4152,19 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
     // Ctrl+right-click (Cmd on macOS) over a local terminal opens the file under
     // the cursor in the OS default app; otherwise follow the configured action.
     if (ev.button == .right and ev.action == .release) {
-        // Right-click on sidebar tab closes it (same as middle-click / × button)
+        // Right-click on sidebar tab shows a confirmation dialog before closing.
         if (hitTestSidebarTab(@floatFromInt(ev.x), @floatFromInt(ev.y))) |tab_idx| {
-            requestCloseTabGesture(tab_idx);
+            const closes_window = tab.g_tab_count <= 1;
+            if (close_confirm.shouldConfirm(AppWindow.g_confirm_close_running_program, AppWindow.tabHasRunningProgram(tab_idx))) {
+                const action: close_confirm.PendingClose = if (closes_window) .window else .{ .tab = tab_idx };
+                overlays.closeConfirmOpen(action, .running_program);
+            } else if (closes_window) {
+                overlays.closeConfirmOpen(.window, .window_generic);
+            } else {
+                overlays.closeConfirmOpen(.{ .tab = tab_idx }, .tab_right_click);
+            }
+            AppWindow.g_force_rebuild = true;
+            AppWindow.g_cells_valid = false;
             return;
         }
         // Right-click on sidebar + opens session launcher

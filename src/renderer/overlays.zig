@@ -145,7 +145,7 @@ threadlocal var g_update_prompt_rect: ?DebugLineRect = null;
 
 threadlocal var g_close_shortcut_confirm_until_ms: i64 = 0;
 
-pub const CloseConfirmVariant = enum { running_program, window_generic, terminal_split };
+pub const CloseConfirmVariant = enum { running_program, window_generic, terminal_split, tab_right_click };
 threadlocal var g_window_close_confirm_visible: bool = false;
 threadlocal var g_close_confirm_pending: close_confirm.PendingClose = .window;
 threadlocal var g_close_confirm_variant: CloseConfirmVariant = .window_generic;
@@ -2383,7 +2383,7 @@ fn runSessionLauncherRow(row: usize) void {
         openLocalShellSession();
     } else if (row == 1) {
         openSshList();
-    } else if (row == command_center_state.SESSION_LAUNCHER_ROW_TMUX) {
+    } else if (row == platform_pty_command.sessionLauncherTmuxRow()) {
         openTmuxSshPicker();
         return;
     } else if (platform_pty_command.sessionLauncherWslRow()) |wsl_row| {
@@ -4455,7 +4455,7 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
         g_session_launcher_selected = row;
         if (row == 0) return .local_shell;
         if (row == 1) return .ssh;
-        if (row == command_center_state.SESSION_LAUNCHER_ROW_TMUX) return .tmux;
+        if (row == platform_pty_command.sessionLauncherTmuxRow()) return .tmux;
         if (platform_pty_command.sessionLauncherWslRow()) |wsl_row| {
             if (row == wsl_row) return .wsl;
         }
@@ -4701,7 +4701,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         row += 1;
         renderSessionRow(layout, window_height, row, "SSH", i18n.s().sl_v_connect_server, g_session_launcher_selected == row);
         row += 1;
-        renderSessionRow(layout, window_height, command_center_state.SESSION_LAUNCHER_ROW_TMUX, "tmux", "Alive session", g_session_launcher_selected == command_center_state.SESSION_LAUNCHER_ROW_TMUX);
+        renderSessionRow(layout, window_height, platform_pty_command.sessionLauncherTmuxRow(), "tmux", "Alive session", g_session_launcher_selected == platform_pty_command.sessionLauncherTmuxRow());
         row += 1;
         if (platform_pty_command.sessionLauncherWslRow()) |wsl_row| {
             row = wsl_row;
@@ -6123,11 +6123,13 @@ pub fn renderWindowCloseConfirm(window_width: f32, window_height: f32) void {
         .running_program => "A program is still running",
         .window_generic => "Close WispTerm?",
         .terminal_split => "Close this terminal?",
+        .tab_right_click => "Close this tab?",
     };
     const body_text = switch (g_close_confirm_variant) {
         .running_program => "Closing now will end it.",
         .window_generic => "Running panels in this window will be terminated.",
         .terminal_split => "This terminal pane will be closed.",
+        .tab_right_click => "This tab and its terminals will be closed.",
     };
     const hint_text = "Press Enter or Close to proceed, Esc to cancel.";
     renderTitlebarTextStrongLimited(title_text, text_x, title_y, fg, text_right - text_x);

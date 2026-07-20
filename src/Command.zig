@@ -31,6 +31,13 @@ pub fn cwdQueryId(self: *const Command) ?i32 {
     return self.impl.cwdQueryId();
 }
 
+/// True when this surface launched a real child process (vs a virtual PTY,
+/// e.g. a tmux control-mode pane) that can actually exit. Used by the
+/// per-frame sweep that auto-closes panes whose terminal process has ended.
+pub fn hasProcess(self: *const Command) bool {
+    return self.impl.hasProcess();
+}
+
 test "Command delegates lifecycle API to platform implementation" {
     const start_info = @typeInfo(@TypeOf(start)).@"fn";
     try std.testing.expectEqual(@as(usize, 4), start_info.params.len);

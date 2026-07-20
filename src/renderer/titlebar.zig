@@ -380,11 +380,11 @@ pub fn renderBellEmoji(x: f32, y: f32, opacity: f32) void {
 /// Map a tab kind to its sidebar icon codepoint.
 pub fn sidebarTabKindIcon(tab_state: *const tab.TabState) u32 {
     return switch (tab_state.kind) {
-        .terminal => 0x2B22,          // ⬢ black hexagon
-        .ai_chat => 0x2727,            // ✧ white four-pointed star
-        .ai_history => 0x23F1,         // ⏱ stopwatch
-        .skill_center => 0x26A1,       // ⚡ high voltage
-        .port_forwarding => 0x21CC,    // ⇌ rightwards harpoon over leftwards harpoon
+        .terminal => 0x1F5A5,          // 🖥️ desktop computer
+        .ai_chat => 0x1F916,            // 🤖 robot face
+        .ai_history => 0x1F4DC,         // 📜 scroll
+        .skill_center => 0x1F6E0,       // 🛠️ hammer and wrench
+        .port_forwarding => 0x1F517,    // 🔗 link
     };
 }
 
@@ -1173,8 +1173,10 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
         // Separator line above plus button
         gl_init.renderQuad(4, plus_y + plus_row_h, sidebar_w - 8, 1, border_color);
 
-        const plus_btn_w: f32 = sidebar_w;
-        renderPlusIcon(0, plus_y, plus_btn_w, plus_row_h, blend(bg, fg, 0.70));
+        const plus_icon_cp: u32 = 0x2795; // ➕ heavy plus sign
+        const plus_icon_x = (sidebar_w - titlebarGlyphAdvance(plus_icon_cp)) / 2;
+        const plus_icon_y = plus_y + (plus_row_h - font.g_titlebar_cell_height) / 2;
+        renderTitlebarChar(plus_icon_cp, plus_icon_x, plus_icon_y, blend(bg, fg, 0.70));
     }
 
     // Update tooltip hover tracking

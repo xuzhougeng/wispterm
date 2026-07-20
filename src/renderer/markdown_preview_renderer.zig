@@ -16,12 +16,12 @@ const c = @cImport({
     @cInclude("stb_image.h");
 });
 
-const FOOTER_HEIGHT: f32 = 44;
+pub const FOOTER_HEIGHT: f32 = 44;
 /// Re-exported from the pure geometry module so the drawn header height and the
 /// close-button hit-test share a single source of truth.
 pub const HEADER_HEIGHT: f32 = preview_close_button.HEADER_HEIGHT;
-const PAD_X: f32 = 16;
-const PAD_Y: f32 = 18;
+pub const PAD_X: f32 = 16;
+pub const PAD_Y: f32 = 18;
 const LINE_GAP: f32 = 6;
 // Upper bound on lines/rows laid out per pass. Off-screen lines are measured
 // (to size the scrollbar) but not drawn, so this also bounds how far a large
@@ -255,12 +255,42 @@ fn renderDocument(
             code_bg,
             border,
         );
+        pane.line_heights.buf[rendered] = consumed;
         y_from_top += consumed;
         rendered += 1;
     }
+    pane.line_heights.len = rendered;
+    pane.line_heights.generation = pane.content_generation;
     // Clamp scroll to the laid-out height so the pane can't scroll past its last
     // rendered line into blank space (large heads now stop cleanly at the end).
     pane.max_scroll = @max(0, (y_from_top - body_origin) - body_h);
+
+    // Draw selection highlights for text-based panes.
+    if (pane.kind != .markdown and pane.kind != .text and pane.kind != .csv and pane.kind != .tsv) {
+        _ = panel_h;
+        return;
+    }
+    if (pane.hasSelection()) {
+        const sel_start = pane.selection.start();
+        const sel_end = pane.selection.end();
+        const sel_color = blend(AppWindow.g_theme.background, AppWindow.g_theme.foreground, 0.44);
+        const body_x = panel_x + PAD_X;
+        var line_y = body_origin;
+        var i: usize = 0;
+        while (i < sel_start and i < pane.line_heights.len) : (i += 1) {
+            line_y += pane.line_heights.buf[i];
+        }
+        while (i <= sel_end and i < pane.line_heights.len) : (i += 1) {
+            const h = pane.line_heights.buf[i];
+            const top = @max(line_y, body_top);
+            const bottom = @min(line_y + h, body_top + body_h);
+            if (bottom > top) {
+                const gl_y = window_height - bottom;
+                ui_pipeline.fillQuad(body_x, gl_y, max_w, bottom - top, sel_color);
+            }
+            line_y += h;
+        }
+    }
     _ = panel_h;
 }
 

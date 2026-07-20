@@ -13,6 +13,7 @@ const gl_init = AppWindow.gpu.gl_init;
 const Surface = @import("../Surface.zig");
 const SplitTree = @import("../split_tree.zig");
 const renderer = @import("../renderer.zig");
+const PreviewPane = @import("../preview_pane.zig");
 const preview_close_button = @import("../input/preview_close_button.zig");
 
 const TabState = tab.TabState;
@@ -132,6 +133,20 @@ pub fn previewCloseButtonAtPoint(x: i32, y: i32) ?SplitTree.Node.Handle {
                 )) return r.handle;
             },
             .terminal => {},
+        }
+    }
+    return null;
+}
+
+/// Find the SplitRect for a given preview pane by pointer identity.
+/// Returns null if the pane is not currently laid out (not live).
+pub fn rectForPreview(pane_ptr: *const PreviewPane) ?SplitRect {
+    for (0..g_split_rect_count) |i| {
+        const r = g_split_rects[i];
+        if (!cachedRectIsLive(r)) continue;
+        switch (r.pane) {
+            .preview => |p| if (p == pane_ptr) return r,
+            else => {},
         }
     }
     return null;
@@ -346,7 +361,6 @@ pub fn computeSplitLayout(
 }
 
 test "split_layout: soleTerminalSurface only for a single terminal rect" {
-    const PreviewPane = @import("../preview_pane.zig");
     const saved_count = g_split_rect_count;
     const saved_rect = g_split_rects[0];
     defer {
