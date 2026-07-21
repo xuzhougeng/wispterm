@@ -23,7 +23,7 @@ terminals together.
 - **Reorder tabs:** open the tab sidebar with `Ctrl+Shift+B` (`toggle_sidebar`)
   and drag a tab up or down to a new position.
 - **Close a tab:** click the `×` button on the tab, middle-click the tab, or
-  press `Ctrl+Shift+W` (`close_panel_or_tab`). When the tab (or focused panel)
+  press `Ctrl+Shift+W` (`Cmd+W` on macOS; `close_panel_or_tab`). When the tab (or focused panel)
   is running a full-screen TUI such as `vim` or `htop`, WispTerm asks for
   confirmation first; turn that off with `confirm-close-running-program = false`.
 

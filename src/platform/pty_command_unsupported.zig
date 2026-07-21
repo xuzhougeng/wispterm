@@ -3,6 +3,12 @@ const builtin = @import("builtin");
 const process_shared = @import("process_shared.zig");
 const ssh_connection = @import("../ssh/connection.zig");
 
+const c = if (builtin.os.tag != .windows) @cImport({
+    @cInclude("sys/types.h");
+    @cInclude("unistd.h");
+    @cInclude("pwd.h");
+}) else {};
+
 pub const CommandLineBuffer = [256]u8;
 pub const CwdBuffer = [260]u8;
 pub const CwdUnit = u8;
@@ -36,6 +42,28 @@ pub fn resolveShellCommandLine(out_buf: *CommandLineBuffer, cmd: []const u8) usi
     @memcpy(out_buf[0..len], cmd[0..len]);
     out_buf[len] = 0;
     return len;
+}
+
+pub fn detectDefaultShell(out: []u8) []const u8 {
+    if (builtin.os.tag != .windows) {
+        var passwd_buf: [4096]u8 = undefined;
+        var entry: c.struct_passwd = undefined;
+        var result: ?*c.struct_passwd = null;
+        if (c.getpwuid_r(c.getuid(), &entry, &passwd_buf, passwd_buf.len, &result) == 0 and result != null) {
+            if (entry.pw_shell) |shell_ptr| {
+                const shell = std.mem.sliceTo(shell_ptr, 0);
+                if (shell.len != 0) {
+                    const len = @min(out.len, shell.len);
+                    @memcpy(out[0..len], shell[0..len]);
+                    return out[0..len];
+                }
+            }
+        }
+    }
+    const fallback = guaranteedLocalShellCommand();
+    const len = @min(out.len, fallback.len);
+    @memcpy(out[0..len], fallback[0..len]);
+    return out[0..len];
 }
 
 pub fn allocCommandLineFromUtf8(allocator: std.mem.Allocator, command: []const u8) !OwnedCommandLine {

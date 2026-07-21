@@ -148,7 +148,7 @@ Use `keybind = clear` before custom bindings if you want to remove all defaults 
 | Previous / next image/PDF in gallery (preview focused) | Left / Right | Left / Right |
 | Previous / next PDF page (PDF preview focused) | PageUp / PageDown | PageUp / PageDown |
 | Download SSH remote file | Ctrl+Shift-click path in SSH output | Cmd+Shift-click path in SSH output |
-| Close focused panel, tab, or window | **Ctrl+Shift+W** | **Cmd+Shift+W** |
+| Close focused panel, tab, or window | **Ctrl+Shift+W** | **Cmd+W** |
 | Maximize or restore window | **Alt+Enter** | **Opt+Enter** |
 | Increase / decrease font size | **Ctrl++** / **Ctrl+-** | **Cmd++** / **Cmd+-** |
 | Copy terminal selection or AI Chat selection/transcript | **Ctrl+Shift+C** | **Cmd+Shift+C** |
@@ -186,7 +186,7 @@ Use `keybind = clear` before custom bindings if you want to remove all defaults 
 | Next tab | **Ctrl+Tab** | **Ctrl+Tab** |
 | Previous tab | **Ctrl+Shift+Tab** | **Ctrl+Shift+Tab** |
 | Switch to tab 1–9 | **Alt+1**–**9** | **Opt+1**–**9** |
-| Open config file | **Ctrl+,** | **Cmd+,** |
+| Open visual settings | **Ctrl+,** | **Cmd+,** |
 
 ## AI Chat Markdown export
 

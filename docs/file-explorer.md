@@ -68,7 +68,8 @@ The left File Explorer and right-side preview/browser panels can be resized by
 dragging their inner edges. Markdown, text, CSV, and TSV previews scroll with
 the mouse wheel; CSV and TSV cells show a larger hover popup when their content
 does not fit in the visible cell. Image and PDF previews zoom in and out with
-the mouse wheel and can be dragged to pan after zooming. `Ctrl+Shift+W` closes
+the mouse wheel and can be dragged to pan after zooming. `Ctrl+Shift+W` (`Cmd+W`
+on macOS) closes
 the focused pane — click a preview pane (or press `Ctrl+1-9`) to select it, then
 close it like any other split.
 

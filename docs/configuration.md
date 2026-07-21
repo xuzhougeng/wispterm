@@ -10,9 +10,9 @@ main config path is resolved in this order:
    - **macOS:** `~/Library/Application Support/wispterm/config`
    - **Linux:** `$XDG_CONFIG_HOME/wispterm/config` (fallback: `~/.config/wispterm/config`)
 
-Press the configured `open_config` shortcut (default `Ctrl+,`, `Cmd+,` on macOS) to open the
-config file in your default editor, or run `wispterm --show-config-path` to
-print the resolved path.
+Press `Ctrl+,` (`Cmd+,` on macOS) to open the visual Settings page. Advanced
+users can run **Open Config** from the command center to edit the raw file, or
+run `wispterm --show-config-path` to print the resolved path.
 
 CLI flags override config file values (last wins). `config-file = extra.conf`
 and `--config-file extra.conf` include additional config files; they do not
@@ -126,7 +126,7 @@ login password configured on the relay server.
 
 You do not have to edit the config file by hand. Open the command center
 (`Ctrl+Shift+P`, `Cmd+Shift+P` on macOS) and run **Settings** to open an in-app
-settings page that edits the most common options: font size, theme, cursor style
+settings page that edits the most common options: font family and size, theme, cursor style
 and blink, focus-follows-mouse, restore-tabs-on-startup, the default shell, the
 default AI profile, WeChat direct control, and the interface language. The page
 also has an **Open raw config** button for the advanced keys above, and changes
@@ -140,7 +140,10 @@ the settings page; it leaves Quake mode, your saved AI profiles, and custom
 
 ## Default Shell and Git Bash
 
-Set `shell` in your config file to choose what new local shell sessions launch.
+By default, WispTerm follows the current OS account's login shell (for example
+`/bin/bash` or `/bin/zsh`). Choose **System default** in Settings to keep this
+behavior, or choose a specific shell to override it for new local sessions.
+You can also set `shell` in the config file explicitly.
 Existing tabs keep their current process; save the config, wait for hot reload
 or restart WispTerm, then open a new session.
 

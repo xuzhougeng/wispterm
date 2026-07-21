@@ -142,13 +142,13 @@ test "menu_macos: View > Toggle Tab Sidebar carries toggle_sidebar and ⌘⇧B" 
     );
 }
 
-test "menu_macos: WispTerm > Settings carries open_config and ⌘," {
+test "menu_macos: WispTerm > Settings carries open_settings and ⌘," {
     if (builtin.os.tag != .macos) return error.SkipZigTest;
     installFreshMenu();
     const wispterm_idx = try requireSubmenuTitled("About WispTerm");
     const item_idx = try findItemIndex(wispterm_idx, "Settings…");
     try std.testing.expectEqual(
-        @as(i32, @intCast(@intFromEnum(keybind.Action.open_config))),
+        @as(i32, @intCast(@intFromEnum(keybind.Action.open_settings))),
         menu_macos.wispterm_macos_menu_item_action_for_test(wispterm_idx, item_idx),
     );
     const key_ptr = menu_macos.wispterm_macos_menu_item_key_equivalent_for_test(wispterm_idx, item_idx);
@@ -156,6 +156,23 @@ test "menu_macos: WispTerm > Settings carries open_config and ⌘," {
     try std.testing.expectEqual(
         menu_macos.ModCmd,
         menu_macos.wispterm_macos_menu_item_modifier_for_test(wispterm_idx, item_idx),
+    );
+}
+
+test "menu_macos: File > Close Tab uses the standard ⌘W shortcut" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    installFreshMenu();
+    const file_idx = try requireSubmenuTitled("New Tab");
+    const item_idx = try findItemIndex(file_idx, "Close Tab");
+    try std.testing.expectEqual(
+        @as(i32, @intCast(@intFromEnum(keybind.Action.close_panel_or_tab))),
+        menu_macos.wispterm_macos_menu_item_action_for_test(file_idx, item_idx),
+    );
+    const key_ptr = menu_macos.wispterm_macos_menu_item_key_equivalent_for_test(file_idx, item_idx);
+    try std.testing.expectEqualStrings("w", std.mem.span(key_ptr.?));
+    try std.testing.expectEqual(
+        menu_macos.ModCmd,
+        menu_macos.wispterm_macos_menu_item_modifier_for_test(file_idx, item_idx),
     );
 }
 

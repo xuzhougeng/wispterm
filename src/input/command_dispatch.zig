@@ -29,6 +29,7 @@ pub const Command = union(enum) {
     close_panel_or_tab,
     toggle_maximize,
     font_size: i32,
+    open_settings,
     // Late commands.
     copy,
     paste,
@@ -61,6 +62,7 @@ pub fn resolve(action: keybind.Action, phase: Phase) ?Command {
             .toggle_maximize => .toggle_maximize,
             .font_size_increase => .{ .font_size = 1 },
             .font_size_decrease => .{ .font_size = -1 },
+            .open_settings => .open_settings,
             else => null,
         },
         .late => switch (action) {
@@ -140,6 +142,11 @@ test "late commands resolve only in the late phase" {
     try std.testing.expectEqual(Command.copy, resolve(.copy, .late).?);
     try std.testing.expectEqual(Command.open_config, resolve(.open_config, .late).?);
     try std.testing.expectEqual(@as(?Command, null), resolve(.copy, .early));
+}
+
+test "visual settings resolves before overlay routing" {
+    try std.testing.expectEqual(Command.open_settings, resolve(.open_settings, .early).?);
+    try std.testing.expectEqual(@as(?Command, null), resolve(.open_settings, .late));
 }
 
 test "focus actions map to focus_split targets" {
