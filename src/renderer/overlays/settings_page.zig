@@ -3,6 +3,7 @@ const input_key = @import("../../input/key.zig");
 const Config = @import("../../config.zig");
 const shell_integration = @import("../../platform/shell_integration.zig");
 const settings_picker = @import("settings_picker.zig");
+const settings_page_layout = @import("settings_page_layout.zig");
 
 pub const SETTINGS_FONT_FAMILY_ROW: usize = 0;
 pub const SETTINGS_FONT_SIZE_ROW: usize = 1;
@@ -105,8 +106,10 @@ pub const State = struct {
     picker: settings_picker.State = .{},
     picker_choices: []const []const u8 = &.{},
     picker_choices_owned: bool = false,
+    picker_allocator: ?std.mem.Allocator = null,
 
     pub fn open(self: *State) void {
+        self.closePicker(null);
         self.visible = true;
         self.selectCategory(.general);
         self.cfg_dirty = true;
@@ -137,7 +140,7 @@ pub const State = struct {
 
     pub fn close(self: *State, allocator: ?std.mem.Allocator) void {
         self.visible = false;
-        self.closePicker(allocator);
+        self.closePicker(null);
         if (self.cfg_loaded) {
             const alloc = allocator orelse return;
             self.cfg_cache.deinit(alloc);
@@ -177,15 +180,18 @@ pub const State = struct {
         return &self.cfg_cache;
     }
 
-    pub fn openPicker(self: *State, kind: settings_picker.Kind, choices: []const []const u8, current: []const u8, owned: bool) void {
+    pub fn openPicker(self: *State, kind: settings_picker.Kind, choices: []const []const u8, current: []const u8, owned: bool, allocator: ?std.mem.Allocator) void {
+        std.debug.assert(!owned or allocator != null);
+        self.closePicker(null);
         self.picker_choices = choices;
         self.picker_choices_owned = owned;
+        self.picker_allocator = if (owned) allocator else null;
         self.picker.open(kind, choices, current);
     }
 
     pub fn closePicker(self: *State, allocator: ?std.mem.Allocator) void {
         if (self.picker_choices_owned) {
-            if (allocator) |alloc| {
+            if (self.picker_allocator orelse allocator) |alloc| {
                 for (self.picker_choices) |choice| alloc.free(choice);
                 alloc.free(self.picker_choices);
             } else return;
@@ -193,6 +199,7 @@ pub const State = struct {
         self.picker.close();
         self.picker_choices = &.{};
         self.picker_choices_owned = false;
+        self.picker_allocator = null;
     }
 
     pub fn pickerOpen(self: *const State) bool {
@@ -266,6 +273,56 @@ pub const State = struct {
         } else if (delta_y < 0) {
             self.moveFocus(1);
         }
+    }
+
+    pub fn hitTest(self: *State, layout: settings_page_layout.Layout, x: f32, y: f32) ?Action {
+        if (layout.categoryAt(x, y)) |index| {
+            return switch (categoryAt(index) orelse return null) {
+                .general => .select_general,
+                .appearance => .select_appearance,
+                .ai => .select_ai,
+                .system => .select_system,
+            };
+        }
+
+        const row_index = layout.rowAt(x, y) orelse return null;
+        if (self.pickerOpen()) {
+            if (!self.selectPickerIndex(row_index)) return null;
+            return .choose_picker_value;
+        }
+        const rows = categoryRows(self.category);
+        if (row_index >= rows.len) return null;
+        const row = rows[row_index];
+        self.focus = row;
+
+        if (row == SETTINGS_FONT_SIZE_ROW) {
+            return switch (layout.fontControlAt(x) orelse return null) {
+                .minus => .font_size_minus,
+                .plus => .font_size_plus,
+            };
+        }
+        if (row == SETTINGS_THEME_ROW) return .cycle_theme;
+        if (row == SETTINGS_FONT_FAMILY_ROW) return .open_font_picker;
+
+        const control_row = row - SETTINGS_CONTROL_ROW_START;
+        if (shell_integration.supported) {
+            if (control_row == 9) return .toggle_start_menu;
+            if (control_row == 10) return .toggle_startup;
+        }
+        return switch (control_row) {
+            0 => .cycle_cursor_style,
+            1 => .toggle_cursor_blink,
+            2 => .toggle_focus_follows_mouse,
+            3 => .open_shell_picker,
+            4 => .cycle_default_ai_profile,
+            5 => .toggle_weixin_direct,
+            6 => .cycle_language,
+            7 => .toggle_restore_tabs,
+            8 => .toggle_distill_suggest,
+            9 + SHELL_INTEGRATION_ROWS => .open_raw_config,
+            10 + SHELL_INTEGRATION_ROWS => .restore_defaults,
+            else => null,
+        };
     }
 
     pub fn firstVisibleRow(self: *const State, visible_rows: usize) usize {
@@ -375,12 +432,47 @@ test "appearance exposes font family before font size" {
 test "settings page choice picker handles navigation selection and cancel" {
     const choices = [_][]const u8{ "bash", "zsh", "fish" };
     var state = State{ .visible = true };
-    state.openPicker(.shell, &choices, "zsh", false);
+    state.openPicker(.shell, &choices, "zsh", false, null);
 
     try std.testing.expectEqual(@as(?Action, null), state.handleKey(.{ .key = .arrow_down }));
     try std.testing.expectEqualStrings("fish", state.pickerValue().?);
     try std.testing.expectEqual(Action.choose_picker_value, state.handleKey(.{ .key = .enter }).?);
     try std.testing.expectEqual(Action.close_picker, state.handleKey(.{ .key = .escape }).?);
+}
+
+test "settings page hit test selects a picker row without AppWindow" {
+    const choices = [_][]const u8{ "bash", "zsh" };
+    var state = State{ .visible = true };
+    state.openPicker(.shell, &choices, "bash", false, null);
+    const layout = settings_page_layout.compute(.{
+        .window_height = 700,
+        .top_offset = 40,
+        .content_x = 0,
+        .content_width = 900,
+        .cell_height = 20,
+        .focus_index = 0,
+        .row_count = choices.len,
+        .category_count = categoryCount(),
+    });
+
+    const action = state.hitTest(layout, layout.content_x + 10, layout.row_top_px + layout.row_h + 1);
+
+    try std.testing.expectEqual(Action.choose_picker_value, action.?);
+    try std.testing.expectEqualStrings("zsh", state.pickerValue().?);
+}
+
+test "settings page reopen releases owned picker choices and resets picker" {
+    var state = State{ .visible = true };
+    const choices = try std.testing.allocator.alloc([]const u8, 2);
+    choices[0] = try std.testing.allocator.dupe(u8, "Fira Code");
+    choices[1] = try std.testing.allocator.dupe(u8, "JetBrains Mono");
+    state.openPicker(.font_family, choices, "Fira Code", true, std.testing.allocator);
+
+    state.open();
+
+    try std.testing.expect(state.visible);
+    try std.testing.expect(!state.pickerOpen());
+    try std.testing.expectEqual(@as(usize, 0), state.pickerCount());
 }
 
 test "settings page deinit frees loaded cache after reload invalidation" {

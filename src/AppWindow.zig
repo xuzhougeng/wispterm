@@ -4588,12 +4588,15 @@ fn syncFileExplorerToActiveTerminalSurface(force: bool) void {
 pub fn closeTab(idx: usize) void {
     const allocator = g_allocator orelse return;
     if (tab.g_tab_count <= 1 or idx >= tab.g_tab_count) return;
+    var closing_settings = false;
     if (tab.g_tabs[idx]) |closing| {
+        closing_settings = closing.kind == .settings;
         if (closing.tmux_window_id != null) tmux_controller.forgetClosedTab(closing);
     }
     tab.closeTab(idx, allocator);
     file_explorer.onTabClosed(idx);
     browser_panel.onTabClosed(idx);
+    if (closing_settings) overlays.settingsPageDidClose();
     clearUiStateOnTabChange();
 }
 
@@ -4604,6 +4607,11 @@ pub fn closeFocusedSplitWouldCloseWindow() bool {
 }
 
 pub fn switchTab(idx: usize) void {
+    const deactivating_settings = if (activeTab()) |active|
+        active.kind == .settings and idx != active_tab_state.g_active_tab
+    else
+        false;
+    if (deactivating_settings) overlays.settingsPageDidDeactivate();
     tab.switchTab(idx);
     clearUiStateOnTabChange();
 }
@@ -4669,6 +4677,7 @@ pub fn closeFocusedSplit() void {
     }
 
     const closing_tab_idx = active_tab_state.g_active_tab;
+    const closing_settings = if (tab.activeTab()) |active| active.kind == .settings else false;
     var closing_surface_id: ?[16]u8 = null;
     if (tab.activeSurface()) |surface| closing_surface_id = surface.remote_id;
     switch (tab.closeFocusedSplit(allocator)) {
@@ -4681,9 +4690,11 @@ pub fn closeFocusedSplit() void {
         .closed_tab => {
             file_explorer.onTabClosed(closing_tab_idx);
             browser_panel.onTabClosed(closing_tab_idx);
+            if (closing_settings) overlays.settingsPageDidClose();
             clearUiStateOnTabChange();
         },
         .close_window => {
+            if (closing_settings) overlays.settingsPageDidClose();
             split_layout.invalidateCachedRects();
             cell_renderer.g_current_render_surface = null;
             g_should_close = true;

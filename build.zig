@@ -14,6 +14,13 @@ comptime {
 
 const linux_system_libraries = [_][]const u8{ "SDL3", "fontconfig" };
 
+fn fastTestsNeedLibc(os_tag: std.Target.Os.Tag) bool {
+    return switch (os_tag) {
+        .linux, .macos => true,
+        else => false,
+    };
+}
+
 const windows_system_libraries = [_][]const u8{
     "user32",
     "advapi32", // registry access for WSL availability detection
@@ -349,6 +356,12 @@ test "windows system libraries are gated by platform" {
 
     const macos = PlatformFeatures.forOs(.macos);
     try std.testing.expectEqual(@as(usize, 0), systemLibrariesFor(macos).len);
+}
+
+test "fast tests link libc on hosts whose platform adapters import C headers" {
+    try std.testing.expect(fastTestsNeedLibc(.linux));
+    try std.testing.expect(fastTestsNeedLibc(.macos));
+    try std.testing.expect(!fastTestsNeedLibc(.windows));
 }
 
 test "macOS platform advertises required app frameworks" {
@@ -793,10 +806,10 @@ pub fn build(b: *std.Build) void {
         .name = "wispterm-fast-test",
         .root_module = fast_test_mod,
     });
+    fast_test_mod.link_libc = fastTestsNeedLibc(b.graph.host.result.os.tag);
     switch (b.graph.host.result.os.tag) {
         .windows => fast_test_mod.linkSystemLibrary("winhttp", .{}),
         .macos => {
-            fast_test_mod.link_libc = true;
             fast_test_mod.addCSourceFile(.{
                 .file = b.path("src/platform/http_client_macos_bridge.m"),
                 .flags = &.{},

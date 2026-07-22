@@ -41,6 +41,7 @@ const overlay_state = @import("overlays/state.zig");
 const confirm_modals = @import("overlays/confirm_modals.zig");
 const settings_page = @import("overlays/settings_page.zig");
 const settings_page_layout = @import("overlays/settings_page_layout.zig");
+const settings_page_renderer = @import("settings_page_renderer.zig");
 const toasts = @import("overlays/toasts.zig");
 const ssh_profiles = @import("overlays/ssh_profiles.zig");
 const ssh_profiles_layout = @import("overlays/ssh_profiles_layout.zig");
@@ -1070,8 +1071,7 @@ pub fn weixinQrPanelHandleAction(action: weixin_qr_panel.Action) void {
         .close => {
             if (weixin_qr_panel.controller()) |controller| controller.cancelLogin();
             weixin_qr_panel.close();
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
+            AppWindow.applyUiEffect(.repaint);
         },
         .retry => {
             const allocator = AppWindow.g_allocator orelse std.heap.page_allocator;
@@ -1083,8 +1083,7 @@ pub fn weixinQrPanelHandleAction(action: weixin_qr_panel.Action) void {
                 showStatusToast(i18n.s().toast_wechat_login_failed);
                 return;
             };
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
+            AppWindow.applyUiEffect(.repaint);
         },
         .unbind => unbindWeixinDirect(),
     }
@@ -1853,6 +1852,11 @@ fn measureTitlebarText(text: []const u8) f32 {
         text_width += titlebar.titlebarGlyphAdvance(cp);
     }
     return text_width;
+}
+
+fn renderSettingsTextLimited(text: []const u8, x: f32, y: f32, color: [3]f32, max_width: f32) f32 {
+    renderTitlebarTextLimited(text, x, y, color, max_width);
+    return @min(max_width, measureTitlebarText(text));
 }
 
 fn renderTitlebarText(text: []const u8, x_start: f32, y: f32, color: [3]f32) void {
@@ -5101,8 +5105,7 @@ fn applyProfileToSession(session: *AppWindow.ai_chat.Session, idx: usize) bool {
     if (!aiProfileInputsValid(protocol, base_url, model, command)) return false;
     ai_chat.applyProviderProfile(session, base_url, api_key, model, protocol, thinking, reasoning_effort, max_tokens, vision_val);
     session.setAcpCommand(command);
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    AppWindow.applyUiEffect(.repaint);
     return true;
 }
 
@@ -5120,8 +5123,7 @@ pub fn openSwitchModelPicker(session: *AppWindow.ai_chat.Session) void {
     loadAiProfiles();
     if (assistantProfiles().profile_count == 0) {
         session.appendLocalToolMessage(i18n.s().ai_model_no_profiles);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        AppWindow.applyUiEffect(.repaint);
         return;
     }
     setSwitchModelTarget(session);
@@ -6627,6 +6629,18 @@ pub fn settingsPageClose() void {
     settingsState().close(AppWindow.g_allocator);
 }
 
+/// Release transient Settings resources when its tab is closed through the
+/// shared tab chrome instead of the Settings-specific close action.
+pub fn settingsPageDidClose() void {
+    settingsState().close(AppWindow.g_allocator);
+}
+
+/// A picker is scoped to the active Settings visit. Keep the tab itself open,
+/// but discard transient choices when the user switches away.
+pub fn settingsPageDidDeactivate() void {
+    settingsState().closePicker(AppWindow.g_allocator);
+}
+
 pub fn settingsPageHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
     if (!settingsPageVisible()) return .none;
     if (settingsState().handleKey(ev)) |action| executeSettingsAction(action);
@@ -6666,61 +6680,7 @@ fn settingsLayout(window_height: f32, top_offset: f32, content_x: f32, content_w
 
 fn settingsHitTest(xpos: f64, ypos: f64, window_height: f32, top_offset: f32, content_x: f32, content_width: f32) ?SettingsAction {
     const layout = settingsLayout(window_height, top_offset, content_x, content_width);
-    const x: f32 = @floatCast(xpos);
-    const y: f32 = @floatCast(ypos);
-
-    if (layout.categoryAt(x, y)) |index| {
-        settingsState().closePicker(AppWindow.g_allocator);
-        return switch (settings_page.categoryAt(index) orelse return null) {
-            .general => .select_general,
-            .appearance => .select_appearance,
-            .ai => .select_ai,
-            .system => .select_system,
-        };
-    }
-
-    const row_index = layout.rowAt(x, y) orelse return null;
-    if (settingsState().pickerOpen()) {
-        if (!settingsState().selectPickerIndex(row_index)) return null;
-        return .choose_picker_value;
-    }
-    const rows = settings_page.categoryRows(settingsState().category);
-    if (row_index >= rows.len) return null;
-    const row = rows[row_index];
-    settingsState().focus = row;
-
-    if (row == SETTINGS_FONT_SIZE_ROW) {
-        return switch (layout.fontControlAt(x) orelse return null) {
-            .minus => .font_size_minus,
-            .plus => .font_size_plus,
-        };
-    }
-
-    if (row == SETTINGS_THEME_ROW) {
-        return .cycle_theme;
-    }
-
-    if (row == SETTINGS_FONT_FAMILY_ROW) return .open_font_picker;
-
-    const control_row = row - SETTINGS_CONTROL_ROW_START;
-    if (shell_integration.supported) {
-        if (control_row == 9) return .toggle_start_menu;
-        if (control_row == 10) return .toggle_startup;
-    }
-    return switch (control_row) {
-        0 => .cycle_cursor_style,
-        1 => .toggle_cursor_blink,
-        2 => .toggle_focus_follows_mouse,
-        3 => .open_shell_picker,
-        4 => .cycle_default_ai_profile,
-        5 => .toggle_weixin_direct,
-        6 => .cycle_language,
-        7 => .toggle_restore_tabs,
-        8 => .toggle_distill_suggest,
-        9 + settings_page.SHELL_INTEGRATION_ROWS => .open_raw_config,
-        10 + settings_page.SHELL_INTEGRATION_ROWS => .restore_defaults,
-        else => null,
-    };
+    return settingsState().hitTest(layout, @floatCast(xpos), @floatCast(ypos));
 }
 
 fn executeSettingsAction(action: SettingsAction) void {
@@ -6769,7 +6729,7 @@ fn executeSettingsAction(action: SettingsAction) void {
         .toggle_focus_follows_mouse => Config.setConfigValue(allocator, "focus-follows-mouse", if (cfg.@"focus-follows-mouse") "false" else "true") catch {},
         .open_shell_picker => {
             settingsState().closePicker(allocator);
-            settingsState().openPicker(.shell, platform_pty_command.configShellChoices(), cfg.shell, false);
+            settingsState().openPicker(.shell, platform_pty_command.configShellChoices(), cfg.shell, false, null);
         },
         .choose_picker_value => chooseSettingsPickerValue(allocator),
         .close_picker => settingsState().closePicker(allocator),
@@ -6798,10 +6758,6 @@ fn executeSettingsAction(action: SettingsAction) void {
     }
 }
 
-fn fontFamilyLessThan(_: void, left: []const u8, right: []const u8) bool {
-    return std.mem.order(u8, left, right) == .lt;
-}
-
 fn openFontFamilyPicker(allocator: std.mem.Allocator, current: []const u8) void {
     settingsState().closePicker(allocator);
     const discovery = font.g_font_discovery orelse return;
@@ -6810,8 +6766,7 @@ fn openFontFamilyPicker(allocator: std.mem.Allocator, current: []const u8) void 
         allocator.free(choices);
         return;
     }
-    std.sort.heap([]const u8, choices, {}, fontFamilyLessThan);
-    settingsState().openPicker(.font_family, choices, current, true);
+    settingsState().openPicker(.font_family, choices, current, true, allocator);
 }
 
 fn chooseSettingsPickerValue(allocator: std.mem.Allocator) void {
@@ -6939,302 +6894,38 @@ fn shellSettingText(configured: []const u8, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "{s} ({s})", .{ prefix, detected }) catch prefix;
 }
 
-fn settingsCategoryLabel(category: settings_page.Category) []const u8 {
-    return switch (i18n.lang()) {
-        .en => switch (category) {
-            .general => "General",
-            .appearance => "Appearance",
-            .ai => "AI & Integrations",
-            .system => "System",
-        },
-        .zh_CN => switch (category) {
-            .general => "常规",
-            .appearance => "外观",
-            .ai => "AI 与集成",
-            .system => "系统",
-        },
-    };
-}
-
-fn settingsCategoryDescription(category: settings_page.Category) []const u8 {
-    return switch (i18n.lang()) {
-        .en => switch (category) {
-            .general => "Startup, language, and configuration",
-            .appearance => "Typography, theme, and cursor behavior",
-            .ai => "Profiles and assistant integrations",
-            .system => "Desktop integration and startup behavior",
-        },
-        .zh_CN => switch (category) {
-            .general => "启动、语言与配置管理",
-            .appearance => "字体、主题与光标行为",
-            .ai => "配置文件与智能助手集成",
-            .system => "桌面集成与启动方式",
-        },
-    };
-}
-
-fn settingsRowDescription(row: usize) []const u8 {
-    const zh = i18n.lang() == .zh_CN;
-    if (shell_integration.supported) {
-        if (row == SETTINGS_CONTROL_ROW_START + 9) return if (zh) "在 Windows 开始菜单中显示 WispTerm" else "Show WispTerm in the Windows Start menu";
-        if (row == SETTINGS_CONTROL_ROW_START + 10) return if (zh) "登录系统后自动启动 WispTerm" else "Launch WispTerm when you sign in";
-    }
-    return switch (row) {
-        SETTINGS_FONT_FAMILY_ROW => if (zh) "从系统已安装字体中选择终端字体" else "Choose from fonts installed on this system",
-        SETTINGS_FONT_SIZE_ROW => if (zh) "调整终端内容的显示字号" else "Adjust the terminal text size",
-        SETTINGS_THEME_ROW => if (zh) "选择终端和应用界面的配色主题" else "Choose the terminal and app color theme",
-        SETTINGS_CONTROL_ROW_START + 0 => if (zh) "选择终端光标的形状" else "Choose the terminal cursor shape",
-        SETTINGS_CONTROL_ROW_START + 1 => if (zh) "控制光标是否闪烁" else "Control whether the cursor blinks",
-        SETTINGS_CONTROL_ROW_START + 2 => if (zh) "鼠标移动时自动切换面板焦点" else "Move panel focus with the pointer",
-        SETTINGS_CONTROL_ROW_START + 3 => if (zh) "设置新标签页使用的默认 Shell" else "Set the default shell for new tabs",
-        SETTINGS_CONTROL_ROW_START + 4 => if (zh) "选择新建 AI 会话使用的配置" else "Choose the profile for new AI sessions",
-        SETTINGS_CONTROL_ROW_START + 5 => if (zh) "允许微信消息直接进入当前会话" else "Allow WeChat messages into the active session",
-        SETTINGS_CONTROL_ROW_START + 6 => if (zh) "选择 WispTerm 的界面语言" else "Choose the WispTerm interface language",
-        SETTINGS_CONTROL_ROW_START + 7 => if (zh) "启动时恢复上次打开的标签页" else "Restore previously open tabs at launch",
-        SETTINGS_CONTROL_ROW_START + 8 => if (zh) "在合适时建议将工作流沉淀为技能" else "Suggest reusable skills from completed work",
-        settings_page.SETTINGS_RAW_CONFIG_ROW => if (zh) "在编辑器中打开完整配置文件" else "Open the complete config file in your editor",
-        settings_page.SETTINGS_RESTORE_DEFAULTS_ROW => if (zh) "移除自定义设置并恢复默认值" else "Remove custom settings and restore defaults",
-        else => "",
-    };
-}
-
-const SettingsControlKind = enum {
-    adjuster,
-    toggle,
-    choice,
-    action,
-};
-
-fn settingsControlKind(row: usize) SettingsControlKind {
-    if (shell_integration.supported and (row == SETTINGS_CONTROL_ROW_START + 9 or row == SETTINGS_CONTROL_ROW_START + 10)) return .toggle;
-    return switch (row) {
-        SETTINGS_FONT_SIZE_ROW => .adjuster,
-        SETTINGS_FONT_FAMILY_ROW,
-        SETTINGS_THEME_ROW,
-        SETTINGS_CONTROL_ROW_START + 0,
-        SETTINGS_CONTROL_ROW_START + 3,
-        SETTINGS_CONTROL_ROW_START + 4,
-        SETTINGS_CONTROL_ROW_START + 6,
-        => .choice,
-        SETTINGS_CONTROL_ROW_START + 1,
-        SETTINGS_CONTROL_ROW_START + 2,
-        SETTINGS_CONTROL_ROW_START + 5,
-        SETTINGS_CONTROL_ROW_START + 7,
-        SETTINGS_CONTROL_ROW_START + 8,
-        => .toggle,
-        settings_page.SETTINGS_RAW_CONFIG_ROW,
-        settings_page.SETTINGS_RESTORE_DEFAULTS_ROW,
-        => .action,
-        else => .action,
-    };
-}
-
-fn renderSettingsRow(layout: SettingsLayout, window_height: f32, row: usize, row_index: usize, title: []const u8, value: []const u8, selected: bool) void {
-    const visible = layout.visibleRow(window_height, row_index) orelse return;
-    const gl_y = visible.gl_y;
-    const x = layout.content_x;
-    const w = layout.content_w;
-    const bg = AppWindow.g_theme.background;
-    const fg = AppWindow.g_theme.foreground;
-    const accent = AppWindow.g_theme.cursor_color;
-    const muted = mixColor(bg, fg, 0.56);
-    const title_x = x + 20;
-    const right_edge = x + w - 18;
-    const title_y = textYFromTop(window_height, visible.top_px + 10);
-    const detail_y = textYFromTop(window_height, visible.top_px + 10 + overlayLineHeight());
-    var title_max_w = w - 40;
-
-    if (selected) {
-        ui_pipeline.fillQuadAlpha(x + 2, gl_y + 8, 3, layout.row_h - 16, accent, 0.82);
-    }
-    if (value.len > 0) {
-        const kind = settingsControlKind(row);
-        const max_value_w: f32 = switch (kind) {
-            .toggle => 96,
-            .adjuster => 152,
-            .choice => 360,
-            .action => 180,
-        };
-        const min_value_w: f32 = switch (kind) {
-            .toggle => 76,
-            .adjuster => 118,
-            .choice => 132,
-            .action => 96,
-        };
-        const trailing_w: f32 = switch (kind) {
-            .choice, .action => 26,
-            .adjuster, .toggle => 12,
-        };
-        const value_w = if (kind == .toggle)
-            46.0
-        else
-            @min(max_value_w, @max(min_value_w, measureTitlebarText(value) + 24 + trailing_w));
-        const value_x = @round(right_edge - value_w);
-        const control_h = if (kind == .toggle) 24.0 else @round(@max(32.0, font.g_titlebar_cell_height + 10.0));
-        const pill_y = gl_y + @round((layout.row_h - control_h) / 2);
-        const is_on = std.mem.eql(u8, value, i18n.s().settings_value_on);
-        if (kind == .toggle) {
-            const track_color = if (is_on) mixColor(bg, accent, 0.40) else mixColor(bg, fg, 0.18);
-            renderRoundedQuadAlpha(value_x, pill_y, value_w, control_h, control_h / 2, track_color, 0.96);
-        }
-        const value_color = if (selected) accent else mixColor(bg, fg, 0.82);
-        if (kind == .toggle) {
-            const knob_d: f32 = control_h - 6;
-            const knob_x = if (is_on) value_x + value_w - knob_d - 3 else value_x + 3;
-            renderRoundedQuadAlpha(knob_x, pill_y + (control_h - knob_d) / 2, knob_d, knob_d, knob_d / 2, if (is_on) accent else mixColor(bg, fg, 0.42), 0.96);
-        } else {
-            _ = renderTitlebarTextLimited(value, value_x, rowTextY(pill_y, control_h), value_color, value_w - trailing_w);
-            if (kind == .choice or kind == .action) {
-                renderTitlebarText(">", value_x + value_w - 12, rowTextY(pill_y, control_h), mixColor(bg, fg, 0.60));
-            }
-        }
-        title_max_w = @max(1.0, value_x - title_x - 18);
-    }
-
-    if (visible.visible_index > 0) {
-        ui_pipeline.fillQuadAlpha(x + 18, gl_y + layout.row_h - 1, w - 36, 1, mixColor(bg, fg, 0.14), 0.62);
-    }
-
-    renderTitlebarTextLimited(title, title_x, title_y, if (selected) mixColor(fg, accent, 0.16) else fg, title_max_w);
-    renderTitlebarTextLimited(settingsRowDescription(settings_page.categoryRows(settingsState().category)[row_index]), title_x, detail_y, muted, title_max_w);
-}
-
-fn renderSettingsPickerRow(layout: SettingsLayout, window_height: f32, row_index: usize, label: []const u8, selected: bool, current: bool) void {
-    const visible = layout.visibleRow(window_height, row_index) orelse return;
-    const bg = AppWindow.g_theme.background;
-    const fg = AppWindow.g_theme.foreground;
-    const accent = AppWindow.g_theme.cursor_color;
-    const x = layout.content_x;
-    const title_x = x + 20;
-    if (selected) {
-        ui_pipeline.fillQuadAlpha(x + 2, visible.gl_y + 8, 3, layout.row_h - 16, accent, 0.82);
-        ui_pipeline.fillQuadAlpha(x + 8, visible.gl_y + 6, layout.content_w - 16, layout.row_h - 12, mixColor(bg, accent, 0.08), 0.72);
-    }
-    if (visible.visible_index > 0) {
-        ui_pipeline.fillQuadAlpha(x + 18, visible.gl_y + layout.row_h - 1, layout.content_w - 36, 1, mixColor(bg, fg, 0.14), 0.62);
-    }
-    const text_y = rowTextY(visible.gl_y, layout.row_h);
-    renderTitlebarTextLimited(label, title_x, text_y, if (selected) mixColor(fg, accent, 0.16) else fg, layout.content_w - 170);
-    if (current) {
-        const current_label = if (i18n.lang() == .zh_CN) "当前" else "Current";
-        renderTitlebarText(current_label, layout.content_x + layout.content_w - 100, text_y, accent);
-    }
-}
-
 pub fn renderSettingsPage(window_height: f32, top_offset: f32, content_x: f32, content_width: f32) void {
     if (!settingsPageVisible()) return;
     const allocator = AppWindow.g_allocator orelse return;
     const state = settingsState();
-    const focus = state.focus;
-    const picker_open = state.pickerOpen();
-
     const cfg = settingsCfg(allocator);
-
     const layout = settingsLayout(window_height, top_offset, content_x, content_width);
-    const page_y = @round(window_height - layout.page_top_px - layout.page_h);
 
-    const bg = AppWindow.g_theme.background;
-    const fg = AppWindow.g_theme.foreground;
-    const accent = AppWindow.g_theme.cursor_color;
-    const border_color = mixColor(bg, fg, 0.16);
-    const muted_color = mixColor(bg, fg, 0.58);
+    var rows_storage: [8]settings_page_renderer.Row = undefined;
+    var value_buffers: [8][640]u8 = undefined;
+    var row_count: usize = 0;
 
-    ui_pipeline.fillQuadAlpha(layout.page_x, page_y, layout.page_w, layout.page_h, mixColor(bg, fg, 0.012), 1.0);
-    ui_pipeline.fillQuadAlpha(layout.page_x, page_y, layout.nav_w, layout.page_h, mixColor(bg, fg, 0.025), 0.96);
-    ui_pipeline.fillQuadAlpha(layout.page_x + layout.nav_w - 1, page_y, 1, layout.page_h, border_color, 0.72);
-
-    const nav_title_y = textYFromTop(window_height, layout.nav_title_top_px);
-    const nav_label_y = textYFromTop(window_height, layout.nav_label_top_px);
-    renderTitlebarText(i18n.s().settings_title, layout.page_x + 24, nav_title_y, mixColor(fg, accent, 0.10));
-    renderTitlebarText(if (i18n.lang() == .zh_CN) "偏好设置" else "PREFERENCES", layout.page_x + 24, nav_label_y, muted_color);
-
-    for (0..settings_page.categoryCount()) |idx| {
-        const category = settings_page.categoryAt(idx) orelse continue;
-        const item_top = layout.nav_item_top_px + layout.nav_item_h * @as(f32, @floatFromInt(idx));
-        const item_y = @round(window_height - item_top - layout.nav_item_h);
-        const selected = category == state.category;
-        if (selected) {
-            ui_pipeline.fillQuadAlpha(layout.page_x + 14, item_y + 10, 3, layout.nav_item_h - 20, accent, 0.84);
-        }
-        renderTitlebarTextLimited(settingsCategoryLabel(category), layout.page_x + 28, rowTextY(item_y, layout.nav_item_h), if (selected) mixColor(fg, accent, 0.16) else mixColor(bg, fg, 0.76), layout.nav_w - 48);
-    }
-
-    const page_title_y = textYFromTop(window_height, layout.page_top_px + 28);
-    const subtitle_y = textYFromTop(window_height, layout.page_top_px + 28 + overlayLineHeight());
-    const page_title = if (state.pickerKind()) |kind| switch (kind) {
-        .font_family => if (i18n.lang() == .zh_CN) "选择字体" else "Choose font family",
-        .shell => if (i18n.lang() == .zh_CN) "选择默认 Shell" else "Choose default shell",
-    } else settingsCategoryLabel(state.category);
-    const page_subtitle = if (picker_open)
-        (if (i18n.lang() == .zh_CN) "用方向键选择，按 Enter 应用，按 Esc 返回" else "Use arrows to choose, Enter to apply, Esc to go back")
-    else
-        settingsCategoryDescription(state.category);
-    renderTitlebarText(page_title, layout.content_x, page_title_y, mixColor(fg, accent, 0.10));
-    renderTitlebarTextLimited(page_subtitle, layout.content_x, subtitle_y, muted_color, layout.content_w);
-    ui_pipeline.fillQuadAlpha(layout.content_x, @round(window_height - layout.row_top_px), layout.content_w, 1, border_color, 0.52);
-
-    const rows = settings_page.categoryRows(state.category);
-    const item_count = if (picker_open) state.pickerCount() else rows.len;
-    if (picker_open) {
-        const current = switch (state.pickerKind().?) {
-            .font_family => cfg.@"font-family",
-            .shell => cfg.shell,
-        };
-        for (0..state.pickerCount()) |row_index| {
-            const value = state.pickerValueAt(row_index) orelse continue;
-            var shell_label_buf: [640]u8 = undefined;
-            const label = if (state.pickerKind().? == .shell) shellSettingText(value, &shell_label_buf) else value;
-            renderSettingsPickerRow(layout, window_height, row_index, label, state.picker.selected == row_index, std.ascii.eqlIgnoreCase(value, current));
-        }
-    } else {
+    if (!state.pickerOpen()) {
         loadAiProfiles();
         const ai_default_value = if (assistantProfiles().profile_count > 0)
             aiProfileField(&assistantProfiles().profiles[defaultAiProfileIndex()], .name)
         else
             i18n.s().settings_value_none;
-        const ai_default_hint = if (assistantProfiles().profile_count > 0)
-            aiProfileModeLabel(&assistantProfiles().profiles[defaultAiProfileIndex()])
-        else
-            i18n.s().settings_hint_add_profiles;
-        _ = ai_default_hint;
 
-        for (rows, 0..) |row, row_index| {
-            var font_buf: [24]u8 = undefined;
-            var shell_buf: [640]u8 = undefined;
-            var theme_buf: [96]u8 = undefined;
-            const title: []const u8 = if (shell_integration.supported and row == SETTINGS_CONTROL_ROW_START + 9)
-                i18n.s().settings_start_menu
-            else if (shell_integration.supported and row == SETTINGS_CONTROL_ROW_START + 10)
-                i18n.s().settings_startup
-            else switch (row) {
-                SETTINGS_FONT_FAMILY_ROW => if (i18n.lang() == .zh_CN) "字体" else "Font family",
-                SETTINGS_FONT_SIZE_ROW => i18n.s().settings_font_size,
-                SETTINGS_THEME_ROW => i18n.s().settings_theme,
-                SETTINGS_CONTROL_ROW_START + 0 => i18n.s().settings_cursor_style,
-                SETTINGS_CONTROL_ROW_START + 1 => i18n.s().settings_cursor_blink,
-                SETTINGS_CONTROL_ROW_START + 2 => i18n.s().settings_focus_follows_mouse,
-                SETTINGS_CONTROL_ROW_START + 3 => i18n.s().settings_shell,
-                SETTINGS_CONTROL_ROW_START + 4 => i18n.s().settings_default_ai,
-                SETTINGS_CONTROL_ROW_START + 5 => i18n.s().settings_weixin_direct,
-                SETTINGS_CONTROL_ROW_START + 6 => i18n.s().settings_language,
-                SETTINGS_CONTROL_ROW_START + 7 => i18n.s().settings_restore_tabs,
-                SETTINGS_CONTROL_ROW_START + 8 => i18n.s().settings_distill_suggest,
-                settings_page.SETTINGS_RAW_CONFIG_ROW => i18n.s().settings_raw_config,
-                settings_page.SETTINGS_RESTORE_DEFAULTS_ROW => i18n.s().settings_restore_defaults,
-                else => "",
-            };
+        for (settings_page.categoryRows(state.category), 0..) |row, row_index| {
+            const buf = value_buffers[row_index][0..];
             const value: []const u8 = if (shell_integration.supported and row == SETTINGS_CONTROL_ROW_START + 9)
                 boolText(shell_integration.isEnabled(allocator, .start_menu))
             else if (shell_integration.supported and row == SETTINGS_CONTROL_ROW_START + 10)
                 boolText(shell_integration.isEnabled(allocator, .startup))
             else switch (row) {
                 SETTINGS_FONT_FAMILY_ROW => cfg.@"font-family",
-                SETTINGS_FONT_SIZE_ROW => std.fmt.bufPrint(&font_buf, "-  {d}  +", .{cfg.@"font-size"}) catch "",
-                SETTINGS_THEME_ROW => std.fmt.bufPrint(&theme_buf, "{s}", .{currentThemePresetLabel(cfg)}) catch currentThemePresetLabel(cfg),
+                SETTINGS_FONT_SIZE_ROW => std.fmt.bufPrint(buf, "-  {d}  +", .{cfg.@"font-size"}) catch "",
+                SETTINGS_THEME_ROW => currentThemePresetLabel(cfg),
                 SETTINGS_CONTROL_ROW_START + 0 => cursorStyleText(cfg.@"cursor-style"),
                 SETTINGS_CONTROL_ROW_START + 1 => boolText(cfg.@"cursor-style-blink"),
                 SETTINGS_CONTROL_ROW_START + 2 => boolText(cfg.@"focus-follows-mouse"),
-                SETTINGS_CONTROL_ROW_START + 3 => shellSettingText(cfg.shell, &shell_buf),
+                SETTINGS_CONTROL_ROW_START + 3 => shellSettingText(cfg.shell, buf),
                 SETTINGS_CONTROL_ROW_START + 4 => ai_default_value,
                 SETTINGS_CONTROL_ROW_START + 5 => boolText(cfg.@"weixin-direct-enabled"),
                 SETTINGS_CONTROL_ROW_START + 6 => languageSettingText(cfg.language),
@@ -7244,42 +6935,32 @@ pub fn renderSettingsPage(window_height: f32, top_offset: f32, content_x: f32, c
                 settings_page.SETTINGS_RESTORE_DEFAULTS_ROW => "Enter",
                 else => "",
             };
-            renderSettingsRow(layout, window_height, row, row_index, title, value, focus == row);
+            rows_storage[row_count] = .{ .id = row, .value = value };
+            row_count += 1;
         }
     }
 
-    // Scrollbar indicator when not all rows fit (short windows). The list is
-    // scrolled via keyboard/click focus-follow and the mouse wheel.
-    if (layout.visible_rows < item_count) {
-        const total: f32 = @floatFromInt(item_count);
-        const vis: f32 = @floatFromInt(layout.visible_rows);
-        const track_h = layout.row_h * vis;
-        const track_top_px = layout.row_top_px;
-        const sb_w: f32 = 3;
-        const sb_x = layout.content_x + layout.content_w - sb_w - 7;
-        const track_gl_y = @round(window_height - track_top_px - track_h);
-        ui_pipeline.fillQuadAlpha(sb_x, track_gl_y, sb_w, track_h, mixColor(bg, fg, 0.25), 0.30);
-
-        const thumb_h = @max(24.0, @round(track_h * vis / total));
-        const max_scroll_f: f32 = @floatFromInt(item_count - layout.visible_rows);
-        const scroll_f: f32 = @floatFromInt(layout.scroll);
-        const thumb_offset = if (max_scroll_f > 0) @round((track_h - thumb_h) * (scroll_f / max_scroll_f)) else 0;
-        const thumb_gl_y = @round(window_height - (track_top_px + thumb_offset) - thumb_h);
-        ui_pipeline.fillQuadAlpha(sb_x, thumb_gl_y, sb_w, thumb_h, accent, 0.55);
-    }
-
-    const footer_h = ui_patterns.workbenchFooterHeight(font.g_titlebar_cell_height);
-    const footer_top = ui_patterns.workbenchFooterTop(window_height, layout.page_top_px, footer_h);
-    const footer_y = @round(window_height - footer_top - footer_h);
-    ui_pipeline.fillQuadAlpha(layout.page_x, footer_y, layout.page_w, footer_h, mixColor(bg, fg, 0.030), 0.98);
-    ui_pipeline.fillQuadAlpha(layout.page_x, footer_y + footer_h - 1, layout.page_w, 1, border_color, 0.68);
-    const footer_text = if (picker_open)
-        (if (i18n.lang() == .zh_CN) "↑/↓ 选择  ·  Enter 应用  ·  Esc 返回" else "↑/↓ choose  ·  Enter apply  ·  Esc back")
-    else
-        i18n.s().settings_workbench_footer;
-    renderTitlebarTextLimited(footer_text, layout.content_x, rowTextY(footer_y, footer_h), muted_color, layout.content_w);
+    var default_shell_buf: [640]u8 = undefined;
+    const picker_current = if (state.pickerKind()) |kind| switch (kind) {
+        .font_family => cfg.@"font-family",
+        .shell => cfg.shell,
+    } else "";
+    settings_page_renderer.render(.{
+        .bg = AppWindow.g_theme.background,
+        .fg = AppWindow.g_theme.foreground,
+        .accent = AppWindow.g_theme.cursor_color,
+        .cell_h = font.g_titlebar_cell_height,
+        .fillQuadAlpha = ui_pipeline.fillQuadAlpha,
+        .roundedQuadAlpha = renderRoundedQuadAlpha,
+        .renderTextLimited = renderSettingsTextLimited,
+        .measureText = measureTitlebarText,
+    }, .{
+        .state = state,
+        .rows = rows_storage[0..row_count],
+        .picker_current = picker_current,
+        .default_shell_label = shellSettingText("", &default_shell_buf),
+    }, layout, window_height);
 }
-
 /// Mouse-wheel handling for the settings page. The list scrolls by moving the
 /// focused row (which the view follows), matching the keyboard navigation model.
 /// Positive delta scrolls toward the top, mirroring whatsNewHandleScroll().
@@ -7631,6 +7312,27 @@ test "overlays: settings page state is owned by OverlayState" {
 
     try std.testing.expect(overlayState().settings.visible);
     try std.testing.expect(settingsPageVisible());
+}
+
+test "overlays: settings tab lifecycle releases owned picker choices" {
+    var settings_tab: AppWindow.tab.TabState = undefined;
+    const ctx = beginSettingsPageTest(&settings_tab);
+    defer ctx.restore();
+    settingsPageOpen();
+
+    const first = try std.testing.allocator.alloc([]const u8, 1);
+    first[0] = try std.testing.allocator.dupe(u8, "Fira Code");
+    settingsState().openPicker(.font_family, first, "Fira Code", true, std.testing.allocator);
+    settingsPageDidDeactivate();
+    try std.testing.expect(!settingsState().pickerOpen());
+    try std.testing.expect(settingsState().visible);
+
+    const second = try std.testing.allocator.alloc([]const u8, 1);
+    second[0] = try std.testing.allocator.dupe(u8, "JetBrains Mono");
+    settingsState().openPicker(.font_family, second, "JetBrains Mono", true, std.testing.allocator);
+    settingsPageDidClose();
+    try std.testing.expect(!settingsState().pickerOpen());
+    try std.testing.expect(!settingsState().visible);
 }
 
 test "overlays: status toast state is owned by OverlayState" {
