@@ -331,7 +331,9 @@ theme: ?[]const u8 = null,
 
 /// The shell to run in the terminal. Platform aliases are resolved by
 /// platform/pty_command.zig; any other value is treated as a raw command path.
-shell: []const u8 = platform_pty_command.default_shell_name,
+/// Empty means follow the current user's OS login shell. A non-empty value is
+/// an explicit override written by the Settings page or config file.
+shell: []const u8 = "",
 
 /// Working directory for the first local terminal surface (unset = inherit app cwd).
 @"working-directory": ?[]const u8 = null,
@@ -1762,8 +1764,9 @@ pub fn removeConfigKeys(allocator: std.mem.Allocator, keys: []const []const u8) 
 /// Config keys backing the settings page. "Restore default settings" removes
 /// these active lines so each reverts to its built-in default. Intentionally
 /// excludes `quake-mode` (not a settings-page row) and anything carrying user
-/// data such as AI profiles, custom keybinds, or `font-family`.
+/// data such as AI profiles or custom keybinds.
 pub const settings_reset_keys = [_][]const u8{
+    "font-family",
     "font-size",
     "theme",
     "cursor-style",
@@ -1780,7 +1783,7 @@ pub const settings_reset_keys = [_][]const u8{
 
 /// Revert every settings-page option to its built-in default by removing its
 /// active line from the main config file. Non-destructive: comments, custom
-/// keybinds, AI profiles, font-family, and window geometry are all preserved.
+/// keybinds, AI profiles, and window geometry are all preserved.
 pub fn resetSettingsToDefaults(allocator: std.mem.Allocator) !void {
     try removeConfigKeys(allocator, &settings_reset_keys);
 }
@@ -2058,7 +2061,7 @@ test "config: help text is writable to a caller-provided writer" {
 
 test "config: shell defaults and template come from platform pty command" {
     const cfg = Config{};
-    try std.testing.expectEqualStrings(platform_pty_command.defaultShellName(), cfg.shell);
+    try std.testing.expectEqualStrings("", cfg.shell);
     try std.testing.expect(std.mem.indexOf(u8, default_config_template, platform_pty_command.shellSettingComment()) != null);
     try std.testing.expect(std.mem.indexOf(u8, default_config_template, platform_pty_command.defaultShellAssignmentComment()) != null);
 }
@@ -2209,7 +2212,7 @@ test "config: settings reset strips settings-page keys but preserves everything 
     // Untouched: comments, unrelated keys, custom keybinds, and quake-mode
     // (intentionally excluded — it is not a settings-page row).
     try std.testing.expect(std.mem.indexOf(u8, stripped, "# WispTerm config") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stripped, "font-family = JetBrains Mono") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stripped, "font-family = JetBrains Mono") == null);
     try std.testing.expect(std.mem.indexOf(u8, stripped, "keybind = ctrl+shift+p=toggle_command_palette") != null);
     try std.testing.expect(std.mem.indexOf(u8, stripped, "quake-mode = true") != null);
 }

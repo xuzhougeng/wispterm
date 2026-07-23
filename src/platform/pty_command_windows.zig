@@ -160,6 +160,13 @@ pub fn resolveShellCommandLine(out_buf: *CommandLineBuffer, cmd: []const u8) usi
     return len;
 }
 
+pub fn detectDefaultShell(out: []u8) []const u8 {
+    const value = "cmd";
+    const len = @min(out.len, value.len);
+    @memcpy(out[0..len], value[0..len]);
+    return out[0..len];
+}
+
 fn commandLineLowerAscii(command: CommandLine, out: *[512]u8) []const u8 {
     const len = @min(command.len, out.len);
     for (command[0..len], 0..) |unit, i| {

@@ -199,6 +199,7 @@ test {
     _ = @import("renderer/overlays/startup_shortcuts_layout.zig");
     _ = @import("renderer/overlays/settings_page_layout.zig");
     _ = @import("renderer/overlays/settings_page.zig");
+    _ = @import("renderer/overlays/settings_picker.zig");
     _ = @import("memory_center/session.zig");
     _ = @import("renderer/memory_center_renderer.zig");
     _ = @import("renderer/overlays/toasts.zig");

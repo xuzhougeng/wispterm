@@ -100,6 +100,7 @@ pub const Action = enum {
     focus_panel_7,
     focus_panel_8,
     focus_panel_9,
+    open_settings,
     open_config,
 
     pub fn parse(value: []const u8) ?Action {
@@ -154,6 +155,9 @@ pub const Set = struct {
             // Cmd+C has no such conflict, so the migrated Cmd+Shift+C is replaced
             // by the single conventional shortcut rather than kept alongside it.
             set.replaceTrigger(.copy, .{ .mods = .{ .win = true }, .key_code = 'C' });
+            // Closing uses the native macOS Cmd+W convention. Windows/Linux keep
+            // Ctrl+Shift+W so Ctrl+W remains available to shells and TUIs.
+            set.replaceTrigger(.close_panel_or_tab, .{ .mods = .{ .win = true }, .key_code = 'W' });
         }
         return set;
     }
@@ -461,7 +465,7 @@ pub const default_bindings = [_]Binding{
     .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = '7' }, .action = .focus_panel_7 },
     .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = '8' }, .action = .focus_panel_8 },
     .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = '9' }, .action = .focus_panel_9 },
-    .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = Key.comma }, .action = .open_config },
+    .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = Key.comma }, .action = .open_settings },
 };
 
 test "keybind parses ghostty-style global trigger and action" {
@@ -489,6 +493,16 @@ test "keybind defaults include global quake and command palette" {
         .mods = if (is_macos) .{ .win = true, .shift = true } else .{ .ctrl = true, .shift = true },
         .key_code = 'P',
     }).?);
+}
+
+test "keybind defaults open the visual settings page with ctrl comma" {
+    const set = Set.defaults();
+    const is_macos = builtin.target.os.tag == .macos;
+    const action = set.lookupApp(.{
+        .mods = if (is_macos) .{ .win = true } else .{ .ctrl = true },
+        .key_code = Key.comma,
+    });
+    try std.testing.expectEqual(Action.open_settings, action.?);
 }
 
 test "copy default: macOS binds Cmd+C only, other platforms keep Ctrl+Shift+C" {

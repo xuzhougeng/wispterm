@@ -72,7 +72,17 @@ pub fn cwdFromUtf8(cwd_buf: *CwdBuffer, cwd: []const u8) Cwd {
 }
 
 pub fn resolveShellCommandLine(out_buf: *CommandLineBuffer, cmd: []const u8) usize {
-    return impl.resolveShellCommandLine(out_buf, cmd);
+    var detected_buf: [512]u8 = undefined;
+    const effective = effectiveShellConfigValue(cmd, detectedDefaultShell(&detected_buf));
+    return impl.resolveShellCommandLine(out_buf, effective);
+}
+
+pub fn effectiveShellConfigValue(configured: []const u8, detected: []const u8) []const u8 {
+    return if (configured.len == 0) detected else configured;
+}
+
+pub fn detectedDefaultShell(out: []u8) []const u8 {
+    return impl.detectDefaultShell(out);
 }
 
 pub fn commandLineDisplay(command: CommandLine, out: []u8) []const u8 {
@@ -247,6 +257,21 @@ pub fn defaultShellName() []const u8 {
 
 pub const default_shell_name = defaultShellNameForOs(builtin.os.tag);
 
+const WINDOWS_CONFIG_SHELL_CHOICES = [_][]const u8{ "", "cmd", "powershell", "pwsh", "wsl" };
+const MACOS_CONFIG_SHELL_CHOICES = [_][]const u8{ "", "zsh", "bash", "fish", "sh" };
+const POSIX_CONFIG_SHELL_CHOICES = [_][]const u8{ "", "sh", "bash", "zsh", "fish" };
+
+pub fn configShellChoices() []const []const u8 {
+    return configShellChoicesForOs(builtin.os.tag);
+}
+
+pub fn configShellChoicesForOs(os_tag: std.Target.Os.Tag) []const []const u8 {
+    return switch (backendForOs(os_tag)) {
+        .windows => &WINDOWS_CONFIG_SHELL_CHOICES,
+        .unsupported => if (os_tag == .macos) &MACOS_CONFIG_SHELL_CHOICES else &POSIX_CONFIG_SHELL_CHOICES,
+    };
+}
+
 pub fn defaultShellNameForOs(os_tag: std.Target.Os.Tag) []const u8 {
     return switch (backendForOs(os_tag)) {
         .windows => "cmd",
@@ -269,7 +294,7 @@ pub const shell_setting_choices_hint = shellSettingChoicesHintForOs(builtin.os.t
 pub fn shellSettingChoicesHintForOs(os_tag: std.Target.Os.Tag) []const u8 {
     return switch (backendForOs(os_tag)) {
         .windows => "cmd / powershell / pwsh / wsl",
-        .unsupported => "sh / zsh / fish",
+        .unsupported => "sh / bash / zsh / fish",
     };
 }
 
@@ -282,7 +307,7 @@ pub const shell_setting_comment = shellSettingCommentForOs(builtin.os.tag);
 pub fn shellSettingCommentForOs(os_tag: std.Target.Os.Tag) []const u8 {
     return switch (backendForOs(os_tag)) {
         .windows => "# Shell (cmd, powershell, pwsh, wsl, or a custom path)",
-        .unsupported => "# Shell (sh, zsh, fish, or a custom path)",
+        .unsupported => "# Shell (sh, bash, zsh, fish, or a custom path)",
     };
 }
 
@@ -293,13 +318,8 @@ pub fn defaultShellAssignmentComment() []const u8 {
 pub const default_shell_assignment_comment = defaultShellAssignmentCommentForOs(builtin.os.tag);
 
 pub fn defaultShellAssignmentCommentForOs(os_tag: std.Target.Os.Tag) []const u8 {
-    return switch (backendForOs(os_tag)) {
-        .windows => "# shell = cmd",
-        .unsupported => switch (os_tag) {
-            .macos => "# shell = zsh",
-            else => "# shell = sh",
-        },
-    };
+    _ = os_tag;
+    return "# shell =  # empty follows your OS login shell";
 }
 
 pub fn nextConfigShell(shell: []const u8) []const u8 {
@@ -661,6 +681,27 @@ test "platform pty command exposes shell config defaults by target OS" {
     try std.testing.expectEqualStrings("zsh", configReloadTestInitialShellForOs(.linux));
     try std.testing.expectEqualStrings("pwsh", configReloadTestNextShellForOs(.windows));
     try std.testing.expectEqualStrings("fish", configReloadTestNextShellForOs(.linux));
+}
+
+test "settings shell picker offers bash and zsh on POSIX" {
+    const mac_choices = configShellChoicesForOs(.macos);
+    try std.testing.expect(stringChoicesContain(mac_choices, "bash"));
+    try std.testing.expect(stringChoicesContain(mac_choices, "zsh"));
+    const windows_choices = configShellChoicesForOs(.windows);
+    try std.testing.expect(stringChoicesContain(windows_choices, "powershell"));
+    try std.testing.expect(stringChoicesContain(windows_choices, "pwsh"));
+}
+
+fn stringChoicesContain(choices: []const []const u8, expected: []const u8) bool {
+    for (choices) |choice| {
+        if (std.mem.eql(u8, choice, expected)) return true;
+    }
+    return false;
+}
+
+test "empty shell config follows the detected login shell while explicit config wins" {
+    try std.testing.expectEqualStrings("/bin/bash", effectiveShellConfigValue("", "/bin/bash"));
+    try std.testing.expectEqualStrings("zsh", effectiveShellConfigValue("zsh", "/bin/bash"));
 }
 
 test "platform pty command delegates launch context classification to backend" {

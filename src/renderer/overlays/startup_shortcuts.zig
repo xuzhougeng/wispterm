@@ -71,7 +71,7 @@ const STARTUP_SHORTCUT_ENTRIES = [_]StartupShortcut{
     .{ .keys = "Ctrl+A / Ctrl+C in AI", .keys_macos = "Cmd+A / Cmd+C in AI", .action = "Select / copy chat", .action_zh = "选择 / 复制对话" },
     .{ .keys = "Right-click selection", .action = "Copy selection", .action_zh = "复制选区" },
     .{ .keys = "Ctrl+Shift+V", .kind = .action, .first = .paste_image, .action = "Paste image", .action_zh = "粘贴图片" },
-    .{ .keys = "Ctrl+,", .kind = .action, .first = .open_config, .action = "Open config", .action_zh = "打开配置" },
+    .{ .keys = "Ctrl+,", .kind = .action, .first = .open_settings, .action = "Settings", .action_zh = "设置" },
     .{ .keys = "Ctrl++ / Ctrl+-", .kind = .pair, .first = .font_size_increase, .second = .font_size_decrease, .action = "Font size", .action_zh = "字号" },
     .{ .keys = "Alt+Enter", .kind = .action, .first = .toggle_maximize, .action = "Maximize / restore", .action_zh = "最大化 / 还原" },
 };

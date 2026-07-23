@@ -3117,6 +3117,7 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
         .close_panel_or_tab => closePanelOrTab(),
         .toggle_maximize => toggleMaximize(),
         .font_size => |delta| adjustFontSize(delta),
+        .open_settings => overlays.settingsPageOpen(),
         // Late
         .copy => copySelectionToClipboard(),
         .paste => {

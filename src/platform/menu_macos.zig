@@ -96,7 +96,7 @@ fn buildDefaultMenu() void {
     wispterm_macos_menu_begin_submenu("WispTerm");
     wispterm_macos_menu_add_item("About WispTerm", @intFromEnum(SystemAction.about), "", 0);
     wispterm_macos_menu_add_separator();
-    wispterm_macos_menu_add_item("Settings…", id(.open_config), ",", ModCmd);
+    wispterm_macos_menu_add_item("Settings…", id(.open_settings), ",", ModCmd);
     wispterm_macos_menu_add_separator();
     wispterm_macos_menu_add_item("Hide WispTerm", @intFromEnum(SystemAction.hide), "h", ModCmd);
     wispterm_macos_menu_add_item("Hide Others", @intFromEnum(SystemAction.hide_others), "h", ModCmd | ModOpt);
@@ -112,7 +112,7 @@ fn buildDefaultMenu() void {
     wispterm_macos_menu_add_item("Split Right", id(.split_right), "+", AppMod | ModShift);
     wispterm_macos_menu_add_item("Split Down", id(.split_down), "-", AppMod | ModShift);
     wispterm_macos_menu_add_separator();
-    wispterm_macos_menu_add_item("Close Tab", id(.close_panel_or_tab), "w", AppMod | ModShift);
+    wispterm_macos_menu_add_item("Close Tab", id(.close_panel_or_tab), "w", AppMod);
     wispterm_macos_menu_end_submenu();
 
     // Edit.
