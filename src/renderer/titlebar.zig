@@ -25,9 +25,26 @@ pub const SIDEBAR_WIDTH: f32 = 48;
 pub const SIDEBAR_HIDDEN_INDICATOR_W: f32 = 8;
 pub const SIDEBAR_ROW_H: f32 = 42;
 pub const SIDEBAR_TOOLTIP_DWELL_MS: i64 = 350;
+pub const SIDEBAR_TOOLTIP_SHOW_MS: i64 = 3000;
 
 threadlocal var g_sidebar_tooltip_hovered_tab: ?usize = null;
 threadlocal var g_sidebar_tooltip_hover_since: i64 = 0;
+threadlocal var g_sidebar_tooltip_shown_at: i64 = 0;
+
+/// Whether the sidebar tooltip is active (dwell pending or shown but not yet dismissed).
+/// Called by `anyOverlayActive` to keep the frame loop running during the show duration.
+pub fn sidebarTooltipActive() bool {
+    if (!tab.g_sidebar_visible) return false;
+    const ht = g_sidebar_tooltip_hovered_tab orelse return false;
+    _ = ht;
+    const now_ms = std.time.milliTimestamp();
+    // Keep frames ticking during dwell period
+    if (now_ms - g_sidebar_tooltip_hover_since < SIDEBAR_TOOLTIP_DWELL_MS) return true;
+    // Keep frames ticking during the show window
+    if (g_sidebar_tooltip_shown_at > 0 and now_ms - g_sidebar_tooltip_shown_at < SIDEBAR_TOOLTIP_SHOW_MS) return true;
+    return false;
+}
+
 pub const TITLEBAR_TOGGLE_W: f32 = 46;
 pub const TITLEBAR_FOLDER_W: f32 = 46;
 // On macOS the native menu bar (WispTerm › Settings…, command palette) replaces
@@ -1179,10 +1196,11 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
         renderTitlebarChar(plus_icon_cp, plus_icon_x, plus_icon_y, blend(bg, fg, 0.70));
     }
 
-    // Update tooltip hover tracking
+    // Update tooltip hover tracking; reset show timer on any hover change
     if (current_hovered_tab != g_sidebar_tooltip_hovered_tab) {
         g_sidebar_tooltip_hovered_tab = current_hovered_tab;
         g_sidebar_tooltip_hover_since = if (current_hovered_tab != null) now_ms else 0;
+        g_sidebar_tooltip_shown_at = 0;
     }
 }
 
@@ -1220,6 +1238,13 @@ pub fn renderSidebarTooltipOverlay(window_height: f32, titlebar_h: f32) void {
     const ht = g_sidebar_tooltip_hovered_tab orelse return;
     const now_ms = std.time.milliTimestamp();
     if (now_ms - g_sidebar_tooltip_hover_since < SIDEBAR_TOOLTIP_DWELL_MS) return;
+
+    // Auto-dismiss after show duration
+    if (g_sidebar_tooltip_shown_at == 0) {
+        g_sidebar_tooltip_shown_at = now_ms;
+    } else if (now_ms - g_sidebar_tooltip_shown_at >= SIDEBAR_TOOLTIP_SHOW_MS) {
+        return;
+    }
 
     if (tab.g_tabs[ht]) |t| {
         const row_h = sidebarRowHeight();

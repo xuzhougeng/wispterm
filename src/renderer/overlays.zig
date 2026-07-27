@@ -6414,6 +6414,9 @@ pub fn anyOverlayActive(now: i64) bool {
     // Copilot edge handle: shimmer / reveal-fade / hover-tooltip dwell.
     if (copilot_edge_handle.isAnimating()) return true;
 
+    // Sidebar tab tooltip: keep frame loop running during dwell + show duration.
+    if (titlebar.sidebarTooltipActive()) return true;
+
     // FPS 叠层开启时每秒刷新
     if (g_debug_fps) return true;
 
