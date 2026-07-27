@@ -1,3 +1,7 @@
+zig-cache-global/
+local-deps/
+.zig-global-cache/
+*.log
 # Zig build artifacts
 zig-out/
 zig-out-no-webview/
