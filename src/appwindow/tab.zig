@@ -436,6 +436,7 @@ pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: 
     t.tmux_owner = null;
     t.tmux_name_len = 0;
     t.copilot_visible = false;
+    t.terminal_icon = null;
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -1772,6 +1773,7 @@ pub fn restoreTab(
     t.tmux_owner = null;
     t.tmux_name_len = 0;
     t.copilot_visible = false;
+    t.terminal_icon = null;
     applyRestoredTabMetadata(t, snap);
 
     g_tabs[g_tab_count] = t;
