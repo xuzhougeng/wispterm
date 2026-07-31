@@ -1880,13 +1880,13 @@ test "input: right-clicking a sidebar tab starts tab rename" {
     const previous_count = tab.g_tab_count;
     const previous_active = active_tab_state.g_active_tab;
     const previous_sidebar = tab.g_sidebar_visible;
-    const previous_sidebar_width = titlebar.g_sidebar_width;
+    // icon-only sidebar: width is fixed, no resizing
     defer {
         tab.g_tabs = previous_tabs;
         tab.g_tab_count = previous_count;
         active_tab_state.g_active_tab = previous_active;
         tab.g_sidebar_visible = previous_sidebar;
-        titlebar.g_sidebar_width = previous_sidebar_width;
+        // icon-only sidebar: no width to restore
         tab.g_tab_rename_active = false;
         tab.g_tab_rename_idx = 0;
     }
@@ -1899,7 +1899,7 @@ test "input: right-clicking a sidebar tab starts tab rename" {
     tab.g_tab_count = 2;
     active_tab_state.g_active_tab = 0;
     tab.g_sidebar_visible = true;
-    titlebar.g_sidebar_width = 220;
+    // icon-only sidebar: fixed width
     tab.g_tab_rename_active = false;
 
     const y: i32 = @intFromFloat(titlebarHeight() + titlebar.sidebarHeaderHeight() + 6 + titlebar.sidebarRowHeight() / 2);
@@ -2791,10 +2791,9 @@ fn processSizeChange(win: anytype) void {
         "input-size-change client={}x{} dpi={} font_dpi={} cell={d:.2}x{d:.2} term={}x{}",
         .{ size.width, size.height, window_backend.effectiveDpi(win), font.g_dpi, font.cell_width, font.cell_height, AppWindow.term_cols, AppWindow.term_rows },
     );
-    if (titlebar.setSidebarWidth(titlebar.g_sidebar_width, @floatFromInt(size.width))) {
-        syncSidebarWidthToBackend(win);
-        requestInputRepaint();
-    }
+    // icon-only sidebar: fixed width, no resize needed
+    syncSidebarWidthToBackend(win);
+    requestInputRepaint();
 
     syncGridFromWindowSize(size.width, size.height);
 }
@@ -3992,7 +3991,7 @@ fn sidebarLayout() hit_test.SidebarLayout {
         .header_h = @floatCast(titlebar.sidebarHeaderHeight()),
         .row_h = @floatCast(titlebar.sidebarRowHeight()),
         .tab_count = tab.g_tab_count,
-        .resize_hit_width = @floatCast(titlebar.SIDEBAR_RESIZE_HIT_WIDTH),
+        .resize_hit_width = 8,
         .close_btn_w = @floatCast(tab.TAB_CLOSE_BTN_W),
     };
 }
@@ -4073,10 +4072,9 @@ fn hitTestSidebarResizeHandle(xpos: f64, ypos: f64) bool {
     return hit_test.sidebarResizeHandle(sidebarLayout(), xpos, ypos);
 }
 
-fn applySidebarWidthFromMouse(xpos: f64) void {
+fn applySidebarWidthFromMouse(_: f64) void {
     const win = AppWindow.g_window orelse return;
-    const size = clientSize(win);
-    if (!titlebar.setSidebarWidth(@floatCast(xpos), @floatFromInt(size.width))) return;
+    // icon-only sidebar: no resize drag
     syncGridFromWindow(win);
     syncSidebarWidthToBackend(win);
     requestInputRepaint();
