@@ -4604,7 +4604,12 @@ fn handleSidebarPress(xpos: f64, ypos: f64) void {
     if (tab.g_tab_rename_active) tab.commitTabRename();
 
     if (hitTestSidebarPlusButton(xpos, ypos)) {
-        overlays.sessionLauncherOpen();
+        // Left-click on + button → spawn a new terminal tab directly.
+        // Right-click on + button is handled in the right-click release handler
+        // (opens session launcher for choosing window type).
+        if (AppWindow.g_allocator) |alloc| {
+            _ = AppWindow.spawnTab(alloc);
+        }
         return;
     }
 
@@ -5750,7 +5755,19 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
     // Ctrl+right-click (Cmd on macOS) over a local terminal opens the file under
     // the cursor in the OS default app; otherwise follow the configured action.
     if (ev.button == .right and ev.action == .release) {
-        if (handleSidebarTabRenameGesture(@floatFromInt(ev.x), @floatFromInt(ev.y))) return;
+        const rc_xpos: f64 = @floatFromInt(ev.x);
+        const rc_ypos: f64 = @floatFromInt(ev.y);
+        // Right-click on sidebar tab → close confirmation dialog
+        if (hitTestSidebarTab(rc_xpos, rc_ypos)) |tab_idx| {
+            requestCloseTabGesture(tab_idx);
+            return;
+        }
+        // Right-click on sidebar + button → session launcher (new window type dialog)
+        if (hitTestSidebarPlusButton(rc_xpos, rc_ypos)) {
+            overlays.sessionLauncherOpen();
+            return;
+        }
+        if (handleSidebarTabRenameGesture(rc_xpos, rc_ypos)) return;
         if (openInEditorAtRightClick(ev)) return;
         handleConfiguredRightClick();
         return;
@@ -6363,9 +6380,13 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
 
             if (plus_btn_pressed) {
                 plus_btn_pressed = false;
-                // Only fire if still in the + button area
+                // Left-click on + button → spawn a new terminal tab directly.
+                // Right-click on + button is handled in the right-click release
+                // handler (opens session launcher for choosing window type).
                 if (hitTestSidebarPlusButton(xpos, ypos)) {
-                    overlays.sessionLauncherOpen();
+                    if (AppWindow.g_allocator) |alloc| {
+                        _ = AppWindow.spawnTab(alloc);
+                    }
                 }
                 return;
             }

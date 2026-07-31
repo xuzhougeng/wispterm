@@ -55,6 +55,20 @@ A fifth guard — a **layered-dependency** check (e.g. `renderer/overlays/*` mus
 
 ## Hard Rules
 
+### Persistent UI Features (survive all merges)
+
+These features are WispTerm identity features. They must survive every merge from `main`. If a merge overwrites or removes them, restore them before committing the merge.
+
+1. **Icon-only sidebar with hover tooltip.** The left sidebar is 48px wide and shows one centered emoji icon per tab (五行 series — 金🪙 / 木🌲 / 水🌊 / 火🔥 / 土🌍 — for terminal tabs; kind-specific emoji for AI/SSH/skill/port-forward tabs). No tab titles or numbers in the sidebar row. On mouse hover, a floating tooltip popup shows the tab title, current working directory, and git branch. The tooltip is rendered in the overlay pass (`renderSidebarTooltipOverlay`) so it is not overwritten by terminal cells. When the sidebar is hidden, an 8px indicator bar on the left edge shows tab segments (active tab in accent color).
+
+2. **Right-click sidebar tab → close confirmation dialog.** Right-clicking a tab in the sidebar opens a close-confirmation dialog (`close_confirm` / `confirm_modals`) if the tab has a running program. Left-click switches tabs. This uses `requestCloseTabGesture` which checks `close_confirm.shouldConfirm` and opens `overlays.closeConfirmOpen` with the appropriate variant.
+
+3. **Plus button: left-click = new terminal tab, right-click = new session dialog.** Left-clicking the ➕ button at the bottom of the sidebar spawns a new terminal tab directly (`spawnTabWithCwd`). Right-clicking the ➕ button opens the session launcher dialog (`overlays.sessionLauncherOpen`) where the user can choose between terminal, SSH, WSL, AI chat, etc.
+
+4. **Terminal process exit closes the tab/window.** When the terminal's child process exits (PTY EOF / child exit), the tab is automatically closed. If it was the last tab, the window closes. This is handled in the Surface/termio exit path — the PTY read thread detects process exit and triggers `closeTabOnExit` which calls `requestCloseTabGesture` without confirmation (the program has already exited).
+
+When merging from `main`, check that all four features are intact: grep for `renderSidebarTooltipOverlay`, `requestCloseTabGesture`, `sessionLauncherOpen`, and the process-exit close path. If any are missing, restore them from the `dev` branch history before committing the merge.
+
 When changing application **keyboard shortcuts** (bindings in `src/input.zig` and related input paths), **update `README.md`** so the [Keyboard shortcuts](README.md#keyboard-shortcuts) section stays accurate. Also update user-visible shortcut text in `src/renderer/overlays.zig` (startup overlay, command palette entries) when those strings describe the same bindings.
 
 The main render loop is **event-driven** (`src/appwindow/render_gate.zig`): a frame is drawn only when `frameNeedsRender` is true, and `overlays.anyOverlayActive()` deliberately excludes statically-open overlays (command palette / command center, session launcher / new session, settings page) to keep idle CPU low. Therefore, any **overlay or panel key/char handler** in `src/input.zig` (`handleKey`/`handleChar`) that mutates UI state — selection index, filter text, focus — **must request a repaint**, or the change paints only on the next incidental wake (cursor blink ~530ms, mouse move) and navigation visibly lags ("不跟手") identically on Windows and macOS — it is shared logic, not platform code.

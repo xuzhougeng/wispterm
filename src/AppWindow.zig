@@ -4719,6 +4719,85 @@ pub fn closeFocusedSplit() void {
     }
 }
 
+/// Sweep all tabs for terminal surfaces whose child process has exited and
+/// auto-close them. This is the "close on exit" feature — when the shell
+/// process (bash/powershell/ssh) exits, the pane/tab/window is closed
+/// automatically instead of staying open showing "Press Enter to reconnect".
+///
+/// Virtual panes (tmux control-mode) and non-terminal tabs are skipped.
+/// Returns true if any pane was closed (caller should redraw).
+pub fn sweepExitedSurfaces() bool {
+    const allocator = g_allocator orelse return false;
+    var any_closed = false;
+    var ti: usize = 0;
+    while (ti < tab.g_tab_count) {
+        const t = tab.g_tabs[ti] orelse {
+            ti += 1;
+            continue;
+        };
+        // Skip non-terminal tabs and tmux tabs (tmux drives its own removal)
+        if (t.kind != .terminal or t.tmux_window_id != null) {
+            ti += 1;
+            continue;
+        }
+        // Collect exited surfaces first (closing mutates the tree)
+        const MaxClose = 16;
+        var to_close_handles: [MaxClose]SplitTree.Node.Handle = undefined;
+        var to_close_ids: [MaxClose][16]u8 = undefined;
+        var close_count: usize = 0;
+        var it = t.tree.surfaces();
+        while (it.next()) |entry| {
+            if (entry.surface.isExited() and entry.surface.command.hasProcess()) {
+                if (close_count < MaxClose) {
+                    to_close_handles[close_count] = entry.handle;
+                    to_close_ids[close_count] = entry.surface.remote_id;
+                    close_count += 1;
+                }
+            }
+        }
+        if (close_count == 0) {
+            ti += 1;
+            continue;
+        }
+        // Close each exited surface
+        for (0..close_count) |ci| {
+            const handle = to_close_handles[ci];
+            const surface_id = to_close_ids[ci];
+            switch (tab.closeSplitAt(allocator, t, handle)) {
+                .closed_split => {
+                    any_closed = true;
+                    html_server.stopForSurfaceId(&surface_id);
+                    input.g_selecting = false;
+                    handleActiveSurfaceChangeWithinTab();
+                    requestImmediateLayoutResize();
+                },
+                .closed_tab => {
+                    any_closed = true;
+                    file_explorer.onTabClosed(ti);
+                    browser_panel.onTabClosed(ti);
+                    clearUiStateOnTabChange();
+                    // Tab was removed; restart the sweep since indices shifted
+                    return sweepExitedSurfaces();
+                },
+                .close_window => {
+                    any_closed = true;
+                    split_layout.invalidateCachedRects();
+                    cell_renderer.g_current_render_surface = null;
+                    g_should_close = true;
+                    return true;
+                },
+                .no_op => {},
+            }
+        }
+        ti += 1;
+    }
+    if (any_closed) {
+        g_force_rebuild = true;
+        g_cells_valid = false;
+    }
+    return any_closed;
+}
+
 /// Move focus to the split in the given direction. Returns whether focus
 /// actually moved — false means there is no pane in that direction, so callers
 /// can let the key fall through to the terminal instead of consuming it.
@@ -5028,6 +5107,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
                 cell_renderer.drawCells(rend, @floatFromInt(fb_height), left_panels_w + @as(f32, @floatFromInt(pad.left)), pad_top);
                 overlays.renderScrollbar(@floatFromInt(fb_width), @floatFromInt(fb_height), pad_top);
                 overlays.renderResizeOverlayWithOffset(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+                titlebar.renderSidebarTooltipOverlay(@floatFromInt(fb_height), titlebar_offset);
             }
         } else {
             // Multiple splits: render each surface in its own viewport
@@ -5099,6 +5179,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
             ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
             overlays.renderSplitDividers(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
             overlays.renderPaneAgentDots(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
+            titlebar.renderSidebarTooltipOverlay(@floatFromInt(fb_height), titlebar_offset);
         }
     } else {
         gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
@@ -5107,6 +5188,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
         titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+        titlebar.renderSidebarTooltipOverlay(@floatFromInt(fb_height), titlebar_offset);
     }
 
     // Copilot panel draws on top of the reserved right region (terminal tabs only;
@@ -7619,6 +7701,8 @@ fn runMainLoop(self: *AppWindow) !void {
             g_force_rebuild = true;
             g_cells_valid = false;
         }
+        // Auto-close terminal panes whose child process has exited (close-on-exit)
+        _ = sweepExitedSurfaces();
         if (weixin_qr_panel.visible()) {
             const qr_allocator = g_allocator orelse allocator;
             if (weixin_qr_panel.refresh(qr_allocator)) {
