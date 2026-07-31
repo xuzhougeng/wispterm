@@ -29,9 +29,359 @@ pub fn clampSidebarWidth(width: f32, min_width: f32, max_for_window: f32) f32 {
     return @max(min_width, @min(max_for_window, width));
 }
 
+pub const SIDEBAR_STATUS_CLOSE_GAP: f32 = 10;
+pub const SIDEBAR_STATUS_LEADING_GAP: f32 = 6;
+pub const SIDEBAR_TAB_LIST_TOP_GAP: f32 = 6;
+pub const SIDEBAR_TAB_TITLE_GAP: f32 = 8;
+pub const SIDEBAR_TAB_RIGHT_GAP: f32 = 8;
+pub const SIDEBAR_TAB_BELL_W: f32 = 20;
+pub const SIDEBAR_TAB_BELL_GAP: f32 = 4;
+pub const SIDEBAR_TAB_CLOSE_MARGIN: f32 = 4;
+pub const SIDEBAR_TAB_CLOSE_HOVER_INSET_X: f32 = 6;
+pub const SIDEBAR_TAB_CLOSE_HOVER_TOP_PAD: f32 = 10;
+pub const SIDEBAR_TAB_CLOSE_HOVER_SIZE: f32 = 20;
+pub const SIDEBAR_ACTIVE_MARKER_W: f32 = 3;
+pub const SIDEBAR_ACTIVE_MARKER_VPAD: f32 = 6;
+
+pub const SidebarStatusBadgeLayout = struct {
+    x: f32,
+    next_right_content_x: f32,
+};
+
+pub fn sidebarStatusBadgeLayout(close_btn_x: f32, badge_w: f32) SidebarStatusBadgeLayout {
+    const x = close_btn_x - SIDEBAR_STATUS_CLOSE_GAP - badge_w;
+    return .{
+        .x = x,
+        .next_right_content_x = x - SIDEBAR_STATUS_LEADING_GAP,
+    };
+}
+
+pub const SidebarHeaderLayout = struct {
+    top_px: f32,
+    y: f32,
+    h: f32,
+    title_x: f32,
+    title_y: f32,
+    title_max_w: f32,
+    plus_x: f32,
+    plus_y: f32,
+    plus_w: f32,
+    plus_h: f32,
+    rule_y: f32,
+};
+
+pub fn sidebarHeaderLayout(
+    window_height: f32,
+    titlebar_h: f32,
+    sidebar_w: f32,
+    header_h: f32,
+    title_x: f32,
+    plus_w: f32,
+    plus_margin: f32,
+    titlebar_cell_h: f32,
+) SidebarHeaderLayout {
+    const y = window_height - titlebar_h - header_h;
+    const plus_x = sidebar_w - plus_w - plus_margin;
+    return .{
+        .top_px = titlebar_h,
+        .y = y,
+        .h = header_h,
+        .title_x = title_x,
+        .title_y = y + (header_h - titlebar_cell_h) / 2,
+        .title_max_w = @max(0.0, sidebar_w - plus_w - title_x - 12.0),
+        .plus_x = plus_x,
+        .plus_y = y,
+        .plus_w = plus_w,
+        .plus_h = header_h,
+        .rule_y = y,
+    };
+}
+
+pub const SidebarTabRowLayout = struct {
+    row_top_px: f32,
+    row_y: f32,
+    row_h: f32,
+    number_x: f32,
+    number_w: f32,
+    title_x: f32,
+    title_max_w: f32,
+    text_y: f32,
+    close_x: f32,
+    right_content_x: f32,
+    badge_x: f32,
+    badge_w: f32,
+    bell_x: f32,
+    bell_w: f32,
+    active_marker_x: f32,
+    active_marker_y: f32,
+    active_marker_w: f32,
+    active_marker_h: f32,
+    close_hover_x: f32,
+    close_hover_y: f32,
+    close_hover_w: f32,
+    close_hover_h: f32,
+};
+
+pub const SidebarTabTone = enum {
+    active,
+    inactive,
+    muted,
+};
+
+pub const SidebarTabVisual = struct {
+    active: bool,
+    hovered: bool,
+    draw_active_background: bool,
+    draw_hover_background: bool,
+    draw_active_marker: bool,
+    number_tone: SidebarTabTone,
+    title_tone: SidebarTabTone,
+    close_opacity: f32,
+    draw_close: bool,
+    close_hovered: bool,
+    draw_close_hover_background: bool,
+};
+
+pub const SidebarTabVisualInput = struct {
+    row: SidebarTabRowLayout,
+    active: bool,
+    hovered: bool,
+    tab_count: usize,
+    close_opacity: f32,
+    mouse_x: ?f32 = null,
+    close_btn_w: f32,
+};
+
+pub fn sidebarTabVisual(input: SidebarTabVisualInput) SidebarTabVisual {
+    const close_opacity = @max(0.0, @min(1.0, input.close_opacity));
+    const can_close = input.tab_count > 1 and close_opacity > 0.01;
+    const close_hovered = can_close and input.hovered and blk: {
+        const mx = input.mouse_x orelse break :blk false;
+        break :blk mx >= input.row.close_x and mx < input.row.close_x + input.close_btn_w;
+    };
+
+    return .{
+        .active = input.active,
+        .hovered = input.hovered,
+        .draw_active_background = input.active,
+        .draw_hover_background = !input.active and input.hovered,
+        .draw_active_marker = input.active,
+        .number_tone = if (input.active) .active else .muted,
+        .title_tone = if (input.active) .active else .inactive,
+        .close_opacity = close_opacity,
+        .draw_close = can_close,
+        .close_hovered = close_hovered,
+        .draw_close_hover_background = close_hovered,
+    };
+}
+
+pub fn sidebarTabRowLayout(
+    window_height: f32,
+    titlebar_h: f32,
+    header_h: f32,
+    row_h_full: f32,
+    sidebar_w: f32,
+    tab_idx: usize,
+    number_x: f32,
+    number_w: f32,
+    close_btn_w: f32,
+    titlebar_cell_h: f32,
+    show_agent_badge: bool,
+    agent_badge_w: f32,
+    show_bell: bool,
+) ?SidebarTabRowLayout {
+    const list_top_px = titlebar_h + header_h + SIDEBAR_TAB_LIST_TOP_GAP;
+    const row_top_px = list_top_px + @as(f32, @floatFromInt(tab_idx)) * row_h_full;
+    if (row_top_px >= window_height) return null;
+
+    const row_h = @min(row_h_full, window_height - row_top_px);
+    if (row_h <= 0) return null;
+
+    const row_y = window_height - row_top_px - row_h;
+    const close_x = sidebar_w - close_btn_w - SIDEBAR_TAB_CLOSE_MARGIN;
+    var right_content_x = close_x - SIDEBAR_STATUS_CLOSE_GAP;
+    var badge_x: f32 = 0;
+    const badge_w = if (show_agent_badge) @max(0.0, agent_badge_w) else 0.0;
+    if (show_agent_badge) {
+        const badge = sidebarStatusBadgeLayout(close_x, badge_w);
+        badge_x = badge.x;
+        right_content_x = badge.next_right_content_x;
+    }
+
+    var bell_x: f32 = 0;
+    const bell_w = if (show_bell) SIDEBAR_TAB_BELL_W else 0.0;
+    if (show_bell) {
+        bell_x = right_content_x - SIDEBAR_TAB_BELL_W;
+        right_content_x = bell_x - SIDEBAR_TAB_BELL_GAP;
+    }
+
+    const title_x = number_x + number_w + SIDEBAR_TAB_TITLE_GAP;
+    const marker_h = @max(0.0, row_h - SIDEBAR_ACTIVE_MARKER_VPAD * 2.0);
+    return .{
+        .row_top_px = row_top_px,
+        .row_y = row_y,
+        .row_h = row_h,
+        .number_x = number_x,
+        .number_w = number_w,
+        .title_x = title_x,
+        .title_max_w = @max(0.0, right_content_x - title_x - SIDEBAR_TAB_RIGHT_GAP),
+        .text_y = row_y + (row_h - titlebar_cell_h) / 2.0,
+        .close_x = close_x,
+        .right_content_x = right_content_x,
+        .badge_x = badge_x,
+        .badge_w = badge_w,
+        .bell_x = bell_x,
+        .bell_w = bell_w,
+        .active_marker_x = 0,
+        .active_marker_y = row_y + SIDEBAR_ACTIVE_MARKER_VPAD,
+        .active_marker_w = SIDEBAR_ACTIVE_MARKER_W,
+        .active_marker_h = marker_h,
+        .close_hover_x = close_x + SIDEBAR_TAB_CLOSE_HOVER_INSET_X,
+        .close_hover_y = row_y + SIDEBAR_TAB_CLOSE_HOVER_TOP_PAD,
+        .close_hover_w = SIDEBAR_TAB_CLOSE_HOVER_SIZE,
+        .close_hover_h = SIDEBAR_TAB_CLOSE_HOVER_SIZE,
+    };
+}
+
 /// Printable-ASCII passthrough, else '?'.
 pub fn fallbackCodepoint(byte: u8) u32 {
     return if (byte >= 0x20 and byte <= 0x7e) byte else '?';
+}
+
+pub const TopBarLayout = struct {
+    top_y: f32,
+    toggle_x: f32,
+    caption_button_w: f32,
+    caption_start_x: f32,
+    caption_buttons: CaptionButtonRects,
+    config_x: f32,
+    help_x: f32,
+    copilot_x: f32,
+    title_text_x: f32,
+    title_text_max_w: f32,
+};
+
+pub const Rect = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+};
+
+pub const CaptionButtonKind = enum {
+    minimize,
+    maximize,
+    close,
+};
+
+pub const CaptionButtonIcon = enum {
+    minimize,
+    maximize,
+    restore,
+    close,
+};
+
+pub const CaptionButtonRects = struct {
+    minimize: Rect,
+    maximize: Rect,
+    close: Rect,
+
+    pub fn rectForKind(self: CaptionButtonRects, kind: CaptionButtonKind) Rect {
+        return switch (kind) {
+            .minimize => self.minimize,
+            .maximize => self.maximize,
+            .close => self.close,
+        };
+    }
+};
+
+pub const CaptionButtonState = struct {
+    hovered: bool = false,
+    focused: bool = false,
+    maximized: bool = false,
+    fullscreen: bool = false,
+};
+
+pub const CaptionButtonVisual = struct {
+    kind: CaptionButtonKind,
+    rect: Rect,
+    hover_rect: Rect,
+    hovered: bool,
+    icon: CaptionButtonIcon,
+};
+
+pub fn captionButtonRects(window_width: f32, top_y: f32, button_h: f32, button_w: f32) CaptionButtonRects {
+    const start_x = window_width - button_w * 3.0;
+    return .{
+        .minimize = .{ .x = start_x, .y = top_y, .w = button_w, .h = button_h },
+        .maximize = .{ .x = start_x + button_w, .y = top_y, .w = button_w, .h = button_h },
+        .close = .{ .x = start_x + button_w * 2.0, .y = top_y, .w = button_w, .h = button_h },
+    };
+}
+
+pub fn captionButtonIcon(kind: CaptionButtonKind, maximized: bool, fullscreen: bool) CaptionButtonIcon {
+    return switch (kind) {
+        .minimize => .minimize,
+        .maximize => if (maximized or fullscreen) .restore else .maximize,
+        .close => .close,
+    };
+}
+
+pub fn captionButtonHoverRect(kind: CaptionButtonKind, rect: Rect, focused: bool, maximized: bool) Rect {
+    if (kind != .close or !focused or maximized) return rect;
+    return .{
+        .x = rect.x,
+        .y = rect.y + 1.0,
+        .w = @max(0.0, rect.w - 1.0),
+        .h = @max(0.0, rect.h - 1.0),
+    };
+}
+
+pub fn captionButtonVisual(kind: CaptionButtonKind, rect: Rect, state: CaptionButtonState) CaptionButtonVisual {
+    return .{
+        .kind = kind,
+        .rect = rect,
+        .hover_rect = captionButtonHoverRect(kind, rect, state.focused, state.maximized),
+        .hovered = state.hovered,
+        .icon = captionButtonIcon(kind, state.maximized, state.fullscreen),
+    };
+}
+
+/// Window-top chrome geometry for the app-drawn titlebar.
+///
+/// The renderer consumes this in framebuffer coordinates, with Y=0 at the
+/// bottom. Width arguments may be zero on platforms where those controls are
+/// hosted outside WispTerm's titlebar.
+pub fn topBarLayout(
+    window_width: f32,
+    window_height: f32,
+    titlebar_h: f32,
+    left_reserved: f32,
+    toggle_w: f32,
+    config_w: f32,
+    help_w: f32,
+    copilot_w: f32,
+    caption_button_w: f32,
+) TopBarLayout {
+    const caption_area_w = caption_button_w * 3.0;
+    const caption_start_x = window_width - caption_area_w;
+    const caption_buttons = captionButtonRects(window_width, window_height - titlebar_h, titlebar_h, caption_button_w);
+    const config_x = caption_start_x - config_w;
+    const help_x = config_x - help_w;
+    const copilot_x = help_x - copilot_w;
+    const title_text_x = left_reserved + toggle_w + 10.0;
+    return .{
+        .top_y = window_height - titlebar_h,
+        .toggle_x = left_reserved,
+        .caption_button_w = caption_button_w,
+        .caption_start_x = caption_start_x,
+        .caption_buttons = caption_buttons,
+        .config_x = config_x,
+        .help_x = help_x,
+        .copilot_x = copilot_x,
+        .title_text_x = title_text_x,
+        .title_text_max_w = @max(0.0, copilot_x - title_text_x - 12.0),
+    };
 }
 
 test "pointInRect inside / edges / outside" {
@@ -64,6 +414,146 @@ test "clampSidebarWidth bounds" {
     try std.testing.expectEqual(@as(f32, 300), clampSidebarWidth(300, 160, 720));
 }
 
+test "sidebar status badge leaves readable gap before close button" {
+    const close_btn_x: f32 = 184;
+    const badge_w: f32 = 34;
+    const layout = sidebarStatusBadgeLayout(close_btn_x, badge_w);
+
+    try std.testing.expectEqual(@as(f32, 10), close_btn_x - (layout.x + badge_w));
+    try std.testing.expectEqual(@as(f32, close_btn_x - 10 - badge_w - 6), layout.next_right_content_x);
+}
+
+test "sidebarHeaderLayout computes header title and plus button geometry" {
+    const l = sidebarHeaderLayout(820, 57, 220, 46, 14, 42, 6, 23);
+
+    try std.testing.expectEqual(@as(f32, 57), l.top_px);
+    try std.testing.expectEqual(@as(f32, 717), l.y);
+    try std.testing.expectEqual(@as(f32, 46), l.h);
+    try std.testing.expectEqual(@as(f32, 14), l.title_x);
+    try std.testing.expectEqual(@as(f32, 728.5), l.title_y);
+    try std.testing.expectEqual(@as(f32, 172), l.plus_x);
+    try std.testing.expectEqual(@as(f32, 717), l.plus_y);
+    try std.testing.expectEqual(@as(f32, 152), l.title_max_w);
+    try std.testing.expectEqual(@as(f32, 717), l.rule_y);
+}
+
+test "sidebarTabRowLayout computes tab text and affordance slots" {
+    const l = sidebarTabRowLayout(820, 57, 46, 45, 220, 1, 14, 28, 36, 23, true, 34, true).?;
+
+    try std.testing.expectEqual(@as(f32, 154), l.row_top_px);
+    try std.testing.expectEqual(@as(f32, 621), l.row_y);
+    try std.testing.expectEqual(@as(f32, 45), l.row_h);
+    try std.testing.expectEqual(@as(f32, 14), l.number_x);
+    try std.testing.expectEqual(@as(f32, 28), l.number_w);
+    try std.testing.expectEqual(@as(f32, 50), l.title_x);
+    try std.testing.expectEqual(@as(f32, 180), l.close_x);
+    try std.testing.expectEqual(@as(f32, 136), l.badge_x);
+    try std.testing.expectEqual(@as(f32, 110), l.bell_x);
+    try std.testing.expectEqual(@as(f32, 106), l.right_content_x);
+    try std.testing.expectEqual(@as(f32, 48), l.title_max_w);
+    try std.testing.expectEqual(@as(f32, 632), l.text_y);
+    try std.testing.expectEqual(@as(f32, 627), l.active_marker_y);
+    try std.testing.expectEqual(@as(f32, 33), l.active_marker_h);
+    try std.testing.expectEqual(@as(f32, 186), l.close_hover_x);
+    try std.testing.expectEqual(@as(f32, 631), l.close_hover_y);
+}
+
+test "sidebarTabRowLayout clips bottom row and reports offscreen rows" {
+    const clipped = sidebarTabRowLayout(160, 30, 40, 32, 200, 2, 14, 24, 36, 18, false, 0, false).?;
+
+    try std.testing.expectEqual(@as(f32, 140), clipped.row_top_px);
+    try std.testing.expectEqual(@as(f32, 20), clipped.row_h);
+    try std.testing.expectEqual(@as(f32, 0), clipped.row_y);
+    try std.testing.expectEqual(@as(f32, 8), clipped.active_marker_h);
+
+    try std.testing.expectEqual(
+        @as(?SidebarTabRowLayout, null),
+        sidebarTabRowLayout(160, 30, 40, 32, 200, 3, 14, 24, 36, 18, false, 0, false),
+    );
+}
+
+test "sidebarTabRowLayout clamps title width in narrow sidebars" {
+    const l = sidebarTabRowLayout(400, 40, 46, 42, 96, 0, 14, 30, 36, 20, true, 32, true).?;
+
+    try std.testing.expectEqual(@as(f32, 52), l.title_x);
+    try std.testing.expectEqual(@as(f32, 56), l.close_x);
+    try std.testing.expectEqual(@as(f32, 14), l.badge_x);
+    try std.testing.expectEqual(@as(f32, -12), l.bell_x);
+    try std.testing.expectEqual(@as(f32, 0), l.title_max_w);
+}
+
+test "sidebarTabVisual maps active hover and text tones" {
+    const row = sidebarTabRowLayout(820, 57, 46, 45, 220, 0, 14, 28, 36, 23, false, 0, false).?;
+
+    const visual = sidebarTabVisual(.{
+        .row = row,
+        .active = true,
+        .hovered = true,
+        .tab_count = 3,
+        .close_opacity = 0.5,
+        .mouse_x = row.close_x + 4,
+        .close_btn_w = 36,
+    });
+
+    try std.testing.expect(visual.draw_active_background);
+    try std.testing.expect(!visual.draw_hover_background);
+    try std.testing.expect(visual.draw_active_marker);
+    try std.testing.expectEqual(SidebarTabTone.active, visual.number_tone);
+    try std.testing.expectEqual(SidebarTabTone.active, visual.title_tone);
+    try std.testing.expect(visual.draw_close);
+    try std.testing.expect(visual.close_hovered);
+}
+
+test "sidebarTabVisual suppresses close affordance for single tabs" {
+    const row = sidebarTabRowLayout(820, 57, 46, 45, 220, 0, 14, 28, 36, 23, false, 0, false).?;
+
+    const visual = sidebarTabVisual(.{
+        .row = row,
+        .active = false,
+        .hovered = true,
+        .tab_count = 1,
+        .close_opacity = 1.0,
+        .mouse_x = row.close_x + 4,
+        .close_btn_w = 36,
+    });
+
+    try std.testing.expect(!visual.draw_active_background);
+    try std.testing.expect(visual.draw_hover_background);
+    try std.testing.expectEqual(SidebarTabTone.muted, visual.number_tone);
+    try std.testing.expectEqual(SidebarTabTone.inactive, visual.title_tone);
+    try std.testing.expect(!visual.draw_close);
+    try std.testing.expect(!visual.close_hovered);
+}
+
+test "sidebarTabVisual clamps opacity and requires row hover for close hover" {
+    const row = sidebarTabRowLayout(820, 57, 46, 45, 220, 0, 14, 28, 36, 23, false, 0, false).?;
+
+    const outside = sidebarTabVisual(.{
+        .row = row,
+        .active = false,
+        .hovered = false,
+        .tab_count = 3,
+        .close_opacity = 2.0,
+        .mouse_x = row.close_x + 4,
+        .close_btn_w = 36,
+    });
+    try std.testing.expectEqual(@as(f32, 1.0), outside.close_opacity);
+    try std.testing.expect(outside.draw_close);
+    try std.testing.expect(!outside.close_hovered);
+
+    const faded = sidebarTabVisual(.{
+        .row = row,
+        .active = false,
+        .hovered = true,
+        .tab_count = 3,
+        .close_opacity = 0.01,
+        .mouse_x = row.close_x + 4,
+        .close_btn_w = 36,
+    });
+    try std.testing.expect(!faded.draw_close);
+    try std.testing.expect(!faded.close_hovered);
+}
+
 test "fallbackCodepoint maps printable ASCII, else '?'" {
     try std.testing.expectEqual(@as(u32, 'A'), fallbackCodepoint('A'));
     try std.testing.expectEqual(@as(u32, 0x20), fallbackCodepoint(0x20)); // space — inclusive low bound
@@ -72,4 +562,71 @@ test "fallbackCodepoint maps printable ASCII, else '?'" {
     try std.testing.expectEqual(@as(u32, '?'), fallbackCodepoint(0x7f)); // just above
     try std.testing.expectEqual(@as(u32, '?'), fallbackCodepoint(0x07));
     try std.testing.expectEqual(@as(u32, '?'), fallbackCodepoint(0xC3));
+}
+
+test "topBarLayout computes titlebar chrome rectangles" {
+    const l = topBarLayout(1200, 800, 34, 0, 46, 46, 46, 46, 46);
+
+    try std.testing.expectEqual(@as(f32, 766), l.top_y);
+    try std.testing.expectEqual(@as(f32, 0), l.toggle_x);
+    try std.testing.expectEqual(@as(f32, 46), l.caption_button_w);
+    try std.testing.expectEqual(@as(f32, 1062), l.caption_start_x);
+    try std.testing.expectEqual(Rect{ .x = 1062, .y = 766, .w = 46, .h = 34 }, l.caption_buttons.minimize);
+    try std.testing.expectEqual(Rect{ .x = 1108, .y = 766, .w = 46, .h = 34 }, l.caption_buttons.maximize);
+    try std.testing.expectEqual(Rect{ .x = 1154, .y = 766, .w = 46, .h = 34 }, l.caption_buttons.close);
+    try std.testing.expectEqual(@as(f32, 1016), l.config_x);
+    try std.testing.expectEqual(@as(f32, 970), l.help_x);
+    try std.testing.expectEqual(@as(f32, 924), l.copilot_x);
+    try std.testing.expectEqual(@as(f32, 56), l.title_text_x);
+    try std.testing.expectEqual(@as(f32, 856), l.title_text_max_w);
+}
+
+test "topBarLayout collapses optional titlebar controls cleanly" {
+    const l = topBarLayout(360, 240, 40, 160, 46, 0, 0, 0, 46);
+
+    try std.testing.expectEqual(@as(f32, 200), l.top_y);
+    try std.testing.expectEqual(@as(f32, 160), l.toggle_x);
+    try std.testing.expectEqual(@as(f32, 222), l.caption_start_x);
+    try std.testing.expectEqual(Rect{ .x = 222, .y = 200, .w = 46, .h = 40 }, l.caption_buttons.minimize);
+    try std.testing.expectEqual(Rect{ .x = 314, .y = 200, .w = 46, .h = 40 }, l.caption_buttons.close);
+    try std.testing.expectEqual(@as(f32, 222), l.config_x);
+    try std.testing.expectEqual(@as(f32, 222), l.help_x);
+    try std.testing.expectEqual(@as(f32, 222), l.copilot_x);
+    try std.testing.expectEqual(@as(f32, 216), l.title_text_x);
+    try std.testing.expectEqual(@as(f32, 0), l.title_text_max_w);
+}
+
+test "captionButtonRects keeps minimize maximize close ordered at window edge" {
+    const rects = captionButtonRects(1280, 774, 46, 46);
+
+    try std.testing.expectEqual(Rect{ .x = 1142, .y = 774, .w = 46, .h = 46 }, rects.minimize);
+    try std.testing.expectEqual(Rect{ .x = 1188, .y = 774, .w = 46, .h = 46 }, rects.maximize);
+    try std.testing.expectEqual(Rect{ .x = 1234, .y = 774, .w = 46, .h = 46 }, rects.close);
+    try std.testing.expectEqual(rects.maximize, rects.rectForKind(.maximize));
+}
+
+test "captionButtonRects collapses on platforms with native caption controls" {
+    const rects = captionButtonRects(640, 600, 40, 0);
+
+    try std.testing.expectEqual(Rect{ .x = 640, .y = 600, .w = 0, .h = 40 }, rects.minimize);
+    try std.testing.expectEqual(Rect{ .x = 640, .y = 600, .w = 0, .h = 40 }, rects.maximize);
+    try std.testing.expectEqual(Rect{ .x = 640, .y = 600, .w = 0, .h = 40 }, rects.close);
+}
+
+test "captionButtonHoverRect preserves the focused window border for close hover" {
+    const rect = Rect{ .x = 1234, .y = 774, .w = 46, .h = 46 };
+
+    try std.testing.expectEqual(Rect{ .x = 1234, .y = 775, .w = 45, .h = 45 }, captionButtonHoverRect(.close, rect, true, false));
+    try std.testing.expectEqual(rect, captionButtonHoverRect(.close, rect, false, false));
+    try std.testing.expectEqual(rect, captionButtonHoverRect(.close, rect, true, true));
+    try std.testing.expectEqual(rect, captionButtonHoverRect(.maximize, rect, true, false));
+}
+
+test "captionButtonVisual chooses restore glyph for maximized or fullscreen windows" {
+    const rect = Rect{ .x = 1188, .y = 774, .w = 46, .h = 46 };
+
+    try std.testing.expectEqual(CaptionButtonIcon.maximize, captionButtonVisual(.maximize, rect, .{}).icon);
+    try std.testing.expectEqual(CaptionButtonIcon.restore, captionButtonVisual(.maximize, rect, .{ .maximized = true }).icon);
+    try std.testing.expectEqual(CaptionButtonIcon.restore, captionButtonVisual(.maximize, rect, .{ .fullscreen = true }).icon);
+    try std.testing.expectEqual(CaptionButtonIcon.close, captionButtonVisual(.close, rect, .{ .hovered = true }).icon);
 }

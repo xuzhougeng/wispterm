@@ -2,11 +2,14 @@
 
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
-const markdown_preview = @import("../markdown_preview.zig");
-const pdf_preview = @import("../pdf_preview.zig");
+const markdown_preview = @import("../preview/markdown.zig");
+const pdf_preview = @import("../preview/pdf.zig");
 const text_wrap = @import("../text_wrap.zig");
 const ui_perf = @import("../ui_perf.zig");
-const PreviewPane = @import("../preview_pane.zig");
+const PreviewPane = @import("../preview/pane.zig");
+const preview_diagnostics = @import("../preview/diagnostics.zig");
+const markdown_layout = @import("../preview/markdown_layout.zig");
+const preview_image_layout = @import("../preview/image_layout.zig");
 const preview_close_button = @import("../input/preview_close_button.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
@@ -55,11 +58,17 @@ pub fn renderInto(
     window_height: f32,
     close_hovered: bool,
 ) void {
-    if (panel_h <= 0) return;
-
-    // GL origin is bottom-left, so the pane's bottom edge in GL space is:
-    //   window_height - panel_top - panel_h
-    const pane_gl_bottom = window_height - panel_top - panel_h;
+    const layout = markdown_layout.compute(.{
+        .panel_x = panel_x,
+        .panel_top = panel_top,
+        .panel_w = panel_w,
+        .panel_h = panel_h,
+        .window_height = window_height,
+        .header_h = HEADER_HEIGHT,
+        .footer_h = FOOTER_HEIGHT,
+        .pad_x = PAD_X,
+        .pad_y = PAD_Y,
+    }) orelse return;
 
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
@@ -72,13 +81,12 @@ pub fn renderInto(
     const normal = blend(bg, fg, 0.88);
     const strong = blend(bg, fg, 0.96);
 
-    // Side background: fillQuad(x, gl_y, w, h) — gl_y = pane_gl_bottom
-    ui_pipeline.fillQuad(panel_x, pane_gl_bottom, panel_w, panel_h, panel_bg);
+    ui_pipeline.fillQuad(layout.background.x, layout.background.y, layout.background.w, layout.background.h, panel_bg);
 
-    renderHeader(pane, panel_x, panel_w, window_height, panel_top, card_bg, border, muted, normal, accent, close_hovered);
-    renderFooter(pane, panel_x, panel_w, pane_gl_bottom, card_bg, border, muted, normal, accent);
+    renderHeader(pane, layout, card_bg, border, muted, normal, accent, close_hovered);
+    renderFooter(pane, layout, card_bg, border, muted, normal, accent);
 
-    renderDocument(pane, panel_x, panel_w, window_height, panel_top, panel_h, pane_gl_bottom, normal, muted, strong, accent, code_bg, border);
+    renderDocument(pane, layout, normal, muted, strong, accent, code_bg, border);
 }
 
 pub fn deinit() void {
@@ -87,10 +95,7 @@ pub fn deinit() void {
 
 fn renderHeader(
     pane: *const PreviewPane,
-    panel_x: f32,
-    panel_w: f32,
-    window_height: f32,
-    panel_top: f32,
+    layout: markdown_layout.Panel,
     card_bg: [3]f32,
     border: [3]f32,
     muted: [3]f32,
@@ -102,16 +107,14 @@ fn renderHeader(
     // so its top-right corner is free for a close (×) button. The button lets
     // users dismiss the preview with the mouse without knowing the close-split
     // keybind; Ctrl+Shift+W still works too.
-    // header_y (GL): window_height - panel_top - HEADER_HEIGHT.
-    const header_y = window_height - panel_top - HEADER_HEIGHT;
-    ui_pipeline.fillQuad(panel_x, header_y, panel_w, HEADER_HEIGHT, card_bg);
-    ui_pipeline.fillQuad(panel_x, header_y, panel_w, 1, border);
+    ui_pipeline.fillQuad(layout.header.x, layout.header.y, layout.header.w, layout.header.h, card_bg);
+    ui_pipeline.fillQuad(layout.header_rule.x, layout.header_rule.y, layout.header_rule.w, layout.header_rule.h, border);
 
     // Close (×) button, top-right. Geometry comes from the shared pure module
     // (top-down px); flip to GL for drawing. Symmetric box, so the X centers the
     // same in either y-convention.
-    const b = preview_close_button.rect(panel_x, panel_top, panel_w);
-    const btn_gl_y = window_height - b.y - b.h;
+    const b = preview_close_button.rect(layout.panel_x, layout.panel_top, layout.panel_w);
+    const btn_gl_y = layout.window_height - b.y - b.h;
     if (close_hovered) {
         ui_pipeline.fillQuad(b.x, btn_gl_y, b.w, b.h, blend(card_bg, normal, 0.18));
     }
@@ -121,11 +124,11 @@ fn renderHeader(
     // Large text/log files are shown as a scrollable head; tell the user the rest
     // is clipped so they don't mistake the end of the window for the end of file.
     // The banner stops before the × button (b.x) so the two never overlap.
-    if (pane.content_truncated and panel_w > PAD_X * 2) {
+    if (pane.content_truncated and layout.panel_w > PAD_X * 2) {
         var buf: [96]u8 = undefined;
         const label = truncatedBannerText(&buf, pane.sourceText().len);
-        const text_y = header_y + (HEADER_HEIGHT - font.g_titlebar_cell_height) / 2;
-        const banner_x = panel_x + PAD_X;
+        const text_y = layout.headerTextY(font.g_titlebar_cell_height);
+        const banner_x = layout.content_x;
         const banner_max_w = @max(@as(f32, 0), b.x - 8 - banner_x);
         _ = titlebar.renderTextLimited(label, banner_x, text_y, accent, banner_max_w);
     }
@@ -147,19 +150,15 @@ fn truncatedBannerText(buf: []u8, head_bytes: usize) []const u8 {
 
 fn renderFooter(
     pane: *PreviewPane,
-    panel_x: f32,
-    panel_w: f32,
-    pane_gl_bottom: f32,
+    layout: markdown_layout.Panel,
     card_bg: [3]f32,
     border: [3]f32,
     muted: [3]f32,
     normal: [3]f32,
     accent: [3]f32,
 ) void {
-    // Footer sits at the pane's bottom edge in GL space.
-    // Dock check: pane_gl_bottom = window_height - titlebar_h - (window_height - titlebar_h) = 0 ✓
-    ui_pipeline.fillQuad(panel_x, pane_gl_bottom, panel_w, FOOTER_HEIGHT, card_bg);
-    ui_pipeline.fillQuad(panel_x, pane_gl_bottom + FOOTER_HEIGHT - 1, panel_w, 1, border);
+    ui_pipeline.fillQuad(layout.footer.x, layout.footer.y, layout.footer.w, layout.footer.h, card_bg);
+    ui_pipeline.fillQuad(layout.footer_rule.x, layout.footer_rule.y, layout.footer_rule.w, layout.footer_rule.h, border);
 
     const badge = switch (pane.kind) {
         .markdown => "MD",
@@ -169,16 +168,16 @@ fn renderFooter(
         .image => "IMG",
         .pdf => "PDF",
     };
-    const text_y = pane_gl_bottom + (FOOTER_HEIGHT - font.g_titlebar_cell_height) / 2;
-    var badge_end = titlebar.renderTextLimited(badge, panel_x + PAD_X, text_y, accent, 40);
+    const text_y = layout.footerTextY(font.g_titlebar_cell_height);
+    var badge_end = titlebar.renderTextLimited(badge, layout.content_x, text_y, accent, 40);
     if (pane.kind == .pdf and pane.pdf_page_count > 0) {
         var page_buf: [24]u8 = undefined;
         const label = pdf_preview.formatPageIndicator(&page_buf, pane.pdf_page, pane.pdf_page_count);
         badge_end = titlebar.renderTextLimited(label, badge_end + 8, text_y, muted, 64);
     }
-    const content_right = panel_x + panel_w - PAD_X;
+    const content_right = layout.contentRight();
     const title_x = badge_end + 10;
-    const title_max_w = @max(40, @min(panel_w * 0.34, content_right - title_x));
+    const title_max_w = @max(40, @min(layout.panel_w * 0.34, content_right - title_x));
     const title_end = titlebar.renderTextLimited(pane.title(), title_x, text_y, normal, title_max_w);
 
     var sep_x = title_end + 10;
@@ -190,12 +189,7 @@ fn renderFooter(
 
 fn renderDocument(
     pane: *PreviewPane,
-    panel_x: f32,
-    panel_w: f32,
-    window_height: f32,
-    panel_top: f32,
-    panel_h: f32,
-    pane_gl_bottom: f32,
+    layout: markdown_layout.Panel,
     normal: [3]f32,
     muted: [3]f32,
     strong: [3]f32,
@@ -203,30 +197,21 @@ fn renderDocument(
     code_bg: [3]f32,
     border: [3]f32,
 ) void {
-    // body_top (from window top): panel_top + HEADER_HEIGHT + PAD_Y
-    // Dock check: titlebar_h + HEADER_HEIGHT + PAD_Y ✓
-    const body_top = panel_top + HEADER_HEIGHT + PAD_Y;
-    // body_bottom margin (from window BOTTOM): pane_gl_bottom + FOOTER_HEIGHT + PAD_Y
-    // Dock check: 0 + FOOTER_HEIGHT + PAD_Y = FOOTER_HEIGHT + PAD_Y ✓
-    const body_bottom_margin = pane_gl_bottom + FOOTER_HEIGHT + PAD_Y;
-    // body_h = window_height - body_top - body_bottom_margin
-    // Dock check: window_height - (titlebar_h+HEADER_HEIGHT+PAD_Y) - (FOOTER_HEIGHT+PAD_Y) ✓
-    const body_h = window_height - body_top - body_bottom_margin;
-    if (body_h <= 0) return;
+    if (!layout.bodyAvailable()) return;
 
     if (pane.kind.isRaster()) {
-        renderImageDocument(pane, panel_x, panel_w, window_height, body_top, body_h, normal, muted, border);
+        renderImageDocument(pane, layout.panel_x, layout.panel_w, layout.window_height, layout.body_top, layout.body_h, normal, muted, border);
         return;
     }
     if (markdown_preview.delimiterForKind(pane.kind)) |delimiter| {
-        renderDelimitedDocument(pane, panel_x, panel_w, window_height, body_top, body_h, delimiter, normal, muted, strong, accent, code_bg, border);
+        renderDelimitedDocument(pane, layout.panel_x, layout.panel_w, layout.window_height, layout.body_top, layout.body_h, delimiter, normal, muted, strong, accent, code_bg, border);
         return;
     }
 
     const row_h = @max(22, font.g_titlebar_cell_height + LINE_GAP);
-    const body_origin = body_top - pane.scroll_offset;
+    const body_origin = layout.body_top - pane.scroll_offset;
     var y_from_top: f32 = body_origin;
-    const max_w = panel_w - PAD_X * 2;
+    const max_w = layout.content_w;
 
     var in_code = false;
     var rendered: usize = 0;
@@ -239,11 +224,11 @@ fn renderDocument(
         // full content height (needed to clamp scroll) without extra draw cost.
         const consumed = renderMarkdownLine(
             pane,
-            panel_x + PAD_X,
+            layout.content_x,
             max_w,
-            window_height,
-            body_top,
-            body_h,
+            layout.window_height,
+            layout.body_top,
+            layout.body_h,
             y_from_top,
             row_h,
             line,
@@ -263,18 +248,17 @@ fn renderDocument(
     pane.line_heights.generation = pane.content_generation;
     // Clamp scroll to the laid-out height so the pane can't scroll past its last
     // rendered line into blank space (large heads now stop cleanly at the end).
-    pane.max_scroll = @max(0, (y_from_top - body_origin) - body_h);
+    pane.max_scroll = @max(0, (y_from_top - body_origin) - layout.body_h);
 
     // Draw selection highlights for text-based panes.
     if (pane.kind != .markdown and pane.kind != .text and pane.kind != .csv and pane.kind != .tsv) {
-        _ = panel_h;
         return;
     }
     if (pane.hasSelection()) {
         const sel_start = pane.selection.start();
         const sel_end = pane.selection.end();
         const sel_color = blend(AppWindow.g_theme.background, AppWindow.g_theme.foreground, 0.44);
-        const body_x = panel_x + PAD_X;
+        const body_x = layout.panel_x + PAD_X;
         var line_y = body_origin;
         var i: usize = 0;
         while (i < sel_start and i < pane.line_heights.len) : (i += 1) {
@@ -282,16 +266,15 @@ fn renderDocument(
         }
         while (i <= sel_end and i < pane.line_heights.len) : (i += 1) {
             const h = pane.line_heights.buf[i];
-            const top = @max(line_y, body_top);
-            const bottom = @min(line_y + h, body_top + body_h);
+            const top = @max(line_y, layout.body_top);
+            const bottom = @min(line_y + h, layout.body_top + layout.body_h);
             if (bottom > top) {
-                const gl_y = window_height - bottom;
+                const gl_y = layout.window_height - bottom;
                 ui_pipeline.fillQuad(body_x, gl_y, max_w, bottom - top, sel_color);
             }
             line_y += h;
         }
     }
-    _ = panel_h;
 }
 
 /// Number of non-blank lines — the count of rows the delimited renderer actually
@@ -727,31 +710,30 @@ fn renderImageDocument(
         return;
     }
 
-    const image_w: f32 = @floatFromInt(pane.image_width);
-    const image_h: f32 = @floatFromInt(pane.image_height);
-    if (image_w <= 0 or image_h <= 0) return;
+    const image_size = preview_image_layout.Size{
+        .width = @floatFromInt(pane.image_width),
+        .height = @floatFromInt(pane.image_height),
+    };
+    const view_size = preview_image_layout.Size{ .width = content_w, .height = body_h };
+    const draw_size = preview_image_layout.drawSize(image_size, view_size, pane.imageZoom()) orelse return;
+    pane.clampImagePan(content_w, body_h, draw_size.width, draw_size.height);
 
-    const scale = @min(content_w / image_w, body_h / image_h) * pane.imageZoom();
-    if (scale <= 0) return;
-
-    const draw_w = image_w * scale;
-    const draw_h = image_h * scale;
-    pane.clampImagePan(content_w, body_h, draw_w, draw_h);
-    const draw_x = content_x + (content_w - draw_w) / 2 + pane.imagePanX();
-    const draw_top = body_top + (body_h - draw_h) / 2 + pane.imagePanY();
-    const draw_y = window_height - draw_top - draw_h;
-
-    const clip_x: i32 = @intFromFloat(@max(0, @floor(content_x)));
-    const clip_y: i32 = @intFromFloat(@max(0, @floor(window_height - body_top - body_h)));
-    const clip_w: i32 = @intFromFloat(@max(0, @ceil(content_w)));
-    const clip_h: i32 = @intFromFloat(@max(0, @ceil(body_h)));
-    if (clip_w <= 0 or clip_h <= 0) return;
+    const layout = preview_image_layout.compute(.{
+        .content_x = content_x,
+        .content_width = content_w,
+        .body_top = body_top,
+        .body_height = body_h,
+        .window_height = window_height,
+        .image = image_size,
+        .zoom = pane.imageZoom(),
+        .pan = .{ .x = pane.imagePanX(), .y = pane.imagePanY() },
+    }) orelse return;
 
     // Clip the image to the body area, restoring any outer scissor afterward.
     const saved_scissor = gpu.state.scissorState();
-    gpu.state.setScissor(.{ .x = clip_x, .y = clip_y, .w = clip_w, .h = clip_h });
-    ui_pipeline.fillQuad(draw_x - 1, draw_y - 1, draw_w + 2, draw_h + 2, border);
-    drawImageTexture(pane, draw_x, draw_y, draw_w, draw_h, window_height);
+    gpu.state.setScissor(.{ .x = layout.scissor.x, .y = layout.scissor.y, .w = layout.scissor.w, .h = layout.scissor.h });
+    ui_pipeline.fillQuad(layout.border.x, layout.border.y, layout.border.w, layout.border.h, border);
+    drawImageTexture(pane, layout.vertices);
     gpu.state.restoreScissor(saved_scissor);
 }
 
@@ -772,46 +754,69 @@ fn renderStatusMessage(
 
 fn ensureImageTexture(pane: *PreviewPane) bool {
     const generation = pane.contentGeneration();
-    if (pane.image_generation == generation) return pane.image_texture != 0 and !pane.image_failed;
+    if (pane.image_generation == generation) return pane.image_texture.isValid() and !pane.image_failed;
 
     pane.unloadImageTexture();
     pane.image_generation = generation;
     pane.image_failed = true;
 
     const source = pane.sourceText();
-    if (source.len == 0 or source.len > std.math.maxInt(c_int)) return false;
+    if (source.len == 0 or source.len > std.math.maxInt(c_int)) {
+        var bytes_buf: [32]u8 = undefined;
+        const bytes_s = std.fmt.bufPrint(&bytes_buf, "{d}", .{source.len}) catch "";
+        preview_diagnostics.debug("image-decode", &.{
+            .{ .key = "stage", .value = "invalid-source-size" },
+            .{ .key = "kind", .value = @tagName(pane.kind) },
+            .{ .key = "path", .value = pane.path() },
+            .{ .key = "bytes", .value = bytes_s },
+        });
+        return false;
+    }
 
     var w: c_int = 0;
     var h: c_int = 0;
     var n: c_int = 0;
     const data = c.stbi_load_from_memory(@ptrCast(source.ptr), @intCast(source.len), &w, &h, &n, 4);
-    if (data == null or w <= 0 or h <= 0) return false;
+    if (data == null or w <= 0 or h <= 0) {
+        var bytes_buf: [32]u8 = undefined;
+        const bytes_s = std.fmt.bufPrint(&bytes_buf, "{d}", .{source.len}) catch "";
+        preview_diagnostics.debug("image-decode", &.{
+            .{ .key = "stage", .value = "decode-failed" },
+            .{ .key = "kind", .value = @tagName(pane.kind) },
+            .{ .key = "path", .value = pane.path() },
+            .{ .key = "bytes", .value = bytes_s },
+        });
+        return false;
+    }
     defer c.stbi_image_free(data);
 
     const t = gpu.Texture.create();
-    pane.image_texture = t.handle;
-    if (pane.image_texture == 0) return false;
-
-    gpu.Texture.fromHandle(pane.image_texture).upload2D(w, h, @ptrCast(data), .{ .unpack_alignment = 1 });
+    pane.image_texture = t;
+    pane.image_texture.upload2D(w, h, @ptrCast(data), .{ .unpack_alignment = 1 });
+    if (!pane.image_texture.isValid()) return false;
 
     pane.image_width = w;
     pane.image_height = h;
     pane.image_failed = false;
+    var width_buf: [32]u8 = undefined;
+    var height_buf: [32]u8 = undefined;
+    var bytes_buf: [32]u8 = undefined;
+    const width_s = std.fmt.bufPrint(&width_buf, "{d}", .{w}) catch "";
+    const height_s = std.fmt.bufPrint(&height_buf, "{d}", .{h}) catch "";
+    const bytes_s = std.fmt.bufPrint(&bytes_buf, "{d}", .{source.len}) catch "";
+    preview_diagnostics.debug("image-decode", &.{
+        .{ .key = "stage", .value = "ready" },
+        .{ .key = "kind", .value = @tagName(pane.kind) },
+        .{ .key = "path", .value = pane.path() },
+        .{ .key = "bytes", .value = bytes_s },
+        .{ .key = "width", .value = width_s },
+        .{ .key = "height", .value = height_s },
+    });
     return true;
 }
 
-fn drawImageTexture(pane: *PreviewPane, x: f32, y: f32, w: f32, h: f32, window_height: f32) void {
-    _ = window_height;
-    if (pane.image_texture == 0 or ui_pipeline.emoji.program == 0) return;
-
-    const vertices = [6][4]f32{
-        .{ x, y + h, 0, 0 },
-        .{ x, y, 0, 1 },
-        .{ x + w, y, 1, 1 },
-        .{ x, y + h, 0, 0 },
-        .{ x + w, y, 1, 1 },
-        .{ x + w, y + h, 1, 0 },
-    };
+fn drawImageTexture(pane: *PreviewPane, vertices: preview_image_layout.Vertices) void {
+    if (!pane.image_texture.isValid() or ui_pipeline.emoji.program == 0) return;
 
     ui_pipeline.drawTextureQuad(vertices, pane.image_texture, 1.0);
 }
@@ -1093,6 +1098,12 @@ fn cleanInline(buf: *[1024]u8, text: []const u8) []const u8 {
                 continue;
             }
         }
+        if (ch == '_' and isIntrawordUnderscore(text, i)) {
+            buf[pos] = ch;
+            pos += 1;
+            i += 1;
+            continue;
+        }
         if (ch == '*' or ch == '_' or ch == '`' or ch == '\r' or ch == '\n' or ch == 0x1b) {
             i += 1;
             continue;
@@ -1102,6 +1113,14 @@ fn cleanInline(buf: *[1024]u8, text: []const u8) []const u8 {
         i += 1;
     }
     return std.mem.trim(u8, buf[0..pos], " \t");
+}
+
+fn isIntrawordUnderscore(text: []const u8, index: usize) bool {
+    return index > 0 and index + 1 < text.len and isWordByte(text[index - 1]) and isWordByte(text[index + 1]);
+}
+
+fn isWordByte(ch: u8) bool {
+    return std.ascii.isAlphanumeric(ch) or ch == '_';
 }
 
 const Link = struct { label: []const u8, end: usize };

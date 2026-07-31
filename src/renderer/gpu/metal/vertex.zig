@@ -5,8 +5,9 @@
 //! id; the render encoder consumes the stored layout as D1 grows.
 const c = @import("c.zig");
 const Buffer = @import("Buffer.zig");
+const types = @import("../types.zig");
 
-pub const VaoHandle = c.GLuint;
+pub const VaoHandle = types.VertexArrayHandle;
 
 /// One float vertex attribute (same public fields as the OpenGL backend).
 pub const VertexAttr = struct {

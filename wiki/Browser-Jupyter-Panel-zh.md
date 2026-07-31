@@ -4,9 +4,10 @@
 
 > 不离开终端，在侧边面板里打开网页。
 
-## 内嵌浏览器面板（Windows）
+## 内嵌浏览器面板
 
-在带 WebView2 支持的 Windows 构建上，WispTerm 可以在右侧面板显示网页：
+在带内嵌浏览器后端的构建上（Windows 为 WebView2，macOS 为 WKWebView），WispTerm
+可以在右侧面板显示网页：
 
 - 打开命令中心（`Ctrl+Shift+P`），运行 **Toggle Browser**。
 - `Ctrl` 点击（macOS 上 `Cmd` 点击）终端输出里的 `http://` 或 `https://` 网址，即可
@@ -14,7 +15,7 @@
 - 点击面板的地址栏输入新地址，按 `Enter` 跳转。
 - 拖动面板左边缘可调整宽度。
 
-不带内嵌 WebView2 支持的构建 —— 或没有可用 WebView2 运行时的环境 —— 会改在系统默认
+不带内嵌浏览器支持的构建，或没有可用浏览器运行时的环境，会改在系统默认
 浏览器中打开网址。内嵌面板与 Copilot 侧栏、Markdown 预览共用右侧槽位，因此打开其一会
 隐藏其它。
 

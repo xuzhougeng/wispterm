@@ -9,17 +9,22 @@ const AssetNameParts = struct {
     suffix: []const u8,
 };
 
-pub fn currentPackage(allocator: std.mem.Allocator, webview_enabled: bool) !release_package.Package {
+pub fn currentPackage(
+    allocator: std.mem.Allocator,
+    webview_enabled: bool,
+    gpu_backend: []const u8,
+) !release_package.Package {
     const exe_path = try std.fs.selfExePathAlloc(allocator);
     defer allocator.free(exe_path);
-    const exe_dir = std.fs.path.dirname(exe_path) orelse return release_package.Package.init(.windows, .baseline);
+    const exe_dir = std.fs.path.dirname(exe_path) orelse
+        return release_package.Package.init(.windows, runtimeFlavor(gpu_backend, webview_enabled, false));
     // Either payload marks a compat install: webview2-flavor installs from
     // before the compat package existed carry only the embedded-browser
     // loader, and their next auto-update migrates them onto the compat asset
     // (a superset that adds the bundled console host).
     const has_compat_payload = payloadExists(allocator, exe_dir, embeddedBrowserPayloadPath()) or
         payloadExists(allocator, exe_dir, bundled_console_host_payload_path);
-    return release_package.Package.init(.windows, runtimeFlavor(webview_enabled, has_compat_payload));
+    return release_package.Package.init(.windows, runtimeFlavor(gpu_backend, webview_enabled, has_compat_payload));
 }
 
 fn payloadExists(allocator: std.mem.Allocator, exe_dir: []const u8, name: []const u8) bool {
@@ -41,8 +46,8 @@ fn assetNameParts(package: release_package.Package) ?AssetNameParts {
             .prefix = "wispterm-windows-portable-compat-",
             .suffix = ".zip",
         },
-        .without_embedded_browser_payload => .{
-            .prefix = "wispterm-windows-portable-no-webview-",
+        .opengl => .{
+            .prefix = "wispterm-windows-portable-opengl-",
             .suffix = ".zip",
         },
     };
@@ -65,8 +70,13 @@ pub fn embeddedBrowserPayloadPath() []const u8 {
     return embedded_browser_payload_path;
 }
 
-fn runtimeFlavor(webview_enabled: bool, has_compat_payload: bool) release_package.Flavor {
-    if (!webview_enabled) return .without_embedded_browser_payload;
+fn runtimeFlavor(
+    gpu_backend: []const u8,
+    webview_enabled: bool,
+    has_compat_payload: bool,
+) release_package.Flavor {
+    _ = webview_enabled;
+    if (std.mem.eql(u8, gpu_backend, "opengl")) return .opengl;
     if (has_compat_payload) return .compat;
     return .baseline;
 }

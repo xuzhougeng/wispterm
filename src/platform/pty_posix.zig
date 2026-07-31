@@ -406,7 +406,15 @@ fn childExec(
     // matches the SGR / cursor-control set our ghostty-vt parser implements.
     _ = setenv("TERM", "xterm-256color", 1);
     _ = setenv("COLORTERM", "truecolor", 1);
-    _ = setenv("TERM_PROGRAM", "wispterm", 1);
+    // Advertise as Ghostty (whose VT engine we embed) rather than a bespoke
+    // "wispterm". Full-screen TUIs like Claude Code decide whether to enable the
+    // Kitty keyboard protocol purely from a hardcoded TERM_PROGRAM allowlist
+    // (iTerm.app/WezTerm/ghostty/…) — they never probe at runtime. An
+    // unrecognized value means they never push `CSI > 1 u`, so the protocol stays
+    // off and Shift+Enter can't be told apart from Enter (#302's encoder is then
+    // never reached). TERM stays xterm-256color so SSH/ncurses terminfo lookups
+    // keep working even where xterm-ghostty isn't installed.
+    _ = setenv("TERM_PROGRAM", "ghostty", 1);
     // Some shells refuse to load completions when TERMINFO points at a value
     // that doesn't exist for our TERM choice. Clearing it lets ncurses fall
     // back to the system database.

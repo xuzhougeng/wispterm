@@ -3,7 +3,7 @@
 //! bytes (local/WSL/SSH sources), so it is staged in a private temp file.
 const std = @import("std");
 const pdf_render = @import("pdf_render.zig");
-const pdf_preview = @import("../pdf_preview.zig");
+const pdf_preview = @import("../preview/pdf.zig");
 
 const MAX_PNG_BYTES: usize = 64 * 1024 * 1024;
 

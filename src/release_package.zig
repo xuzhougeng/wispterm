@@ -12,7 +12,8 @@ pub const Flavor = enum {
     /// Full-featured package for older Windows machines: ships the embedded
     /// browser loader plus a modern bundled console host.
     compat,
-    without_embedded_browser_payload,
+    /// Windows fallback package that keeps the OpenGL renderer across updates.
+    opengl,
 };
 
 pub const Package = struct {
@@ -34,5 +35,6 @@ pub const Package = struct {
 test "release package exposes embedded browser payload requirement" {
     try std.testing.expect(Package.init(.windows, .compat).requiresEmbeddedBrowserPayload());
     try std.testing.expect(!Package.init(.windows, .baseline).requiresEmbeddedBrowserPayload());
+    try std.testing.expect(!Package.init(.windows, .opengl).requiresEmbeddedBrowserPayload());
     try std.testing.expect(!(Package{ .platform = .linux }).requiresEmbeddedBrowserPayload());
 }

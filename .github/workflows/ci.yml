@@ -1,0 +1,166 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Decide which jobs need to run from the changed paths. Doc-only changes skip
+  # the zig/windows suites; remote-only changes run just the npm job. Required
+  # checks gated below report "skipped" (which satisfies branch protection)
+  # instead of being filtered out at the `on:` level (which would leave them
+  # pending forever and block the merge).
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      remote: ${{ steps.filter.outputs.remote }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # `code` = anything that isn't pure docs/remote. Single negation glob
+          # so the `some` quantifier means "some changed file is real code".
+          filters: |
+            code:
+              - '!{docs/**,wiki/**,release-notes/**,plans/**,remote/**,tests/macos_e2e/**,**/*.md,*.md}'
+            remote:
+              - 'remote/**'
+
+  zig-fast-linux:
+    name: Zig fast tests / Linux
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Format check
+        run: zig fmt --check build.zig src
+
+      - name: Fetch dependencies
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            zig build test --fetch && exit 0
+            if [ "$attempt" -lt 5 ]; then
+              sleep $((15 * attempt))
+            fi
+          done
+          exit 1
+
+      - name: Fast tests
+        run: zig build test
+
+  zig-full-mac-arm:
+    name: Zig full tests / macOS ARM
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Fetch dependencies
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            zig build test-full -Dtarget=native --fetch && exit 0
+            if [ "$attempt" -lt 5 ]; then
+              sleep $((15 * attempt))
+            fi
+          done
+          exit 1
+
+      - name: Full tests
+        run: zig build test-full -Dtarget=native
+
+  remote-ts:
+    name: Remote TypeScript
+    needs: changes
+    if: ${{ needs.changes.outputs.remote == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: remote
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: remote/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # Production emit: typecheck alone does not validate the Vite client
+      # bundle or the tsc server emit (build:docker = build + build:server).
+      - run: npm run build:docker
+
+  windows-smoke:
+    name: Windows smoke
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    runs-on: windows-2022
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Fetch dependencies
+        shell: pwsh
+        run: |
+          foreach ($attempt in 1..5) {
+            zig build test --fetch
+            if ($LASTEXITCODE -eq 0) {
+              exit 0
+            }
+            if ($attempt -lt 5) {
+              Start-Sleep -Seconds (15 * $attempt)
+            }
+          }
+          exit 1
+
+      - name: Fast tests only
+        run: zig build test
+
+      # Agent-control loopback round-trip ON Windows. The fast suite above never
+      # touches a real socket, and the round-trip test otherwise runs only on
+      # non-Windows hosts — which is exactly how the v1.30.0 wisptermctl
+      # "malformed response" bug (broken Stream.read on Windows overlapped
+      # sockets) reached release. This guards it where it actually bit.
+      - name: Agent-control socket round-trip
+        run: zig build test-ctl

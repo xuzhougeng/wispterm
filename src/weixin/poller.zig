@@ -3,10 +3,10 @@
 const std = @import("std");
 const types = @import("types.zig");
 const binding = @import("binding.zig");
-const agent = @import("agent.zig");
+const agent = @import("../chatops/router.zig");
 const ilink = @import("ilink_client.zig");
-const control_mod = @import("control.zig");
-const reply_progress = @import("reply_progress.zig");
+const control_mod = @import("../chatops/control.zig");
+const reply_progress = @import("../chatops/reply_progress.zig");
 const media_inbound_mod = @import("media_inbound.zig");
 
 const log = std.log.scoped(.weixin);
@@ -223,7 +223,6 @@ pub const Poller = struct {
     allocator: std.mem.Allocator,
     client: ilink.ClientApi,
     control: control_mod.Control,
-    settings: types.Settings,
     owner: []const u8,
     account_id: []const u8,
     sync_buf: []u8,
@@ -357,7 +356,7 @@ pub const Poller = struct {
             .context_token = context_token,
             .model_context = model_context,
         };
-        try agent.route(allocator, self.control, self.settings, text, reply_context, &r);
+        try agent.route(allocator, self.control, "微信", text, reply_context, &r);
         try reply.appendSlice(allocator, r.text.items);
         if (!r.expect_ai_progress) {
             if (baseline.len != 0) allocator.free(baseline);
@@ -622,6 +621,7 @@ pub const Poller = struct {
         var schedule = ProgressSchedule{};
         var elapsed_ms: u64 = 0;
         var announcer = ApprovalAnnouncer{};
+        var question_announcer = ApprovalAnnouncer{};
 
         // Wait for the AI's answer up to the context_token's validity window, not
         // the old reply_timeout_ms (<= 3 min) cap that abandoned slow tasks.
@@ -636,6 +636,7 @@ pub const Poller = struct {
             defer if (progress.text.len != 0) self.allocator.free(progress.text);
 
             const announce_now = announcer.due(progress.needs_approval);
+            const question_announce_now = question_announcer.due(progress.needs_question);
             if (progress.needs_approval) {
                 if (announce_now and progress.text.len != 0) {
                     std.debug.print(
@@ -644,6 +645,18 @@ pub const Poller = struct {
                     );
                     self.sendTextLocked(job.to_user_id, progress.text, job.context_token) catch |err| {
                         std.debug.print("weixin send({d}): kind=ai_approval generation={d} status=failed err={}\n", .{ debugNowMs(), generation, err });
+                    };
+                }
+                continue;
+            }
+            if (progress.needs_question) {
+                if (question_announce_now and progress.text.len != 0) {
+                    std.debug.print(
+                        "weixin send({d}): kind=ai_question generation={d} to_len={d} to_hash={x} bytes={d} context={}\n",
+                        .{ debugNowMs(), generation, job.to_user_id.len, debugHash(job.to_user_id), progress.text.len, job.context_token.len != 0 },
+                    );
+                    self.sendTextLocked(job.to_user_id, progress.text, job.context_token) catch |err| {
+                        std.debug.print("weixin send({d}): kind=ai_question generation={d} status=failed err={}\n", .{ debugNowMs(), generation, err });
                     };
                 }
                 continue;
@@ -688,7 +701,7 @@ pub const Poller = struct {
         };
     }
 
-    fn allocProgressText(self: *Poller, baseline_transcript: []const u8) !struct { done: bool, needs_approval: bool, text: []u8 } {
+    fn allocProgressText(self: *Poller, baseline_transcript: []const u8) !struct { done: bool, needs_approval: bool, needs_question: bool, text: []u8 } {
         self.transcript_mutex.lock();
         defer self.transcript_mutex.unlock();
 
@@ -705,12 +718,24 @@ pub const Poller = struct {
                 "⚠️ 副驾需要你确认是否执行：\n{s}\n\n回复 Y 同意 / N 拒绝。",
                 .{clipped},
             );
-            return .{ .done = false, .needs_approval = true, .text = text };
+            return .{ .done = false, .needs_approval = true, .needs_question = false, .text = text };
         }
-        if (progress_value.text.len == 0) return .{ .done = progress_value.done, .needs_approval = false, .text = &.{} };
+        if (progress_value.needs_question) {
+            // The snapshot's Question section already lists the numbered options;
+            // wrap it with the Chinese instruction the WeChat user reads.
+            const clipped = clipUtf8(progress_value.question_text, 1200);
+            const text = try std.fmt.allocPrint(
+                self.allocator,
+                "❓ 副驾想请你选择：\n{s}\n\n回复序号，或直接输入你的答案。",
+                .{clipped},
+            );
+            return .{ .done = false, .needs_approval = false, .needs_question = true, .text = text };
+        }
+        if (progress_value.text.len == 0) return .{ .done = progress_value.done, .needs_approval = false, .needs_question = false, .text = &.{} };
         return .{
             .done = progress_value.done,
             .needs_approval = false,
+            .needs_question = false,
             .text = try self.allocator.dupe(u8, progress_value.text),
         };
     }
@@ -977,6 +1002,12 @@ const NoopControl = struct {
     fn resolveAiApproval(_: *anyopaque, _: bool) bool {
         return false;
     }
+    fn aiQuestionOptionCount(_: *anyopaque) usize {
+        return 0;
+    }
+    fn resolveAiQuestion(_: *anyopaque, _: types.QuestionReply) bool {
+        return false;
+    }
     fn inboundFileDir(_: *anyopaque, _: []u8) []const u8 {
         return "";
     }
@@ -1000,6 +1031,8 @@ const NoopControl = struct {
             .latest_transcript = latestTranscript,
             .ai_approval_pending = aiApprovalPending,
             .resolve_ai_approval = resolveAiApproval,
+            .ai_question_option_count = aiQuestionOptionCount,
+            .resolve_ai_question = resolveAiQuestion,
             .inbound_file_dir = inboundFileDir,
             .list_ai_conversations = listAiConversations,
             .pin_ai_conversation_by_index = pinAiConversationByIndex,
@@ -1241,7 +1274,6 @@ test "poller bootstrap advances cursor without replying to historical messages" 
         .allocator = t.allocator,
         .client = fake.api(),
         .control = NoopControl.iface(),
-        .settings = .{},
         .owner = "u1",
         .account_id = "",
         .sync_buf = try t.allocator.dupe(u8, "OLD"),
@@ -1349,6 +1381,12 @@ const ApprovalTranscriptControl = struct {
     fn resolveAiApproval(_: *anyopaque, _: bool) bool {
         return false;
     }
+    fn aiQuestionOptionCount(_: *anyopaque) usize {
+        return 0;
+    }
+    fn resolveAiQuestion(_: *anyopaque, _: types.QuestionReply) bool {
+        return false;
+    }
     fn inboundFileDir(_: *anyopaque, _: []u8) []const u8 {
         return "";
     }
@@ -1372,6 +1410,8 @@ const ApprovalTranscriptControl = struct {
             .latest_transcript = latestTranscript,
             .ai_approval_pending = aiApprovalPending,
             .resolve_ai_approval = resolveAiApproval,
+            .ai_question_option_count = aiQuestionOptionCount,
+            .resolve_ai_question = resolveAiQuestion,
             .inbound_file_dir = inboundFileDir,
             .list_ai_conversations = listAiConversations,
             .pin_ai_conversation_by_index = pinAiConversationByIndex,
@@ -1386,7 +1426,6 @@ test "allocProgressText surfaces a needs-approval prompt naming the command" {
         .allocator = t.allocator,
         .client = undefined, // unused by allocProgressText
         .control = ApprovalTranscriptControl.iface(),
-        .settings = .{},
         .owner = "u1",
         .account_id = "",
         .sync_buf = empty_sync,
@@ -1456,6 +1495,12 @@ const TmpDirControl = struct {
     fn resolve_ai_approval(_: *anyopaque, _: bool) bool {
         return false;
     }
+    fn ai_question_option_count(_: *anyopaque) usize {
+        return 0;
+    }
+    fn resolve_ai_question(_: *anyopaque, _: types.QuestionReply) bool {
+        return false;
+    }
     fn inbound_file_dir(ctx: *anyopaque, buf: []u8) []const u8 {
         const self: *TmpDirControl = @ptrCast(@alignCast(ctx));
         const n = @min(self.dir.len, buf.len);
@@ -1481,6 +1526,8 @@ const TmpDirControl = struct {
             .latest_transcript = latest_transcript,
             .ai_approval_pending = ai_approval_pending,
             .resolve_ai_approval = resolve_ai_approval,
+            .ai_question_option_count = ai_question_option_count,
+            .resolve_ai_question = resolve_ai_question,
             .inbound_file_dir = inbound_file_dir,
             .list_ai_conversations = list_ai_conversations,
             .pin_ai_conversation_by_index = pin_ai_conversation_by_index,
@@ -1503,7 +1550,6 @@ test "pollerMediaAdapter downloads, saves under weixin_inbound, and builds recei
         .allocator = t.allocator,
         .client = client.api(),
         .control = ctrl.iface(),
-        .settings = .{},
         .owner = "u1",
         .account_id = "",
         .sync_buf = empty_sync,

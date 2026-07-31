@@ -1,5 +1,17 @@
 # Development, Architecture, Packaging, and Releases
 
+## Version Sources
+
+The desktop app version has one source of truth: `build.zig.zon`. Build options
+export that value as `build_options.app_version`, and it drives
+`wispterm --version`, package `version.txt` output, release notes, and the
+command center `Version` entry.
+
+The WispTerm Remote web console/relay under `remote/` is a separate package with
+its own version surfaces (`remote/package.json`, `remote/package-lock.json`,
+`remote/src/client/version.ts`, and the rendered web label). Do not bump Remote
+versions for a desktop-only release.
+
 ## Building
 
 ### Windows (PowerShell)
@@ -48,13 +60,32 @@ Test-Path .\zig-out\bin\wispterm.exe
 Get-Item .\zig-out\bin\wispterm.exe
 ```
 
+### Tests and structural guards
+
+```bash
+zig build test         # fast inner loop: platform-independent logic (src/test_fast.zig)
+zig build test-full    # complete pre-merge gate; a SUPERSET of `zig build test`
+zig build check-sizes  # the file-size backstop on its own
+```
+
+`zig build test` is sub-second when cached and does not recompile the heavy app
+binary; `zig build test-full` is the gate to run before finishing a change and
+now also runs the fast suite.
+
+Architecture is enforced by source-scan ratchet tests under `src/source_guards/`
+(file size, top-level `g_*` globals, `AppWindow` import-hub re-exports, and
+direct UI dirty-writes). Each freezes today's count so it can only **shrink** —
+adding a new occurrence fails the gate. The cohesion/coupling rationale and the
+frozen ceilings are in [`../AGENTS.md`](../AGENTS.md) and
+[decoupling-guide.md §8](decoupling-guide.md#8-structural-debt-governance-axis-b-in-practice).
+
 ## Why The UI Is Custom Drawn
 
 WispTerm's main terminal UI is intentionally custom drawn instead of composed
 from raw Win32 controls. The terminal surface, tabs, splits, overlays,
-background image, shader effects, and theme colors all share one OpenGL
-rendering pipeline, so they can stay visually consistent and behave like one
-terminal canvas.
+background image, shader effects, and theme colors all share one GPU rendering
+pipeline (D3D11 on Windows, Metal on macOS, OpenGL on Linux), so
+they can stay visually consistent and behave like one terminal canvas.
 
 Classic Win32 controls such as `SCROLLBAR` provide native behavior, but they do
 not blend well with WispTerm's dark theme, transparency, background images, and
@@ -94,6 +125,63 @@ preview is visible, the table preview labels should move with the regression.
 For that scenario, add `-ManualSetupSeconds 15`, open the CSV/TSV preview during
 the pause, then let the script run the resize sequence.
 
+## Performance Benchmarking
+
+`wispterm-bench` is the CPU-side benchmark CLI (Ghostty-aligned: mirrors
+`ghostty-bench`'s `--duration` case-runner shape). It links ghostty-vt and
+drives a synthetic VT byte stream through the same parser the shipped app uses,
+so the number is directly comparable across branches and machines. Build and
+run it with:
+
+```powershell
+zig build -Demit-bench -Doptimize=ReleaseFast
+.\zig-out\bin\wispterm-bench.exe --list
+.\zig-out\bin\wispterm-bench.exe --case terminal-stream --duration 1000
+```
+
+Always pass `-Doptimize=ReleaseFast` for benchmarks — a debug build is not
+representative of real performance. Use `--duration <ms>` to set the per-case
+window (default 1000ms) and `--case <name>` to run a single case.
+
+The CLI writes a machine-readable `benchmark-report-<timestamp>.json` and a
+paste-ready `benchmark-report-<timestamp>.md` into the WispTerm config dir
+(`%APPDATA%\wispterm\` on Windows, `~/Library/Application Support/wispterm/` on
+macOS), and prints the Markdown to stdout. Paste that Markdown block into a
+**Performance Report** issue (or a Discussion) so we can compare results across
+hardware and renderer backends. The JSON is for tooling/regression tracking.
+
+The bench module's own tests (which link ghostty-vt and so cannot run in the
+lean fast suite) have their own step:
+
+```powershell
+zig build test-bench
+```
+
+An in-app GPU-side benchmark (`wispterm --benchmark`) measures per-frame render
+latency through the real renderer. It spawns a no-shell virtual surface, drives a
+synthetic VT stream from the UI thread with vsync off, and records the
+rebuild+draw+present pipeline time per frame as `latency_ns` (p50/p95/max), then
+writes the same JSON + Markdown report shape as the CLI. The renderer backend is
+fixed at build time (`-Dgpu-backend`), so a D3D11-vs-OpenGL comparison is two
+builds of the same machine:
+
+```powershell
+zig build -Dgpu-backend=opengl -Doptimize=ReleaseFast
+.\zig-out\bin\wispterm.exe --benchmark
+zig build -Dgpu-backend=d3d11  -Doptimize=ReleaseFast
+.\zig-out\bin\wispterm.exe --benchmark
+```
+
+Each run writes `benchmark-report-<timestamp>.{json,md}` to the config dir and
+prints the Markdown to stdout; diff the two reports' `scroll-flood` /
+`unicode-heavy` rows to see the per-backend render delta. The report carries the
+GPU adapter name + PCI ids, window/DPI/grid size, and `runner: in-app` so it is
+distinguishable from a CLI report.
+
+When publishing a desktop release, run `wispterm-bench --case terminal-stream
+--duration 1000` on the release machine and attach the Markdown report to the
+release notes as a regression baseline for that version.
+
 ## Windows UI Automation
 
 When debugging UI behavior, automate WispTerm as a real visible Windows app from
@@ -122,6 +210,212 @@ When adding more UI automation, follow the same pattern:
   the crop when a pixel check fails.
 - Always clean up test windows with `CloseMainWindow()`, then `Stop-Process
   -Force` if the process remains.
+
+For Windows-native D3D11 Phase IV parity, use the normal-session smoke script
+against an explicitly built D3D11 executable:
+
+```powershell
+zig build -Dgpu-backend=d3d11
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1
+```
+
+The script launches a real visible WispTerm window with an isolated `%APPDATA%`,
+enables render diagnostics plus the D3D11 UI/offscreen probes, switches between
+two visible tabs, checks tab text, the `+` icon, active/inactive row states, and
+the close-hover affordance, then toggles the tab sidebar, file explorer, and
+command palette. It also generates a high-contrast background image, verifies it
+through the initial D3D11 screenshot, opens Markdown and image preview panes
+from a temporary File Explorer fixture, opens the Copilot assistant sidebar with
+a temporary AI profile, opens the startup shortcuts overlay from the Command
+Center, opens the Settings page from the titlebar gear, and opens the Skill
+Center from the Command Center. It captures
+screenshots, writes JSON metrics under
+`zig-out\d3d11-normal-session-smoke\`, and verifies that
+`render-diagnostic.log` contains `gpu-backend=d3d11 present=dxgi`, D3D11 init
+details for swap effect / adapter / fallback reason / healthy policy state, a
+D3D11 environment line for adapter description, vendor/device/subsystem,
+revision, memory sizes, output count, feature level, and swap effect, a Win32
+environment line for remote session, session id, monitor count, mixed-DPI state,
+primary DPI, and system DPI, a
+successful `d3d11-ui-smoke` probe, an offscreen round-trip marker, and no D3D11
+recovery request in the healthy path. It is a Phase IV and Phase V
+diagnostics/policy/recovery-coordination evidence tool only; it does not change
+the Windows default renderer.
+
+Use `debug\test-d3d11-environment-smoke.ps1` after a D3D11 build to wrap the
+normal-session smoke into a matrix evidence package:
+
+```powershell
+zig build -Dgpu-backend=d3d11
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-environment-smoke.ps1
+```
+
+The collector writes `zig-out\d3d11-env-smoke\<timestamp>\environment.json`, a
+redacted `matrix-summary.md` review artifact, a `normal-session\` result
+directory, copied screenshots under `screenshots\`, and the original render
+diagnostics path. It records adapter/session/monitor facts and smoke health,
+plus a record-only `matrix` section when `-MatrixClass` is provided. Use classes
+such as `local-physical`, `rdp`, `virtual-machine`, `hybrid-gpu`,
+`weak-integrated-gpu`, `single-monitor`, `multi-monitor-same-dpi`, and
+`multi-monitor-mixed-dpi`; add `-RequireMatrixClass` only when the class can be
+proven from collected facts. The collector does not block environments and does
+not change fallback policy. The durable ledger format is documented in
+[windows-native-d3d11-environment-matrix.md](windows-native-d3d11-environment-matrix.md).
+After collecting one or more environment packages, run
+`debug\summarize-d3d11-environment-matrix.ps1` to emit a consolidated
+`matrix-ledger.md` / `matrix-ledger.json` plus a
+`matrix-collection-plan.md` / `matrix-collection-plan.json` for PR or issue
+review. The collection plan lists remaining non-recorded classes and the exact
+collector command to run in each matching environment; it is not evidence and
+does not accept missing classes.
+To audit the collected Phase V artifacts against the default-migration gate
+without rerunning smokes, use `debug\audit-d3d11-default-gate.ps1`; it emits
+`default-gate-audit.md` / `default-gate-audit.json` and keeps missing evidence
+as missing rather than treating it as a pass. If unavailable environment
+classes are explicitly accepted under `KNOWN_ISSUES.md` heading
+`Accepted D3D11 Phase V Environment Matrix Gaps`, the audit marks those matrix
+rows and the environment-ledger gate as `accepted` while preserving the original
+ledger status.
+If a shorter soak is explicitly operator-accepted, keep its summary under
+`zig-out\d3d11-accepted-soak\`; the audit marks that gate as `accepted` so it is
+visible and distinct from a completed 20-minute automated soak.
+
+To exercise the controlled Phase V device-recreate path, run the same smoke
+with `-RecreateSmoke` after building the D3D11 executable:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -RecreateSmoke
+```
+
+This sets `WISPTERM_D3D11_RECREATE_SMOKE=1`, asks the backend to latch one
+recreate-class recovery request, and verifies that diagnostics record the
+recreate request, a successful single-shot device/swapchain recreate attempt,
+and restored feature resources. It still leaves automatic fallback and the
+Windows default backend unchanged.
+
+To exercise the failed-recreate escalation path, run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -RecreateFailureSmoke
+```
+
+This sets `WISPTERM_D3D11_RECREATE_FAILURE_SMOKE=1`, asks the backend to latch
+one recreate-class recovery request, injects a synthetic failed recreate, and
+verifies that diagnostics escalate it to a `recreate_failed` fallback candidate
+exactly once. The smoke also verifies a version+adapter-scoped
+`d3d11-fallback` marker is written to the isolated smoke profile state file,
+that feature resources are not reported as restored after the forced failure,
+and that automatic fallback plus the Windows default backend remain unchanged.
+
+To add rapid resize stress evidence to the same D3D11 session smoke, use:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -RapidResizeSmoke
+```
+
+This drives a burst of real Win32 `SetWindowPos` changes, restores the window
+to the baseline smoke size, captures a post-resize screenshot, and verifies that
+the session remains nonblank with D3D11 resize diagnostics and no present/resize
+failure lines. It is Phase V hardening evidence only; it does not change the
+Windows default backend or fallback policy.
+
+To exercise Win32 window-state transitions on D3D11, run:
+
+```powershell
+zig build -Dgpu-backend=d3d11
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -WindowStateSmoke
+```
+
+This drives maximize, restore, minimize, and restore-from-minimize through real
+Win32 window state APIs, captures screenshots after the visible states, verifies
+the session returns to the baseline window size, and checks that D3D11 resize
+diagnostics were emitted without present/resize failure lines. It is a Phase V
+window-state sub-slice only.
+
+To exercise fullscreen startup on D3D11, run:
+
+```powershell
+zig build -Dgpu-backend=d3d11
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -FullscreenStartupSmoke
+```
+
+This writes `fullscreen = true` into the isolated smoke config, launches through
+the real startup fullscreen path, captures a fullscreen screenshot, uses
+Alt+Enter to exit fullscreen, restores the baseline window rectangle, and
+verifies both visible states are nonblank with D3D11 fullscreen/resize
+diagnostics and no present/resize failure lines.
+
+To add a D3D11 long-run soak loop to the normal-session smoke, run:
+
+```powershell
+zig build -Dgpu-backend=d3d11
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -SoakMinutes 20
+```
+
+The soak mode keeps the real window active after the initial terminal capture,
+sends a shell output burst when the shell is recognized, loops tab switches and
+small Win32 resize/restore cycles for the requested duration, captures periodic
+screenshots plus a final restored-size screenshot, and verifies the process
+survives with nonblank frames, D3D11 resize diagnostics, and no present/resize
+failure lines. It is Phase V reliability evidence only; it does not change the
+Windows default backend or fallback policy.
+
+The completed Phase VI default migration gate is documented in
+[windows-native-d3d11-default-gate.md](windows-native-d3d11-default-gate.md).
+Use it as the checklist for collecting evidence, recording matrix gaps, and
+keeping the Windows `auto` default change small and revertible.
+
+D3D11 fallback is a next-launch policy while the renderer backend remains a
+comptime selection. Do not implement same-process D3D11-to-OpenGL switching
+without first changing the backend architecture. The `d3d11-fallback` state-file
+marker is separate from the older OpenGL+DXGI present `d3d-bringup` fuse,
+scoped by app version and adapter identity, and currently feeds only diagnostic
+selector tests. Explicit `d3d11` must ignore a matching marker except for
+diagnostics; current Windows `auto` resolves to D3D11.
+
+To exercise the marker path without changing selection, run:
+
+```powershell
+zig build -Dgpu-backend=d3d11
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -FallbackMarkerSmoke
+```
+
+This sets `WISPTERM_D3D11_FALLBACK_MARKER_SMOKE=1`, writes a synthetic
+version+adapter-scoped `d3d11-fallback` marker into the smoke profile's isolated
+state file, verifies explicit `d3d11` still wins with a warning-class decision,
+verifies current Windows `auto` remains D3D11, and verifies the marker-aware
+dry-run would select OpenGL from the marker. It does not enable live failure
+writes or automatic fallback.
+
+To record the future-auto selector dry-run surface without writing a marker,
+run:
+
+```powershell
+zig build -Dgpu-backend=d3d11
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -AutoDryRunSmoke
+```
+
+This sets `WISPTERM_D3D11_AUTO_DRY_RUN_SMOKE=1` and verifies diagnostics for
+current Windows `auto` selecting D3D11, the marker-aware policy selecting D3D11
+when eligible and OpenGL from a matching marker, explicit
+`d3d11` ignoring a matching marker with warning semantics, explicit `opengl`
+remaining OpenGL, and stale markers being ignored. It does not change the
+Windows default backend, write a fallback marker, or trigger automatic fallback.
+
+To prove the Windows OpenGL fallback path still runs the same normal-session UI
+subset, build it explicitly and run:
+
+```powershell
+zig build -Dgpu-backend=opengl
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -Backend opengl
+```
+
+This reuses the normal-session screenshot workflow for tab chrome, sidebar,
+file explorer, Markdown/image previews, assistant panel, command palette,
+startup shortcuts, Settings, Skill Center, and background image rendering, but
+expects `gpu-backend=opengl` diagnostics instead of D3D11 probes. It also
+verifies that no D3D11 recovery, fallback-marker, UI-probe, or offscreen-smoke
+markers fire in the OpenGL fallback session.
 
 ## macOS UI Smoke Tests
 
@@ -205,7 +499,7 @@ Rules of thumb:
 
 ## Windows SSH/SCP Compatibility
 
-When changing SSH/SCP code paths (`src/scp.zig`, SSH clipboard image paste,
+When changing SSH/SCP code paths (`src/ssh/scp.zig`, SSH clipboard image paste,
 remote file explorer listing/upload/download, or SSH session metadata), test
 against the existing real SSH profile in `%APPDATA%\wispterm\ssh_hosts` whenever
 it is available. The profile fields are hex encoded as
@@ -235,12 +529,11 @@ OpenSSH error so regressions can be diagnosed without guessing.
 
 ### Windows
 
-WispTerm supports three portable Windows packages plus the local installer build:
+WispTerm supports three portable Windows packages:
 
-- `portable` - lightweight portable build, run directly without installation
-- `portable-compat` - full-featured portable build for older Windows 10 machines: `WebView2Loader.dll` for the embedded browser plus a bundled modern ConPTY (`conpty.dll` + `OpenConsole.exe`) so TUI apps like Codex get mouse scrolling and scrollbars on old inbox conhosts
-- `portable-no-webview` - portable build compiled with embedded WebView2 disabled
-- `wispterm-setup.exe` - installer build, installs to the current user's profile and creates a Start menu shortcut
+- `portable` - default native D3D11 build, run directly without installation
+- `portable-compat` - native D3D11 build for older Windows 10 machines: `WebView2Loader.dll` for the embedded browser plus a bundled modern ConPTY (`conpty.dll` + `OpenConsole.exe`) so TUI apps like Codex get mouse scrolling and scrollbars on old inbox conhosts
+- `portable-opengl` - renderer fallback for systems where native D3D11 cannot start or render correctly
 
 Build the artifacts with:
 
@@ -260,15 +553,15 @@ zig-out\dist\portable-compat\conpty.dll
 zig-out\dist\portable-compat\OpenConsole.exe
 zig-out\dist\portable-compat\version.txt
 zig-out\dist\portable-compat\plugins\...
-zig-out\dist\portable-no-webview\wispterm.exe
-zig-out\dist\portable-no-webview\version.txt
-zig-out\dist\portable-no-webview\plugins\...
-zig-out\dist\installer\wispterm-setup.exe
+zig-out\dist\portable-opengl\wispterm.exe
+zig-out\dist\portable-opengl\version.txt
+zig-out\dist\portable-opengl\plugins\...
 ```
 
-The installer does not require administrator rights. It installs WispTerm to
-`%LOCALAPPDATA%\Programs\WispTerm`, adds a Start menu entry, and registers an
-uninstall entry for the current user.
+The portable app can add or remove its native Start menu shortcut and enable or
+disable login startup from Settings. These actions use Windows shell APIs
+directly; no installer, PowerShell child process, or administrator rights are
+required.
 
 ### macOS
 
@@ -304,21 +597,21 @@ Several GitHub Actions workflows publish release assets whenever a tag matching
 
 - `wispterm-windows-portable-vX.Y.Z.zip`
 - `wispterm-windows-portable-compat-vX.Y.Z.zip`
-- `wispterm-windows-portable-no-webview-vX.Y.Z.zip`
+- `wispterm-windows-portable-opengl-vX.Y.Z.zip`
 - `wispterm-windows-debug-vX.Y.Z.zip`
 
 When WispTerm detects a newer release on Windows, it downloads the matching
 portable zip to the Downloads folder and reveals it in Explorer; unzip it over
 your existing install to update.
 
-The unsigned IExpress installer is not published for now because Windows
-Defender can quarantine it as a false positive. Use the portable zip release
-asset; the `portable-compat` zip when using the embedded browser panel or on
-older Windows 10 machines (its bundled ConPTY restores TUI mouse support); or
-the `portable-no-webview` zip when embedded WebView2 should be disabled. The
-bundled ConPTY is preferred automatically when its files sit next to
-`wispterm.exe`; set `windows-conpty = system` in the config to force the OS
-inbox ConPTY.
+WispTerm does not build or publish a Windows installer. Use the default portable
+zip release asset; the `portable-compat` zip when using the embedded browser panel
+or on older Windows 10 machines (its bundled ConPTY restores TUI mouse support);
+or the `portable-opengl` zip when the default native D3D11 renderer shows a
+black window, crash, missing UI, resize failure, RDP issue, or multi-monitor/DPI
+issue. Include diagnostics in the bug report. The bundled
+ConPTY is preferred automatically when its files sit next to `wispterm.exe`; set
+`windows-conpty = system` in the config to force the OS inbox ConPTY.
 
 **macOS assets** (per tagged release):
 

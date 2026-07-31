@@ -5,13 +5,18 @@
 //! Supports local (std.fs), WSL, and remote SSH/SCP modes.
 
 const std = @import("std");
-const ssh_connection = @import("ssh_connection.zig");
-const agent_history = @import("agent_history.zig");
-const scp = @import("scp.zig");
+const ssh_connection = @import("ssh/connection.zig");
+const agent_history = @import("agent/history.zig");
+const scp = @import("ssh/scp.zig");
 const file_backend = @import("file_backend.zig");
 const platform_local_path = @import("platform/local_path.zig");
 const ui_perf = @import("ui_perf.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
+const action = @import("file_explorer/action.zig");
+
+/// Domain-owned file-explorer keyboard intent (re-exported so callers route
+/// keys through `handleAction` instead of poking internals directly).
+pub const Action = action.Action;
 
 pub const DEFAULT_WIDTH: f32 = 240;
 pub const MIN_WIDTH: f32 = 160;
@@ -42,6 +47,19 @@ pub const TerminalPanelTarget = union(enum) {
     },
     wsl: []const u8,
     local: []const u8,
+};
+
+pub const SourceSnapshot = union(enum) {
+    local,
+    wsl,
+    remote: ssh_connection.SshConnection,
+};
+
+pub const EntryView = struct {
+    index: usize,
+    name: []const u8,
+    path: []const u8,
+    is_dir: bool,
 };
 
 pub threadlocal var g_visible: bool = false;
@@ -99,9 +117,31 @@ pub threadlocal var g_history_selected: ?usize = null;
 pub threadlocal var g_root_path: [260]u8 = undefined;
 pub threadlocal var g_root_path_len: usize = 0;
 
-// Flat list of currently visible entries (rebuilt on expand/collapse/rescan)
-pub threadlocal var g_entries: [MAX_ENTRIES]FlatEntry = undefined;
+// Flat list of currently visible entries (rebuilt on expand/collapse/rescan).
+// Heap-allocated on first use: as a direct `threadlocal` array this was
+// ~1.6 MB in the TLS template, which Windows commits privately for EVERY
+// thread — see renderer/gpu/d3d11/vertex.zig for the same pattern. Contents
+// start undefined, matching the old `= undefined` initializer.
+threadlocal var g_entries_storage: ?*[MAX_ENTRIES]FlatEntry = null;
 pub threadlocal var g_entry_count: usize = 0;
+
+pub fn entries() *[MAX_ENTRIES]FlatEntry {
+    if (g_entries_storage == null) {
+        g_entries_storage = std.heap.page_allocator.create([MAX_ENTRIES]FlatEntry) catch
+            @panic("out of memory allocating file explorer entries");
+    }
+    return g_entries_storage.?;
+}
+
+/// Free this thread's entries storage (window-thread teardown). A later
+/// accidental use safely reallocates fresh storage instead of dangling.
+fn releaseEntriesStorage() void {
+    if (g_entries_storage) |e| {
+        std.heap.page_allocator.destroy(e);
+        g_entries_storage = null;
+    }
+    g_entry_count = 0;
+}
 
 const AsyncListKind = enum { rescan, expand };
 
@@ -194,6 +234,97 @@ pub fn width() f32 {
 pub fn isVisibleForActiveTab() bool {
     const owner = g_owner_tab orelse return false;
     return g_visible and owner == active_tab_state.g_active_tab;
+}
+
+/// Narrow, read-only queries used by the input layer so it does not have to
+/// reach into file-explorer globals directly. These preserve the exact
+/// semantics of the underlying `g_*` reads.
+pub fn isFocused() bool {
+    return g_focused;
+}
+
+pub fn focus() void {
+    g_focused = true;
+}
+
+pub fn blur() void {
+    g_focused = false;
+}
+
+pub fn blurAndCancelOp() void {
+    blur();
+    if (hasActiveOp()) cancelOp();
+}
+
+/// Current inline-operation mode (rename / new file / new dir / confirm delete).
+pub fn opMode() OpMode {
+    return g_op_mode;
+}
+
+/// True when any inline file operation is active (not `.none`).
+pub fn hasActiveOp() bool {
+    return g_op_mode != .none;
+}
+
+/// True when the panel is showing the agent-history view rather than files.
+pub fn isAgentHistoryPanel() bool {
+    return g_panel_mode == .agent_history;
+}
+
+/// True when the panel is showing the file-tree view (not agent history).
+pub fn isFilesPanel() bool {
+    return g_panel_mode == .files;
+}
+
+/// True when the explorer is browsing a remote (SSH) location.
+pub fn isRemoteMode() bool {
+    return g_mode == .remote;
+}
+
+pub fn sourceSnapshot() ?SourceSnapshot {
+    return switch (g_mode) {
+        .local => .local,
+        .wsl => .wsl,
+        .remote => if (g_has_ssh_conn) .{ .remote = g_ssh_conn } else null,
+    };
+}
+
+pub fn entryAt(idx: usize) ?EntryView {
+    if (idx >= g_entry_count) return null;
+    return entryViewAssumeValid(idx);
+}
+
+pub fn rowIndexAtListY(relative_y: f64) ?usize {
+    if (!std.math.isFinite(relative_y) or relative_y < 0) return null;
+    const row_h: f64 = @floatCast(rowHeight());
+    if (row_h <= 0) return null;
+    const scrolled_y = relative_y + @as(f64, @floatCast(g_scroll_offset));
+    if (!std.math.isFinite(scrolled_y) or scrolled_y < 0) return null;
+    const idx: usize = @intFromFloat(scrolled_y / row_h);
+    if (idx >= g_entry_count) return null;
+    return idx;
+}
+
+pub fn selectEntry(idx: usize) ?EntryView {
+    if (idx >= g_entry_count) return null;
+    g_selected = idx;
+    return entryViewAssumeValid(idx);
+}
+
+pub fn toggleDirectoryAt(idx: usize) bool {
+    if (idx >= g_entry_count or !entries()[idx].is_dir) return false;
+    toggleExpand(idx);
+    return true;
+}
+
+fn entryViewAssumeValid(idx: usize) EntryView {
+    const entry = &entries()[idx];
+    return .{
+        .index = idx,
+        .name = entry.name_buf[0..entry.name_len],
+        .path = entry.path_buf[0..entry.path_len],
+        .is_dir = entry.is_dir,
+    };
 }
 
 pub fn openForActiveTab() void {
@@ -317,7 +448,7 @@ pub fn syncPanelForTerminalTarget(target: TerminalPanelTarget, force: bool) void
     }
 }
 
-pub fn syncAgentHistoryRows(store: *const agent_history.Store) void {
+pub fn syncAgentHistoryRows(store: anytype) void {
     const allocator = std.heap.page_allocator;
     const selected_index_copy = g_history_selected;
     const selected_session_id_copy = if (g_history_selected) |selected|
@@ -512,45 +643,6 @@ fn copyRootPathOnly(path: []const u8) void {
     g_root_path_len = len;
 }
 
-/// Enter remote mode with the given SSH connection.
-pub fn enterRemoteMode(conn: *const ssh_connection.SshConnection, remote_cwd: []const u8) void {
-    g_async_context_id +%= 1;
-    g_mode = .remote;
-    g_ssh_conn = conn.*;
-    g_has_ssh_conn = true;
-    if (remote_cwd.len > 0) {
-        setRoot(remote_cwd);
-    } else {
-        g_root_path_len = 0;
-        rescanRemote();
-    }
-}
-
-/// Switch back to local mode.
-pub fn enterLocalMode() void {
-    g_async_context_id +%= 1;
-    g_pending_async_list = null;
-    g_loading = false;
-    g_mode = .local;
-    g_has_ssh_conn = false;
-    g_entry_count = 0;
-    g_root_path_len = 0;
-}
-
-/// Enter WSL mode. Paths are Linux-style and listed via the platform backend.
-pub fn enterWslMode(wsl_cwd: []const u8) void {
-    g_async_context_id +%= 1;
-    g_pending_async_list = null;
-    g_loading = false;
-    g_mode = .wsl;
-    g_has_ssh_conn = false;
-    if (wsl_cwd.len > 0) {
-        setRoot(wsl_cwd);
-    } else {
-        setRoot("~");
-    }
-}
-
 pub fn setRoot(path: []const u8) void {
     g_async_context_id +%= 1;
     const len = @min(path.len, g_root_path.len);
@@ -586,7 +678,7 @@ pub fn tickAsync() bool {
         setTransferStatus(.failed, if (job.resolve_root) "SSH pwd failed" else "SSH list failed");
         if (job.kind == .expand) {
             if (findEntryByPath(job.path_buf[0..job.path_len])) |idx| {
-                g_entries[idx].expanded = false;
+                entries()[idx].expanded = false;
             }
         }
         return true;
@@ -609,7 +701,7 @@ pub fn tickAsync() bool {
         .expand => {
             const path = job.path_buf[0..job.path_len];
             const idx = findEntryByPath(path) orelse return true;
-            if (!g_entries[idx].expanded) return true;
+            if (!entries()[idx].expanded) return true;
             _ = insertBackendChildren(idx + 1, job.entries[0..job.count], job.depth, path, '/');
         },
     }
@@ -686,7 +778,7 @@ pub fn refresh() void {
     g_refresh_keep_path_len = 0;
     if (g_selected) |sel| {
         if (sel < g_entry_count) {
-            const p = g_entries[sel].path_buf[0..g_entries[sel].path_len];
+            const p = entries()[sel].path_buf[0..entries()[sel].path_len];
             const n: u16 = @intCast(@min(p.len, g_refresh_keep_path.len));
             @memcpy(g_refresh_keep_path[0..n], p[0..n]);
             g_refresh_keep_path_len = n;
@@ -737,19 +829,19 @@ fn loadBackendEntries(
     const perf = ui_perf.begin("file_explorer.load_backend_entries");
     defer perf.end();
 
-    const capacity = g_entries.len - g_entry_count;
+    const capacity = entries().len - g_entry_count;
     if (capacity == 0) return .ok;
 
     const allocator = std.heap.page_allocator;
-    const entries = allocator.alloc(file_backend.Entry, capacity) catch return .open_failed;
-    defer allocator.free(entries);
+    const backend_entries = allocator.alloc(file_backend.Entry, capacity) catch return .open_failed;
+    defer allocator.free(backend_entries);
 
-    const result = file_backend.list(allocator, backend, path, entries);
+    const result = file_backend.list(allocator, backend, path, backend_entries);
     if (result.status != .ok) return result.status;
 
-    for (entries[0..result.count]) |*entry| {
-        if (g_entry_count >= g_entries.len) break;
-        if (copyBackendEntry(&g_entries[g_entry_count], entry, depth, parent_path, sep)) {
+    for (backend_entries[0..result.count]) |*entry| {
+        if (g_entry_count >= entries().len) break;
+        if (copyBackendEntry(&entries()[g_entry_count], entry, depth, parent_path, sep)) {
             g_entry_count += 1;
         }
     }
@@ -802,9 +894,9 @@ fn pathEndsWithSeparator(path: []const u8, sep: u8) bool {
 
 pub fn toggleExpand(idx: usize) void {
     if (idx >= g_entry_count) return;
-    if (!g_entries[idx].is_dir) return;
+    if (!entries()[idx].is_dir) return;
 
-    if (g_entries[idx].expanded) {
+    if (entries()[idx].expanded) {
         collapse(idx);
     } else {
         if (g_mode == .remote and g_has_ssh_conn) {
@@ -818,7 +910,7 @@ pub fn toggleExpand(idx: usize) void {
 }
 
 fn expandRemote(idx: usize) void {
-    const entry = &g_entries[idx];
+    const entry = &entries()[idx];
     entry.expanded = true;
     const path = entry.path_buf[0..entry.path_len];
     if (startAsyncList(.expand, path, entry.depth + 1, false) == .blocked) {
@@ -828,13 +920,13 @@ fn expandRemote(idx: usize) void {
 }
 
 fn expandWithBackend(idx: usize, backend: file_backend.Backend, sep: u8) void {
-    const entry = &g_entries[idx];
+    const entry = &entries()[idx];
     entry.expanded = true;
 
     const path = entry.path_buf[0..entry.path_len];
     const child_depth = entry.depth + 1;
     const insert_pos = idx + 1;
-    const max_new = g_entries.len - g_entry_count;
+    const max_new = entries().len - g_entry_count;
     if (max_new == 0) return;
 
     const allocator = std.heap.page_allocator;
@@ -870,10 +962,10 @@ fn insertBackendChildren(
     sep: u8,
 ) usize {
     if (backend_entries.len == 0) return 0;
-    if (g_entry_count >= g_entries.len) return 0;
+    if (g_entry_count >= entries().len) return 0;
 
     const allocator = std.heap.page_allocator;
-    const max_new = g_entries.len - g_entry_count;
+    const max_new = entries().len - g_entry_count;
     const flat_children = allocator.alloc(FlatEntry, @min(backend_entries.len, max_new)) catch {
         return 0;
     };
@@ -892,19 +984,19 @@ fn insertBackendChildren(
     if (insert_pos < g_entry_count) {
         std.mem.copyBackwards(
             FlatEntry,
-            g_entries[insert_pos + filled .. g_entry_count + filled],
-            g_entries[insert_pos..g_entry_count],
+            entries()[insert_pos + filled .. g_entry_count + filled],
+            entries()[insert_pos..g_entry_count],
         );
     }
 
-    @memcpy(g_entries[insert_pos .. insert_pos + filled], flat_children[0..filled]);
+    @memcpy(entries()[insert_pos .. insert_pos + filled], flat_children[0..filled]);
     g_entry_count += filled;
     return filled;
 }
 
 fn findEntryByPath(path: []const u8) ?usize {
     for (0..g_entry_count) |idx| {
-        const entry_path = g_entries[idx].path_buf[0..g_entries[idx].path_len];
+        const entry_path = entries()[idx].path_buf[0..entries()[idx].path_len];
         if (std.mem.eql(u8, entry_path, path)) return idx;
     }
     return null;
@@ -916,9 +1008,9 @@ fn startAsyncList(kind: AsyncListKind, path: []const u8, depth: u16, resolve_roo
     if (g_async_job != null) return queueAsyncList(kind, path, depth, resolve_root);
 
     const allocator = std.heap.page_allocator;
-    const entries = allocator.alloc(file_backend.Entry, MAX_ENTRIES) catch return .blocked;
+    const backend_entries = allocator.alloc(file_backend.Entry, MAX_ENTRIES) catch return .blocked;
     const job = allocator.create(AsyncListJob) catch {
-        allocator.free(entries);
+        allocator.free(backend_entries);
         return .blocked;
     };
 
@@ -929,12 +1021,12 @@ fn startAsyncList(kind: AsyncListKind, path: []const u8, depth: u16, resolve_roo
         .path_len = path.len,
         .depth = depth,
         .resolve_root = resolve_root,
-        .entries = entries,
+        .entries = backend_entries,
     };
     @memcpy(job.path_buf[0..path.len], path);
 
     const thread = std.Thread.spawn(.{}, asyncListThread, .{job}) catch {
-        allocator.free(entries);
+        allocator.free(backend_entries);
         allocator.destroy(job);
         return .blocked;
     };
@@ -1320,6 +1412,7 @@ pub fn deinit() void {
     g_pending_async_list = null;
     g_loading = false;
     clearHistoryRows();
+    releaseEntriesStorage();
 }
 
 fn setLoading(msg: []const u8) void {
@@ -1337,13 +1430,13 @@ fn expandWsl(idx: usize) void {
 }
 
 fn collapse(idx: usize) void {
-    var entry = &g_entries[idx];
+    var entry = &entries()[idx];
     entry.expanded = false;
 
     // Remove all entries after idx with depth > entry.depth
     const base_depth = entry.depth;
     var end = idx + 1;
-    while (end < g_entry_count and g_entries[end].depth > base_depth) {
+    while (end < g_entry_count and entries()[end].depth > base_depth) {
         end += 1;
     }
 
@@ -1354,7 +1447,7 @@ fn collapse(idx: usize) void {
     const remaining = g_entry_count - end;
     var k: usize = 0;
     while (k < remaining) : (k += 1) {
-        g_entries[idx + 1 + k] = g_entries[end + k];
+        entries()[idx + 1 + k] = entries()[end + k];
     }
     g_entry_count -= remove_count;
 
@@ -1404,7 +1497,7 @@ pub fn startRename() void {
     const sel = g_selected orelse return;
     if (sel >= g_entry_count) return;
     g_op_mode = .rename;
-    const entry = &g_entries[sel];
+    const entry = &entries()[sel];
     @memcpy(g_input_buf[0..entry.name_len], entry.name_buf[0..entry.name_len]);
     g_input_len = entry.name_len;
 }
@@ -1446,7 +1539,7 @@ fn commitRename() void {
     if (sel >= g_entry_count) return;
     if (g_input_len == 0) return;
 
-    const entry = &g_entries[sel];
+    const entry = &entries()[sel];
     const old_path = entry.path_buf[0..entry.path_len];
     const new_name = g_input_buf[0..g_input_len];
 
@@ -1497,7 +1590,7 @@ fn commitDelete() void {
     const sel = g_selected orelse return;
     if (sel >= g_entry_count) return;
 
-    const entry = &g_entries[sel];
+    const entry = &entries()[sel];
     const path = entry.path_buf[0..entry.path_len];
 
     const cwd = std.fs.cwd();
@@ -1513,7 +1606,7 @@ fn commitDelete() void {
 fn getSelectedParentPath() []const u8 {
     if (g_selected) |sel| {
         if (sel < g_entry_count) {
-            const entry = &g_entries[sel];
+            const entry = &entries()[sel];
             if (entry.is_dir and entry.expanded) {
                 return entry.path_buf[0..entry.path_len];
             }
@@ -1557,6 +1650,33 @@ pub fn moveSelection(delta: i32) void {
         g_selected = 0;
     }
     ensureSelectedVisible();
+}
+
+/// Perform a typed navigation-key intent by delegating to the existing
+/// `moveSelection`/`toggleExpand` operations. This is the narrow command API
+/// input.zig uses so it no longer calls those internals — or reads the
+/// `g_selected`/`g_entry_count`/`g_entries` globals for the Enter decision —
+/// directly. Behavior matches the previous inline key branch exactly.
+pub fn handleAction(act: Action) void {
+    switch (act) {
+        .move_selection_up => moveSelection(-1),
+        .move_selection_down => moveSelection(1),
+        .toggle_selected_expand => {
+            // Enter on a directory toggles expand; on a file it is a no-op
+            // (toggleExpand also guards is_dir, so the inner check just avoids
+            // the call, preserving the original conditional shape).
+            if (g_selected) |sel| {
+                if (sel < g_entry_count and entries()[sel].is_dir) {
+                    toggleExpand(sel);
+                }
+            }
+        },
+        .rename_selected => startRename(),
+        .refresh => refresh(),
+        .create_file => startNewFile(),
+        .create_directory => startNewDir(),
+        .delete_selected => startDelete(),
+    }
 }
 
 fn ensureSelectedVisible() void {
@@ -1642,7 +1762,7 @@ pub fn downloadSelected(local_dir: []const u8) void {
     const sel = g_selected orelse return;
     if (sel >= g_entry_count) return;
 
-    const entry = &g_entries[sel];
+    const entry = &entries()[sel];
 
     const name = entry.name_buf[0..entry.name_len];
     if (!isSafeDownloadEntryName(name)) {
@@ -1695,17 +1815,6 @@ pub fn uploadFolder(local_path: []const u8) void {
     _ = startTransferJob(.upload, &g_ssh_conn, local_path, dst, name, scp.transferDirWithControl);
 }
 
-pub fn uploadLocalFileToRemoteSpec(local_path: []const u8, dst_spec: []const u8, display_name: []const u8, conn: *const ssh_connection.SshConnection) bool {
-    return uploadLocalPathToRemoteSpecWithTransferFns(
-        local_path,
-        dst_spec,
-        display_name,
-        conn,
-        scp.transferWithControl,
-        scp.transferDirWithControl,
-    );
-}
-
 fn uploadLocalFileToRemoteSpecWithTransfer(local_path: []const u8, dst_spec: []const u8, display_name: []const u8, conn: *const ssh_connection.SshConnection, transfer_fn: TransferFn) bool {
     return startTransferJob(.upload, conn, local_path, dst_spec, display_name, transfer_fn);
 }
@@ -1740,10 +1849,6 @@ pub fn uploadLocalFileToRemoteSpecWithCompletion(
     completion: TransferCompletion,
 ) bool {
     return startTransferJobWithCompletion(.upload, conn, local_path, dst_spec, display_name, pickUploadTransferFn(local_path), completion);
-}
-
-pub fn downloadRemoteFileToPath(remote_path: []const u8, local_path: []const u8, display_name: []const u8, conn: *const ssh_connection.SshConnection) bool {
-    return downloadRemotePathToPath(remote_path, local_path, display_name, conn, false);
 }
 
 pub fn downloadRemotePathToPath(remote_path: []const u8, local_path: []const u8, display_name: []const u8, conn: *const ssh_connection.SshConnection, is_dir: bool) bool {
@@ -2027,13 +2132,13 @@ test "file_explorer: download refuses remote entry names that can escape the des
     g_ssh_conn = .{};
     g_selected = 0;
     g_entry_count = 1;
-    g_entries[0] = .{};
+    entries()[0] = .{};
     const evil_name = "..\\..\\evil";
-    @memcpy(g_entries[0].name_buf[0..evil_name.len], evil_name);
-    g_entries[0].name_len = evil_name.len;
+    @memcpy(entries()[0].name_buf[0..evil_name.len], evil_name);
+    entries()[0].name_len = evil_name.len;
     const evil_path = "/srv/..\\..\\evil";
-    @memcpy(g_entries[0].path_buf[0..evil_path.len], evil_path);
-    g_entries[0].path_len = evil_path.len;
+    @memcpy(entries()[0].path_buf[0..evil_path.len], evil_path);
+    entries()[0].path_len = evil_path.len;
 
     downloadSelected("/tmp/wispterm-test-downloads");
 
@@ -2268,6 +2373,64 @@ test "file_explorer: moveHistorySelection walks selected row" {
     try std.testing.expectEqual(@as(?usize, 2), g_history_selected);
 }
 
+test "file_explorer: handleAction move intents walk the selection" {
+    g_panel_mode = .files;
+    g_row_height = 20;
+    g_visible_height = 200;
+    g_entry_count = 5;
+    g_scroll_offset = 0;
+    g_selected = 0;
+
+    handleAction(.move_selection_down);
+    try std.testing.expectEqual(@as(?usize, 1), g_selected);
+
+    handleAction(.move_selection_down);
+    handleAction(.move_selection_down);
+    try std.testing.expectEqual(@as(?usize, 3), g_selected);
+
+    handleAction(.move_selection_up);
+    try std.testing.expectEqual(@as(?usize, 2), g_selected);
+
+    // Matches moveSelection(-1) clamping at the top row.
+    handleAction(.move_selection_up);
+    handleAction(.move_selection_up);
+    handleAction(.move_selection_up);
+    try std.testing.expectEqual(@as(?usize, 0), g_selected);
+}
+
+test "file_explorer: handleAction toggle collapses an expanded directory and no-ops on a file" {
+    // Mirrors the Enter branch the input.zig key handler used to run inline:
+    // route to toggleExpand only when the selection is a directory. Use the
+    // collapse direction (in-memory, no filesystem) to keep the test
+    // deterministic — listing a fabricated path is environment-dependent.
+    g_panel_mode = .files;
+    g_mode = .local;
+    g_entry_count = 3;
+    entries()[0] = .{ .is_dir = true, .expanded = true, .depth = 0 };
+    // One synthetic child of entry 0, so collapse has something to remove.
+    entries()[1] = .{ .is_dir = false, .expanded = false, .depth = 1 };
+    entries()[2] = .{ .is_dir = false, .expanded = false, .depth = 0 };
+
+    // Selected directory (expanded): Enter toggles it to collapsed and drops
+    // the child row.
+    g_selected = 0;
+    handleAction(.toggle_selected_expand);
+    try std.testing.expect(!entries()[0].expanded);
+    try std.testing.expectEqual(@as(usize, 2), g_entry_count);
+
+    // Selected file: Enter is a no-op (entry untouched).
+    entries()[1] = .{ .is_dir = false, .expanded = false, .depth = 0 };
+    g_selected = 1;
+    handleAction(.toggle_selected_expand);
+    try std.testing.expect(!entries()[1].expanded);
+    try std.testing.expectEqual(@as(usize, 2), g_entry_count);
+
+    // No selection: Enter is a no-op (no crash).
+    g_selected = null;
+    handleAction(.toggle_selected_expand);
+    try std.testing.expectEqual(@as(?usize, null), g_selected);
+}
+
 test "file_explorer: history scroll does not mutate file scroll" {
     g_panel_mode = .files;
     g_row_height = 20;
@@ -2301,6 +2464,48 @@ test "file_explorer: switching to agent history clears file op state" {
     try std.testing.expectEqual(@as(u8, 0), g_input_len);
     try std.testing.expectEqual(@as(f32, 77), g_scroll_offset);
     try std.testing.expectEqual(@as(f32, 12), g_history_scroll_offset);
+}
+
+test "file_explorer: narrow query accessors reflect global state" {
+    const prev_focused = g_focused;
+    const prev_op_mode = g_op_mode;
+    const prev_panel_mode = g_panel_mode;
+    const prev_mode = g_mode;
+    defer {
+        g_focused = prev_focused;
+        g_op_mode = prev_op_mode;
+        g_panel_mode = prev_panel_mode;
+        g_mode = prev_mode;
+    }
+
+    g_focused = true;
+    try std.testing.expect(isFocused());
+    g_focused = false;
+    try std.testing.expect(!isFocused());
+
+    g_op_mode = .none;
+    try std.testing.expect(!hasActiveOp());
+    try std.testing.expectEqual(OpMode.none, opMode());
+    g_op_mode = .rename;
+    try std.testing.expect(hasActiveOp());
+    try std.testing.expectEqual(OpMode.rename, opMode());
+    g_op_mode = .confirm_delete;
+    try std.testing.expect(hasActiveOp());
+    try std.testing.expectEqual(OpMode.confirm_delete, opMode());
+
+    g_panel_mode = .files;
+    try std.testing.expect(isFilesPanel());
+    try std.testing.expect(!isAgentHistoryPanel());
+    g_panel_mode = .agent_history;
+    try std.testing.expect(isAgentHistoryPanel());
+    try std.testing.expect(!isFilesPanel());
+
+    g_mode = .remote;
+    try std.testing.expect(isRemoteMode());
+    g_mode = .local;
+    try std.testing.expect(!isRemoteMode());
+    g_mode = .wsl;
+    try std.testing.expect(!isRemoteMode());
 }
 
 test "file_explorer: syncPanelForTabKind resets focus and mode" {
@@ -2405,8 +2610,8 @@ test "file_explorer: unchanged terminal target preserves file state" {
 }
 
 fn setFlatEntryPathForTest(idx: usize, path: []const u8) void {
-    @memcpy(g_entries[idx].path_buf[0..path.len], path);
-    g_entries[idx].path_len = @intCast(path.len);
+    @memcpy(entries()[idx].path_buf[0..path.len], path);
+    entries()[idx].path_len = @intCast(path.len);
 }
 
 test "file_explorer: refresh restore re-selects entry by path" {

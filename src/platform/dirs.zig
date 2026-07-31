@@ -27,6 +27,14 @@ pub fn clearTestConfigDirForCurrentThread() void {
     test_config_dir_override = null;
 }
 
+/// Thin setter/clearer for `test_config_dir_override`, used by feature tests
+/// (e.g. mcp_registry) that want a one-call override/reset pair instead of
+/// the two named functions above. No-op outside `builtin.is_test`.
+pub fn setTestConfigDirOverride(path: ?[]const u8) void {
+    if (!builtin.is_test) return;
+    test_config_dir_override = path;
+}
+
 pub fn configDirFromEnvForOs(
     allocator: std.mem.Allocator,
     os_tag: std.Target.Os.Tag,
@@ -41,7 +49,7 @@ pub fn configDirFromEnvForOs(
         },
         .macos => {
             if (nonEmpty(env.home)) |home| {
-                return std.fs.path.join(allocator, &.{ home, "Library", "Application Support", app_dir_name });
+                return joinPathForOs(allocator, os_tag, &.{ home, "Library", "Application Support", app_dir_name });
             }
             return error.NoConfigPath;
         },
@@ -85,7 +93,7 @@ pub fn pathInConfigDirFromEnvForOs(
 ) ![]const u8 {
     const dir = try configDirFromEnvForOs(allocator, os_tag, env);
     defer allocator.free(dir);
-    return std.fs.path.join(allocator, &.{ dir, basename });
+    return joinPathForOs(allocator, os_tag, &.{ dir, basename });
 }
 
 pub fn configFilePath(allocator: std.mem.Allocator) ![]const u8 {
@@ -171,7 +179,7 @@ pub fn openSshConfigPathFromEnvForOs(
         .windows => nonEmpty(env.userprofile) orelse nonEmpty(env.home) orelse return error.NoOpenSshConfigPath,
         else => nonEmpty(env.home) orelse return error.NoOpenSshConfigPath,
     };
-    return std.fs.path.join(allocator, &.{ base, ".ssh", "config" });
+    return joinPathForOs(allocator, os_tag, &.{ base, ".ssh", "config" });
 }
 
 /// The user's home directory (`$HOME`, or `%USERPROFILE%` on Windows). Used to
@@ -212,6 +220,22 @@ pub fn agentHistoryPathFromEnvForOs(
     return pathInConfigDirFromEnvForOs(allocator, os_tag, env, "agent-history.json");
 }
 
+pub fn agentHistoryDir(allocator: std.mem.Allocator) ![]const u8 {
+    return pathInConfigDir(allocator, "agent-history");
+}
+
+pub fn agentHistoryDirFromEnvForOs(
+    allocator: std.mem.Allocator,
+    os_tag: std.Target.Os.Tag,
+    env: Env,
+) ![]const u8 {
+    return pathInConfigDirFromEnvForOs(allocator, os_tag, env, "agent-history");
+}
+
+pub fn memoryDir(allocator: std.mem.Allocator) ![]const u8 {
+    return pathInConfigDir(allocator, "memory");
+}
+
 pub fn aiHistoryCachePath(allocator: std.mem.Allocator) ![]const u8 {
     return pathInConfigDir(allocator, "ai_history_cache.json");
 }
@@ -248,6 +272,18 @@ pub fn commandsDirFromEnvForOs(
     return pathInConfigDirFromEnvForOs(allocator, os_tag, env, "commands");
 }
 
+pub fn toolsDir(allocator: std.mem.Allocator) ![]const u8 {
+    return pathInConfigDir(allocator, "tools");
+}
+
+pub fn toolsDirFromEnvForOs(
+    allocator: std.mem.Allocator,
+    os_tag: std.Target.Os.Tag,
+    env: Env,
+) ![]const u8 {
+    return pathInConfigDirFromEnvForOs(allocator, os_tag, env, "tools");
+}
+
 pub fn pluginSkillsDir(allocator: std.mem.Allocator) ![]const u8 {
     const dir = try configDir(allocator);
     defer allocator.free(dir);
@@ -261,32 +297,7 @@ pub fn pluginSkillsDirFromEnvForOs(
 ) ![]const u8 {
     const dir = try configDirFromEnvForOs(allocator, os_tag, env);
     defer allocator.free(dir);
-    return std.fs.path.join(allocator, &.{ dir, "plugins", "skills" });
-}
-
-/// Path to the Claude Code hook settings file (`~/.claude/settings.json`).
-/// Returns `error.NoHomePath` when neither HOME nor USERPROFILE is set.
-pub fn agentHookSettingsPath(allocator: std.mem.Allocator) ![]const u8 {
-    const userprofile = envVarOwned(allocator, "USERPROFILE");
-    defer if (userprofile) |value| allocator.free(value);
-    const home = envVarOwned(allocator, "HOME");
-    defer if (home) |value| allocator.free(value);
-
-    return agentHookSettingsPathFromEnv(allocator, .{
-        .userprofile = userprofile,
-        .home = home,
-    });
-}
-
-pub fn agentHookSettingsPathFromEnv(allocator: std.mem.Allocator, env: Env) ![]const u8 {
-    const dot_claude = ".claude";
-    if (nonEmpty(env.home)) |home| {
-        return std.fs.path.join(allocator, &.{ home, dot_claude, "settings.json" });
-    }
-    if (nonEmpty(env.userprofile)) |userprofile| {
-        return std.fs.path.join(allocator, &.{ userprofile, dot_claude, "settings.json" });
-    }
-    return error.NoHomePath;
+    return joinPathForOs(allocator, os_tag, &.{ dir, "plugins", "skills" });
 }
 
 pub fn downloadsDir(allocator: std.mem.Allocator) ![]const u8 {
@@ -315,7 +326,7 @@ pub fn downloadsDirFromEnvForOs(
         },
         else => {
             if (nonEmpty(env.home)) |home| {
-                return std.fs.path.join(allocator, &.{ home, "Downloads" });
+                return joinPathForOs(allocator, os_tag, &.{ home, "Downloads" });
             }
             return error.NoDownloadsPath;
         },
@@ -394,6 +405,69 @@ fn nonEmpty(value: ?[]const u8) ?[]const u8 {
     return actual;
 }
 
+fn joinPathForOs(
+    allocator: std.mem.Allocator,
+    os_tag: std.Target.Os.Tag,
+    paths: []const []const u8,
+) ![]u8 {
+    if (os_tag != .macos) {
+        return std.fs.path.join(allocator, paths);
+    }
+
+    return joinPosixPath(allocator, paths);
+}
+
+fn joinPosixPath(allocator: std.mem.Allocator, paths: []const []const u8) ![]u8 {
+    if (paths.len == 0) return allocator.dupe(u8, "");
+
+    const first_path_index = blk: {
+        for (paths, 0..) |path, index| {
+            if (path.len != 0) break :blk index;
+        }
+        return allocator.dupe(u8, "");
+    };
+
+    var total_len: usize = paths[first_path_index].len;
+    var prev_path = paths[first_path_index];
+    var i: usize = first_path_index + 1;
+    while (i < paths.len) : (i += 1) {
+        const this_path = paths[i];
+        if (this_path.len == 0) continue;
+
+        const prev_sep = prev_path[prev_path.len - 1] == '/';
+        const this_sep = this_path[0] == '/';
+        total_len += @intFromBool(!prev_sep and !this_sep);
+        total_len += if (prev_sep and this_sep) this_path.len - 1 else this_path.len;
+        prev_path = this_path;
+    }
+
+    const out = try allocator.alloc(u8, total_len);
+    errdefer allocator.free(out);
+
+    @memcpy(out[0..paths[first_path_index].len], paths[first_path_index]);
+    var out_index = paths[first_path_index].len;
+    prev_path = paths[first_path_index];
+    i = first_path_index + 1;
+    while (i < paths.len) : (i += 1) {
+        const this_path = paths[i];
+        if (this_path.len == 0) continue;
+
+        const prev_sep = prev_path[prev_path.len - 1] == '/';
+        const this_sep = this_path[0] == '/';
+        if (!prev_sep and !this_sep) {
+            out[out_index] = '/';
+            out_index += 1;
+        }
+
+        const adjusted_path = if (prev_sep and this_sep) this_path[1..] else this_path;
+        @memcpy(out[out_index..][0..adjusted_path.len], adjusted_path);
+        out_index += adjusted_path.len;
+        prev_path = this_path;
+    }
+
+    return out;
+}
+
 test "configDir uses test override in Zig test processes" {
     const allocator = std.testing.allocator;
     const override = "/tmp/wispterm-test-config";
@@ -446,9 +520,7 @@ test "platform dirs resolve app config root per OS" {
             .home = "/Users/alice",
         });
         defer allocator.free(dir);
-        const expected = try std.fs.path.join(allocator, &.{ "/Users/alice", "Library", "Application Support", app_dir_name });
-        defer allocator.free(expected);
-        try std.testing.expectEqualStrings(expected, dir);
+        try std.testing.expectEqualStrings("/Users/alice/Library/Application Support/wispterm", dir);
     }
 }
 
@@ -487,9 +559,7 @@ test "platform dirs build window state path" {
     });
     defer allocator.free(state_path);
 
-    const expected = try std.fs.path.join(allocator, &.{ "/Users/alice", "Library", "Application Support", app_dir_name, "state" });
-    defer allocator.free(expected);
-    try std.testing.expectEqualStrings(expected, state_path);
+    try std.testing.expectEqualStrings("/Users/alice/Library/Application Support/wispterm/state", state_path);
 }
 
 test "platform dirs ignore empty env values" {
@@ -593,6 +663,12 @@ test "platform dirs expose app skill roots" {
     const expected_commands = try std.fs.path.join(allocator, &.{ "/home/alice", ".config", app_dir_name, "commands" });
     defer allocator.free(expected_commands);
     try std.testing.expectEqualStrings(expected_commands, commands);
+
+    const tools = try toolsDirFromEnvForOs(allocator, .linux, env);
+    defer allocator.free(tools);
+    const expected_tools = try std.fs.path.join(allocator, &.{ "/home/alice", ".config", app_dir_name, "tools" });
+    defer allocator.free(expected_tools);
+    try std.testing.expectEqualStrings(expected_tools, tools);
 }
 
 test "platform dirs resolve downloads directory per OS" {
@@ -645,4 +721,11 @@ test "platform dirs resolve home directory per OS" {
     try std.testing.expectEqualStrings("/home/alice", linux);
 
     try std.testing.expectError(error.NoHomeDir, homeDirFromEnvForOs(allocator, .linux, .{}));
+}
+
+test "agentHistoryDir resolves under config dir (macos)" {
+    const a = std.testing.allocator;
+    const p = try agentHistoryDirFromEnvForOs(a, .macos, .{ .home = "/Users/x" });
+    defer a.free(p);
+    try std.testing.expectEqualStrings("/Users/x/Library/Application Support/wispterm/agent-history", p);
 }

@@ -81,38 +81,36 @@ pub fn uploadPending(rend: *Renderer) void {
     const alloc = rend.surface.allocator;
 
     for (rend.kitty_pending_uploads.items) |pending| {
-        var texture_handle: Renderer.GLuint = 0;
+        var texture = gpu.Texture.invalid();
         if (findTexture(rend, pending.image_id)) |existing| {
-            texture_handle = existing.texture;
+            texture = existing.texture;
         } else {
-            const new_tex = gpu.Texture.create();
-            texture_handle = new_tex.handle;
+            texture = gpu.Texture.create();
             rend.kitty_textures.append(alloc, .{
                 .image_id = pending.image_id,
                 .width = pending.width,
                 .height = pending.height,
                 .transmit_time = pending.transmit_time,
-                .texture = texture_handle,
+                .texture = texture,
             }) catch {
-                var t = gpu.Texture.fromHandle(texture_handle);
-                t.destroy();
+                texture.destroy();
                 alloc.free(pending.rgba);
                 continue;
             };
         }
 
-        gpu.Texture.fromHandle(texture_handle).upload2D(
+        texture.upload2D(
             @intCast(pending.width),
             @intCast(pending.height),
             pending.rgba.ptr,
-            .{ .filter = .linear, .wrap = .clamp_to_edge, .unpack_alignment = 1 },
+            .{ .sampler = .linear_clamp, .unpack_alignment = 1 },
         );
 
         if (findTextureMut(rend, pending.image_id)) |tex| {
             tex.width = pending.width;
             tex.height = pending.height;
             tex.transmit_time = pending.transmit_time;
-            tex.texture = texture_handle;
+            tex.texture = texture;
         }
 
         alloc.free(pending.rgba);

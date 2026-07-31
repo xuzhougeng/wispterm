@@ -1,9 +1,11 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const platform_update_package = @import("platform/update_package.zig");
 const release_package = @import("release_package.zig");
 
 pub const latest_release_api_url = "https://api.github.com/repos/xuzhougeng/wispterm/releases/latest";
 pub const latest_release_page_url = "https://github.com/xuzhougeng/wispterm/releases/latest";
+pub const repo_url = "https://github.com/xuzhougeng/wispterm";
 pub const asset_name_buffer_len = 128;
 pub const asset_download_url_buffer_len = 512;
 
@@ -220,10 +222,6 @@ pub fn evaluateReleaseForPackage(current_version: []const u8, release: ReleaseIn
     };
 }
 
-pub fn evaluateRelease(current_version: []const u8, release: ReleaseInfo) CheckResult {
-    return evaluateReleaseForPackage(current_version, release, .{ .platform = .unsupported });
-}
-
 pub fn formatStatusMessage(buf: []u8, result: CheckResult) ![]const u8 {
     return switch (result.state) {
         .idle => std.fmt.bufPrint(buf, "", .{}),
@@ -264,19 +262,6 @@ fn copyExact(buf: []u8, value: []const u8) ?[]const u8 {
     if (buf.len < value.len) return null;
     @memcpy(buf[0..value.len], value);
     return buf[0..value.len];
-}
-
-pub fn fetchLatestRelease(
-    allocator: std.mem.Allocator,
-    current_version: []const u8,
-    buffers: CheckResultBuffers,
-) CheckResult {
-    return fetchLatestReleaseForPackage(
-        allocator,
-        current_version,
-        .{ .platform = .unsupported },
-        buffers,
-    );
 }
 
 pub fn fetchLatestReleaseForPackage(
@@ -443,17 +428,17 @@ test "update_check: copy result fails when asset buffers are too small" {
     try std.testing.expectEqual(@as(u64, 0), copied.asset_size);
 }
 
-test "update_check: selects portable asset for runtime flavor" {
+test "update_check: selects supported Windows portable assets" {
     const tag_name = "v0.28.0";
     var portable_name_buf: [asset_name_buffer_len]u8 = undefined;
-    var required_extra_name_buf: [asset_name_buffer_len]u8 = undefined;
-    var no_embedded_browser_name_buf: [asset_name_buffer_len]u8 = undefined;
+    var compat_name_buf: [asset_name_buffer_len]u8 = undefined;
+    var opengl_name_buf: [asset_name_buffer_len]u8 = undefined;
     const portable_package = platform_update_package.packageForScenario(.baseline);
-    const required_extra_package = platform_update_package.packageForScenario(.compat);
-    const no_embedded_browser_package = platform_update_package.packageForScenario(.without_embedded_browser_payload);
+    const compat_package = platform_update_package.packageForScenario(.compat);
+    const opengl_package = platform_update_package.packageForScenario(.opengl);
     const portable_name = try platform_update_package.assetName(tag_name, portable_package, &portable_name_buf);
-    const required_extra_name = try platform_update_package.assetName(tag_name, required_extra_package, &required_extra_name_buf);
-    const no_embedded_browser_name = try platform_update_package.assetName(tag_name, no_embedded_browser_package, &no_embedded_browser_name_buf);
+    const compat_name = try platform_update_package.assetName(tag_name, compat_package, &compat_name_buf);
+    const opengl_name = try platform_update_package.assetName(tag_name, opengl_package, &opengl_name_buf);
 
     const json = try std.fmt.allocPrint(std.testing.allocator,
         \\{{
@@ -463,16 +448,16 @@ test "update_check: selects portable asset for runtime flavor" {
         \\  "prerelease":false,
         \\  "assets":[
         \\    {{"name":"{s}","browser_download_url":"https://example.test/portable.zip","size":11}},
-        \\    {{"name":"{s}","browser_download_url":"https://example.test/required-extra.zip","size":22}},
-        \\    {{"name":"{s}","browser_download_url":"https://example.test/no-embedded-browser.zip","size":33}}
+        \\    {{"name":"{s}","browser_download_url":"https://example.test/compat.zip","size":22}},
+        \\    {{"name":"{s}","browser_download_url":"https://example.test/opengl.zip","size":33}}
         \\  ]
         \\}}
     , .{
         tag_name,
         tag_name,
         portable_name,
-        required_extra_name,
-        no_embedded_browser_name,
+        compat_name,
+        opengl_name,
     });
     defer std.testing.allocator.free(json);
 
@@ -484,36 +469,73 @@ test "update_check: selects portable asset for runtime flavor" {
     try std.testing.expectEqualStrings("https://example.test/portable.zip", normal.download_url);
     try std.testing.expectEqual(@as(u64, 11), normal.size);
 
-    const required_extra = selectReleaseAsset(release, required_extra_package) orelse return error.ExpectedAsset;
-    try std.testing.expectEqualStrings(required_extra_name, required_extra.name);
+    const compat = selectReleaseAsset(release, compat_package) orelse return error.ExpectedAsset;
+    try std.testing.expectEqualStrings(compat_name, compat.name);
+    try std.testing.expectEqualStrings("https://example.test/compat.zip", compat.download_url);
+    try std.testing.expectEqual(@as(u64, 22), compat.size);
 
-    const no_embedded_browser = selectReleaseAsset(release, no_embedded_browser_package) orelse return error.ExpectedAsset;
-    try std.testing.expectEqualStrings(no_embedded_browser_name, no_embedded_browser.name);
+    const opengl = selectReleaseAsset(release, opengl_package) orelse return error.ExpectedAsset;
+    try std.testing.expectEqualStrings(opengl_name, opengl.name);
+    try std.testing.expectEqualStrings("https://example.test/opengl.zip", opengl.download_url);
+    try std.testing.expectEqual(@as(u64, 33), opengl.size);
 }
 
 test "update_check: selects macOS DMG asset for macOS package" {
     const package = ReleasePackage{ .platform = .macos };
-    var asset_name_buf: [asset_name_buffer_len]u8 = undefined;
-    const asset_name = try platform_update_package.assetName("v0.32.0", package, &asset_name_buf);
-
-    const release = ReleaseInfo{
-        .tag_name = "v0.32.0",
-        .html_url = "https://github.com/xuzhougeng/wispterm/releases/tag/v0.32.0",
-        .draft = false,
-        .prerelease = false,
-        .assets = &.{
-            .{
-                .name = asset_name,
-                .download_url = "https://example.test/wispterm-macos-v0.32.0.dmg",
-                .size = 1234,
-            },
+    const expected_name, const expected_url = switch (builtin.cpu.arch) {
+        .aarch64 => .{
+            "wispterm-macos-aarch64-v1.28.0.dmg",
+            "https://example.test/wispterm-macos-aarch64-v1.28.0.dmg",
         },
-        .owned = false,
+        .x86_64 => .{
+            "wispterm-macos-x86_64-v1.28.0.dmg",
+            "https://example.test/wispterm-macos-x86_64-v1.28.0.dmg",
+        },
+        else => return error.SkipZigTest,
     };
 
-    const result = evaluateReleaseForPackage("0.31.0", release, package);
+    const json =
+        \\{"tag_name":"v1.28.0","html_url":"https://github.com/xuzhougeng/wispterm/releases/tag/v1.28.0","draft":false,"prerelease":false,"assets":[
+        \\  {"name":"wispterm-macos-v1.28.0.dmg","browser_download_url":"https://example.test/wispterm-macos-v1.28.0.dmg","size":1000},
+        \\  {"name":"wispterm-macos-aarch64-v1.28.0.dmg","browser_download_url":"https://example.test/wispterm-macos-aarch64-v1.28.0.dmg","size":2000},
+        \\  {"name":"wispterm-macos-x86_64-v1.28.0.dmg","browser_download_url":"https://example.test/wispterm-macos-x86_64-v1.28.0.dmg","size":3000}
+        \\]}
+    ;
+    const release = try parseLatestRelease(std.testing.allocator, json);
+    defer release.deinit(std.testing.allocator);
+
+    const result = evaluateReleaseForPackage("1.27.0", release, package);
     try std.testing.expectEqual(State.update_available, result.state);
-    try std.testing.expectEqualStrings("wispterm-macos-v0.32.0.dmg", result.asset_name);
+    try std.testing.expectEqualStrings(expected_name, result.asset_name);
+    try std.testing.expectEqualStrings(expected_url, result.asset_download_url);
+}
+
+test "update_check: selects the published Linux x86_64 AppImage asset" {
+    if (builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+
+    const json =
+        \\{
+        \\  "tag_name":"v1.33.1",
+        \\  "html_url":"https://github.com/xuzhougeng/wispterm/releases/tag/v1.33.1",
+        \\  "draft":false,
+        \\  "prerelease":false,
+        \\  "assets":[
+        \\    {"name":"wispterm-linux-v1.33.1.AppImage","browser_download_url":"https://example.test/generic.AppImage","size":11},
+        \\    {"name":"WispTerm-1.33.1-aarch64.AppImage","browser_download_url":"https://example.test/arm64.AppImage","size":22},
+        \\    {"name":"WispTerm-1.33.1-x86_64.AppImage","browser_download_url":"https://example.test/x86_64.AppImage","size":33}
+        \\  ]
+        \\}
+    ;
+
+    const release = try parseLatestRelease(std.testing.allocator, json);
+    defer release.deinit(std.testing.allocator);
+
+    const package = ReleasePackage{ .platform = .linux };
+    const result = evaluateReleaseForPackage("1.33.0", release, package);
+    try std.testing.expectEqual(State.update_available, result.state);
+    try std.testing.expectEqualStrings("WispTerm-1.33.1-x86_64.AppImage", result.asset_name);
+    try std.testing.expectEqualStrings("https://example.test/x86_64.AppImage", result.asset_download_url);
+    try std.testing.expectEqual(@as(u64, 33), result.asset_size);
 }
 
 test "update_check: update result includes selected asset fields" {

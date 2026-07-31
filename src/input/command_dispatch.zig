@@ -25,9 +25,11 @@ pub const Command = union(enum) {
     toggle_file_explorer,
     toggle_sidebar,
     toggle_ai_copilot,
+    copilot_conversation_picker,
     close_panel_or_tab,
     toggle_maximize,
     font_size: i32,
+    open_settings,
     // Late commands.
     copy,
     paste,
@@ -55,10 +57,12 @@ pub fn resolve(action: keybind.Action, phase: Phase) ?Command {
             .toggle_file_explorer => .toggle_file_explorer,
             .toggle_sidebar => .toggle_sidebar,
             .toggle_ai_copilot => .toggle_ai_copilot,
+            .copilot_conversation_picker => .copilot_conversation_picker,
             .close_panel_or_tab => .close_panel_or_tab,
             .toggle_maximize => .toggle_maximize,
             .font_size_increase => .{ .font_size = 1 },
             .font_size_decrease => .{ .font_size = -1 },
+            .open_settings => .open_settings,
             else => null,
         },
         .late => switch (action) {
@@ -140,6 +144,11 @@ test "late commands resolve only in the late phase" {
     try std.testing.expectEqual(@as(?Command, null), resolve(.copy, .early));
 }
 
+test "visual settings resolves before overlay routing" {
+    try std.testing.expectEqual(Command.open_settings, resolve(.open_settings, .early).?);
+    try std.testing.expectEqual(@as(?Command, null), resolve(.open_settings, .late));
+}
+
 test "focus actions map to focus_split targets" {
     try std.testing.expectEqual(Command{ .focus_split = .left }, resolve(.focus_left, .late).?);
     try std.testing.expectEqual(Command{ .focus_split = .previous }, resolve(.focus_previous, .late).?);
@@ -164,4 +173,38 @@ test "focus_panel actions resolve to a 1-based focus_panel command (late phase o
     try std.testing.expectEqual(@as(?Command, null), resolve(.focus_panel_1, .early));
     // Regression: the shared `else` arm still resolves switch_tab.
     try std.testing.expectEqual(Command{ .switch_tab = 0 }, resolve(.switch_tab_1, .late).?);
+}
+
+// Behavior test (converted from a source-string grep in test_main.zig that
+// asserted input.zig contained a `.copilot_conversation_picker =>` dispatch
+// arm). The dispatch lives here now; assert the real resolver wiring instead of
+// grepping for the arm text.
+test "copilot_conversation_picker resolves to the picker command in the early phase" {
+    try std.testing.expectEqual(
+        Command.copilot_conversation_picker,
+        resolve(.copilot_conversation_picker, .early).?,
+    );
+    // It is an early-phase command, matching the real key-routing order.
+    try std.testing.expectEqual(@as(?Command, null), resolve(.copilot_conversation_picker, .late));
+}
+
+// Behavior test (converted from a source-string grep that asserted keybind.zig
+// contained the literal "copilot_conversation_picker"). Call the keybind catalog
+// directly: the action name must parse to the enum value AND a default binding
+// must exist, so the copilot picker is reachable out of the box. `keybind` is
+// already imported by this module, so this runs in the fast test suite.
+test "copilot_conversation_picker is a real, default-bound keybind action" {
+    try std.testing.expectEqual(
+        keybind.Action.copilot_conversation_picker,
+        keybind.Action.parse("copilot_conversation_picker").?,
+    );
+
+    var bound = false;
+    for (keybind.default_bindings) |binding| {
+        if (binding.action == .copilot_conversation_picker) {
+            bound = true;
+            break;
+        }
+    }
+    try std.testing.expect(bound);
 }

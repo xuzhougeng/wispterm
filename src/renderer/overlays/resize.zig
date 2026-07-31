@@ -5,11 +5,8 @@ const AppWindow = @import("../../AppWindow.zig");
 const Surface = @import("../../Surface.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
-const gl_init = AppWindow.gpu.gl_init;
 const primitives = @import("primitives.zig");
 const renderRoundedQuadAlpha = primitives.renderRoundedQuadAlpha;
-
-const c = AppWindow.gpu.c;
 
 pub const RESIZE_OVERLAY_DURATION_MS: i64 = 750; // How long to show after resize stops
 const RESIZE_OVERLAY_FADE_MS: i64 = 150; // Fade out duration
@@ -173,7 +170,6 @@ fn renderResizeOverlayText(cols: u16, rows: u16, window_width: f32, window_heigh
     const content_height = window_height - top_offset;
     const box_x = (window_width - box_width) / 2;
     const box_y = (content_height - box_height) / 2; // Centered in content area (GL coords)
-
 
     // Draw rounded background box (black with alpha, slightly more transparent than scrollbar)
     const corner_radius: f32 = 6;

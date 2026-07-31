@@ -17,7 +17,7 @@
 const std = @import("std");
 const xev = @import("xev");
 const Surface = @import("../Surface.zig");
-const renderer = @import("../renderer.zig");
+const geometry = @import("../core/geometry.zig");
 const window_backend = @import("../platform/window_backend.zig");
 
 const Thread = @This();
@@ -35,7 +35,7 @@ coalesce_c: xev.Completion = .{},
 coalesce_cancel_c: xev.Completion = .{},
 
 /// Pending coalesced resize (latest wins). Writer-thread-only.
-coalesce_data: ?renderer.size.GridSize = null,
+coalesce_data: ?geometry.GridSize = null,
 
 /// Whether the coalesce timer is currently active.
 coalesce_active: bool = false,
@@ -59,6 +59,7 @@ pub fn deinit(self: *Thread) void {
 
 pub fn threadMain(self: *Thread, surface: *Surface) void {
     self.surface = surface;
+    defer surface.markStopped();
 
     // Register mailbox wakeup callback
     surface.mailbox.wakeup.wait(&self.loop, &self.wakeup_c, Thread, self, wakeupCallback);
@@ -67,7 +68,7 @@ pub fn threadMain(self: *Thread, surface: *Surface) void {
     self.stop.wait(&self.loop, &self.stop_c, Thread, self, stopCallback);
 
     // Run the event loop until stop is signaled
-    self.loop.run(.until_done) catch {};
+    self.loop.run(.until_done) catch |err| surface.failIo(.event_loop, err);
 }
 
 fn wakeupCallback(
@@ -76,41 +77,77 @@ fn wakeupCallback(
     _: *xev.Completion,
     r: xev.Async.WaitError!void,
 ) xev.CallbackAction {
-    _ = r catch return .disarm;
     const self = self_opt orelse return .disarm;
+    _ = r catch |err| {
+        if (self.surface) |surface| surface.failIo(.event_loop, err);
+        return .disarm;
+    };
     self.drainMailbox();
     return .rearm;
 }
 
 fn stopCallback(
-    _: ?*Thread,
+    self_opt: ?*Thread,
     loop: *xev.Loop,
     _: *xev.Completion,
-    _: xev.Async.WaitError!void,
+    r: xev.Async.WaitError!void,
 ) xev.CallbackAction {
+    _ = r catch |err| {
+        if (self_opt) |self| if (self.surface) |surface| surface.failIo(.event_loop, err);
+    };
     loop.stop();
     return .disarm;
 }
 
+/// Drain the mailbox: apply the control lane (resizes) first, then flush every
+/// queued payload write.
+///
+/// Order rationale: resize is last-writer-wins on both lanes and the coalesced
+/// resize is additionally deferred behind a 25ms timer, so strict resize/write
+/// interleaving is neither possible nor meaningful — only the latest geometry
+/// can win regardless of when writes land relative to it. We therefore apply
+/// the pending immediate resize (which grows/shrinks the grid now), arm/refresh
+/// the coalesce timer for the pending coalesced resize, and then drain all
+/// queued writes in their exact enqueue order via popWrite(). Writes can never
+/// be evicted by a resize because they live on a separate ordered lane.
 fn drainMailbox(self: *Thread) void {
     const surface = self.surface orelse return;
-    while (surface.mailbox.pop()) |msg| {
-        defer msg.deinit();
+    // Always drain both lanes (free queued payloads, clear pending resizes) but
+    // only touch the PTY while the surface accepts input.
+    const accepts = surface.acceptsInput();
 
+    // Control lane: immediate resize applies now; coalesced resize feeds the
+    // 25ms timer (handleResize preserves last-writer-wins + the coalesce gate).
+    if (surface.mailbox.takePendingImmediateResize()) |grid| {
+        if (accepts) self.handleResizeImmediate(grid);
+    }
+    if (surface.mailbox.takePendingResize()) |grid| {
+        if (accepts) self.handleResize(grid);
+    }
+
+    // Payload lane: flush every queued write in order. writeToPty() self-gates
+    // on acceptsInput(), so writes to a stopped surface are freed, not sent.
+    while (surface.mailbox.popWrite()) |msg| {
+        defer msg.deinit();
         switch (msg) {
-            .resize => |grid| self.handleResize(grid),
-            .resize_immediate => |grid| self.handleResizeImmediate(grid),
             .write_small => |payload| writeToPty(surface, payload.data[0..payload.len]),
             .write_alloc => |payload| writeToPty(surface, payload.data),
+            .resize, .resize_immediate => unreachable, // resize never enters the payload ring
         }
     }
 }
 
 fn writeToPty(surface: *Surface, data: []const u8) void {
-    surface.pty.writeInput(data) catch {};
+    if (!surface.acceptsInput()) return;
+    surface.pty.writeInput(data) catch |err| {
+        surface.failIo(.pty_write, err);
+        return;
+    };
 }
 
-fn handleResize(self: *Thread, grid: renderer.size.GridSize) void {
+fn handleResize(self: *Thread, grid: geometry.GridSize) void {
+    const surface = self.surface orelse return;
+    if (!surface.acceptsInput()) return;
     self.coalesce_data = grid;
 
     if (self.coalesce_active) return; // timer already running, it will pick up latest data
@@ -120,11 +157,14 @@ fn handleResize(self: *Thread, grid: renderer.size.GridSize) void {
     self.coalesce.run(&self.loop, &self.coalesce_c, COALESCE_MS, Thread, self, coalesceCallback);
 }
 
-fn handleResizeImmediate(self: *Thread, grid: renderer.size.GridSize) void {
+fn handleResizeImmediate(self: *Thread, grid: geometry.GridSize) void {
+    const surface = self.surface orelse return;
+    if (!surface.acceptsInput()) return;
+
     // Drop any older coalesced resize so a delayed timer cannot undo the
     // immediate layout change.
     self.coalesce_data = null;
-    applyResize(self.surface.?, grid);
+    applyResize(surface, grid);
 }
 
 fn coalesceCallback(
@@ -133,8 +173,13 @@ fn coalesceCallback(
     _: *xev.Completion,
     r: xev.Timer.RunError!void,
 ) xev.CallbackAction {
-    _ = r catch {
-        if (self_opt) |self| self.coalesce_active = false;
+    _ = r catch |err| {
+        if (self_opt) |self| {
+            self.coalesce_active = false;
+            if (err != error.Canceled) {
+                if (self.surface) |surface| surface.failIo(.event_loop, err);
+            }
+        }
         return .disarm;
     };
     const self = self_opt orelse return .disarm;
@@ -143,25 +188,34 @@ fn coalesceCallback(
 
     if (self.coalesce_data) |grid| {
         self.coalesce_data = null;
-        applyResize(self.surface.?, grid);
+        if (self.surface) |surface| applyResize(surface, grid);
     }
 
     return .disarm;
 }
 
-fn applyResize(surface: *Surface, grid: renderer.size.GridSize) void {
+fn applyResize(surface: *Surface, grid: geometry.GridSize) void {
+    if (!surface.acceptsInput()) return;
+
     // PTY resize first (like Ghostty), then terminal.
     // The ReadThread is concurrently in a blocking PTY read. This keeps
     // backend output draining while resize side effects are emitted.
     surface.resize_in_progress.store(true, .release);
     defer surface.resize_in_progress.store(false, .release);
 
-    surface.pty.setSize(.{ .ws_col = grid.cols, .ws_row = grid.rows }) catch {};
+    surface.pty.setSize(.{ .ws_col = grid.cols, .ws_row = grid.rows }) catch |err| {
+        surface.failIo(.pty_resize, err);
+        return;
+    };
 
     surface.render_state.mutex.lock();
-    defer surface.render_state.mutex.unlock();
 
-    surface.terminal.resize(surface.allocator, grid.cols, grid.rows) catch {};
+    surface.terminal.resize(surface.allocator, grid.cols, grid.rows) catch |err| {
+        surface.render_state.mutex.unlock();
+        surface.failIo(.terminal_resize, err);
+        return;
+    };
+    defer surface.render_state.mutex.unlock();
     surface.terminal.width_px = @intFromFloat(@as(f32, @floatFromInt(grid.cols)) * surface.size.cell.width);
     surface.terminal.height_px = @intFromFloat(@as(f32, @floatFromInt(grid.rows)) * surface.size.cell.height);
 

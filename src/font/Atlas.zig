@@ -9,7 +9,6 @@
 /// changes. The atlas starts at 512×512 and doubles when full.
 ///
 /// A 1px border is reserved around the atlas edges to prevent sampling artifacts.
-
 const std = @import("std");
 
 const Atlas = @This();
@@ -93,8 +92,8 @@ pub fn reserve(self: *Atlas, allocator: std.mem.Allocator, width: u32, height: u
     const max_atlas_dim: u32 = 8192;
     if (width > max_atlas_dim or height > max_atlas_dim) return error.AtlasFull;
 
-    // Add 1px padding around each glyph to prevent GL_LINEAR from
-    // sampling neighboring glyphs in the atlas.
+    // Add 1px padding around each glyph to prevent linear sampling from
+    // reading neighboring glyphs in the atlas.
     const padded_width = width + 1;
     const padded_height = height + 1;
 

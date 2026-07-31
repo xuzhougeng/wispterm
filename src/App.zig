@@ -8,7 +8,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Config = @import("config.zig");
 const AppWindow = @import("AppWindow.zig");
-const ai_chat = @import("ai_chat.zig");
+const ai_chat = @import("assistant/conversation/session.zig");
 const app_metadata = @import("app_metadata.zig");
 const keybind = @import("keybind.zig");
 const console_host_policy = @import("platform/console_host_policy.zig");
@@ -21,13 +21,17 @@ const window_backend = @import("platform/window_backend.zig");
 const remote = @import("remote_client.zig");
 const weixin = @import("weixin/controller.zig");
 const weixin_types = @import("weixin/types.zig");
+const feishu = @import("feishu/controller.zig");
+const feishu_types = @import("feishu/types.zig");
+const feishu_binding = @import("feishu/binding.zig");
 const ctl_server = @import("ctl/server.zig");
 const ctl_discovery = @import("ctl/discovery.zig");
-const port_forward_manager_mod = @import("port_forward_manager.zig");
+const port_forward_manager_mod = @import("port_forward/manager.zig");
 const platform_dirs = @import("platform/dirs.zig");
 const platform_open_url = @import("platform/open_url.zig");
 const update_check = @import("update_check.zig");
 const update_install = @import("update_install.zig");
+const update_apply = @import("platform/update_apply.zig");
 const whats_new_gate = @import("whats_new_gate.zig");
 const platform_window_state = @import("platform/window_state.zig");
 
@@ -100,6 +104,9 @@ remote_client: ?*remote.Client,
 // WeChat direct (embedded ilink). Independent from the remote relay client.
 weixin_controller: ?*weixin.Controller,
 
+// Feishu long-connection channel. Created by startFeishu().
+feishu_controller: ?*feishu.Controller = null,
+
 // Local agent terminal control API (wisptermctl). Created by startAgentControl().
 agent_control_server: ?*ctl_server.Server = null,
 
@@ -143,6 +150,7 @@ update_check_in_flight: bool,
 download_thread: ?std.Thread,
 download_in_flight: bool,
 download_worker_running: bool,
+download_completed: bool,
 startup_update_check_started: bool,
 
 // Window management
@@ -219,6 +227,18 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
     errdefer allocator.free(ai_subagent_profile);
     const jina_api_key = try dupeStr(allocator, cfg.@"jina-api-key");
     errdefer allocator.free(jina_api_key);
+
+    var initial_cwd_buf: platform_pty_command.CwdBuffer = undefined;
+    var initial_cwd_len: usize = 0;
+    if (cfg.@"working-directory") |dir| {
+        if (dir.len > 0) {
+            const owned_cwd = try platform_pty_command.allocCwdFromUtf8(allocator, dir);
+            defer platform_pty_command.freeCwd(allocator, owned_cwd);
+            initial_cwd_len = @min(owned_cwd.len, initial_cwd_buf.len - 1);
+            @memcpy(initial_cwd_buf[0..initial_cwd_len], owned_cwd[0..initial_cwd_len]);
+            initial_cwd_buf[initial_cwd_len] = 0;
+        }
+    }
 
     var app = App{
         .allocator = allocator,
@@ -300,7 +320,10 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .download_thread = null,
         .download_in_flight = false,
         .download_worker_running = false,
+        .download_completed = false,
         .startup_update_check_started = false,
+        .next_window_cwd = initial_cwd_buf,
+        .next_window_cwd_len = initial_cwd_len,
         .windows = .empty,
         .mutex = .{},
         .window_threads = .empty,
@@ -363,7 +386,7 @@ pub fn startPortForwarding(self: *App, cfg: *const Config) void {
 
 // WeChat direct (embedded ilink). App owns the controller's lifecycle; the
 // Control vtable lives in AppWindow (it needs UI-thread tab/overlay state,
-// marshalled from the poller thread). See AppWindow.weixinControl.
+// marshalled from the poller thread). See AppWindow.chatopsControl.
 //
 // Cross-compiles to the Windows exe; not yet run (no Windows runtime / live
 // WeChat here). /term-/keys terminal delegation and the AI transcript (for
@@ -381,12 +404,56 @@ pub fn startWeixin(self: *App, cfg: *const Config) void {
         .reply_timeout_ms = std.math.clamp(cfg.@"weixin-reply-timeout-ms", 5000, 180000),
         .allowed_user = cfg.@"weixin-allowed-user" orelse "",
     };
-    const controller = weixin.Controller.create(self.allocator, state_path, AppWindow.weixinControl(), settings) catch |err| {
+    const controller = weixin.Controller.create(self.allocator, state_path, AppWindow.chatopsControl(), settings) catch |err| {
         std.debug.print("weixin-direct disabled: {}\n", .{err});
         return;
     };
     controller.start() catch {};
     self.weixin_controller = controller;
+}
+
+/// Creates and starts the Feishu long-connection controller when enabled.
+/// Credentials come from config keys; falls back to env FEISHU_APP_ID /
+/// FEISHU_APP_SECRET when a config key is absent or empty. Call once, after
+/// App is at its final address (see main.zig).
+pub fn startFeishu(self: *App, cfg: *const Config) void {
+    if (!cfg.@"feishu-enabled") return;
+
+    const configured_app_id = cfg.@"feishu-app-id" orelse "";
+    const env_app_id: ?[]u8 = if (configured_app_id.len == 0)
+        std.process.getEnvVarOwned(self.allocator, "FEISHU_APP_ID") catch null
+    else
+        null;
+    defer if (env_app_id) |v| self.allocator.free(v);
+    const app_id: []const u8 = if (configured_app_id.len != 0) configured_app_id else env_app_id orelse "";
+
+    const configured_app_secret = cfg.@"feishu-app-secret" orelse "";
+    const env_app_secret: ?[]u8 = if (configured_app_secret.len == 0)
+        std.process.getEnvVarOwned(self.allocator, "FEISHU_APP_SECRET") catch null
+    else
+        null;
+    defer if (env_app_secret) |v| self.allocator.free(v);
+    const app_secret: []const u8 = if (configured_app_secret.len != 0) configured_app_secret else env_app_secret orelse "";
+
+    if (app_id.len == 0 or app_secret.len == 0) {
+        std.log.warn("feishu-enabled but credentials missing; skipping feishu startup", .{});
+        return;
+    }
+
+    // Select the API region (China feishu.cn vs international larksuite.com) before
+    // any network call. Process-wide singleton — see feishu_types.apiBase().
+    feishu_types.setRegion(cfg.@"feishu-international");
+
+    const creds = feishu_types.Credentials{ .app_id = app_id, .app_secret = app_secret };
+    const binding_cfg = feishu_binding.Config{
+        .allowed_user = cfg.@"feishu-allowed-user" orelse "",
+    };
+    const controller = feishu.Controller.create(self.allocator, creds, binding_cfg, AppWindow.chatopsControl()) catch |err| {
+        std.debug.print("feishu disabled: {}\n", .{err});
+        return;
+    };
+    controller.start() catch {};
+    self.feishu_controller = controller;
 }
 
 /// Starts the local agent terminal control API (wisptermctl) when enabled.
@@ -670,6 +737,7 @@ pub fn requestUpdateDownload(self: *App) void {
             return;
         }
         self.download_in_flight = true;
+        self.download_completed = false;
         self.download_worker_running = true;
         self.update_result = self.pendingDownloadResultWithStateLocked(.downloading);
     }
@@ -765,6 +833,7 @@ fn storeDownloadFailure(self: *App) void {
     defer self.update_mutex.unlock();
     self.download_worker_running = false;
     self.download_in_flight = false;
+    self.download_completed = false;
     self.update_result = self.pendingDownloadResultWithStateLocked(.download_failed);
 }
 
@@ -772,7 +841,40 @@ fn storeDownloadComplete(self: *App) void {
     self.update_mutex.lock();
     defer self.update_mutex.unlock();
     self.download_worker_running = false;
+    self.download_completed = true;
     self.update_result = self.pendingDownloadResultWithStateLocked(.downloaded);
+}
+
+/// Apply the downloaded macOS update in place and quit so the helper can swap
+/// and relaunch. Returns false (no quit) when not applicable — caller shows the
+/// manual fallback. Safe to call on any platform: non-macOS returns false.
+pub fn requestUpdateInstall(self: *App) bool {
+    if (!update_apply.isSupported()) return false;
+
+    var asset_buf: [128]u8 = undefined;
+    var asset_len: usize = 0;
+    {
+        self.update_mutex.lock();
+        defer self.update_mutex.unlock();
+        const name = self.pending_download_update.asset_name;
+        if (!self.download_completed or name.len == 0 or name.len > asset_buf.len) return false;
+        asset_len = name.len;
+        @memcpy(asset_buf[0..asset_len], name[0..asset_len]);
+    }
+
+    const dmg_path = update_install.downloadDestPath(self.allocator, asset_buf[0..asset_len]) catch return false;
+    defer self.allocator.free(dmg_path);
+
+    const exe_path = std.fs.selfExePathAlloc(self.allocator) catch return false;
+    defer self.allocator.free(exe_path);
+
+    update_apply.applyUpdate(self.allocator, dmg_path, exe_path) catch |err| {
+        std.debug.print("Update install: failed: {}\n", .{err});
+        return false;
+    };
+
+    window_backend.requestQuit();
+    return true;
 }
 
 fn copyBounded(out: []u8, value: []const u8) ?[]const u8 {
@@ -1074,6 +1176,12 @@ pub fn deinit(self: *App) void {
         self.weixin_controller = null;
     }
 
+    if (self.feishu_controller) |controller| {
+        controller.stop();
+        controller.destroy();
+        self.feishu_controller = null;
+    }
+
     self.port_forward_manager.deinit();
 
     // Free owned string copies
@@ -1114,6 +1222,21 @@ test "app: updateConfig refreshes configured shell command" {
     const expected_len = platform_pty_command.resolveShellCommandLine(&expected_buf, next_shell);
     const CommandUnit = @TypeOf(expected_buf[0]);
     try testing.expectEqualSlices(CommandUnit, expected_buf[0..expected_len], app.getShellCmd());
+}
+
+test "app: working-directory seeds initial cwd once" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var app = try App.init(allocator, .{ .@"working-directory" = "/tmp/wispterm-project" });
+    defer app.deinit();
+
+    var cwd_buf: platform_pty_command.CwdBuffer = undefined;
+    const len = app.takeInitialCwd(&cwd_buf);
+    var utf8: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = platform_pty_command.cwdToUtf8(&utf8, platform_pty_command.cwdFromBuffer(&cwd_buf, len)).?;
+    try testing.expectEqualStrings("/tmp/wispterm-project", cwd);
+    try testing.expectEqual(@as(usize, 0), app.takeInitialCwd(&cwd_buf));
 }
 
 test "app: WeChat direct can start while remote client is active" {
@@ -1290,4 +1413,48 @@ test "app: download completion can be joined while duplicate downloads stay bloc
     try testing.expect(!app.download_worker_running);
     try testing.expectEqual(update_check.State.downloaded, app.update_result.state);
     try testing.expectEqualStrings("https://example.test/releases/v0.28.0", app.update_result.release_url);
+}
+
+test "app: download_completed is durable across consumeUpdateResult" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    // Set up pending download state directly and call storeDownloadComplete
+    app.update_mutex.lock();
+    try testing.expect(app.copyPendingDownloadUpdateLocked() == false); // nothing set yet
+    // Manually seed pending_download_update so storeDownloadComplete has something to store
+    _ = std.fmt.bufPrint(&app.download_asset_name_buf, "test-update.zip", .{}) catch unreachable;
+    app.pending_download_update.asset_name = app.download_asset_name_buf[0..15];
+    app.download_worker_running = true;
+    app.update_mutex.unlock();
+
+    // Before completion: flag is false
+    try testing.expect(!app.download_completed);
+
+    app.storeDownloadComplete();
+
+    // After storeDownloadComplete: flag must be true and durable
+    try testing.expect(app.download_completed);
+
+    // Consuming the result resets update_result but must NOT clear download_completed
+    _ = app.consumeUpdateResult();
+    try testing.expect(app.download_completed); // durable: survives consume
+
+    // A new download start clears it
+    app.update_mutex.lock();
+    app.download_completed = false; // ponytail: simulate requestUpdateDownload locked block
+    app.update_mutex.unlock();
+    try testing.expect(!app.download_completed);
+
+    // storeDownloadFailure also clears it
+    app.update_mutex.lock();
+    app.download_worker_running = true;
+    app.update_mutex.unlock();
+    app.storeDownloadComplete(); // set true again
+    try testing.expect(app.download_completed);
+    app.storeDownloadFailure();
+    try testing.expect(!app.download_completed);
 }

@@ -1,6 +1,41 @@
 const std = @import("std");
+const ghostty_vt = @import("ghostty-vt");
 
 const input_key = @import("input/key.zig");
+
+/// Encode a "special" terminal key (Enter, Tab, Backspace, …) using the Kitty
+/// keyboard protocol when the running application has enabled it.
+///
+/// Full-screen TUIs such as Claude Code and Codex push Kitty keyboard flags so
+/// they can tell a modified press apart from a bare one. With the protocol
+/// active this returns the disambiguated CSI-u sequence — e.g. Shift+Enter
+/// becomes "\x1b[13;2u" instead of the legacy "\r" — letting those apps treat
+/// it as "insert newline" rather than "submit" (issue #302).
+///
+/// Returns the encoded bytes (written into `buf`) when the protocol is active,
+/// or null when it is disabled, in which case the caller falls back to the
+/// historical legacy byte(s) so plain shells and non-Kitty apps are completely
+/// unaffected. A bare Enter still encodes as "\r" even while the protocol is on.
+pub fn kittyKeyEncode(
+    opts: ghostty_vt.input.KeyEncodeOptions,
+    key: ghostty_vt.input.Key,
+    mods: ghostty_vt.input.KeyMods,
+    buf: []u8,
+) ?[]const u8 {
+    // Diverge from legacy encoding only when the app opted into the Kitty
+    // keyboard protocol; otherwise signal the caller to keep existing behavior.
+    if (opts.kitty_flags.int() == 0) return null;
+
+    var writer: std.Io.Writer = .fixed(buf);
+    ghostty_vt.input.encodeKey(&writer, .{
+        .action = .press,
+        .key = key,
+        .mods = mods,
+    }, opts) catch return null;
+
+    const encoded = writer.buffered();
+    return if (encoded.len == 0) null else encoded;
+}
 
 pub fn terminalArrowSequence(ev: input_key.KeyEvent, cursor_keys: bool) ?[]const u8 {
     const modifier: u8 = 1 +
@@ -56,4 +91,43 @@ test "terminal arrow sequence handles modifiers" {
         terminalArrowSequence(.{ .key = input_key.Key.arrow_right, .ctrl = true }, false).?,
     );
     try std.testing.expect(terminalArrowSequence(.{ .key = input_key.Key.key_a, .alt = true }, false) == null);
+}
+
+const kitty_disambiguate: ghostty_vt.input.KeyEncodeOptions = .{
+    .kitty_flags = .{ .disambiguate = true },
+};
+
+test "kittyKeyEncode returns null when the Kitty keyboard protocol is disabled" {
+    var buf: [64]u8 = undefined;
+    // Protocol off (default options): caller must fall back to legacy bytes,
+    // so Shift+Enter stays a bare Enter for plain shells.
+    try std.testing.expect(kittyKeyEncode(.{}, .enter, .{ .shift = true }, &buf) == null);
+}
+
+test "kittyKeyEncode encodes Shift+Enter as CSI u when the protocol is active" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "\x1b[13;2u",
+        kittyKeyEncode(kitty_disambiguate, .enter, .{ .shift = true }, &buf).?,
+    );
+}
+
+test "kittyKeyEncode keeps a bare Enter as \\r while the protocol is active" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "\r",
+        kittyKeyEncode(kitty_disambiguate, .enter, .{}, &buf).?,
+    );
+}
+
+test "kittyKeyEncode disambiguates Shift+Tab and Shift+Backspace when active" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "\x1b[9;2u",
+        kittyKeyEncode(kitty_disambiguate, .tab, .{ .shift = true }, &buf).?,
+    );
+    try std.testing.expectEqualStrings(
+        "\x1b[127;2u",
+        kittyKeyEncode(kitty_disambiguate, .backspace, .{ .shift = true }, &buf).?,
+    );
 }

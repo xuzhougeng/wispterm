@@ -1,14 +1,17 @@
-//! Pure sidebar hit-test geometry for the icon-based sidebar. Callers gather
-//! the current layout into a SidebarLayout and ask which region a point hits.
-//! No globals here — the math is std-only and unit-testable.
+﻿//! Pure sidebar hit-test geometry, extracted from input.zig. Callers gather the
+//! current layout into a SidebarLayout and ask which region a point hits. No
+//! globals here — the math is std-only and unit-testable.
 const std = @import("std");
 
 pub const SidebarLayout = struct {
     visible: bool,
     titlebar_h: f64,
     width: f64, // titlebar.sidebarWidth()
+    header_h: f64, // titlebar.sidebarHeaderHeight()
     row_h: f64, // titlebar.sidebarRowHeight()
     tab_count: usize,
+    resize_hit_width: f64, // titlebar.SIDEBAR_RESIZE_HIT_WIDTH
+    close_btn_w: f64, // tab.TAB_CLOSE_BTN_W
 };
 
 pub const PANEL_HEADER_CLOSE_BTN_W: f64 = 32;
@@ -32,7 +35,7 @@ pub const Rect = struct {
 };
 
 fn listTop(l: SidebarLayout) f64 {
-    return l.titlebar_h + 6;
+    return l.titlebar_h + l.header_h + 6;
 }
 
 /// Which tab row a point falls on, or null if outside the tab list.
@@ -59,20 +62,40 @@ pub fn sidebarTabIndexForDragY(l: SidebarLayout, y: f64) ?usize {
     return idx_raw;
 }
 
-/// True if (x, y) falls within the + (new-tab) button area at the bottom of
-/// the icon sidebar (the row immediately after the last tab).
+/// True if (x, y) falls within the + (new-tab) button in the sidebar header.
 pub fn sidebarPlusButton(l: SidebarLayout, x: f64, y: f64) bool {
     if (!l.visible) return false;
-    if (x < 0 or x >= l.width) return false;
-    const top = listTop(l);
-    if (y < top) return false;
+    const plus_w: f64 = 42;
+    const plus_x = l.width - plus_w - 6;
+    return x >= plus_x and x < plus_x + plus_w and
+        y >= l.titlebar_h and y < l.titlebar_h + l.header_h;
+}
 
-    // Tab rows
-    const tab_area_h = @as(f64, @floatFromInt(l.tab_count)) * l.row_h;
-    const plus_top = top + tab_area_h;
-    if (y < plus_top) return false;
-    const in_plus = y - plus_top;
-    return in_plus >= 0 and in_plus < l.row_h and x >= 0 and x < l.width;
+/// True if (x, y) is over the close button of the given tab row, and the
+/// sidebar has more than one tab (close is suppressed on the last tab).
+pub fn sidebarTabCloseButton(l: SidebarLayout, x: f64, y: f64, tab_idx: usize) bool {
+    if (!l.visible or tab_idx >= l.tab_count or l.tab_count <= 1) return false;
+    const row = sidebarTabAt(l, x, y) orelse return false;
+    if (row != tab_idx) return false;
+    const close_x = l.width - l.close_btn_w - 4;
+    return x >= close_x and x < close_x + l.close_btn_w;
+}
+
+pub fn sidebarTabRenameTarget(l: SidebarLayout, x: f64, y: f64) ?usize {
+    const tab_idx = sidebarTabAt(l, x, y) orelse return null;
+    if (sidebarPlusButton(l, x, y)) return null;
+    if (sidebarResizeHandle(l, x, y)) return null;
+    if (sidebarTabCloseButton(l, x, y, tab_idx)) return null;
+    return tab_idx;
+}
+
+/// True if (x, y) is within the horizontal resize-hit band around the sidebar
+/// right edge and below the titlebar.
+pub fn sidebarResizeHandle(l: SidebarLayout, x: f64, y: f64) bool {
+    if (!l.visible) return false;
+    if (y < l.titlebar_h) return false;
+    const half_hit = l.resize_hit_width / 2;
+    return x >= l.width - half_hit and x <= l.width + half_hit;
 }
 
 pub const PANEL_HEADER_BTN_GAP: f64 = 4;
@@ -119,9 +142,12 @@ pub fn panelHeaderButton(l: PanelHeaderLayout, index_from_right: usize, x: f64, 
 const sample: SidebarLayout = .{
     .visible = true,
     .titlebar_h = 30,
-    .width = 48,
-    .row_h = 42,
+    .width = 200,
+    .header_h = 40,
+    .row_h = 28,
     .tab_count = 3,
+    .resize_hit_width = 8,
+    .close_btn_w = 36,
 };
 
 test "sidebarTabAt: invisible sidebar never hits" {
@@ -131,33 +157,57 @@ test "sidebarTabAt: invisible sidebar never hits" {
 }
 
 test "sidebarTabAt: row math and bounds" {
-    // list_top = 30 + 6 = 36; row_h = 42
-    try std.testing.expectEqual(@as(?usize, null), sidebarTabAt(sample, 10, 35)); // above list
-    try std.testing.expectEqual(@as(?usize, 0), sidebarTabAt(sample, 10, 36)); // first row top
-    try std.testing.expectEqual(@as(?usize, 0), sidebarTabAt(sample, 10, 77)); // still row 0
-    try std.testing.expectEqual(@as(?usize, 1), sidebarTabAt(sample, 10, 78)); // row 1
-    try std.testing.expectEqual(@as(?usize, 2), sidebarTabAt(sample, 10, 120)); // row 2 (last)
-    try std.testing.expectEqual(@as(?usize, null), sidebarTabAt(sample, 10, 162)); // past tab_count
-    try std.testing.expectEqual(@as(?usize, null), sidebarTabAt(sample, 48, 100)); // x == width (outside)
+    // list_top = 30 + 40 + 6 = 76; row_h = 28
+    try std.testing.expectEqual(@as(?usize, null), sidebarTabAt(sample, 10, 75)); // above list
+    try std.testing.expectEqual(@as(?usize, 0), sidebarTabAt(sample, 10, 76)); // first row top
+    try std.testing.expectEqual(@as(?usize, 0), sidebarTabAt(sample, 10, 103)); // still row 0
+    try std.testing.expectEqual(@as(?usize, 1), sidebarTabAt(sample, 10, 104)); // row 1
+    try std.testing.expectEqual(@as(?usize, 2), sidebarTabAt(sample, 10, 132)); // row 2 (last)
+    try std.testing.expectEqual(@as(?usize, null), sidebarTabAt(sample, 10, 160)); // past tab_count
+    try std.testing.expectEqual(@as(?usize, null), sidebarTabAt(sample, 200, 100)); // x == width (outside)
     try std.testing.expectEqual(@as(?usize, null), sidebarTabAt(sample, -1, 100)); // x < 0
 }
 
 test "sidebarTabIndexForDragY: clamps to ends" {
     try std.testing.expectEqual(@as(?usize, 0), sidebarTabIndexForDragY(sample, 0)); // above -> 0
     try std.testing.expectEqual(@as(?usize, 2), sidebarTabIndexForDragY(sample, 9999)); // below -> last
-    try std.testing.expectEqual(@as(?usize, 1), sidebarTabIndexForDragY(sample, 78));
+    try std.testing.expectEqual(@as(?usize, 1), sidebarTabIndexForDragY(sample, 104));
     var empty = sample;
     empty.tab_count = 0;
     try std.testing.expectEqual(@as(?usize, null), sidebarTabIndexForDragY(empty, 100));
 }
 
-test "sidebarPlusButton: full-width row below the last tab" {
-    // list_top = 36; tab_rows end at 36 + 3*42 = 162; plus row spans [162, 204)
-    try std.testing.expect(sidebarPlusButton(sample, 10, 170));
-    try std.testing.expect(sidebarPlusButton(sample, 47, 200));
-    try std.testing.expect(!sidebarPlusButton(sample, 10, 35)); // above list
-    try std.testing.expect(!sidebarPlusButton(sample, 10, 80)); // in tab area
-    try std.testing.expect(!sidebarPlusButton(sample, 10, 204)); // below plus row
+test "sidebarPlusButton: top-right header box" {
+    // plus_x = 200 - 42 - 6 = 152; spans x in [152, 194); y in [30, 70)
+    try std.testing.expect(sidebarPlusButton(sample, 160, 50));
+    try std.testing.expect(!sidebarPlusButton(sample, 151, 50)); // left of box
+    try std.testing.expect(!sidebarPlusButton(sample, 160, 70)); // y == header bottom (outside)
+}
+
+test "sidebarTabCloseButton: only on its own hovered row, needs >1 tab" {
+    // close_x = 200 - 36 - 4 = 160; spans [160, 196); row 0 spans y in [76, 104)
+    try std.testing.expect(sidebarTabCloseButton(sample, 170, 80, 0));
+    try std.testing.expect(!sidebarTabCloseButton(sample, 100, 80, 0)); // left of close box
+    try std.testing.expect(!sidebarTabCloseButton(sample, 170, 80, 1)); // hovering row 0, asking row 1
+    var one = sample;
+    one.tab_count = 1;
+    try std.testing.expect(!sidebarTabCloseButton(one, 170, 80, 0)); // single tab: no close
+}
+
+test "sidebarTabRenameTarget: accepts row body and rejects controls" {
+    try std.testing.expectEqual(@as(?usize, 0), sidebarTabRenameTarget(sample, 24, 80));
+    try std.testing.expectEqual(@as(?usize, null), sidebarTabRenameTarget(sample, 170, 80)); // close button
+    try std.testing.expectEqual(@as(?usize, null), sidebarTabRenameTarget(sample, 200, 100)); // resize handle
+    try std.testing.expectEqual(@as(?usize, null), sidebarTabRenameTarget(sample, 10, 50)); // header
+}
+
+test "sidebarResizeHandle: band around the right edge" {
+    // half_hit = 4; band x in [196, 204]; needs y >= titlebar_h (30)
+    try std.testing.expect(sidebarResizeHandle(sample, 200, 100));
+    try std.testing.expect(sidebarResizeHandle(sample, 196, 100));
+    try std.testing.expect(sidebarResizeHandle(sample, 204, 100));
+    try std.testing.expect(!sidebarResizeHandle(sample, 195, 100)); // left of band
+    try std.testing.expect(!sidebarResizeHandle(sample, 200, 20)); // above titlebar
 }
 
 const sample_panel: PanelHeaderLayout = .{

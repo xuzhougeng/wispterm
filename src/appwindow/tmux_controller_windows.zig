@@ -327,7 +327,7 @@ pub const TmuxController = struct {
     /// SSH endpoint of this session, used (in a later task) to build each pane
     /// surface's ssh_connection for preview/copy-to-agent. Null when launched
     /// without a profile — preview-over-tmux stays disabled (documented).
-    ssh_conn: ?@import("../ssh_connection.zig").SshConnection = null,
+    ssh_conn: ?@import("../ssh/connection.zig").SshConnection = null,
     password: [256]u8 = undefined,
     password_len: usize = 0,
     password_sent: bool = false,
@@ -604,7 +604,7 @@ pub fn start(
     scrollback_limit: u32,
     cursor_style: Config.CursorStyle,
     cursor_blink: bool,
-    ssh_conn: ?@import("../ssh_connection.zig").SshConnection,
+    ssh_conn: ?@import("../ssh/connection.zig").SshConnection,
 ) bool {
     if (profile_name.len > 0) {
         for (g_controllers.items) |controller| {

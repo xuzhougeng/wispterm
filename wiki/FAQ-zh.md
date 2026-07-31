@@ -66,6 +66,27 @@ Windows 上 WispTerm 默认通过 DXGI flip-model 交换链呈现画面。在核
 
 也可以随时手动关闭：设置 `wispterm-d3d-present = false` —— 见 [[配置|Configuration-zh]]。
 
+## 第一次启动黑屏怎么办？（弱核显 / 升级后）
+
+在弱核显机器上，安装或升级后的第一次启动可能仍会先走 DXGI 初始化路径；WispTerm 只有在
+这次启动后才能记录“这台机器需要 GDI 回退”。如果第一次打开是黑屏，先关闭所有 WispTerm
+窗口，然后重新打开一次；下一次启动通常会使用已记录的回退路径。
+
+如果重开后仍然黑屏，请手动关闭 DXGI 呈现。创建或编辑 `%APPDATA%\wispterm\config`，
+加入：
+
+```conf
+wispterm-d3d-present = false
+```
+
+如果 WispTerm 黑屏导致无法用 `Ctrl+,` 打开配置文件，可以在 PowerShell 里执行下面两行，
+然后重新打开 WispTerm：
+
+```powershell
+New-Item -ItemType Directory -Force "$env:APPDATA\wispterm" | Out-Null
+Add-Content -Path "$env:APPDATA\wispterm\config" -Value "wispterm-d3d-present = false"
+```
+
 ## 如何不中断当前对话切换 AI 模型？
 
 在 AI Chat 标签或 Copilot 侧栏中输入 `/model` 可打开已保存 profile 选择器，输入
@@ -120,6 +141,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\plugins\skills\wispterm-di
 `%APPDATA%\wispterm\wispterm-debug.log`（崩溃时还会写 `crash-<时间戳>.txt`）。遇到难以复现的问题
 —— 比如打开微信连接时崩溃，或 Ctrl+点击远程文件时卡死 —— 下载它、复现问题，然后把
 `wispterm-debug.log`（以及任何 `crash-*.txt`）附在反馈里。
+
+如果问题是 Ctrl+点击预览或浏览器面板失败，调试日志里还会出现以 `preview-diagnostic`
+开头、可以直接复制的单行记录。复现后，如果完整日志太大，可以只把附近这些
+`preview-diagnostic` 行贴到 issue 里。它们覆盖预览路径解析、异步文件读取、图片解码、
+HTML server 启动、SSH 浏览器隧道、URL 路由和内嵌浏览器面板。
 
 ## 为什么远程在手机上镜像本地终端尺寸？
 

@@ -1,11 +1,10 @@
 /// Size and dimension types used throughout the renderer.
 /// Modeled after Ghostty's size types in `src/renderer/size.zig`.
-
 /// Grid dimensions in cells.
-pub const GridSize = struct {
-    cols: u16 = 80,
-    rows: u16 = 24,
-};
+/// Defined in the neutral `core/geometry.zig` module so the core IO layer can
+/// size the grid without importing the renderer namespace. Re-exported here so
+/// existing renderer-side users keep referring to `size.GridSize` unchanged.
+pub const GridSize = @import("../core/geometry.zig").GridSize;
 
 /// Cell dimensions in pixels.
 pub const CellSize = struct {

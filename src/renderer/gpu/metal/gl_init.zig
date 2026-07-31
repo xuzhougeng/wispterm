@@ -17,11 +17,10 @@
 //!
 //! NOTE: `ui_pipeline` cannot be imported here at file scope because the
 //! `test-metal` build step roots its module at `gpu/metal/test.zig`, and
-//! Zig 0.15 rejects imports that walk outside the module root. Instead,
-//! `ui_pipeline.init()` registers a `BackendHooks` snapshot via
-//! `setBackendHooks()` at startup; the helpers below dispatch through the
-//! installed function pointers (and silently no-op if the renderer hasn't
-//! booted yet — which is the case in the Metal smoke tests).
+//! Zig 0.15 rejects imports that walk outside the module root. Transition-era
+//! backend tests may still install `BackendHooks` directly; otherwise the
+//! helpers below silently no-op. Shared renderer code no longer routes through
+//! this compat shim.
 const std = @import("std");
 const c = @import("c.zig");
 const Pipeline = @import("Pipeline.zig");
@@ -82,9 +81,7 @@ pub fn initShaders() bool {
 }
 
 // ----------------------------------------------------------------------------
-// Render helpers — dispatch through the BackendHooks registered by
-// ui_pipeline.init() (parity with the OpenGL backend, but with an indirection
-// to keep the test-metal compile happy).
+// Render helpers — dispatch through optional BackendHooks in backend tests.
 // ----------------------------------------------------------------------------
 pub fn renderQuad(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
     if (g_hooks) |hk| hk.fillQuad(x, y, w, h, color);

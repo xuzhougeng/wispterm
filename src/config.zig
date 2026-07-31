@@ -19,10 +19,11 @@ const Config = @This();
 
 const std = @import("std");
 const builtin = @import("builtin");
-const ai_agent_config = @import("ai_agent_config.zig");
+const ai_agent_config = @import("agent/config.zig");
 const keybind = @import("keybind.zig");
 const link_open = @import("link_open.zig");
 const console_host_policy = @import("platform/console_host_policy.zig");
+const platform_atomic_file = @import("platform/atomic_file.zig");
 const platform_dirs = @import("platform/dirs.zig");
 const platform_editor = @import("platform/editor.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
@@ -30,6 +31,7 @@ const themes = @import("themes.zig");
 const i18n = @import("i18n.zig");
 
 const log = std.log.scoped(.config);
+const DEFAULT_MEMORY_DIGEST_INPUT_BUDGET_CHARS: u32 = 96_000;
 
 // ============================================================================
 // Theme
@@ -299,7 +301,7 @@ cli_cwd: ?[]u8 = null,
 
 /// Master on/off switch for the Copilot long-term memory system.
 /// When true, memory index is injected into the system prompt and the
-/// memory_save/memory_recall/memory_delete tools are advertised to the model.
+/// memory_save/memory_recall/memory_delete/memory_search tools are advertised to the model.
 @"ai-memory-enabled": bool = true,
 
 /// When true, the Copilot appends a "This task looks reusable. Distill it into
@@ -332,7 +334,12 @@ cli_cwd: ?[]u8 = null,
 
 /// The shell to run in the terminal. Platform aliases are resolved by
 /// platform/pty_command.zig; any other value is treated as a raw command path.
-shell: []const u8 = platform_pty_command.default_shell_name,
+/// Empty means follow the current user's OS login shell. A non-empty value is
+/// an explicit override written by the Settings page or config file.
+shell: []const u8 = "",
+
+/// Working directory for the first local terminal surface (unset = inherit app cwd).
+@"working-directory": ?[]const u8 = null,
 
 /// Name of the saved AI profile used as the default for startup auto-open,
 /// remote auto-open, and the "New Agent" command. Empty falls back to the
@@ -366,6 +373,24 @@ language: i18n.LanguageSetting = .auto,
 /// Optional fixed remote session key base. When set, the first local WispTerm
 /// instance uses it directly and later local instances append _1, _2, ...
 @"remote-session-key": ?[]const u8 = null,
+
+/// Enables the Feishu (Lark) long-connection channel.
+@"feishu-enabled": bool = false,
+
+/// Use the international Lark platform (open.larksuite.com) instead of the
+/// China Feishu platform (open.feishu.cn, default). An app belongs to exactly
+/// one region — credentials are not interchangeable.
+@"feishu-international": bool = false,
+
+/// Feishu app_id. Falls back to env FEISHU_APP_ID when empty.
+@"feishu-app-id": ?[]const u8 = null,
+
+/// Feishu app_secret. Falls back to env FEISHU_APP_SECRET when empty.
+@"feishu-app-secret": ?[]const u8 = null,
+
+/// When set, only this open_id may control the terminal/AI via Feishu.
+/// Empty = no restriction (first sender is auto-bound as owner).
+@"feishu-allowed-user": ?[]const u8 = null,
 
 /// Enables the embedded WeChat ilink direct path. Independent from
 /// remote-enabled and from the Remote server's Weixin bridge binding.
@@ -449,6 +474,33 @@ language: i18n.LanguageSetting = .auto,
 @"whats-new-on-update": bool = true,
 /// Show the Copilot discovery hint to new users. Set to false to suppress permanently.
 @"copilot-hint": bool = true,
+
+// ============================================================================
+// Memory Digest (scheduler)
+// ============================================================================
+
+/// Master on/off switch for the periodic long-term memory digest job.
+@"memory-digest-enabled": bool = false,
+
+/// Name of the saved AI profile the memory digest job runs on. Empty = unset.
+@"memory-digest-profile": []const u8 = "",
+
+/// Time of day (HH:MM, local time) the digest job runs after. Format
+/// validation happens in the scheduler, not here.
+@"memory-digest-run-after": []const u8 = "04:00",
+
+/// Whether to scan WSL/SSH remote sources in addition to local history.
+/// Off by default — first version of remote scanning is opt-in.
+@"memory-digest-scan-remote": bool = false,
+
+/// How many days of history to backfill when the digest first runs.
+@"memory-digest-backfill-days": u32 = 7,
+
+/// Maximum characters retained from a single message before digesting.
+@"memory-digest-max-chars": u32 = 2000,
+
+/// Maximum bytes fed to one memory-digest map prompt before chunking.
+@"memory-digest-input-budget-chars": u32 = DEFAULT_MEMORY_DIGEST_INPUT_BUDGET_CHARS,
 
 /// Load an additional config file. Can be repeated. Relative paths are
 /// resolved relative to the file containing the directive. Prefix with
@@ -906,6 +958,9 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         }
     } else if (std.mem.eql(u8, key, "shell")) {
         self.shell = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "working-directory")) {
+        const trimmed = std.mem.trim(u8, value, " \t\r\n");
+        self.@"working-directory" = if (trimmed.len == 0) null else self.dupeString(allocator, trimmed) orelse return;
     } else if (std.mem.eql(u8, key, "ai-default-profile")) {
         self.@"ai-default-profile" = self.dupeString(allocator, value) orelse return;
     } else if (std.mem.eql(u8, key, "ai-subagent-profile")) {
@@ -951,6 +1006,28 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         } else {
             log.warn("invalid weixin-notify-forward: {s}", .{value});
         }
+    } else if (std.mem.eql(u8, key, "feishu-enabled")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"feishu-enabled" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"feishu-enabled" = false;
+        } else {
+            log.warn("invalid feishu-enabled: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "feishu-international")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"feishu-international" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"feishu-international" = false;
+        } else {
+            log.warn("invalid feishu-international: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "feishu-app-id")) {
+        self.@"feishu-app-id" = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "feishu-app-secret")) {
+        self.@"feishu-app-secret" = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "feishu-allowed-user")) {
+        self.@"feishu-allowed-user" = self.dupeString(allocator, value) orelse return;
     } else if (std.mem.eql(u8, key, "agent-control-enabled")) {
         if (std.mem.eql(u8, value, "true")) {
             self.@"agent-control-enabled" = true;
@@ -1064,6 +1141,41 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         } else {
             log.warn("invalid copilot-hint: {s}", .{value});
         }
+    } else if (std.mem.eql(u8, key, "memory-digest-enabled")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"memory-digest-enabled" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"memory-digest-enabled" = false;
+        } else {
+            log.warn("invalid memory-digest-enabled: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "memory-digest-profile")) {
+        self.@"memory-digest-profile" = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "memory-digest-run-after")) {
+        self.@"memory-digest-run-after" = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "memory-digest-scan-remote")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"memory-digest-scan-remote" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"memory-digest-scan-remote" = false;
+        } else {
+            log.warn("invalid memory-digest-scan-remote: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "memory-digest-backfill-days")) {
+        self.@"memory-digest-backfill-days" = std.fmt.parseInt(u32, value, 10) catch {
+            log.warn("invalid memory-digest-backfill-days: {s}", .{value});
+            return;
+        };
+    } else if (std.mem.eql(u8, key, "memory-digest-max-chars")) {
+        self.@"memory-digest-max-chars" = std.fmt.parseInt(u32, value, 10) catch {
+            log.warn("invalid memory-digest-max-chars: {s}", .{value});
+            return;
+        };
+    } else if (std.mem.eql(u8, key, "memory-digest-input-budget-chars")) {
+        self.@"memory-digest-input-budget-chars" = std.fmt.parseInt(u32, value, 10) catch {
+            log.warn("invalid memory-digest-input-budget-chars: {s}", .{value});
+            return;
+        };
     } else if (std.mem.eql(u8, key, "config-file")) {
         self.loadConfigFileDirective(allocator, value, base_dir);
     } else if (std.mem.eql(u8, key, "background")) {
@@ -1277,7 +1389,8 @@ pub fn isSpecialCommand(flag: []const u8) bool {
         std.mem.eql(u8, flag, "h") or
         std.mem.eql(u8, flag, "version") or
         std.mem.eql(u8, flag, "v") or
-        std.mem.eql(u8, flag, "show-config-path");
+        std.mem.eql(u8, flag, "show-config-path") or
+        std.mem.eql(u8, flag, "benchmark");
 }
 
 /// Check if CLI args contain a specific command flag (e.g. --list-fonts).
@@ -1417,6 +1530,7 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --ai-agent-command-timeout-ms <ms> Agent command timeout budget
         \\  --ai-agent-output-limit <bytes> Max bytes returned by each tool
         \\  --ai-agent-working-dir <path> Default working directory for agent local commands
+        \\  --working-directory <path>  Working directory for the first terminal
         \\  --jina-api-key <key>         API key for Jina web search/read ($websearch, $webread)
         \\  --windows-conpty <mode>      Windows pseudo console host: auto | system
         \\  --auto-update-check <bool>  Check GitHub Releases after startup
@@ -1465,6 +1579,8 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --list-fonts                 List all available system fonts
         \\  --list-themes                List all available themes
         \\  --test-font-discovery        Test font discovery for common fonts
+        \\  --benchmark                  Run the in-app GPU render benchmark, write a
+        \\                               report, and exit (build per-backend with -Dgpu-backend)
         \\  --help, -h                   Show this help message
         \\
         \\Config priority: --config/--config-path, portable wispterm.conf next to the app, then the platform config directory
@@ -1512,12 +1628,13 @@ pub fn ensureConfigExists(allocator: std.mem.Allocator) void {
         std.fs.cwd().makePath(dir) catch return;
     }
 
-    // Create config file with default template if it doesn't exist
-    if (std.fs.cwd().createFile(path, .{ .exclusive = true })) |file| {
-        file.writeAll(default_config_template) catch {};
-        file.close();
-        log.info("created default config file: {s}", .{path});
-    } else |_| {}
+    std.fs.cwd().access(path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            platform_atomic_file.writeFileReplaceSafe(path, default_config_template) catch return;
+            log.info("created default config file: {s}", .{path});
+        },
+        else => return,
+    };
 }
 
 // ============================================================================
@@ -1545,20 +1662,19 @@ pub fn openConfigInEditor(allocator: std.mem.Allocator) void {
         };
     }
 
-    // Create config file with default template if it doesn't exist
-    if (std.fs.cwd().createFile(path, .{ .exclusive = true })) |file| {
-        file.writeAll(default_config_template) catch {};
-        file.close();
-        std.debug.print("[config] created default config file\n", .{});
-    } else |err| switch (err) {
-        error.PathAlreadyExists => {
-            std.debug.print("[config] config file already exists\n", .{});
+    std.fs.cwd().access(path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            platform_atomic_file.writeFileReplaceSafe(path, default_config_template) catch |write_err| {
+                std.debug.print("[config] ERROR: failed to create config file: {}\n", .{write_err});
+                return;
+            };
+            std.debug.print("[config] created default config file\n", .{});
         },
         else => {
-            std.debug.print("[config] ERROR: failed to create config file: {}\n", .{err});
+            std.debug.print("[config] ERROR: failed to access config file: {}\n", .{err});
             return;
         },
-    }
+    };
 
     std.debug.print("[config] opening editor with path: {s}\n", .{path});
     if (!platform_editor.openTextFile(allocator, .{ .path = path })) {
@@ -1587,9 +1703,7 @@ pub fn setConfigValue(allocator: std.mem.Allocator, key: []const u8, value: []co
     const out = try setConfigValueInContent(allocator, content, key, value);
     defer allocator.free(out);
 
-    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(out);
+    try platform_atomic_file.writeFileReplaceSafe(path, out);
 }
 
 /// Pure: return a copy of `content` with `key`'s active value set to `value`.
@@ -1673,16 +1787,15 @@ pub fn removeConfigKeys(allocator: std.mem.Allocator, keys: []const []const u8) 
     const out = try stripConfigKeys(allocator, content, keys);
     defer allocator.free(out);
 
-    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(out);
+    try platform_atomic_file.writeFileReplaceSafe(path, out);
 }
 
 /// Config keys backing the settings page. "Restore default settings" removes
 /// these active lines so each reverts to its built-in default. Intentionally
 /// excludes `quake-mode` (not a settings-page row) and anything carrying user
-/// data such as AI profiles, custom keybinds, or `font-family`.
+/// data such as AI profiles or custom keybinds.
 pub const settings_reset_keys = [_][]const u8{
+    "font-family",
     "font-size",
     "theme",
     "cursor-style",
@@ -1699,7 +1812,7 @@ pub const settings_reset_keys = [_][]const u8{
 
 /// Revert every settings-page option to its built-in default by removing its
 /// active line from the main config file. Non-destructive: comments, custom
-/// keybinds, AI profiles, font-family, and window geometry are all preserved.
+/// keybinds, AI profiles, and window geometry are all preserved.
 pub fn resetSettingsToDefaults(allocator: std.mem.Allocator) !void {
     try removeConfigKeys(allocator, &settings_reset_keys);
 }
@@ -1775,6 +1888,9 @@ const default_config_template =
 ++ platform_pty_command.shell_setting_comment ++
     \\
 ++ platform_pty_command.default_shell_assignment_comment ++
+    \\
+    \\# Working directory for the first terminal. Empty/unset inherits WispTerm's cwd.
+    \\# working-directory =
     \\
     \\
     \\# Remote access foundation (disabled by default)
@@ -1974,7 +2090,7 @@ test "config: help text is writable to a caller-provided writer" {
 
 test "config: shell defaults and template come from platform pty command" {
     const cfg = Config{};
-    try std.testing.expectEqualStrings(platform_pty_command.defaultShellName(), cfg.shell);
+    try std.testing.expectEqualStrings("", cfg.shell);
     try std.testing.expect(std.mem.indexOf(u8, default_config_template, platform_pty_command.shellSettingComment()) != null);
     try std.testing.expect(std.mem.indexOf(u8, default_config_template, platform_pty_command.defaultShellAssignmentComment()) != null);
 }
@@ -2004,6 +2120,57 @@ test "config: restore-tabs-on-startup parses true/false" {
     // Invalid value leaves the previous state untouched (still false).
     cfg.applyKeyValue(allocator, "restore-tabs-on-startup", "maybe", ".");
     try std.testing.expectEqual(false, cfg.@"restore-tabs-on-startup");
+}
+
+test "config: working-directory defaults unset and parses paths" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+    defer cfg.deinit(allocator);
+
+    try std.testing.expect(cfg.@"working-directory" == null);
+
+    cfg.applyKeyValue(allocator, "working-directory", "/tmp/wispterm-project", ".");
+    try std.testing.expectEqualStrings("/tmp/wispterm-project", cfg.@"working-directory".?);
+
+    cfg.applyKeyValue(allocator, "working-directory", "", ".");
+    try std.testing.expect(cfg.@"working-directory" == null);
+}
+
+test "config: help lists working-directory CLI option" {
+    const allocator = std.testing.allocator;
+    var out = std.ArrayList(u8){};
+    defer out.deinit(allocator);
+
+    try writeHelp(out.writer(allocator));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "--working-directory <path>") != null);
+}
+
+test "config: feishu-enabled parses true/false (regression: field needs a parse handler)" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+
+    try std.testing.expectEqual(false, cfg.@"feishu-enabled");
+    cfg.applyKeyValue(allocator, "feishu-enabled", "true", ".");
+    try std.testing.expectEqual(true, cfg.@"feishu-enabled");
+    cfg.applyKeyValue(allocator, "feishu-enabled", "false", ".");
+    try std.testing.expectEqual(false, cfg.@"feishu-enabled");
+    // Invalid value leaves the previous state untouched.
+    cfg.applyKeyValue(allocator, "feishu-enabled", "maybe", ".");
+    try std.testing.expectEqual(false, cfg.@"feishu-enabled");
+}
+
+test "config: feishu-international parses true/false (regression: field needs a parse handler)" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+
+    try std.testing.expectEqual(false, cfg.@"feishu-international");
+    cfg.applyKeyValue(allocator, "feishu-international", "true", ".");
+    try std.testing.expectEqual(true, cfg.@"feishu-international");
+    cfg.applyKeyValue(allocator, "feishu-international", "false", ".");
+    try std.testing.expectEqual(false, cfg.@"feishu-international");
+    // Invalid value leaves the previous state untouched.
+    cfg.applyKeyValue(allocator, "feishu-international", "maybe", ".");
+    try std.testing.expectEqual(false, cfg.@"feishu-international");
 }
 
 test "config: auto update check option parses true false" {
@@ -2074,7 +2241,7 @@ test "config: settings reset strips settings-page keys but preserves everything 
     // Untouched: comments, unrelated keys, custom keybinds, and quake-mode
     // (intentionally excluded — it is not a settings-page row).
     try std.testing.expect(std.mem.indexOf(u8, stripped, "# WispTerm config") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stripped, "font-family = JetBrains Mono") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stripped, "font-family = JetBrains Mono") == null);
     try std.testing.expect(std.mem.indexOf(u8, stripped, "keybind = ctrl+shift+p=toggle_command_palette") != null);
     try std.testing.expect(std.mem.indexOf(u8, stripped, "quake-mode = true") != null);
 }
@@ -2358,4 +2525,88 @@ test "config: wispterm-debug-render parses from a config line" {
     try std.testing.expect(cfg.@"wispterm-debug-render");
     cfg.applyKeyValue(allocator, "wispterm-debug-render", "false", ".");
     try std.testing.expect(!cfg.@"wispterm-debug-render");
+}
+
+test "config: memory-digest-enabled parses true/false" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+
+    try std.testing.expectEqual(false, cfg.@"memory-digest-enabled");
+    cfg.applyKeyValue(allocator, "memory-digest-enabled", "true", ".");
+    try std.testing.expectEqual(true, cfg.@"memory-digest-enabled");
+    cfg.applyKeyValue(allocator, "memory-digest-enabled", "false", ".");
+    try std.testing.expectEqual(false, cfg.@"memory-digest-enabled");
+    // Invalid value leaves the previous state untouched (still false).
+    cfg.applyKeyValue(allocator, "memory-digest-enabled", "maybe", ".");
+    try std.testing.expectEqual(false, cfg.@"memory-digest-enabled");
+}
+
+test "config: memory-digest-profile parses" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{};
+    defer cfg.deinit(allocator);
+    try std.testing.expectEqualStrings("", cfg.@"memory-digest-profile");
+    cfg.applyKeyValue(allocator, "memory-digest-profile", "night-owl", ".");
+    try std.testing.expectEqualStrings("night-owl", cfg.@"memory-digest-profile");
+}
+
+test "config: memory-digest-run-after parses" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{};
+    defer cfg.deinit(allocator);
+    // Default matches the scheduler's implicit fallback; format validation
+    // happens in the scheduler, not here.
+    try std.testing.expectEqualStrings("04:00", cfg.@"memory-digest-run-after");
+    cfg.applyKeyValue(allocator, "memory-digest-run-after", "23:30", ".");
+    try std.testing.expectEqualStrings("23:30", cfg.@"memory-digest-run-after");
+}
+
+test "config: memory-digest-scan-remote parses true/false and defaults off" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{};
+    defer cfg.deinit(allocator);
+    try std.testing.expectEqual(false, cfg.@"memory-digest-scan-remote");
+    cfg.applyKeyValue(allocator, "memory-digest-scan-remote", "true", ".");
+    try std.testing.expectEqual(true, cfg.@"memory-digest-scan-remote");
+    cfg.applyKeyValue(allocator, "memory-digest-scan-remote", "false", ".");
+    try std.testing.expectEqual(false, cfg.@"memory-digest-scan-remote");
+
+    cfg.applyKeyValue(allocator, "memory-digest-scan-remote", "maybe", ".");
+    try std.testing.expectEqual(false, cfg.@"memory-digest-scan-remote");
+}
+
+test "config: memory-digest-backfill-days parses and rejects invalid" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{};
+    defer cfg.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 7), cfg.@"memory-digest-backfill-days");
+    cfg.applyKeyValue(allocator, "memory-digest-backfill-days", "14", ".");
+    try std.testing.expectEqual(@as(u32, 14), cfg.@"memory-digest-backfill-days");
+    // Invalid value leaves the previous state untouched (still 14).
+    cfg.applyKeyValue(allocator, "memory-digest-backfill-days", "not-a-number", ".");
+    try std.testing.expectEqual(@as(u32, 14), cfg.@"memory-digest-backfill-days");
+}
+
+test "config: memory-digest-max-chars parses and rejects invalid" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{};
+    defer cfg.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 2000), cfg.@"memory-digest-max-chars");
+    cfg.applyKeyValue(allocator, "memory-digest-max-chars", "4096", ".");
+    try std.testing.expectEqual(@as(u32, 4096), cfg.@"memory-digest-max-chars");
+    // Invalid value leaves the previous state untouched (still 4096).
+    cfg.applyKeyValue(allocator, "memory-digest-max-chars", "nope", ".");
+    try std.testing.expectEqual(@as(u32, 4096), cfg.@"memory-digest-max-chars");
+}
+
+test "config: memory-digest-input-budget-chars parses and rejects invalid" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{};
+    defer cfg.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 96_000), cfg.@"memory-digest-input-budget-chars");
+    cfg.applyKeyValue(allocator, "memory-digest-input-budget-chars", "128000", ".");
+    try std.testing.expectEqual(@as(u32, 128_000), cfg.@"memory-digest-input-budget-chars");
+    // Invalid value leaves the previous state untouched (still 128000).
+    cfg.applyKeyValue(allocator, "memory-digest-input-budget-chars", "nope", ".");
+    try std.testing.expectEqual(@as(u32, 128_000), cfg.@"memory-digest-input-budget-chars");
 }

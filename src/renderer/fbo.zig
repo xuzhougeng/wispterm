@@ -10,7 +10,7 @@ const ui_pipeline = @import("ui_pipeline.zig");
 const Renderer = @import("Renderer.zig");
 
 /// Create or resize an FBO for a renderer.
-/// Must be called from main thread with GL context current.
+/// Must be called from the main thread with the GPU backend current.
 pub fn ensureRendererFBO(rend: *Renderer, width: u32, height: u32) void {
     if (!rend.needsFBOUpdate(width, height)) return;
 
@@ -20,33 +20,21 @@ pub fn ensureRendererFBO(rend: *Renderer, width: u32, height: u32) void {
     }
 
     const framebuffer = gpu.Framebuffer.initColor(@intCast(width), @intCast(height)) orelse return;
-    rend.setFBOHandles(framebuffer.handle, framebuffer.color, width, height);
+    rend.setFramebuffer(framebuffer, width, height);
 }
 
 /// Clean up FBO resources for a renderer.
 pub fn cleanupRendererFBO(rend: *Renderer) void {
     if (!rend.isFBOReady()) return;
-    var framebuffer = gpu.Framebuffer{
-        .handle = rend.getFBO(),
-        .color = rend.getTexture(),
-        .width = 0,
-        .height = 0,
-    };
+    var framebuffer = rend.getFramebuffer();
     framebuffer.deinit();
-    rend.clearFBOHandles();
+    rend.clearFramebuffer();
 }
 
 /// Bind a renderer's FBO for drawing.
 pub fn bindRendererFBO(rend: *Renderer) void {
     if (!rend.isFBOReady()) return;
-    const size = rend.getFBOSize();
-    const framebuffer = gpu.Framebuffer{
-        .handle = rend.getFBO(),
-        .color = rend.getTexture(),
-        .width = @intCast(size.width),
-        .height = @intCast(size.height),
-    };
-    framebuffer.bind();
+    rend.getFramebuffer().bind();
 }
 
 /// Unbind FBO (return to default framebuffer).

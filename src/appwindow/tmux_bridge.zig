@@ -20,7 +20,7 @@ const pane_mod = @import("../tmux/pane.zig");
 const layout = @import("../tmux/layout.zig");
 const tab = @import("tab.zig");
 const active_tab_state = @import("active_tab.zig");
-const SshConnection = @import("../ssh_connection.zig").SshConnection;
+const SshConnection = @import("../ssh/connection.zig").SshConnection;
 
 const Session = session_mod.Session;
 const PaneMap = pane_mod.PaneMap;
@@ -381,7 +381,7 @@ pub const TmuxBridge = struct {
         const op = p.surface orelse return;
         const s: *Surface = @ptrCast(@alignCast(op));
         if (path.len > 0) s.setCwdPath(path);
-        s.noteAgentCommand(@import("../agent_detector.zig").appFromCommand(cmd));
+        s.noteAgentCommand(@import("../terminal_agents/detector.zig").appFromCommand(cmd));
     }
 
     // ----- tab lookup / creation -----

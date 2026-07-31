@@ -38,6 +38,8 @@ theme = Poimandres
 window-height = 32
 window-width = 120
 quake-mode = false
+# Windows Git Bash 示例：
+# shell = "C:\Program Files\Git\bin\bash.exe" --login -i
 keybind = global:ctrl+backquote=toggle_quake
 keybind = ctrl+shift+p=toggle_command_palette
 scrollback-limit = 10000000
@@ -50,6 +52,9 @@ config-file = extra.conf
 auto-update-check = true
 focus-follows-mouse = false
 remote-enabled = false
+feishu-enabled = false
+feishu-app-id = cli_xxx
+feishu-app-secret = your-app-secret
 ```
 
 ## 配置项参考
@@ -69,10 +74,11 @@ remote-enabled = false
 | `window-height` | `0`（自动） | 初始高度（单元格数，最小 4，0 = 自动 80×24） |
 | `window-width` | `0`（自动） | 初始宽度（单元格数，最小 10，0 = 自动 80×24） |
 | `quake-mode` | `false` | 以 Quake 下拉终端方式启动；`toggle_quake` 在保留状态的前提下隐藏/显示它 |
+| `shell` | 系统默认 | 新建本地 shell 会话时启动的命令。Windows 别名：`cmd`、`powershell`、`pwsh`、`wsl`；POSIX 示例：`sh`、`zsh`、`fish`。也可以使用自定义命令行，例如 `"C:\Program Files\Git\bin\bash.exe" --login -i` |
 | `keybind` | 默认值 | 配置应用级快捷键（可重复）。语法 `[global:]modifier+key=action`；`keybind = clear` 清空全部默认 |
 | `scrollback-limit` | `10000000` | 回滚缓冲上限（字节） |
 | `focus-follows-mouse` | `false` | 焦点跟随鼠标所在面板，无需点击 |
-| `url-open-mode` | `embedded` | 网址在哪打开：`embedded` 在可用时使用右侧浏览器面板（仅 Windows）；`system-browser` 始终用系统默认浏览器。两种方式下 SSH loopback 网址都会保持本地端口转发存活 |
+| `url-open-mode` | `embedded` | 网址在哪打开：`embedded` 在可用时使用右侧浏览器面板（Windows 为 WebView2，macOS 为 WKWebView）；`system-browser` 始终用系统默认浏览器。两种方式下 SSH loopback 网址都会保持本地端口转发存活 |
 | `restore-tabs-on-startup` | `false` | 关闭时持久化标签/分屏布局（`session.json`），下次启动重建。SSH 密码永不持久化，重连会再次提示。`--cwd` 覆盖会跳过恢复 |
 | `auto-update-check` | `true` | 启动后检查 GitHub Releases，有新版时提示 |
 | `config-file` | *(无)* | 包含另一个配置文件（前缀 `?` 表示可选） |
@@ -88,6 +94,10 @@ remote-enabled = false
 | `remote-server-fingerprint` | *(无)* | 用于服务端身份固定的预期 relay 指纹 |
 | `remote-device-name` | *(无)* | 随 WispTerm 配对发送的友好设备名 |
 | `remote-session-key` | *(无)* | 固定的远程会话密钥基；之后并发的实例使用 `_1`、`_2`… |
+| `feishu-enabled` | `false` | 启用飞书/Lark 长连接通道。可在命令中心输入 `feishu` 填写凭证，也可设置下面两个键；需要重启 |
+| `feishu-app-id` | *(无)* | 飞书 App ID（`cli_...`）。为空时回退读取 `FEISHU_APP_ID` |
+| `feishu-app-secret` | *(无)* | 飞书 App Secret。为空时回退读取 `FEISHU_APP_SECRET`；请妥善保管 |
+| `feishu-allowed-user` | *(无)* | 可选：只允许这个飞书 `open_id` 控制 WispTerm。空值表示不显式限制；首个发送者会自动绑定为 owner |
 | `ssh-legacy-algorithms` | `false` | 为老旧 SSH 服务追加兼容选项（ssh-rsa、旧 KEX、CBC）—— 见 [[SSH 与远程开发|SSH-Remote-Development-zh]] |
 | `copy-on-select` | `false` | 自动复制终端选区 —— 见 [[AI 副驾与智能体|AI-Copilot-zh]] |
 | `right-click-action` | *(无)* | `paste`，或 `copy-or-paste`（有选区时复制，否则粘贴） |
@@ -105,6 +115,28 @@ remote-enabled = false
 
 **恢复默认设置**一行会在确认对话框后把该页管理的选项重置为默认。它只清除设置页暴露的
 键 —— 不会动 Quake 模式、已保存的 AI 配置以及自定义 `keybind` 行。
+
+## 默认 shell 与 Git Bash
+
+在配置文件里设置 `shell` 可以决定新建本地 shell 会话时启动什么。已有标签页会继续运行
+当前进程；保存配置后，等待热重载或重启 WispTerm，再新建 session 才会看到变化。
+
+Windows 上配置 Git Bash 时，建议把可执行文件路径放在双引号里，并带上登录交互参数：
+
+```text
+shell = "C:\Program Files\Git\bin\bash.exe" --login -i
+```
+
+不要用单引号，也不要把 Windows 路径里的 `\` 写成 `\\`。WispTerm 配置不是 JSON，
+单引号和双反斜杠都会按字面量处理：
+
+```text
+# 错误写法
+shell = 'C:\\Program Files\\Git\\bin\\bash.exe'
+```
+
+这种错误写法会让 Windows 去查找带引号字符的路径，常见表现是新建标签页时报
+`Failed to create Surface for new tab`。
 
 ## OpenSSH config 导入
 

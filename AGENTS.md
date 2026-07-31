@@ -2,19 +2,66 @@
 
 ## Overview
 
-WispTerm is a terminal emulator written in Zig, currently shipping on Windows. It uses [libghostty-vt](https://github.com/ghostty-org/ghostty) (Ghostty's VT parser and terminal state machine) for terminal emulation, with its own rendering pipeline (OpenGL + FreeType, plus DirectWrite for font discovery on Windows).
+WispTerm is a terminal emulator written in Zig, shipping desktop builds for Windows and macOS, plus an experimental Linux AppImage. It uses [libghostty-vt](https://github.com/ghostty-org/ghostty) (Ghostty's VT parser and terminal state machine) for terminal emulation, with its own rendering pipeline (D3D11/Metal/OpenGL + FreeType, plus DirectWrite/CoreText/fontconfig for font discovery by platform).
 
-Windows is the **primary and default development target** (`x86_64-windows-gnu`), and day-to-day development happens on Windows in PowerShell. Platform-specific code lives behind narrow interfaces in `src/platform/` (per-platform implementations plus `_unsupported`/`_posix` stubs) so that macOS and Linux ports become possible without rewriting the terminal core. Those native ports are not yet implemented; see `TODO.md` for the portability roadmap.
+Windows is the **primary and default development target** (`x86_64-windows-gnu`), and day-to-day development happens on Windows in PowerShell. Platform-specific code lives behind narrow interfaces in `src/platform/` (per-platform implementations plus `_unsupported`/`_posix` stubs) so macOS and Linux can share the terminal core. macOS is an active supported desktop build that is still stabilizing; Linux is experimental. See `ROADMAP.md` for future work and `KNOWN_ISSUES.md` for current platform limitations.
 
 ## Architecture
 
 WispTerm is split into a platform-agnostic **core** (terminal state, IO, rendering) and a per-platform **host** (window, event loop, input) that drives the core through a narrow surface API. The host interface is `src/platform/window_backend.zig`; OS facilities go through capability facades in `src/platform/`. The named contract — what the host implements, what services it supplies, and the invariants that keep the seam intact — is documented in [docs/architecture.md](docs/architecture.md). Read it before touching the platform boundary or starting a port.
 
+### UI presentation styles
+
+WispTerm has exactly three application UI styles. Choose one before adding a screen; do not create a fourth ad-hoc overlay shape. The shared geometry contract is `src/renderer/ui_patterns.zig`. It is intentionally pure and is included in the fast test suite.
+
+| Style | Use for | Required structure | Examples |
+|---|---|---|---|
+| **Command palette** | Find-and-run actions with no persistent form state | Search field, filtered and scrollable action list, visible selection, shortcut/meta column, Escape closes. Keep it transient; do not put multi-step configuration here. | Command Center, Copilot History picker |
+| **Form dialog** | Small configuration, profile editing, confirmation, and launch choices | Centered constrained dialog, title plus one-line instruction, aligned rows/fields, explicit primary and cancel/close actions. Must fit inside viewport gutters at every size. | New Session, AI/SSH/MCP forms |
+| **Workbench page** | Persistent tab-owned tools with browsing, status, or multi-column content | Header, content region, and a full-width footer/status band. Empty states explain why the page is empty and name the next action. Keyboard hints and non-blocking status belong in the footer/status band, never squeezed into a content column. | Settings, Memory Center, Skill Center, Port Forwarding, Agent History |
+
+This follows Ghostty's separation of its command palette dialog from its persistent window/tab shell: Ghostty's palette has a search entry and a scrollable rich list with shortcut metadata, while tabs live in a stable window container. WispTerm uses its GPU renderer rather than GTK, but should preserve that same separation of transient command execution, form input, and persistent workspace state.
+
+When changing a UI page, verify: full labels are visible or deliberately ellipsized with a way to reveal them; the localized UI language is consistent (proper names/model IDs may remain literal); state is placed next to its owner; and the page requests a repaint through `UiEffect` after input changes.
+
+## Cohesion and coupling
+
+These are the **primary** architectural criteria. File length is a symptom, not the rule.
+
+A file may be large when it owns one coherent domain object and exposes a clear API. Ghostty-style large terminal-core files are acceptable because their responsibilities are narrow and their state ownership is explicit — Ghostty ships `terminal/PageList.zig` (~14.8k lines), `terminal/Terminal.zig` (~13.3k), `config/Config.zig` (~10.9k), and `terminal/Screen.zig` (~10.5k) with no scattered module globals. The smell we guard against is **responsibility entanglement**: UI presentation mixed with business mutation, input dispatch mixed with rendering, global mutable state scattered across facades, and one file becoming an import hub for unrelated features. WispTerm's largest files are smaller than Ghostty's yet harder to change because they carry all of those at once.
+
+The goal is not small files but code that can be **understood, tested, and changed locally**. Large-but-cohesive is fine; large-but-tangled must be split. New features should prefer focused modules over growing existing hub files. New UI state must live in an explicit state struct or a feature-owned module — never as another top-level `g_*` / `threadlocal` field in `AppWindow.zig`, `input.zig`, or `renderer/overlays.zig`.
+
+### Integration layer vs feature domains
+
+`AppWindow.zig`, `input.zig`, and `renderer/overlays.zig` are an **integration layer**, not terminal "core". They *coordinate* features — AppWindow assembles modules and routes render/input, `input.zig` dispatches events, `overlays.zig` is the overlay facade/registry — but they must **not own feature state**. The **feature domains** own their own state, query/action APIs, and tests: `assistant/conversation/*`, `assistant/loop/*`, `agent/*`, `agent_tools/*`, `terminal_agents/*`, `weixin/*`, `skill/`, `file_explorer.zig`, `tmux/*`, and the remote client/sync code.
+
+When writing new code: feature domains should not depend on `AppWindow` (expose an API, receive context explicitly); `input.zig` only dispatches and returns a `UiEffect` — it must not read a feature's internal `g_*` state; overlays get capabilities through a Host/Context, not by importing `AppWindow.zig`. Prefer explicit context structs, feature-owned query/action APIs, and `UiEffect` returns. **Each time you touch a watched integration/session file, lower the matching source-guard ratchet** — that is how the boundary converges. The full layer model and per-edge rules are in [docs/architecture.md](docs/architecture.md#integration-layer-vs-feature-domains) and [docs/decoupling-guide.md §8.5](docs/decoupling-guide.md#85-the-layer-model).
+
+### Boundary guards (`src/source_guards/`)
+
+Structural debt is frozen mechanically by source-scanning ratchet tests (the same `@embedFile`-scan idiom as `input/dirty_guard.zig`). They run in `zig build test` and, because `test-full` is now a superset of `test`, in the pre-merge gate too. Each freezes a count at today's value; the count may only **shrink**. To add a case you must first remove one elsewhere — or, better, use the pattern the guard points you to.
+
+| Guard | Freezes | Today's ceiling | Escape hatch |
+|---|---|---|---|
+| `file_size_guard` | lines in any `src/**/*.zig` | < **10,000** (also `zig build check-sizes`) | split by responsibility; never raise the limit |
+| `global_state_guard` | top-level `g_*` / `threadlocal` in the watched integration/session files | AppWindow **66**, input **49**, overlays **32**, assistant/conversation/session **16** | put new state in a state struct (`appwindow/state.zig`, …) |
+| `import_hub_guard` | `pub const X = @import(...)` re-exports in `AppWindow.zig` | **17** | import the real module directly, not via `AppWindow.X` |
+| `side_effect_guard` | direct `g_force_rebuild` / `g_cells_valid` writes in the watched integration/session files | AppWindow **45**, input **81**, overlays **10**, assistant/conversation/session **0** | return a `UiEffect`, land it through `AppWindow.applyUiEffect` |
+
+The 10,000-line guard is a **runaway tripwire, not a health metric**: `check-sizes` prevents uncontrolled growth, it does not certify architectural health. A file under it can still be tangled; treat any file over **5,000 lines** as a signal to review responsibility, dependency direction, state ownership, and test boundaries. The boundary ratchets — not the line count — are the primary enforcement mechanism.
+
+A fifth guard — a **layered-dependency** check (e.g. `renderer/overlays/*` must not import `AppWindow.zig`; `input/*` must not import a concrete renderer) — is the documented next step; it needs per-edge allowlists and lands once the boundaries it asserts have converged. The layer model and the full remediation roadmap (state structs first, then import-hub, then per-domain file splits) live in [docs/decoupling-guide.md](docs/decoupling-guide.md).
+
 ## Hard Rules
 
 When changing application **keyboard shortcuts** (bindings in `src/input.zig` and related input paths), **update `README.md`** so the [Keyboard shortcuts](README.md#keyboard-shortcuts) section stays accurate. Also update user-visible shortcut text in `src/renderer/overlays.zig` (startup overlay, command palette entries) when those strings describe the same bindings.
 
-The main render loop is **event-driven** (`src/appwindow/render_gate.zig`): a frame is drawn only when `frameNeedsRender` is true, and `overlays.anyOverlayActive()` deliberately excludes statically-open overlays (command palette / command center, session launcher / new session, settings page) to keep idle CPU low. Therefore, any **overlay or panel key/char handler** in `src/input.zig` (`handleKey`/`handleChar`) that mutates UI state — selection index, filter text, focus — **must set `AppWindow.g_force_rebuild = true; AppWindow.g_cells_valid = false;`** after consuming the event (the handler functions in `src/renderer/overlays.zig` do not self-dirty; set the two globals at the call site, as the existing overlay branches do). Omit it and the change repaints only on the next incidental wake (cursor blink ~530ms, mouse move), so arrow-key navigation visibly lags ("不跟手") identically on Windows and macOS — it is shared logic, not platform code. The cross-thread analogue for a worker thread is `window_backend.postWakeup()`; `markUiDirty()` in `AppWindow.zig` is private, which is why `input.zig` writes the two globals directly. These `input.zig` tests run only in the full app test binary (`zig build test-full`, and `zig build test-macos-ui` on macOS); the fast `zig build test` suite does **not** compile `input.zig`.
+The main render loop is **event-driven** (`src/appwindow/render_gate.zig`): a frame is drawn only when `frameNeedsRender` is true, and `overlays.anyOverlayActive()` deliberately excludes statically-open overlays (command palette / command center, session launcher / new session, settings page) to keep idle CPU low. Therefore, any **overlay or panel key/char handler** in `src/input.zig` (`handleKey`/`handleChar`) that mutates UI state — selection index, filter text, focus — **must request a repaint**, or the change paints only on the next incidental wake (cursor blink ~530ms, mouse move) and navigation visibly lags ("不跟手") identically on Windows and macOS — it is shared logic, not platform code.
+
+The mechanism is the **UI-effect boundary**, not a direct global write. Input dispatch returns a `UiEffect` (`src/appwindow/ui_effect.zig`: `consumed` / `needs_rebuild` / `cells_invalid` / `wake_backend`), and `input.zig` lands it through `requestInputRepaint()` / `requestInputRebuild()` / `applyInputEffect()`, which funnel into the single sink `AppWindow.applyUiEffect` — the only place that touches `g_force_rebuild` / `g_cells_valid` (and `window_backend.postWakeup()` for a worker thread, via `UiEffect{ .wake_backend = true }`). New or converted handlers **must return/route a `UiEffect`** and **must not write `AppWindow.g_force_rebuild` / `AppWindow.g_cells_valid` directly**: `src/input/dirty_guard.zig` enforces this on the converted regions of `input.zig`, and `src/source_guards/side_effect_guard.zig` freezes the remaining direct-write count per watched file so it can only shrink. Legacy direct writes survive only where already counted by that ratchet.
+
+These `input.zig` compiled tests run only in the full app test binary (`zig build test-full`, and `zig build test-macos-ui` on macOS); the fast `zig build test` suite does **not** compile `input.zig` (the source-scan guards `@embedFile` it as text instead). Because `test-full` now also runs the fast suite, those guards gate the pre-merge build.
 
 When publishing a new **desktop app version**, keep the desktop version surfaces synchronized before tagging or releasing: `build.zig.zon`, matching tests, release notes under `release-notes/`, package `version.txt` output, `wispterm.exe --version`, and the command center `Version` entry. The compiled desktop app reads its version from `build.zig.zon` through `build_options.app_version`; do not hard-code a second desktop version constant.
 
@@ -46,7 +93,7 @@ Tests have two steps. `zig build test` is the fast inner loop: it builds and run
 
 To quantify input responsiveness — e.g. the overlay arrow-key "feel" gated by the event-driven render loop (see the Hard Rule above) — use the opt-in frame-latency probe. Enable it with `wispterm-debug-render = true` in the config file, or `WISPTERM_RENDER_DIAGNOSTICS=1` **in the app process's own environment**. On macOS, `open Foo.app` launches via launchd and does **not** inherit your shell env, so either use the config key or run the bundle binary directly (`WISPTERM_RENDER_DIAGNOSTICS=1 ./zig-out/bin/WispTerm.app/Contents/MacOS/WispTerm`). The log lands at `%APPDATA%\wispterm\render-diagnostic.log` (Windows) / `~/Library/Application Support/wispterm/render-diagnostic.log` (macOS); `grep frame-latency` it while navigating.
 
-Two line kinds: `frame-latency input->present count=N p50/p95/max=..ms` is genuine same-iteration input→present latency (the CPU pipeline wake → process → layout → draw-submit; it excludes the inherent ~1–2 frame vblank/compositor latency, so healthy is single-digit ms). `frame-latency STALL input->present=..ms iters=K (...)` is an input that painted nothing in its own loop iteration — a no-render key (bare modifier / unfocused), or a handler that forgot to mark the UI dirty — and is kept out of the p50/p95 stats. **A STALL that fires the instant you press a navigation key inside an overlay means a handler is missing its `g_force_rebuild` (the event-driven Hard Rule regression); a sporadic STALL on stray non-navigation keys is harmless.** Pure stats live in `src/appwindow/frame_latency.zig` (unit-tested, in the fast suite); the main-loop wiring + the input→render-gate regression tests are in `src/AppWindow.zig` / `src/input.zig`.
+Two line kinds: `frame-latency input->present count=N p50/p95/max=..ms` is genuine same-iteration input→present latency (the CPU pipeline wake → process → layout → draw-submit; it excludes the inherent ~1–2 frame vblank/compositor latency, so healthy is single-digit ms). `frame-latency STALL input->present=..ms iters=K (...)` is an input that painted nothing in its own loop iteration — a no-render key (bare modifier / unfocused), or a handler that forgot to mark the UI dirty — and is kept out of the p50/p95 stats. **A STALL that fires the instant you press a navigation key inside an overlay means a handler is missing its repaint `UiEffect` (the event-driven Hard Rule regression); a sporadic STALL on stray non-navigation keys is harmless.** Pure stats live in `src/appwindow/frame_latency.zig` (unit-tested, in the fast suite); the main-loop wiring + the input→render-gate regression tests are in `src/AppWindow.zig` / `src/input.zig`.
 
 ## Windows UI Automation
 
@@ -54,7 +101,7 @@ When debugging UI behavior, automate WispTerm as a real visible Windows app from
 
 ## Windows SSH/SCP Compatibility
 
-When changing SSH/SCP code paths (`src/scp.zig`, SSH clipboard image paste, remote file explorer, or SSH session metadata), test against the real profile in `%APPDATA%\wispterm\ssh_hosts` when available — but never print or commit the password. Two hard rules: do **not** add OpenSSH connection sharing (`ControlMaster`/`ControlPersist`/`ControlPath`) to helper `ssh.exe`/`scp.exe` commands (it breaks SCP on Windows OpenSSH), and keep the underlying OpenSSH stderr visible rather than collapsing it to a generic failure. Test commands and the full rationale are in [docs/development.md](docs/development.md#windows-sshscp-compatibility).
+When changing SSH/SCP code paths (`src/ssh/scp.zig`, SSH clipboard image paste, remote file explorer, or SSH session metadata), test against the real profile in `%APPDATA%\wispterm\ssh_hosts` when available — but never print or commit the password. Two hard rules: do **not** add OpenSSH connection sharing (`ControlMaster`/`ControlPersist`/`ControlPath`) to helper `ssh.exe`/`scp.exe` commands (it breaks SCP on Windows OpenSSH), and keep the underlying OpenSSH stderr visible rather than collapsing it to a generic failure. Test commands and the full rationale are in [docs/development.md](docs/development.md#windows-sshscp-compatibility).
 
 ## Windows Development Compatibility
 
@@ -63,8 +110,8 @@ This repository must remain safe to check out and develop on Windows. Before fin
 ## Project Structure
 
 ```
-src/                         # Windows desktop terminal application
-├── main.zig                 # Entry point, GLFW window, OpenGL setup, main loop
+src/                         # Desktop terminal application
+├── main.zig                 # Entry point and main loop
 ├── App.zig                  # Application-level state, config reload, remote client lifecycle
 ├── AppWindow.zig            # Window-level tabs, splits, rendering and input routing
 ├── Surface.zig              # Per-terminal surface state and PTY integration
@@ -74,17 +121,40 @@ src/                         # Windows desktop terminal application
 ├── pty.zig                  # App-facing PTY API (re-exports src/platform/pty.zig)
 ├── remote_client.zig        # Outbound WispTerm Remote relay client
 ├── file_explorer.zig        # Local/SSH file explorer state and operations
-├── browser_panel.zig        # Embedded browser panel and SSH tunnel handling
 ├── themes.zig               # Embedded Ghostty-compatible themes
+├── assistant/               # AI conversation session/protocol/composer plus loop,
+│                            #   profile, and sidebar-owned state
+├── agent/                   # Agent config, access rules, history, and memory
+├── agent_tools/             # Model tool-call runtime adapters
+├── terminal_agents/         # External terminal agent detection/prompts/sessions
+├── command/                 # Command center/palette model and registry
+├── preview/                 # Preview pane, gallery, diagnostics, PDF/markdown/png
+├── browser/                 # Embedded browser panel and URL handling
+├── html/                    # Local HTML server and server model
+├── jupyter/                 # Jupyter server detection and picker state
+├── skill/                   # Skill center, install, registry, scan, transfer
+├── port_forward/            # Port-forward rules, manager, and forwarding runtime
+├── research/                # Web/PubMed/read helpers used by assistant tools
+├── tools/                   # First-party assistant tool catalog and registry
 ├── platform/                # Platform abstraction layer: narrow capability
 │                            #   interfaces with per-platform impls (_windows) and
 │                            #   _unsupported/_posix stubs — PTY/process, window/input
 │                            #   backends, font discovery, clipboard, file dialogs,
 │                            #   remote transport, embedded browser, updater, etc.
-├── appwindow/               # Tab and split-tree helpers for AppWindow
+├── appwindow/               # AppWindow decomposition: aggregated state model
+│                            #   (state.zig / window_state / remote_state), feature
+│                            #   bridges (weixin/agent/remote_sync), control API,
+│                            #   surface snapshots, the UiEffect boundary, tab/split
+├── input/                   # Input pipeline split out of input.zig: command
+│                            #   dispatch, UiEffect helpers, hit-test, preview/path,
+│                            #   plus source-scan guards (dirty/overlay effect)
 ├── apprt/                   # Win32/windowing support code
 ├── font/                    # Font manager, atlas, embedded fallback, sprite glyphs
-├── renderer/                # OpenGL renderer, cell renderer, overlays, titlebar, panels
+├── renderer/                # GPU backends, cell renderer, overlays, titlebar, panels
+├── source_guards/           # Cross-cutting architecture ratchets: file-size backstop
+│                            #   + global-state / import-hub / side-effect freezes
+├── ssh/                     # SSH/SCP descriptors, profile store, prompts, tunnels,
+│                            #   OpenSSH config import, and transfer helpers
 └── termio/                  # PTY read/write threads and terminal IO mailbox
 
 remote/                      # WispTerm-specific web remote console and relay

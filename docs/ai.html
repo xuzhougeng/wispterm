@@ -102,7 +102,7 @@
           </div>
           <div class="feature">
             <h3>Saved conversations</h3>
-            <p>Agent sessions are persisted so you can reopen work from the command center with <code>Select Agent History</code> or use the left sidebar history page on AI tabs.</p>
+            <p>Agent sessions are persisted so you can reopen work from the command center with <code>Copilot History</code>. The picker groups saved AI Chat and Copilot sidebar conversations by date, searches titles and models, and lets you filter the source with <kbd>Tab</kbd>.</p>
           </div>
           <div class="feature">
             <h3>Markdown exports</h3>
@@ -188,19 +188,155 @@ ai-agent-output-limit       = 16384</code></pre>
           <div class="feature">
             <h3>Skill locations</h3>
             <p>WispTerm discovers <code>SKILL.md</code> files under the platform config directory (<code>%APPDATA%\wispterm</code> on Windows, <code>~/Library/Application Support/wispterm</code> on macOS) in <code>skills/</code> and <code>plugins/skills/</code>, plus the same two sub-paths next to the executable and in the current working directory.</p>
+            <p>Skill Center also manages Agent tools. Imported executable tools are stored under the WispTerm config directory with a canonical <code>SKILL.md</code> and keep their own enable state. First-party WispTerm tools, including web, terminal, file, docs, and memory tools, appear in the same inventory; their state is stored separately in <code>agent_tools.json</code>. Turning a built-in tool off hides it from newly built AI request tool lists and blocks stale or hallucinated calls at runtime.</p>
           </div>
           <div class="feature">
             <h3>Load a skill</h3>
             <p>Use <code>$skill-name your request</code> in the AI Agent tab to load that skill for the next request without changing global configuration.</p>
           </div>
           <div class="feature">
+            <h3>Third-party tools</h3>
+            <p>WispTerm also works with external utilities. For example, <a href="https://github.com/AHMUJia/claude-chatmap" target="_blank" rel="noopener">Claude ChatMap</a> is a local Claude Code history dashboard that groups chats by folder and can resume a selected chat in a WispTerm tab through <code>wisptermctl</code>. Community tools are not bundled with WispTerm.</p>
+          </div>
+          <div class="feature">
             <h3>Slash commands</h3>
-            <p><code>/model</code> switches saved profiles, <code>/skills</code> lists discovered skills, <code>/commands</code> lists local AI commands, and <code>/reload-skills</code> refreshes future skill calls from disk.</p>
+            <p><code>/commands</code> lists the current command set. Common commands include <code>/model</code> for profile switching, <code>/cwd</code> for the conversation working directory, <code>/permission</code> for agent approval mode, <code>/export</code> for Markdown, <code>/distill</code> for reusable skills, and <code>/remember</code> / <code>/memory</code> / <code>/forget</code> for long-term memory.</p>
+            <p><code>/loop</code> repeats a prompt on an interval and <code>/watch</code> schedules daily or one-shot prompts. <code>/clear</code>, <code>/rewind</code>, <code>/resume</code>, <code>/skills</code>, <code>/reload-skills</code>, and <code>/reload-commands</code> cover conversation lifecycle and local command refresh.</p>
+          </div>
+          <div class="feature">
+            <h3>Lookup shortcuts</h3>
+            <p>Type <code>$websearch &lt;query&gt;</code>, <code>$webread &lt;url | file path&gt;</code>, or <code>$pubmed &lt;query&gt;</code> to run a read-only lookup from the composer without starting a normal AI turn. <code>$websearch</code> uses the configured <code>jina-api-key</code>; <code>$webread</code> can read anonymously; <code>$pubmed</code> uses NCBI PubMed anonymously.</p>
           </div>
           <div class="feature">
             <h3>Command center paths</h3>
-            <p>Run <code>New Agent</code> from <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd>, reopen saved sessions with <code>Select Agent History</code>, or export Markdown records from the active AI tab.</p>
+            <p>Run <code>New Agent</code> from <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd>, reopen saved sessions with <code>Copilot History</code>, or export Markdown records from the active AI tab.</p>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="feishu" class="section">
+      <div class="container">
+        <h2>Feishu/Lark direct control</h2>
+        <p class="section-lead">Use a Feishu enterprise self-built app to send messages into WispTerm's Copilot/Agent flow. The desktop app opens a long connection at startup, so save the credentials first, then restart WispTerm.</p>
+        <div class="feishu-steps">
+          <article class="feishu-step">
+            <h3>Step 1: Create an enterprise self-built app</h3>
+            <p>Open <code>https://open.feishu.cn/app</code> and create an enterprise self-built app, for example <code>WispTerm-Lab</code>. For international Lark tenants, use <code>https://open.larksuite.com</code>.</p>
+            <figure class="feishu-shot">
+              <img src="assets/feishu/feishu-create-enterprise-app.png" alt="Feishu enterprise self-built app creation form">
+              <figcaption>Create an enterprise self-built app, for example <code>WispTerm-Lab</code>.</figcaption>
+            </figure>
+          </article>
+
+          <article class="feishu-step">
+            <h3>Step 2: Add the Robot capability</h3>
+            <p>In <strong>Add app capabilities</strong>, choose <strong>Robot</strong>. This is the capability WispTerm uses for chat messages, cards, and user interaction.</p>
+            <figure class="feishu-shot">
+              <img src="assets/feishu/feishu-add-robot-capability.png" alt="Feishu Add app capabilities page with Robot selected">
+              <figcaption>Add the <strong>Robot</strong> capability.</figcaption>
+            </figure>
+          </article>
+
+          <article class="feishu-step">
+            <h3>Step 3: Import permissions</h3>
+            <p>In <strong>Permission management</strong>, open <strong>Bulk import/export permissions</strong>, switch to <strong>Import</strong>, and paste this JSON:</p>
+            <pre class="code-block"><code>{
+  "scopes": {
+    "tenant": [
+      "application:application:self_manage",
+      "application:bot.basic_info:read",
+      "application:bot.menu:write",
+      "cardkit:card:read",
+      "cardkit:card:write",
+      "contact:contact.base:readonly",
+      "docs:document.comment:create",
+      "docs:document.comment:delete",
+      "docs:document.comment:read",
+      "docs:document.comment:update",
+      "docs:document.comment:write_only",
+      "docx:document.block:convert",
+      "docx:document:readonly",
+      "docx:document:write_only",
+      "drive:drive.metadata:readonly",
+      "im:chat.members:bot_access",
+      "im:chat:create",
+      "im:chat:read",
+      "im:chat:update",
+      "im:message.group_at_msg.include_bot:readonly",
+      "im:message.group_at_msg:readonly",
+      "im:message.p2p_msg:readonly",
+      "im:message.pins:read",
+      "im:message.pins:write_only",
+      "im:message.reactions:read",
+      "im:message.reactions:write_only",
+      "im:message:readonly",
+      "im:message:send_as_bot",
+      "im:message:send_multi_users",
+      "im:message:send_sys_msg",
+      "im:message:update",
+      "im:resource",
+      "wiki:node:read"
+    ],
+    "user": [
+      "offline_access"
+    ]
+  }
+}</code></pre>
+            <figure class="feishu-shot">
+              <img src="assets/feishu/feishu-permission-bulk-import.png" alt="Feishu bulk permission import dialog with JSON editor">
+              <figcaption>Bulk-import the permission JSON.</figcaption>
+            </figure>
+          </article>
+
+          <article class="feishu-step">
+            <h3>Step 4: Configure long-connection events</h3>
+            <p>Open <strong>Events &amp; Callbacks → Event configuration</strong> and select <strong>Long connection</strong>. Then add <code>im.message.receive_v1</code>. A connection-failed status is normal until WispTerm has the app credentials.</p>
+            <div class="feishu-step-shots">
+              <figure class="feishu-shot">
+                <img src="assets/feishu/feishu-event-long-connection.png" alt="Feishu event configuration page with long connection selected">
+                <figcaption>Use long connection mode; no public callback URL is required.</figcaption>
+              </figure>
+              <figure class="feishu-shot">
+                <img src="assets/feishu/feishu-event-receive-message.png" alt="Feishu add event dialog showing im.message.receive_v1">
+                <figcaption>Add the <code>im.message.receive_v1</code> receive-message event.</figcaption>
+              </figure>
+            </div>
+          </article>
+
+          <article class="feishu-step">
+            <h3>Step 5: Publish the app</h3>
+            <p>Create version <code>1.0.0</code>, select <strong>Robot</strong> as both the mobile and desktop default capability, add any release note, and submit. Feishu personal tenants usually publish immediately.</p>
+          </article>
+
+          <article class="feishu-step">
+            <h3>Step 6: Copy credentials into WispTerm</h3>
+            <p>After publication, copy the app <code>App ID</code> and <code>App Secret</code> from Feishu.</p>
+            <figure class="feishu-shot">
+              <img src="assets/feishu/app-created.png" alt="Feishu app creation success screen showing App ID and App Secret">
+              <figcaption>Copy the App ID and App Secret from the self-built app.</figcaption>
+            </figure>
+          </article>
+
+          <article class="feishu-step">
+            <h3>Step 7: Configure in WispTerm</h3>
+            <ol>
+              <li>Open the command center with <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd> (<kbd>Cmd</kbd><kbd>Shift</kbd><kbd>P</kbd> on macOS).</li>
+              <li>Type <code>feishu</code>.</li>
+              <li>Run <code>Feishu: Configure</code>.</li>
+              <li>Fill <code>App ID</code> and <code>App Secret</code>, then save.</li>
+              <li>Restart WispTerm.</li>
+            </ol>
+            <figure class="feishu-shot">
+              <img src="assets/feishu/command-center-config.png" alt="WispTerm Feishu bot configuration form in the command center">
+              <figcaption>Type <code>feishu</code> in the command center, save credentials, then restart WispTerm.</figcaption>
+            </figure>
+          </article>
+
+          <article class="feishu-step">
+            <h3>Config fallback</h3>
+            <p>You can also set <code>feishu-enabled</code>, <code>feishu-app-id</code>, <code>feishu-app-secret</code>, and optionally <code>feishu-allowed-user</code>. Empty ID/secret values fall back to <code>FEISHU_APP_ID</code> and <code>FEISHU_APP_SECRET</code>.</p>
+          </article>
         </div>
       </div>
     </section>

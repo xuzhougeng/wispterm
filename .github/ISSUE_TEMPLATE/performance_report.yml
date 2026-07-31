@@ -1,0 +1,70 @@
+name: 📊 Performance Report
+description: Share a WispTerm benchmark run so we can compare performance across hardware/backends
+title: "[Perf] "
+labels: ["performance"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for sharing a performance report! Run the benchmark (see
+        `docs/development.md` → Performance Benchmarking) and paste the Markdown
+        report the CLI prints. One report per machine/backend combo keeps the
+        data easier to compare.
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Renderer backend
+      description: Which GPU backend were you measuring (or `n/a` for the CPU-only CLI)?
+      options:
+        - opengl
+        - metal
+        - d3d11
+        - n/a (CPU CLI)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: WispTerm version
+      description: Output of `wispterm --version`, or the commit/release you built from.
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware (CPU / GPU / RAM)
+      description: e.g. "Intel i5-1235U, Iris Xe, 16GB" — helps group reports by tier.
+    validations:
+      required: true
+
+  - type: textarea
+    id: report
+    attributes:
+      label: Benchmark report
+      description: Paste the Markdown report the CLI printed to stdout (the `## WispTerm performance report` block).
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: build
+    attributes:
+      label: Build / run command
+      description: The exact `zig build` / `wispterm-bench` invocation and any relevant config.
+      render: shell
+    validations:
+      required: false

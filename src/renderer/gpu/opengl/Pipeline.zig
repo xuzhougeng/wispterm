@@ -3,10 +3,11 @@
 const std = @import("std");
 const Context = @import("Context.zig");
 const c = @import("c.zig").c;
+const types = @import("../types.zig");
 const Pipeline = @This();
 
-program: c.GLuint,
-vao: c.GLuint,
+program: types.ProgramHandle,
+vao: types.VertexArrayHandle,
 
 /// Compile a shader stage. Returns null on failure (logs to stderr).
 pub fn compileShader(shader_type: c.GLenum, source: [*c]const u8) ?c.GLuint {
@@ -65,31 +66,39 @@ fn linkProgram(vs_src: [*c]const u8, fs_src: [*c]const u8) c.GLuint {
 /// Build a pipeline: link the program and pair it with a caller-built VAO (the
 /// vertex-attribute layout is shader-specific, so the caller owns it). On link
 /// failure `program` is 0; callers guard draws on `program != 0`.
-pub fn init(vs_src: [*c]const u8, fs_src: [*c]const u8, vao: c.GLuint) Pipeline {
-    return .{ .program = linkProgram(vs_src, fs_src), .vao = vao };
+pub fn init(vs_src: [*c]const u8, fs_src: [*c]const u8, vao: types.VertexArrayHandle) Pipeline {
+    return .{ .program = @intCast(linkProgram(vs_src, fs_src)), .vao = vao };
 }
 
 /// Called with the program about to be bound. The UI glyph batcher registers
 /// its flush here: switching to any pipeline other than the batch's own means
 /// a foreign draw is coming, so pending batched UI draws must be submitted
 /// first to preserve draw order. Stays null when batching is disabled.
-pub threadlocal var pre_use_hook: ?*const fn (program: c.GLuint) void = null;
+pub threadlocal var pre_use_hook: ?*const fn (program: types.ProgramHandle) void = null;
+
+fn backendProgram(self: Pipeline) c.GLuint {
+    return @intCast(self.program);
+}
+
+fn backendVao(self: Pipeline) c.GLuint {
+    return @intCast(self.vao);
+}
 
 pub fn use(self: Pipeline) void {
     if (pre_use_hook) |hook| hook(self.program);
-    Context.gl.UseProgram.?(self.program);
+    Context.gl.UseProgram.?(self.backendProgram());
 }
 pub fn bindVao(self: Pipeline) void {
-    Context.gl.BindVertexArray.?(self.vao);
+    Context.gl.BindVertexArray.?(self.backendVao());
 }
 pub fn setVec2(self: Pipeline, name: [*c]const u8, x: f32, y: f32) void {
-    Context.gl.Uniform2f.?(Context.gl.GetUniformLocation.?(self.program, name), x, y);
+    Context.gl.Uniform2f.?(Context.gl.GetUniformLocation.?(self.backendProgram(), name), x, y);
 }
 pub fn setFloat(self: Pipeline, name: [*c]const u8, v: f32) void {
-    Context.gl.Uniform1f.?(Context.gl.GetUniformLocation.?(self.program, name), v);
+    Context.gl.Uniform1f.?(Context.gl.GetUniformLocation.?(self.backendProgram(), name), v);
 }
 pub fn setInt(self: Pipeline, name: [*c]const u8, v: i32) void {
-    Context.gl.Uniform1i.?(Context.gl.GetUniformLocation.?(self.program, name), v);
+    Context.gl.Uniform1i.?(Context.gl.GetUniformLocation.?(self.backendProgram(), name), v);
 }
 /// Set the orthographic projection uniform from the current GL viewport
 /// (matches the previous gl_init.setProjectionForProgram behavior).
@@ -105,33 +114,42 @@ pub fn setProjection(self: Pipeline) void {
         0.0,         0.0,          -1.0, 0.0,
         -1.0,        -1.0,         0.0,  1.0,
     };
-    gl.UniformMatrix4fv.?(gl.GetUniformLocation.?(self.program, "projection"), 1, c.GL_FALSE, &projection);
+    gl.UniformMatrix4fv.?(gl.GetUniformLocation.?(self.backendProgram(), "projection"), 1, c.GL_FALSE, &projection);
 }
 pub fn setMat4(self: Pipeline, name: [*c]const u8, m: *const [16]f32) void {
-    Context.gl.UseProgram.?(self.program);
-    Context.gl.UniformMatrix4fv.?(Context.gl.GetUniformLocation.?(self.program, name), 1, c.GL_FALSE, m);
+    Context.gl.UseProgram.?(self.backendProgram());
+    Context.gl.UniformMatrix4fv.?(Context.gl.GetUniformLocation.?(self.backendProgram(), name), 1, c.GL_FALSE, m);
 }
 pub fn setVec3(self: Pipeline, name: [*c]const u8, x: f32, y: f32, z: f32) void {
-    Context.gl.Uniform3f.?(Context.gl.GetUniformLocation.?(self.program, name), x, y, z);
+    Context.gl.Uniform3f.?(Context.gl.GetUniformLocation.?(self.backendProgram(), name), x, y, z);
 }
 pub fn setVec4(self: Pipeline, name: [*c]const u8, x: f32, y: f32, z: f32, w: f32) void {
-    Context.gl.Uniform4f.?(Context.gl.GetUniformLocation.?(self.program, name), x, y, z, w);
+    Context.gl.Uniform4f.?(Context.gl.GetUniformLocation.?(self.backendProgram(), name), x, y, z, w);
+}
+fn topologyEnum(topology: types.PrimitiveTopology) c.GLenum {
+    return switch (topology) {
+        .triangles => c.GL_TRIANGLES,
+        .triangle_strip => c.GL_TRIANGLE_STRIP,
+    };
 }
 /// Non-instanced draw against the currently-bound program/VAO. Does NOT touch
 /// any draw-call counter (callers tick their own, same as drawArraysInstanced).
-pub fn drawArrays(self: Pipeline, mode: c.GLenum, first: c.GLint, count: c.GLsizei) void {
+pub fn drawArrays(self: Pipeline, topology: types.PrimitiveTopology, first: c.GLint, count: c.GLsizei) void {
     _ = self;
-    Context.gl.DrawArrays.?(mode, first, count);
+    Context.gl.DrawArrays.?(topologyEnum(topology), first, count);
 }
 /// Issue an instanced draw against the currently-bound program/VAO. `self` is
 /// unused today (the bound state carries the pipeline); kept as a method for
 /// call-site ergonomics and so a future backend can attach per-pipeline state.
-pub fn drawArraysInstanced(self: Pipeline, mode: c.GLenum, first: c.GLint, count: c.GLsizei, instances: c.GLsizei) void {
+pub fn drawArraysInstanced(self: Pipeline, topology: types.PrimitiveTopology, first: c.GLint, count: c.GLsizei, instances: c.GLsizei) void {
     _ = self;
-    Context.gl.DrawArraysInstanced.?(mode, first, count, instances);
+    Context.gl.DrawArraysInstanced.?(topologyEnum(topology), first, count, instances);
 }
 pub fn deinit(self: *Pipeline) void {
-    if (self.program != 0) Context.gl.DeleteProgram.?(self.program);
-    if (self.vao != 0) Context.gl.DeleteVertexArrays.?(1, &self.vao);
+    if (self.program != 0) Context.gl.DeleteProgram.?(@intCast(self.program));
+    if (self.vao != 0) {
+        var vao: c.GLuint = @intCast(self.vao);
+        Context.gl.DeleteVertexArrays.?(1, &vao);
+    }
     self.* = .{ .program = 0, .vao = 0 };
 }

@@ -8,24 +8,38 @@ const std = @import("std");
 const Config = @import("../config.zig");
 const Surface = @import("../Surface.zig");
 const SplitTree = @import("../split_tree.zig");
-const PreviewPane = @import("../preview_pane.zig");
-const markdown_preview = @import("../markdown_preview.zig");
+const PreviewPane = @import("../preview/pane.zig");
+const markdown_preview = @import("../preview/markdown.zig");
 const input_key = @import("../input/key.zig");
 const remote_client = @import("../remote_client.zig");
 const session_persist = @import("../session_persist.zig");
-const ai_chat = @import("../ai_chat.zig");
-const ai_history_session = @import("../ai_history_session.zig");
-const ai_history_source = @import("../ai_history_source.zig");
-const skill_center = @import("../skill_center.zig");
-const port_forwarding = @import("../port_forwarding.zig");
-const ai_history_time = @import("../ai_history_time.zig");
-const agent_history = @import("../agent_history.zig");
+const ai_chat = @import("../assistant/conversation/session.zig");
+const ai_history_session = @import("../terminal_agents/sessions/session.zig");
+const memory_center_session = @import("../memory_center/session.zig");
+const ai_history_source = @import("../terminal_agents/sessions/source.zig");
+const skill_center = @import("../skill/center.zig");
+const port_forwarding = @import("../port_forward/forwarding.zig");
+const ai_history_time = @import("../terminal_agents/sessions/time.zig");
+const agent_history = @import("../agent/history.zig");
 const platform_pty_command = @import("../platform/pty_command.zig");
+const Pty = @import("../platform/pty.zig").Pty;
 const active_tab_state = @import("active_tab.zig");
 const i18n = @import("../i18n.zig");
+const agent_detector = @import("../terminal_agents/detector.zig");
 
 const CursorStyle = Config.CursorStyle;
 const Selection = Surface.Selection;
+
+/// Map an in-app AI session's live flags onto the terminal-agent badge
+/// vocabulary: pending approval/question beats an inflight turn; the sticky
+/// `attention_done` badge (set by AppWindow on an unseen turn end) shows last.
+fn sessionAgentState(session: *ai_chat.Session) agent_detector.State {
+    if (session.approvalView() != null or session.questionView() != null)
+        return .waiting_approval;
+    if (session.requestState().inflight) return .running;
+    if (session.attention_done) return .done;
+    return .none;
+}
 
 // ============================================================================
 // Constants
@@ -52,6 +66,7 @@ pub const TabState = struct {
     focused: SplitTree.Node.Handle = .root,
     ai_chat_session: ?*ai_chat.Session = null,
     ai_history_session: ?*ai_history_session.Session = null,
+    memory_center_session: ?*memory_center_session.Session = null,
     skill_center_session: ?*skill_center.Session = null,
     port_forwarding_session: ?*port_forwarding.Session = null,
     /// Copilot conversation for a terminal tab (Issue #98). Distinct from
@@ -82,8 +97,10 @@ pub const TabState = struct {
         terminal,
         ai_chat,
         ai_history,
+        memory_center,
         skill_center,
         port_forwarding,
+        settings,
     };
 
     /// Get the focused surface in this tab, or null if tree is empty
@@ -116,14 +133,57 @@ pub const TabState = struct {
             const session = self.ai_history_session orelse return i18n.s().sl_sessions;
             return session.tabTitle();
         }
+        if (self.kind == .memory_center) {
+            return "Memory Center";
+        }
         if (self.kind == .skill_center) {
             return i18n.s().sl_skill_center;
         }
         if (self.kind == .port_forwarding) {
             return i18n.s().pf_title;
         }
+        if (self.kind == .settings) {
+            return i18n.s().settings_title;
+        }
         const surface = self.focusedSurface() orelse return "wispterm";
         return surface.getTitle();
+    }
+
+    /// Aggregate agent state across this tab for the titlebar badge/dot:
+    /// terminal panes' OSC 7748 detections plus in-app AI sessions (AI-chat
+    /// tab session / copilot sidebar session). Returns a synthetic Detection
+    /// (visible() true) or a blank one when nothing is active.
+    pub fn agentDetection(self: *TabState) agent_detector.Detection {
+        var states_buf: [64]agent_detector.State = undefined;
+        var len: usize = 0;
+        // Source the badge's app from a pane that actually has a visible agent
+        // (NOT the focused surface — it may be a plain shell while a
+        // split-sibling runs the agent).
+        var app: agent_detector.App = .none;
+        var it = self.tree.surfaces();
+        while (it.next()) |entry| {
+            if (len >= states_buf.len) break;
+            const det = entry.surface.agent_detection;
+            if (det.visible()) {
+                states_buf[len] = det.state;
+                len += 1;
+                if (app == .none) app = det.app;
+            }
+        }
+        const sessions = [_]?*ai_chat.Session{ self.ai_chat_session, self.copilot_session };
+        for (sessions) |maybe| {
+            const session = maybe orelse continue;
+            const st = sessionAgentState(session);
+            if (st != .none and len < states_buf.len) {
+                states_buf[len] = st;
+                len += 1;
+                if (app == .none) app = .assistant;
+            }
+        }
+        if (len == 0) return .{};
+        const agg = agent_detector.aggregate(states_buf[0..len]);
+        if (agg == .none) return .{};
+        return .{ .app = app, .state = agg, .confidence = 100 };
     }
 
     pub fn deinit(self: *TabState, allocator: std.mem.Allocator) void {
@@ -148,6 +208,13 @@ pub const TabState = struct {
                     self.ai_history_session = null;
                 }
             },
+            .memory_center => {
+                if (self.memory_center_session) |session| {
+                    session.deinit();
+                    allocator.destroy(session);
+                    self.memory_center_session = null;
+                }
+            },
             .skill_center => {
                 if (self.skill_center_session) |session| {
                     session.destroy();
@@ -161,6 +228,7 @@ pub const TabState = struct {
                     self.port_forwarding_session = null;
                 }
             },
+            .settings => {},
         }
     }
 };
@@ -190,12 +258,20 @@ pub threadlocal var g_ai_restore_hook: ?*const fn (session_id: []const u8) bool 
 // keep after returning. Returns true if the tab was reopened.
 pub threadlocal var g_ai_history_restore_hook: ?*const fn (session_persist.AiHistorySnap) bool = null;
 
+/// Rehydrates a Copilot sidebar conversation from the agent-history store by id,
+/// returning an owned `*ai_chat.Session` (with the history hook installed) or
+/// null if the record is gone. AppWindow installs this (it owns the store).
+pub threadlocal var g_copilot_restore_hook: ?*const fn (session_id: []const u8) ?*ai_chat.Session = null;
+
 // tmux session persistence (Phase 3d #4c). The save hook returns the SSH profile
 // names of active tmux controllers (arena-allocated); the restore hook re-attaches
 // a profile by name. Registered by AppWindow so tab.zig stays free of the
 // controller/overlay dependency (and the import cycle).
 pub threadlocal var g_tmux_active_profiles_hook: ?*const fn (std.mem.Allocator) []const []const u8 = null;
 pub threadlocal var g_tmux_restore_hook: ?*const fn (profile_name: []const u8) bool = null;
+/// Re-supply a restored SSH surface's password from its saved profile and arm
+/// autofill (the snapshot carries no password). Registered by AppWindow.
+pub threadlocal var g_ssh_restore_arm_hook: ?*const fn (*Surface) void = null;
 
 // Forced title from config (overrides all tab titles)
 pub threadlocal var g_forced_title: ?[]const u8 = null;
@@ -271,6 +347,9 @@ pub fn activeCopilotSession(
     if (t.kind != .terminal) return null;
     if (t.copilot_session == null) {
         t.copilot_session = make() orelse return null;
+        // Wire incremental persistence: each completed turn now upserts this
+        // conversation into the agent-history store (same path as AI-chat tabs).
+        installAiChatHistoryHook(t.copilot_session.?);
     }
     return t.copilot_session;
 }
@@ -307,6 +386,22 @@ pub fn findAiTabBySessionId(session_id: []const u8) ?usize {
 
 pub fn switchToAiTabBySessionId(session_id: []const u8) bool {
     const idx = findAiTabBySessionId(session_id) orelse return false;
+    switchTab(idx);
+    return true;
+}
+
+pub fn findCopilotTabBySessionId(session_id: []const u8) ?usize {
+    for (0..g_tab_count) |idx| {
+        const t = g_tabs[idx] orelse continue;
+        if (t.kind != .terminal) continue;
+        const session = t.copilot_session orelse continue;
+        if (std.mem.eql(u8, session.sessionId(), session_id)) return idx;
+    }
+    return null;
+}
+
+pub fn switchToCopilotTabBySessionId(session_id: []const u8) bool {
+    const idx = findCopilotTabBySessionId(session_id) orelse return false;
     switchTab(idx);
     return true;
 }
@@ -426,6 +521,7 @@ pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: 
     t.focused = .root;
     t.ai_chat_session = null;
     t.ai_history_session = null;
+    t.memory_center_session = null;
     t.skill_center_session = null;
     t.port_forwarding_session = null;
     t.copilot_session = null;
@@ -446,6 +542,79 @@ pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: 
     return true;
 }
 
+/// Result of `spawnBenchmarkTab`: the active surface (borrowed — the tab's
+/// SplitTree owns it) and the virtual PTY controller the caller must keep open
+/// for the run and deinit when done.
+pub const BenchmarkSpawn = struct {
+    surface: *Surface,
+    controller: Pty.VirtualController,
+};
+
+/// Spawn a no-shell virtual surface as a new tab, for the in-app GPU benchmark.
+/// Mirrors `spawnTabWithCommandAndCwd` but uses `Pty.openVirtual` +
+/// `Surface.initVirtual` (no child process): the benchmark driver direct-feeds
+/// the terminal from the UI thread, so there is no shell. The returned
+/// `controller` is the write half of the virtual PTY and is owned by the caller.
+pub fn spawnBenchmarkTab(
+    allocator: std.mem.Allocator,
+    cols: u16,
+    rows: u16,
+    cursor_style: CursorStyle,
+    cursor_blink: bool,
+) ?BenchmarkSpawn {
+    if (g_tab_count >= MAX_TABS) return null;
+
+    var pair = Pty.openVirtual(.{ .ws_col = cols, .ws_row = rows }) catch return null;
+    // On `initVirtual` failure its errdefer deinits the adopted pty; we still
+    // own and must close the controller side (see tmux_bridge.make).
+    const surface = Surface.initVirtual(
+        allocator,
+        cols,
+        rows,
+        pair.pty,
+        g_scrollback_limit,
+        cursor_style,
+        cursor_blink,
+    ) catch {
+        pair.controller.deinit();
+        return null;
+    };
+    surface.attachRemoteClient(g_remote_client);
+
+    const tree = SplitTree.init(allocator, surface) catch {
+        surface.deinit(allocator);
+        pair.controller.deinit();
+        return null;
+    };
+    surface.unref(allocator); // tree owns the ref now
+
+    const t = allocator.create(TabState) catch {
+        var tree_mut = tree;
+        tree_mut.deinit();
+        pair.controller.deinit();
+        return null;
+    };
+    t.kind = .terminal;
+    t.tree = tree;
+    t.focused = .root;
+    t.ai_chat_session = null;
+    t.ai_history_session = null;
+    t.memory_center_session = null;
+    t.skill_center_session = null;
+    t.port_forwarding_session = null;
+    t.copilot_session = null;
+    t.tmux_window_id = null;
+    t.tmux_owner = null;
+    t.tmux_name_len = 0;
+    t.copilot_visible = false;
+
+    g_tabs[g_tab_count] = t;
+    active_tab_state.g_active_tab = g_tab_count;
+    g_tab_count += 1;
+
+    return .{ .surface = surface, .controller = pair.controller };
+}
+
 pub fn spawnAiChatTab(
     allocator: std.mem.Allocator,
     name: []const u8,
@@ -460,6 +629,7 @@ pub fn spawnAiChatTab(
     agent_val: []const u8,
     max_tokens: u32,
     vision_val: []const u8,
+    command: []const u8,
 ) bool {
     if (g_tab_count >= MAX_TABS) return false;
 
@@ -481,17 +651,27 @@ pub fn spawnAiChatTab(
         return false;
     };
     session.setMaxTokens(max_tokens);
-    installAiChatHistoryHook(session);
+    session.setAcpCommand(command);
 
-    const t = allocator.create(TabState) catch {
+    if (!spawnAiChatSession(allocator, session)) {
         session.deinit();
         return false;
-    };
+    }
+    std.debug.print("New AI Chat tab spawned (count={}), active: {}\n", .{ g_tab_count, active_tab_state.g_active_tab });
+    return true;
+}
+
+pub fn spawnAiChatSession(allocator: std.mem.Allocator, session: *ai_chat.Session) bool {
+    if (g_tab_count >= MAX_TABS) return false;
+
+    const t = allocator.create(TabState) catch return false;
+    installAiChatHistoryHook(session);
     t.kind = .ai_chat;
     t.tree = .empty;
     t.focused = .root;
     t.ai_chat_session = session;
     t.ai_history_session = null;
+    t.memory_center_session = null;
     t.skill_center_session = null;
     t.port_forwarding_session = null;
     t.copilot_session = null;
@@ -506,8 +686,6 @@ pub fn spawnAiChatTab(
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
     g_tab_count += 1;
-
-    std.debug.print("New AI Chat tab spawned (count={}), active: {}\n", .{ g_tab_count, active_tab_state.g_active_tab });
     return true;
 }
 
@@ -519,32 +697,11 @@ pub fn spawnAiChatTabFromHistoryRecord(allocator: std.mem.Allocator, record: age
         std.debug.print("Failed to restore AI Chat session from history\n", .{});
         return false;
     };
-    installAiChatHistoryHook(session);
 
-    const t = allocator.create(TabState) catch {
+    if (!spawnAiChatSession(allocator, session)) {
         session.deinit();
         return false;
-    };
-    t.kind = .ai_chat;
-    t.tree = .empty;
-    t.focused = .root;
-    t.ai_chat_session = session;
-    t.ai_history_session = null;
-    t.skill_center_session = null;
-    t.port_forwarding_session = null;
-    t.copilot_session = null;
-    // allocator.create returns undefined memory and struct-default values are
-    // NOT applied to field-by-field init, so these must be set explicitly or
-    // getTitle reads a garbage tmux_name_len (Phase 3c-2 fields).
-    t.tmux_window_id = null;
-    t.tmux_owner = null;
-    t.tmux_name_len = 0;
-    t.copilot_visible = false;
-
-    g_tabs[g_tab_count] = t;
-    active_tab_state.g_active_tab = g_tab_count;
-    g_tab_count += 1;
-
+    }
     std.debug.print("Restored AI Chat tab from history (count={}), active: {}\n", .{ g_tab_count, active_tab_state.g_active_tab });
     return true;
 }
@@ -576,8 +733,39 @@ pub fn spawnAiHistoryTab(allocator: std.mem.Allocator, source: ai_history_source
     t.tmux_name_len = 0;
     t.copilot_visible = false;
     t.ai_history_session = session_ptr;
+    t.memory_center_session = null;
     t.skill_center_session = null;
     t.port_forwarding_session = null;
+
+    g_tabs[g_tab_count] = t;
+    active_tab_state.g_active_tab = g_tab_count;
+    g_tab_count += 1;
+    return true;
+}
+
+pub fn spawnMemoryCenterTab(allocator: std.mem.Allocator) bool {
+    if (g_tab_count >= MAX_TABS) return false;
+    const session_ptr = allocator.create(memory_center_session.Session) catch return false;
+    session_ptr.* = memory_center_session.Session.init(allocator);
+
+    const t = allocator.create(TabState) catch {
+        session_ptr.deinit();
+        allocator.destroy(session_ptr);
+        return false;
+    };
+    t.kind = .memory_center;
+    t.tree = .empty;
+    t.focused = .root;
+    t.ai_chat_session = null;
+    t.ai_history_session = null;
+    t.memory_center_session = session_ptr;
+    t.skill_center_session = null;
+    t.port_forwarding_session = null;
+    t.copilot_session = null;
+    t.copilot_visible = false;
+    t.tmux_window_id = null;
+    t.tmux_owner = null;
+    t.tmux_name_len = 0;
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -601,6 +789,7 @@ pub fn spawnSkillCenterTab(allocator: std.mem.Allocator) bool {
     t.focused = .root;
     t.ai_chat_session = null;
     t.ai_history_session = null;
+    t.memory_center_session = null;
     t.skill_center_session = session_ptr;
     t.port_forwarding_session = null;
     t.copilot_session = null;
@@ -631,6 +820,7 @@ pub fn spawnPortForwardingTab(allocator: std.mem.Allocator) bool {
     t.focused = .root;
     t.ai_chat_session = null;
     t.ai_history_session = null;
+    t.memory_center_session = null;
     t.skill_center_session = null;
     t.port_forwarding_session = session_ptr;
     t.copilot_session = null;
@@ -642,11 +832,67 @@ pub fn spawnPortForwardingTab(allocator: std.mem.Allocator) bool {
     return true;
 }
 
+/// Open the singleton Settings page as a normal tab. Repeated invocations
+/// switch to the existing page instead of creating duplicate Settings tabs.
+pub fn openSettingsTab(allocator: std.mem.Allocator) bool {
+    for (0..g_tab_count) |idx| {
+        const existing = g_tabs[idx] orelse continue;
+        if (existing.kind != .settings) continue;
+        switchTab(idx);
+        return true;
+    }
+    if (g_tab_count >= MAX_TABS) return false;
+
+    const t = allocator.create(TabState) catch return false;
+    t.* = .{ .kind = .settings, .tree = .empty };
+
+    g_tabs[g_tab_count] = t;
+    active_tab_state.g_active_tab = g_tab_count;
+    g_tab_count += 1;
+    return true;
+}
+
+test "settings tab is singleton and carries the localized title" {
+    const saved_tabs = g_tabs;
+    const saved_count = g_tab_count;
+    const saved_active = active_tab_state.g_active_tab;
+    defer {
+        g_tabs = saved_tabs;
+        g_tab_count = saved_count;
+        active_tab_state.g_active_tab = saved_active;
+    }
+
+    g_tabs = .{null} ** MAX_TABS;
+    g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+
+    try std.testing.expect(openSettingsTab(std.testing.allocator));
+    const first = g_tabs[0].?;
+    defer {
+        first.deinit(std.testing.allocator);
+        std.testing.allocator.destroy(first);
+    }
+    try std.testing.expectEqual(@as(usize, 1), g_tab_count);
+    try std.testing.expectEqual(TabState.Kind.settings, first.kind);
+    try std.testing.expectEqualStrings(i18n.s().settings_title, first.getTitle());
+
+    try std.testing.expect(openSettingsTab(std.testing.allocator));
+    try std.testing.expectEqual(@as(usize, 1), g_tab_count);
+    try std.testing.expect(g_tabs[0].? == first);
+}
+
 /// Active tab's Skill Center session, or null if the active tab isn't one.
 pub fn activeSkillCenter() ?*skill_center.Session {
     const t = activeTab() orelse return null;
     if (t.kind != .skill_center) return null;
     return t.skill_center_session;
+}
+
+/// Active tab's Memory Center session, or null if the active tab isn't one.
+pub fn activeMemoryCenter() ?*memory_center_session.Session {
+    const t = activeTab() orelse return null;
+    if (t.kind != .memory_center) return null;
+    return t.memory_center_session;
 }
 
 /// Active tab's Port Forwarding session, or null if the active tab isn't one.
@@ -1311,8 +1557,10 @@ pub fn commitTabRename() void {
                         session.setTitle(g_tab_rename_buf[0..g_tab_rename_len]);
                     },
                     .ai_history => {},
+                    .memory_center => {},
                     .skill_center => {},
                     .port_forwarding => {},
+                    .settings => {},
                 }
             }
         }
@@ -1503,11 +1751,20 @@ pub fn snapshotTab(arena: std.mem.Allocator, t: *const TabState) !session_persis
     // 3. Translate the optional zoomed handle to a pre-order leaf index.
     const zoomed_leaf: ?u32 = if (t.tree.zoomed) |z| computeFocusedLeafIndex(&t.tree, z) else null;
 
+    // Capture the active Copilot sidebar conversation (if worth persisting) so
+    // it can be restored in place. The conversation itself is in the store.
+    var copilot_sid: ?[]const u8 = null;
+    if (t.copilot_session) |cs| {
+        if (cs.shouldPersistCopilot()) copilot_sid = try arena.dupe(u8, cs.sessionId());
+    }
+
     return session_persist.TabSnap{
         .title_override = try snapshotFocusedTitleOverride(arena, t),
         .focused_leaf = focused_leaf,
         .zoomed_leaf = zoomed_leaf,
         .tree = tree,
+        .copilot_session_id = copilot_sid,
+        .copilot_visible = if (copilot_sid != null) t.copilot_visible else false,
     };
 }
 
@@ -1671,11 +1928,12 @@ fn surfaceFromSnapImpl(
             defer platform_pty_command.freeCommandLine(gpa, command);
             const surface = try Surface.init(gpa, cols, rows, platform_pty_command.commandLineFromOwned(command), g_scrollback_limit, cursor_style, cursor_blink, null);
             surface.attachRemoteClient(g_remote_client);
-            // SSH password is never persisted (security invariant I1). On restore,
-            // the native SSH client prompts interactively if key auth fails;
-            // the in-app password-autofill flow (which requires password_auth=true)
-            // does not engage here.
+            // SSH password is never persisted (security invariant I1). Restore the
+            // endpoint without a password, then let the arm hook re-supply it from
+            // the saved profile (host/user/port match) and arm autofill — so a
+            // restored session logs in without re-typing, like a fresh connect.
             surface.setSshConnection(s.user, s.host, port_slice, "", s.proxy_jump, false, g_ssh_legacy_algorithms);
+            if (g_ssh_restore_arm_hook) |hook| hook(surface);
             return surface;
         },
     }
@@ -1763,6 +2021,7 @@ pub fn restoreTab(
     t.focused = handleOfNthLeaf(&t.tree, snap.focused_leaf) orelse .root;
     t.ai_chat_session = null;
     t.ai_history_session = null;
+    t.memory_center_session = null;
     t.skill_center_session = null;
     t.port_forwarding_session = null;
     t.copilot_session = null;
@@ -1774,6 +2033,17 @@ pub fn restoreTab(
     t.tmux_name_len = 0;
     t.copilot_visible = false;
     t.terminal_icon = null;
+
+    // Restore the Copilot sidebar conversation in place, if any. Missing record
+    // (deleted / corrupt store) → silent fallback to an empty sidebar.
+    if (snap.copilot_session_id) |sid| {
+        if (g_copilot_restore_hook) |hook| {
+            if (hook(sid)) |session| {
+                t.copilot_session = session;
+                t.copilot_visible = snap.copilot_visible;
+            }
+        }
+    }
     applyRestoredTabMetadata(t, snap);
 
     g_tabs[g_tab_count] = t;
@@ -1792,8 +2062,10 @@ fn applyRestoredTabMetadata(t: *TabState, snap: *const session_persist.TabSnap) 
             session.setTitle(title);
         },
         .ai_history => {},
+        .memory_center => {},
         .skill_center => {},
         .port_forwarding => {},
+        .settings => {},
     }
 }
 
@@ -1994,6 +2266,45 @@ test "tab: restoreTab skips an ai tab when no restore hook is installed" {
     try std.testing.expect(!restoreTab(std.testing.allocator, &snap, 80, 24, .block, false));
 }
 
+test "tab: spawnAiChatSession creates active ai chat tab from owned session" {
+    const allocator = std.testing.allocator;
+    resetTestTabGlobals();
+    defer {
+        for (0..g_tab_count) |idx| {
+            if (g_tabs[idx]) |tab_state| {
+                tab_state.deinit(allocator);
+                allocator.destroy(tab_state);
+                g_tabs[idx] = null;
+            }
+        }
+        resetTestTabGlobals();
+    }
+
+    const session = try ai_chat.Session.init(allocator, "Copilot", "https://example.test", "k", "model", "system", "disabled", "low", "false", "true");
+    try std.testing.expect(spawnAiChatSession(allocator, session));
+    try std.testing.expectEqual(@as(usize, 1), g_tab_count);
+    try std.testing.expect(activeAiChat() != null);
+    try std.testing.expectEqualStrings("Copilot", activeAiChat().?.title());
+}
+
+test "tab: spawnAiChatSession returns false without taking ownership when tabs are full" {
+    const allocator = std.testing.allocator;
+    resetTestTabGlobals();
+    defer resetTestTabGlobals();
+
+    const session = try ai_chat.Session.init(allocator, "Copilot", "https://example.test", "k", "model", "system", "disabled", "low", "false", "true");
+
+    g_tab_count = MAX_TABS;
+    active_tab_state.g_active_tab = 3;
+
+    try std.testing.expect(!spawnAiChatSession(allocator, session));
+    try std.testing.expectEqual(@as(usize, MAX_TABS), g_tab_count);
+    try std.testing.expectEqual(@as(usize, 3), active_tab_state.g_active_tab);
+    try std.testing.expect(session.history_on_change == null);
+
+    session.deinit();
+}
+
 test "tab: restoreTab routes ai_history through the restore hook" {
     resetTestTabGlobals();
     const previous_hook = g_ai_history_restore_hook;
@@ -2123,7 +2434,6 @@ test "tab: restored title override applies to focused surface" {
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
 
     var tree = try SplitTree.init(allocator, &surface);
     defer tree.deinit();
@@ -2615,7 +2925,6 @@ test "tab: splitIntoPreview adds a preview leaf and grows the tree by 2 nodes" {
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
 
     const t = try gpa.create(TabState);
     t.* = .{
@@ -2700,7 +3009,6 @@ test "tab: focusPreviewPane selects the just-opened preview leaf" {
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
 
     const t = try gpa.create(TabState);
     t.* = .{
@@ -2770,7 +3078,6 @@ test "tab: closeFocusedSplit closes a focused preview and refocuses the terminal
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
 
     const t = try gpa.create(TabState);
     t.* = .{
@@ -2829,7 +3136,6 @@ test "tab: closeFocusedSplit on the last terminal focuses a preview leaf, not a 
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
 
     const t = try gpa.create(TabState);
     t.* = .{
@@ -2889,7 +3195,6 @@ test "tab: previewForReuse matches preview panes by kind" {
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
 
     const t = try gpa.create(TabState);
     t.* = .{
@@ -2969,7 +3274,6 @@ test "tab: previewForReuse prefers the focused same-kind preview" {
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
 
     const t = try gpa.create(TabState);
     t.* = .{
@@ -3033,7 +3337,6 @@ test "tab: splitIntoPreviewStacked stacks below the existing preview column" {
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
 
     const t = try gpa.create(TabState);
     t.* = .{
@@ -3111,7 +3414,6 @@ test "tab: splitIntoPreviewStacked remaps focus when the split target is focused
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
 
     const t = try gpa.create(TabState);
     t.* = .{

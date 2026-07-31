@@ -14,6 +14,7 @@ pub const Server = struct {
     pub fn stop(_: *Server) void {}
     pub fn destroy(_: *Server) void {}
     pub fn tryTakeCwd(_: *Server) ?[]u8 { return null; }
+    pub fn tryTakeActivate(_: *Server) bool { return false; }
 };
 
 pub fn forwardCwd(_: std.mem.Allocator, _: ?[]const u8) bool {

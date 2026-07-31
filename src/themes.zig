@@ -1,6 +1,7 @@
 /// Embedded themes shipped with WispTerm.
 ///
-/// All 453 themes from Ghostty (https://github.com/ghostty-org/ghostty)
+/// All 453 themes from Ghostty (https://github.com/ghostty-org/ghostty), plus
+/// One Dark Pro from https://github.com/Binaryify/OneDark-Pro,
 /// are embedded at compile time. User themes in the app config themes directory
 /// take priority over embedded themes.
 const std = @import("std");
@@ -302,6 +303,7 @@ pub const entries = [_]Entry{
     .{ .name = "Oceanic Next", .data = @embedFile("themes/Oceanic Next") },
     .{ .name = "Ollie", .data = @embedFile("themes/Ollie") },
     .{ .name = "One Dark Two", .data = @embedFile("themes/One Dark Two") },
+    .{ .name = "One Dark Pro", .data = @embedFile("themes/One Dark Pro") },
     .{ .name = "One Double Dark", .data = @embedFile("themes/One Double Dark") },
     .{ .name = "One Double Light", .data = @embedFile("themes/One Double Light") },
     .{ .name = "One Half Dark", .data = @embedFile("themes/One Half Dark") },
@@ -472,4 +474,10 @@ pub fn get(name: []const u8) ?[]const u8 {
         if (std.mem.eql(u8, entry.name, name)) return entry.data;
     }
     return null;
+}
+
+test "One Dark Pro is an embedded theme" {
+    const theme = get("One Dark Pro") orelse return error.ThemeNotFound;
+    try std.testing.expect(std.mem.indexOf(u8, theme, "background = #282c34") != null);
+    try std.testing.expect(std.mem.indexOf(u8, theme, "palette = 4=#4aa5f0") != null);
 }

@@ -1,63 +1,40 @@
-//! Surface PTY-output bookkeeping unit tests: agent-detection throttling and
-//! the dirty/wakeup dedupe used by termio/ReadThread. Follows the
-//! kitty_graphics_unit.zig pattern (stack Surface with only the touched fields
-//! initialized) so these run headless in the full app test binary.
+//! Surface PTY-output bookkeeping unit tests: authoritative OSC 7748 agent
+//! markers and the dirty/wakeup dedupe used by termio/ReadThread.
 const std = @import("std");
 const Surface = @import("Surface.zig");
-const agent_detect_throttle = @import("agent_detect_throttle.zig");
-
-const interval = agent_detect_throttle.Throttle.interval_ms;
 
 fn minimalAgentSurface(surface: *Surface) void {
+    surface.allocator = std.testing.allocator;
     surface.title_override_len = 0;
     surface.osc7_title_len = 0;
     surface.window_title_len = 0;
     surface.agent_detection = .{};
-    surface.agent_recent_output_len = 0;
-    surface.agent_throttle = .{};
+    surface.agent_osc_active = false;
+    surface.wispterm_image_osc_state = .ground;
+    surface.wispterm_image_osc_buf = .empty;
+    surface.wispterm_agent_osc_buf_len = 0;
 }
 
-test "noteAgentOutputAt: first chunk detects immediately" {
+test "feedVtWithWispTermImageFallback: OSC 7748 marker sets agent detection" {
     var surface: Surface = undefined;
     minimalAgentSurface(&surface);
+    defer surface.wispterm_image_osc_buf.deinit(std.testing.allocator);
 
-    surface.noteAgentOutputAt("claude code session\n", 1000);
-    try std.testing.expectEqual(.claude_code, surface.agent_detection.app);
+    surface.feedVtWithWispTermImageFallback("\x1b]7748;wispterm-agent;state=waiting_approval;app=codex\x07");
+    try std.testing.expectEqual(.codex, surface.agent_detection.app);
+    try std.testing.expectEqual(.waiting_approval, surface.agent_detection.state);
+    try std.testing.expectEqual(@as(u8, 100), surface.agent_detection.confidence);
+    try std.testing.expect(surface.agent_osc_active);
 }
 
-test "noteAgentOutputAt: chunks within the interval defer detection, flush catches up" {
+test "setTitleOverride: legacy title text does not set agent detection" {
     var surface: Surface = undefined;
     minimalAgentSurface(&surface);
+    defer surface.wispterm_image_osc_buf.deinit(std.testing.allocator);
 
-    surface.noteAgentOutputAt("claude code session\n", 1000);
-    try std.testing.expectEqual(.claude_code, surface.agent_detection.app);
-
-    // A flood chunk that overwrites the whole ring with plain text arrives
-    // inside the throttle interval: the ring updates but detection is deferred.
-    const flood = "x" ** 4200;
-    surface.noteAgentOutputAt(flood, 1000 + interval - 1);
-    try std.testing.expectEqual(.claude_code, surface.agent_detection.app);
-    try std.testing.expect(surface.agent_throttle.pendingPeek());
-
-    // Too early: flush refuses, detection still stale.
-    try std.testing.expect(!surface.flushAgentDetection(1000 + interval - 1));
-
-    // After the interval the deferred detection runs on the current ring.
-    try std.testing.expect(surface.flushAgentDetection(1000 + 2 * interval));
+    surface.setTitleOverride("[ * ] OpenAI Codex");
     try std.testing.expectEqual(.none, surface.agent_detection.app);
-    try std.testing.expect(!surface.agent_throttle.pendingPeek());
-}
-
-test "noteAgentOutputAt: detection resumes once the interval has elapsed" {
-    var surface: Surface = undefined;
-    minimalAgentSurface(&surface);
-
-    const flood = "x" ** 4200;
-    surface.noteAgentOutputAt(flood, 1000);
-    try std.testing.expectEqual(.none, surface.agent_detection.app);
-
-    surface.noteAgentOutputAt("claude code session\n", 1000 + interval);
-    try std.testing.expectEqual(.claude_code, surface.agent_detection.app);
+    try std.testing.expectEqual(.none, surface.agent_detection.state);
 }
 
 test "markOutputDirty: only the first mark since the UI consumed it requests a wakeup" {

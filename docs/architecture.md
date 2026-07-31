@@ -3,12 +3,14 @@
 WispTerm is split into a platform-agnostic **core** and a per-platform **host**.
 This document names that seam as an explicit contract so it stays a deliberate
 boundary rather than an implicit convention. It is the reference for the
-portability work tracked in [`TODO.md`](../TODO.md).
+portability work tracked in [`ROADMAP.md`](../ROADMAP.md) and current platform
+limitations tracked in [`KNOWN_ISSUES.md`](../KNOWN_ISSUES.md).
 
 WispTerm follows Ghostty's core/host split: Ghostty keeps terminal behavior in a
 platform-agnostic core and drives it from native hosts (AppKit on macOS, GTK on
 Linux) that own their own event loops and supply platform services. WispTerm's
-core is the same idea with a Win32 host today and macOS/Linux hosts planned.
+core follows the same idea with a primary Win32 host, an AppKit macOS host, and
+an experimental Linux host.
 
 ## The three layers
 
@@ -25,10 +27,16 @@ core is the same idea with a Win32 host today and macOS/Linux hosts planned.
    platform runtime.
    - `src/AppWindow.zig` — window-level tabs, splits, and the render/input
      routing that drives surfaces. Platform-neutral; calls the host interface.
+     It is an **integration layer** (see below), not terminal core: it
+     coordinates features but must not own their state. Its orchestration is
+     being decomposed into `src/appwindow/*` (aggregated state structs, the
+     `UiEffect` invalidation boundary, and feature bridges) — see the
+     structural-debt governance in
+     [docs/decoupling-guide.md §8](decoupling-guide.md#8-structural-debt-governance-axis-b-in-practice).
    - `src/platform/window_backend.zig` — **the host interface** (see below).
    - `src/apprt/win32.zig` — the concrete Win32 host runtime behind the
-     `window_backend` facade. A macOS host adds an AppKit runtime here; a Linux
-     host adds a GTK (or other toolkit) runtime.
+     `window_backend` facade. The macOS host uses AppKit, and the experimental
+     Linux host uses SDL3.
 
 3. **Platform services** — narrow capability interfaces the host/core use for
    OS facilities. Each lives in `src/platform/` as `<cap>.zig` (the interface)
@@ -39,22 +47,25 @@ core is the same idea with a Win32 host today and macOS/Linux hosts planned.
 
 `window_backend.zig` is the named surface/window contract a host implements. It
 exposes an opaque `Window` type and forwards a narrow set of operations to the
-backend selected for the target OS (`window_backend_windows.zig` today,
-`window_backend_unsupported.zig` otherwise). A new host implements a
+backend selected for the target OS (`window_backend_windows.zig`,
+`window_backend_macos.zig`, or `window_backend_linux.zig` where available, with
+unsupported stubs only for missing capabilities). A new host implements a
 `window_backend_<platform>.zig` whose `Window` satisfies these operation groups:
 
 - **Lifecycle** — `create`, `destroy`, `setEventHandlers`, `showVisible` /
   `showHidden`, `closeRequested` / `clearCloseRequested`.
 - **Event loop** — `pollEvents` pumps the OS event loop once; the host owns the
-  loop (Win32 message loop today; AppKit/GTK own their own). The core calls
+  loop (Win32 message loop, AppKit run loop, SDL3 event pump). The core calls
   `pollEvents` each frame and drains the input queue.
 - **Input event queue** — `popKeyEvent`, `popCharEvent`, `popMouseButtonEvent`,
   and related drains return platform-neutral events typed by
   `src/platform/input_events.zig` (backend-neutral `key_*` codes, not raw OS
   keycodes). IME composition goes through `setImeCaret` / `imePreeditText`.
 - **Rendering surface** — `swapBuffers`, `framebufferSize`, `clientSize`. The
-  GPU backend (OpenGL on Windows, Metal on macOS, OpenGL/Vulkan on Linux) is
-  selected behind the renderer and wired to this surface.
+  GPU backend is selected behind the renderer and wired to this surface. The
+  target matrix is Direct3D 11/DXGI on Windows, Metal on macOS, and OpenGL on
+  Linux. Windows defaults to native D3D11 and publishes a separate OpenGL
+  compatibility package.
 - **Window state** — DPI/content scale (`dpi`, `effectiveDpi`,
   `consumeDpiChanged`), geometry (`clientRect`, `windowRect`,
   `nearestMonitorWorkArea`, `setOuterFrame`), and chrome state (fullscreen,
@@ -107,9 +118,83 @@ Scope note: these platform-leakage checks apply to the desktop app, build, and
 shared Zig code. The `remote/` web console and packaged `plugins/` content are
 out of scope.
 
+## Internal-architecture invariants
+
+Beyond the platform seam, a second set of invariants keeps the core itself
+maintainable. **Cohesion and coupling — not file length — are the criteria**: a
+file should own one coherent responsibility with explicit state ownership. Large
+files are acceptable when they stay cohesive (Ghostty ships 10k–15k-line core
+files that do); the smell is tangled responsibility, not size. These are
+enforced by source-scan ratchet tests in `src/source_guards/` that freeze
+today's structural debt so it can only **shrink**:
+
+- **`file_size_guard`** — no `src/**/*.zig` over 10,000 lines (a runaway
+  backstop; also `zig build check-sizes`).
+- **`global_state_guard`** — the top-level `g_*` / `threadlocal` count in
+  `AppWindow.zig` / `input.zig` / `renderer/overlays.zig` /
+  `assistant/conversation/session.zig` may only shrink; new state belongs in an
+  explicit state struct.
+- **`import_hub_guard`** — `AppWindow.zig`'s `pub const X = @import(...)`
+  re-export count may only shrink; import the real module directly, not via
+  `AppWindow.X`.
+- **`side_effect_guard`** — direct `g_force_rebuild` / `g_cells_valid` writes in
+  those files may only shrink; route UI invalidation through the `UiEffect`
+  boundary (`AppWindow.applyUiEffect`).
+
+Because `test-full` is a superset of `test`, these gate the pre-merge build. The
+cohesion criterion, the remediation roadmap, and the layer model live in
+[docs/decoupling-guide.md §8](decoupling-guide.md#8-structural-debt-governance-axis-b-in-practice);
+the contributor-facing summary is in [`AGENTS.md`](../AGENTS.md).
+
+## Integration layer vs feature domains
+
+A second boundary cuts *across* the core, orthogonal to the platform seam: the
+distinction between the **integration layer** that coordinates features and the
+**feature domains** that own them. The watched integration/session files still
+carry historical boundary debt, which is why they carry the ratchets.
+
+- **Integration layer** — `src/AppWindow.zig`, `src/input.zig`, and
+  `src/renderer/overlays.zig`. These *coordinate*: AppWindow assembles modules
+  and routes render/input, `input.zig` dispatches keyboard/mouse events to
+  whoever should handle them, and `overlays.zig` is the overlay facade/registry.
+  They are **not** the terminal "core" and must **not own feature state**. When
+  they hold a feature's `g_*` globals or reach into a feature's internals, that
+  is the entanglement the ratchets are freezing — not a property of being a host.
+
+- **Feature domains** — each owns its own state, query/action API, and tests.
+  A domain is responsible for its own behavior; the integration layer only wires
+  it in and asks it to do things. The current AI/agent ownership split is:
+  `assistant/` owns WispTerm's Assistant/Copilot conversation experience;
+  `agent/` owns WispTerm's own agent permissions, config, memory, file editing,
+  and conversation history; `agent_tools/` owns model tool-call runtime wrappers;
+  and `terminal_agents/` owns adapters for external terminal agent applications
+  such as Claude Code, Codex, Reasonix, and Subagent. In particular,
+  `terminal_agents/sessions/` owns discovery, transcript preview, and resume
+  commands for those external terminal agents. Other feature domains include
+  `weixin/*`, `skill/`, `file_explorer.zig`, `tmux/*`, and the remote
+  client/sync code.
+
+Guidance for new code (these keep the boundary from re-tangling):
+
+- **Feature domains should not depend on `AppWindow`.** They expose their own
+  API and receive what they need explicitly; they do not reach back through the
+  window for context.
+- **`input.zig` only dispatches.** It decides *who* handles an event and returns
+  a `UiEffect`; it must not read a feature's internal `g_*` state to make that
+  decision.
+- **Overlays get capabilities through a Host/Context**, not by importing
+  `AppWindow.zig` (only narrow types such as `appwindow/ui_effect.zig`).
+- Prefer **explicit context structs**, **feature-owned query/action APIs**, and
+  **`UiEffect` returns** over scattered globals and direct dirty writes.
+- **Each time you touch a monolith, lower the matching source-guard ratchet**
+  (`global_state_guard` / `import_hub_guard` / `side_effect_guard`) — moving one
+  case to the right pattern is how the boundary actually converges. The layer
+  model that names these reverse edges is
+  [docs/decoupling-guide.md §8.5](decoupling-guide.md#85-the-layer-model).
+
 ## Implementing a new host
 
-To bring up a platform (see Phase 2 in [`TODO.md`](../TODO.md)):
+To bring up a platform (see [`ROADMAP.md`](../ROADMAP.md)):
 
 1. Add the native host runtime under `src/apprt/` and a
    `window_backend_<platform>.zig` that satisfies the host interface above
@@ -117,7 +202,7 @@ To bring up a platform (see Phase 2 in [`TODO.md`](../TODO.md)):
 2. Implement the platform-service impls behind the existing facades
    (`<cap>_posix.zig` or a new `<cap>_<platform>.zig`): PTY/process, fonts,
    clipboard, file dialogs, notifications, config/theme dirs, etc.
-3. Wire the renderer's GPU backend to the host's surface (Metal on macOS;
-   OpenGL or Vulkan on Linux).
+3. Wire the renderer's GPU backend to the host's surface (D3D11/DXGI on
+   Windows, Metal on macOS, OpenGL on Linux).
 4. Flip the build target's feature gates in `build.zig` once the host backend is
    real, keeping Windows as the default development target.

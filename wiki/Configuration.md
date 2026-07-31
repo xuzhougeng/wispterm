@@ -38,6 +38,8 @@ theme = Poimandres
 window-height = 32
 window-width = 120
 quake-mode = false
+# Windows Git Bash example:
+# shell = "C:\Program Files\Git\bin\bash.exe" --login -i
 keybind = global:ctrl+backquote=toggle_quake
 keybind = ctrl+shift+p=toggle_command_palette
 scrollback-limit = 10000000
@@ -50,6 +52,9 @@ config-file = extra.conf
 auto-update-check = true
 focus-follows-mouse = false
 remote-enabled = false
+feishu-enabled = false
+feishu-app-id = cli_xxx
+feishu-app-secret = your-app-secret
 ```
 
 ## Key reference
@@ -69,10 +74,11 @@ remote-enabled = false
 | `window-height` | `0` (auto) | Initial height in cells (min 4, 0 = auto 80×24) |
 | `window-width` | `0` (auto) | Initial width in cells (min 10, 0 = auto 80×24) |
 | `quake-mode` | `false` | Start as a Quake-style drop-down terminal; `toggle_quake` hides/shows it while preserving state |
+| `shell` | OS default | Shell command for new local sessions. Windows aliases: `cmd`, `powershell`, `pwsh`, `wsl`; POSIX examples: `sh`, `zsh`, `fish`. You can also use a custom command line such as `"C:\Program Files\Git\bin\bash.exe" --login -i` |
 | `keybind` | defaults | Configure an app-level shortcut (repeatable). Syntax `[global:]modifier+key=action`; `keybind = clear` removes all defaults |
 | `scrollback-limit` | `10000000` | Scrollback buffer limit in bytes |
 | `focus-follows-mouse` | `false` | Focus the panel under the mouse without clicking |
-| `url-open-mode` | `embedded` | Where web URLs open: `embedded` uses the right-side browser panel when available (Windows only); `system-browser` always uses the system default browser. SSH loopback URLs keep local port forwards alive either way |
+| `url-open-mode` | `embedded` | Where web URLs open: `embedded` uses the right-side browser panel when available (WebView2 on Windows, WKWebView on macOS); `system-browser` always uses the system default browser. SSH loopback URLs keep local port forwards alive either way |
 | `restore-tabs-on-startup` | `false` | Persist tab/split layout (`session.json`) on close and rebuild on next launch. SSH passwords are never persisted; reconnects re-prompt. `--cwd` overrides skip restore |
 | `auto-update-check` | `true` | Check GitHub Releases after startup and prompt when a newer version exists |
 | `config-file` | *(none)* | Include another config file (prefix `?` to make optional) |
@@ -88,6 +94,10 @@ remote-enabled = false
 | `remote-server-fingerprint` | *(none)* | Expected relay fingerprint for server identity pinning |
 | `remote-device-name` | *(none)* | Friendly device name sent with the WispTerm pairing |
 | `remote-session-key` | *(none)* | Fixed remote session key base; later concurrent instances use `_1`, `_2`, … |
+| `feishu-enabled` | `false` | Enable the Feishu/Lark long-connection channel. Configure credentials from the command center by typing `feishu`, or set the keys below; restart required |
+| `feishu-app-id` | *(none)* | Feishu app ID (`cli_...`). Falls back to `FEISHU_APP_ID` when empty |
+| `feishu-app-secret` | *(none)* | Feishu app secret. Falls back to `FEISHU_APP_SECRET` when empty; keep it private |
+| `feishu-allowed-user` | *(none)* | Optional Feishu `open_id` allowed to control WispTerm. Empty means no explicit restriction; the first sender is auto-bound as owner |
 | `ssh-legacy-algorithms` | `false` | Append compatibility options (ssh-rsa, old KEX, CBC) for legacy SSH servers — see [[SSH-Remote-Development]] |
 | `copy-on-select` | `false` | Copy the terminal selection automatically — see [[AI-Copilot]] |
 | `right-click-action` | *(none)* | `paste`, or `copy-or-paste` (copy when a selection exists, else paste) |
@@ -108,6 +118,31 @@ to the same config file; a few options (such as language) apply after a restart.
 The **Restore default settings** row resets the options the page manages, after
 a confirmation dialog. It clears only the keys exposed on the settings page — it
 leaves Quake mode, your saved AI profiles, and custom `keybind` lines untouched.
+
+## Default shell and Git Bash
+
+Set `shell` in your config file to choose what new local shell sessions launch.
+Existing tabs keep their current process; save the config, wait for hot reload
+or restart WispTerm, then open a new session.
+
+On Windows, Git Bash should be configured as a command line with double quotes
+around the executable path:
+
+```text
+shell = "C:\Program Files\Git\bin\bash.exe" --login -i
+```
+
+Do not use single quotes, and do not write Windows backslashes as `\\`. WispTerm
+config is not JSON, so single quotes and doubled backslashes are treated as
+literal characters:
+
+```text
+# Wrong
+shell = 'C:\\Program Files\\Git\\bin\\bash.exe'
+```
+
+That wrong form can make Windows look for an executable whose path includes the
+quote characters, which shows up as `Failed to create Surface for new tab`.
 
 ## OpenSSH config import
 

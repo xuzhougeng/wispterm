@@ -6,16 +6,15 @@ const std = @import("std");
 const app_metadata = @import("app_metadata.zig");
 
 comptime {
-    _ = @import("ai_chat_composer_layout.zig");
+    _ = @import("assistant/conversation/composer_layout.zig");
     _ = @import("appwindow/thread_message.zig");
-    _ = @import("browser_url.zig");
-    _ = @import("command_center_state.zig");
-    _ = @import("preview_token.zig");
+    _ = @import("browser/url.zig");
+    _ = @import("command/center_state.zig");
+    _ = @import("preview/token.zig");
     _ = @import("release_package.zig");
     _ = @import("scrollbar_model.zig");
     _ = @import("selection_unit.zig");
-    _ = @import("ssh_prompt.zig");
-    _ = @import("system_browser.zig");
+    _ = @import("ssh/prompt.zig");
     _ = @import("update_check.zig");
     _ = @import("update_install.zig");
     _ = @import("platform/webview.zig");

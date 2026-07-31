@@ -1,0 +1,216 @@
+const std = @import("std");
+
+pub const FEISHU_FIELD_COUNT: usize = 2; // text fields: app_id, app_secret (buffer count)
+pub const FEISHU_FIELD_MAX: usize = 256;
+
+// Form rows: 0 = enabled, 1 = international (Lark), 2 = scan-create app,
+// 3 = app_id, 4 = app_secret, 5 = Save.
+pub const FEISHU_ROW_COUNT: usize = 6;
+pub const ENABLED_ROW: usize = 0;
+pub const INTERNATIONAL_ROW: usize = 1;
+pub const SCAN_ROW: usize = 2;
+pub const APP_ID_ROW: usize = 3;
+pub const APP_SECRET_ROW: usize = 4;
+pub const SAVE_ROW: usize = FEISHU_ROW_COUNT - 1;
+
+pub const FeishuField = enum(usize) {
+    app_id = 0,
+    app_secret = 1,
+};
+
+/// 凭证表单的固定缓冲区状态(镜像 assistant_profiles.State 的最小子集)。
+/// focus: 0 = 启用;1 = 国际版;2 = 扫码创建;3 = app_id;4 = app_secret;5 = Save 行。
+pub const State = struct {
+    enabled: bool = false,
+    international: bool = false,
+    bufs: [FEISHU_FIELD_COUNT][FEISHU_FIELD_MAX]u8 = undefined,
+    lens: [FEISHU_FIELD_COUNT]usize = .{0} ** FEISHU_FIELD_COUNT,
+    focus: usize = 0,
+
+    pub fn reset(self: *State) void {
+        self.lens = .{0} ** FEISHU_FIELD_COUNT;
+        self.focus = 0;
+        self.enabled = false;
+        self.international = false;
+    }
+
+    pub fn value(self: *const State, field: FeishuField) []const u8 {
+        const i = @intFromEnum(field);
+        return self.bufs[i][0..self.lens[i]];
+    }
+
+    pub fn setValue(self: *State, field: FeishuField, text: []const u8) void {
+        const i = @intFromEnum(field);
+        const n = @min(text.len, FEISHU_FIELD_MAX);
+        @memcpy(self.bufs[i][0..n], text[0..n]);
+        self.lens[i] = n;
+    }
+
+    pub fn append(self: *State, field: FeishuField, bytes: []const u8) void {
+        const i = @intFromEnum(field);
+        for (bytes) |b| {
+            if (self.lens[i] >= FEISHU_FIELD_MAX) return; // 截断,不溢出
+            self.bufs[i][self.lens[i]] = b;
+            self.lens[i] += 1;
+        }
+    }
+
+    pub fn backspace(self: *State, field: FeishuField) void {
+        const i = @intFromEnum(field);
+        if (self.lens[i] == 0) return;
+        var n = self.lens[i] - 1;
+        while (n > 0 and (self.bufs[i][n] & 0xC0) == 0x80) : (n -= 1) {} // 退一个 UTF-8 码点
+        self.lens[i] = n;
+    }
+
+    /// 焦点所在行对应的文本字段(仅 app_id/app_secret 行),开关行/SCAN/Save 行返回 null。
+    pub fn focusedField(self: *const State) ?FeishuField {
+        return switch (self.focus) {
+            APP_ID_ROW => .app_id,
+            APP_SECRET_ROW => .app_secret,
+            else => null, // ENABLED / INTERNATIONAL / SCAN / SAVE 行都没有文本字段
+        };
+    }
+
+    pub fn toggleEnabled(self: *State) void {
+        self.enabled = !self.enabled;
+    }
+
+    /// Flips the bool for whichever toggle row is focused (enabled / international).
+    /// No-op on the text-field rows and the Save row.
+    pub fn toggleFocusedBool(self: *State) void {
+        switch (self.focus) {
+            ENABLED_ROW => self.enabled = !self.enabled,
+            INTERNATIONAL_ROW => self.international = !self.international,
+            else => {},
+        }
+    }
+
+    pub fn focusNextRow(self: *State) void {
+        if (self.focus < FEISHU_ROW_COUNT - 1) self.focus += 1; // 上限 = Save 行
+    }
+
+    pub fn focusPrevRow(self: *State) void {
+        if (self.focus > 0) self.focus -= 1;
+    }
+};
+
+test "append then value round-trips" {
+    var s = State{};
+    s.append(.app_id, "cli_abc123");
+    try std.testing.expectEqualStrings("cli_abc123", s.value(.app_id));
+    try std.testing.expectEqualStrings("", s.value(.app_secret));
+}
+
+test "append truncates at FEISHU_FIELD_MAX without overflow" {
+    var s = State{};
+    const big = "x" ** (FEISHU_FIELD_MAX + 50);
+    s.append(.app_secret, big);
+    try std.testing.expectEqual(FEISHU_FIELD_MAX, s.value(.app_secret).len);
+}
+
+test "backspace drops one byte and is a no-op when empty" {
+    var s = State{};
+    s.append(.app_id, "ab");
+    s.backspace(.app_id);
+    try std.testing.expectEqualStrings("a", s.value(.app_id));
+    s.backspace(.app_id);
+    s.backspace(.app_id); // empty -> no-op, no underflow
+    try std.testing.expectEqualStrings("", s.value(.app_id));
+}
+
+test "backspace drops a whole multibyte codepoint" {
+    var s = State{};
+    s.append(.app_id, "a\u{4f60}"); // "a你"
+    s.backspace(.app_id);
+    try std.testing.expectEqualStrings("a", s.value(.app_id));
+}
+
+test "setValue replaces and truncates" {
+    var s = State{};
+    s.append(.app_id, "old");
+    s.setValue(.app_id, "new-id");
+    try std.testing.expectEqualStrings("new-id", s.value(.app_id));
+    const big = "y" ** (FEISHU_FIELD_MAX + 10);
+    s.setValue(.app_secret, big);
+    try std.testing.expectEqual(FEISHU_FIELD_MAX, s.value(.app_secret).len);
+}
+
+test "focus navigation clamps over enabled, international, fields, and Save row" {
+    var s = State{};
+    try std.testing.expectEqual(@as(usize, 0), s.focus);
+    s.focusPrevRow(); // clamp at enabled row
+    try std.testing.expectEqual(ENABLED_ROW, s.focus);
+    s.focusNextRow(); // international
+    s.focusNextRow(); // scan
+    s.focusNextRow(); // app_id
+    s.focusNextRow(); // app_secret
+    s.focusNextRow(); // Save row
+    try std.testing.expectEqual(SAVE_ROW, s.focus);
+    s.focusNextRow(); // clamp at Save row
+    try std.testing.expectEqual(SAVE_ROW, s.focus);
+}
+
+test "SCAN_ROW sits between international and app_id, has no field and no toggle" {
+    try std.testing.expectEqual(@as(usize, 2), SCAN_ROW);
+    try std.testing.expectEqual(@as(usize, 3), APP_ID_ROW);
+    try std.testing.expectEqual(@as(usize, 6), FEISHU_ROW_COUNT);
+
+    var s = State{};
+    s.focus = SCAN_ROW;
+    try std.testing.expect(s.focusedField() == null); // 不是文本字段
+    s.toggleFocusedBool(); // 不是 toggle 行 → 不动 enabled/international
+    try std.testing.expect(!s.enabled and !s.international);
+}
+
+test "focusedField maps only text rows to fields" {
+    var s = State{};
+    s.focus = ENABLED_ROW;
+    try std.testing.expect(s.focusedField() == null);
+    s.focus = INTERNATIONAL_ROW;
+    try std.testing.expect(s.focusedField() == null);
+    s.focus = APP_ID_ROW;
+    try std.testing.expect(s.focusedField() == .app_id);
+    s.focus = APP_SECRET_ROW;
+    try std.testing.expect(s.focusedField() == .app_secret);
+    s.focus = SAVE_ROW;
+    try std.testing.expect(s.focusedField() == null);
+}
+
+test "toggleFocusedBool flips enabled or international by focused row, no-op elsewhere" {
+    var s = State{};
+    s.focus = ENABLED_ROW;
+    s.toggleFocusedBool();
+    try std.testing.expect(s.enabled and !s.international);
+    s.focus = INTERNATIONAL_ROW;
+    s.toggleFocusedBool();
+    try std.testing.expect(s.enabled and s.international);
+    // Field / Save rows must not flip either bool.
+    s.focus = APP_ID_ROW;
+    s.toggleFocusedBool();
+    s.focus = SAVE_ROW;
+    s.toggleFocusedBool();
+    try std.testing.expect(s.enabled and s.international);
+}
+
+test "toggleEnabled flips the enabled flag" {
+    var s = State{};
+    try std.testing.expect(!s.enabled);
+    s.toggleEnabled();
+    try std.testing.expect(s.enabled);
+    s.toggleEnabled();
+    try std.testing.expect(!s.enabled);
+}
+
+test "reset clears lengths, focus, enabled, and international" {
+    var s = State{};
+    s.append(.app_id, "x");
+    s.focus = SAVE_ROW;
+    s.enabled = true;
+    s.international = true;
+    s.reset();
+    try std.testing.expectEqual(@as(usize, 0), s.value(.app_id).len);
+    try std.testing.expectEqual(@as(usize, 0), s.focus);
+    try std.testing.expect(!s.enabled);
+    try std.testing.expect(!s.international);
+}

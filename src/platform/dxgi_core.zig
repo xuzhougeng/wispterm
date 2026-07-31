@@ -51,6 +51,7 @@ fn hexByte(comptime pair: *const [2]u8) u8 {
 
 // Interface IDs the presenter queries.
 pub const IID_IDXGIDevice = guid("54ec77fa-1377-44e6-8c32-88fd5f44c84c");
+pub const IID_IDXGIAdapter1 = guid("29038f61-3839-4626-91fd-086879011a05");
 pub const IID_IDXGIFactory1 = guid("770aae78-f26f-4dba-a829-253c83d1b387");
 pub const IID_IDXGIFactory2 = guid("50c83a1c-e072-4c48-87b0-3630fa36a6d0");
 pub const IID_IDXGIResource = guid("035f3ab4-482e-4e50-b41f-8a7f8bd8960b");
@@ -122,7 +123,107 @@ pub const D3D11_MAPPED_SUBRESOURCE = extern struct {
     depth_pitch: u32,
 };
 
+/// d3d11.h D3D11_BOX.
+pub const D3D11_BOX = extern struct {
+    left: u32,
+    top: u32,
+    front: u32,
+    right: u32,
+    bottom: u32,
+    back: u32,
+};
+
+/// windef.h RECT / D3D11_RECT.
+pub const D3D11_RECT = extern struct {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+};
+
+/// d3d11.h D3D11_INPUT_ELEMENT_DESC.
+pub const D3D11_INPUT_ELEMENT_DESC = extern struct {
+    semantic_name: [*:0]const u8,
+    semantic_index: u32,
+    format: u32,
+    input_slot: u32,
+    aligned_byte_offset: u32,
+    input_slot_class: u32,
+    instance_data_step_rate: u32,
+};
+
+/// d3d11.h D3D11_SAMPLER_DESC.
+pub const D3D11_SAMPLER_DESC = extern struct {
+    filter: u32,
+    address_u: u32,
+    address_v: u32,
+    address_w: u32,
+    mip_lod_bias: f32,
+    max_anisotropy: u32,
+    comparison_func: u32,
+    border_color: [4]f32,
+    min_lod: f32,
+    max_lod: f32,
+};
+
+/// d3d11.h D3D11_RENDER_TARGET_BLEND_DESC.
+pub const D3D11_RENDER_TARGET_BLEND_DESC = extern struct {
+    blend_enable: u32,
+    src_blend: u32,
+    dest_blend: u32,
+    blend_op: u32,
+    src_blend_alpha: u32,
+    dest_blend_alpha: u32,
+    blend_op_alpha: u32,
+    render_target_write_mask: u8,
+};
+
+/// d3d11.h D3D11_BLEND_DESC.
+pub const D3D11_BLEND_DESC = extern struct {
+    alpha_to_coverage_enable: u32,
+    independent_blend_enable: u32,
+    render_target: [8]D3D11_RENDER_TARGET_BLEND_DESC,
+};
+
+/// d3d11.h D3D11_RASTERIZER_DESC.
+pub const D3D11_RASTERIZER_DESC = extern struct {
+    fill_mode: u32,
+    cull_mode: u32,
+    front_counter_clockwise: u32,
+    depth_bias: i32,
+    depth_bias_clamp: f32,
+    slope_scaled_depth_bias: f32,
+    depth_clip_enable: u32,
+    scissor_enable: u32,
+    multisample_enable: u32,
+    antialiased_line_enable: u32,
+};
+
+pub const HRESULT = i32;
+
+pub fn hresult(comptime value: u32) HRESULT {
+    return @bitCast(@as(u32, value));
+}
+
+pub fn hresultBits(value: HRESULT) u32 {
+    return @bitCast(value);
+}
+
+pub const S_OK: HRESULT = 0;
+pub const DXGI_ERROR_INVALID_CALL: HRESULT = hresult(0x887A0001);
+pub const DXGI_ERROR_NOT_FOUND: HRESULT = hresult(0x887A0002);
+pub const DXGI_ERROR_DEVICE_REMOVED: HRESULT = hresult(0x887A0005);
+pub const DXGI_ERROR_DEVICE_HUNG: HRESULT = hresult(0x887A0006);
+pub const DXGI_ERROR_DEVICE_RESET: HRESULT = hresult(0x887A0007);
+pub const DXGI_ERROR_DRIVER_INTERNAL_ERROR: HRESULT = hresult(0x887A0020);
+
 pub const DXGI_FORMAT_B8G8R8A8_UNORM: u32 = 87;
+pub const DXGI_FORMAT_R32G32B32A32_FLOAT: u32 = 2;
+pub const DXGI_FORMAT_R32G32B32_FLOAT: u32 = 6;
+pub const DXGI_FORMAT_R32G32_FLOAT: u32 = 16;
+pub const DXGI_FORMAT_R32_FLOAT: u32 = 41;
+pub const DXGI_FORMAT_R8G8B8A8_UNORM: u32 = 28;
+pub const DXGI_FORMAT_R8_UNORM: u32 = 61;
 pub const DXGI_USAGE_RENDER_TARGET_OUTPUT: u32 = 0x20;
 pub const DXGI_SCALING_NONE: u32 = 1;
 pub const DXGI_SCALING_STRETCH: u32 = 0;
@@ -134,12 +235,137 @@ pub const D3D_DRIVER_TYPE_UNKNOWN: u32 = 0;
 pub const D3D_DRIVER_TYPE_HARDWARE: u32 = 1;
 pub const D3D11_SDK_VERSION: u32 = 7;
 pub const D3D11_CREATE_DEVICE_BGRA_SUPPORT: u32 = 0x20;
+pub const D3D_FEATURE_LEVEL_9_1: u32 = 0x9100;
+pub const D3D_FEATURE_LEVEL_9_2: u32 = 0x9200;
+pub const D3D_FEATURE_LEVEL_9_3: u32 = 0x9300;
+pub const D3D_FEATURE_LEVEL_10_0: u32 = 0xa000;
+pub const D3D_FEATURE_LEVEL_10_1: u32 = 0xa100;
+pub const D3D_FEATURE_LEVEL_11_0: u32 = 0xb000;
+pub const D3D_FEATURE_LEVEL_11_1: u32 = 0xb100;
 pub const D3D11_USAGE_DEFAULT: u32 = 0;
 pub const D3D11_USAGE_STAGING: u32 = 3;
+pub const D3D11_USAGE_DYNAMIC: u32 = 2;
+pub const D3D11_BIND_VERTEX_BUFFER: u32 = 0x1;
+pub const D3D11_BIND_INDEX_BUFFER: u32 = 0x2;
+pub const D3D11_BIND_CONSTANT_BUFFER: u32 = 0x4;
+pub const D3D11_BIND_SHADER_RESOURCE: u32 = 0x8;
 pub const D3D11_BIND_RENDER_TARGET: u32 = 0x20;
+pub const D3D11_CPU_ACCESS_WRITE: u32 = 0x10000;
 pub const D3D11_CPU_ACCESS_READ: u32 = 0x20000;
+
+pub const DxgiFailureKind = enum {
+    ok,
+    invalid_call,
+    device_removed,
+    device_hung,
+    device_reset,
+    driver_internal_error,
+    other,
+
+    pub fn name(self: DxgiFailureKind) []const u8 {
+        return switch (self) {
+            .ok => "ok",
+            .invalid_call => "invalid_call",
+            .device_removed => "device_removed",
+            .device_hung => "device_hung",
+            .device_reset => "device_reset",
+            .driver_internal_error => "driver_internal_error",
+            .other => "other",
+        };
+    }
+
+    pub fn requiresDeviceRecreate(self: DxgiFailureKind) bool {
+        return switch (self) {
+            .device_removed, .device_hung, .device_reset, .driver_internal_error => true,
+            else => false,
+        };
+    }
+};
+
+pub fn dxgiFailureKind(hr: HRESULT) DxgiFailureKind {
+    if (hr >= 0) return .ok;
+    return switch (hr) {
+        DXGI_ERROR_INVALID_CALL => .invalid_call,
+        DXGI_ERROR_DEVICE_REMOVED => .device_removed,
+        DXGI_ERROR_DEVICE_HUNG => .device_hung,
+        DXGI_ERROR_DEVICE_RESET => .device_reset,
+        DXGI_ERROR_DRIVER_INTERNAL_ERROR => .driver_internal_error,
+        else => .other,
+    };
+}
+
+pub fn dxgiFailureName(hr: HRESULT) []const u8 {
+    return dxgiFailureKind(hr).name();
+}
+
+pub fn dxgiFailureRequiresDeviceRecreate(hr: HRESULT) bool {
+    return dxgiFailureKind(hr).requiresDeviceRecreate();
+}
+
+pub fn dxgiSwapEffectName(value: u32) []const u8 {
+    return switch (value) {
+        DXGI_SWAP_EFFECT_FLIP_DISCARD => "flip_discard",
+        else => "unknown",
+    };
+}
+
+pub fn d3dFeatureLevelName(value: u32) []const u8 {
+    return switch (value) {
+        D3D_FEATURE_LEVEL_9_1 => "9_1",
+        D3D_FEATURE_LEVEL_9_2 => "9_2",
+        D3D_FEATURE_LEVEL_9_3 => "9_3",
+        D3D_FEATURE_LEVEL_10_0 => "10_0",
+        D3D_FEATURE_LEVEL_10_1 => "10_1",
+        D3D_FEATURE_LEVEL_11_0 => "11_0",
+        D3D_FEATURE_LEVEL_11_1 => "11_1",
+        else => "unknown",
+    };
+}
 pub const D3D11_RESOURCE_MISC_SHARED: u32 = 0x2;
 pub const D3D11_MAP_READ: u32 = 1;
+pub const D3D11_MAP_WRITE_DISCARD: u32 = 4;
+pub const D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST: u32 = 4;
+pub const D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP: u32 = 5;
+pub const D3D11_INPUT_PER_VERTEX_DATA: u32 = 0;
+pub const D3D11_INPUT_PER_INSTANCE_DATA: u32 = 1;
+pub const D3D11_FILTER_MIN_MAG_MIP_POINT: u32 = 0x00;
+pub const D3D11_FILTER_MIN_MAG_MIP_LINEAR: u32 = 0x15;
+pub const D3D11_TEXTURE_ADDRESS_WRAP: u32 = 1;
+pub const D3D11_TEXTURE_ADDRESS_CLAMP: u32 = 3;
+pub const D3D11_COMPARISON_NEVER: u32 = 1;
+pub const D3D11_FLOAT32_MAX: f32 = 3.4028234663852886e38;
+pub const D3D11_BLEND_ZERO: u32 = 1;
+pub const D3D11_BLEND_ONE: u32 = 2;
+pub const D3D11_BLEND_SRC_ALPHA: u32 = 5;
+pub const D3D11_BLEND_INV_SRC_ALPHA: u32 = 6;
+pub const D3D11_BLEND_OP_ADD: u32 = 1;
+pub const D3D11_COLOR_WRITE_ENABLE_ALL: u8 = 0x0F;
+pub const D3D11_FILL_SOLID: u32 = 3;
+pub const D3D11_CULL_NONE: u32 = 1;
+
+pub const D3D11_BUFFER_DESC = extern struct {
+    byte_width: u32,
+    usage: u32,
+    bind_flags: u32,
+    cpu_access_flags: u32,
+    misc_flags: u32,
+    structure_byte_stride: u32,
+};
+
+pub const D3D11_SUBRESOURCE_DATA = extern struct {
+    sys_mem: ?*const anyopaque,
+    sys_mem_pitch: u32,
+    sys_mem_slice_pitch: u32,
+};
+
+pub const D3D11_VIEWPORT = extern struct {
+    top_left_x: f32,
+    top_left_y: f32,
+    width: f32,
+    height: f32,
+    min_depth: f32,
+    max_depth: f32,
+};
 
 // PCI vendor IDs, for matching the GL context's GPU to a DXGI adapter.
 pub const PCI_VENDOR_NVIDIA: u32 = 0x10DE;
@@ -194,13 +420,48 @@ pub const slot = struct {
     pub const Release: usize = 2;
 
     // ID3D11Device (derives IUnknown directly)
+    pub const D3D11Device_CreateBuffer: usize = 3;
     pub const D3D11Device_CreateTexture2D: usize = 5;
+    pub const D3D11Device_CreateShaderResourceView: usize = 7;
+    pub const D3D11Device_CreateRenderTargetView: usize = 9;
+    pub const D3D11Device_CreateInputLayout: usize = 11;
+    pub const D3D11Device_CreateVertexShader: usize = 12;
+    pub const D3D11Device_CreatePixelShader: usize = 15;
+    pub const D3D11Device_CreateBlendState: usize = 20;
+    pub const D3D11Device_CreateRasterizerState: usize = 22;
+    pub const D3D11Device_CreateSamplerState: usize = 23;
+    pub const D3D11Device_GetDeviceRemovedReason: usize = 39;
 
     // ID3D11DeviceContext (IUnknown + ID3D11DeviceChild(4) → first own slot 7:
     // VSSetConstantBuffers(7) … Draw(13) Map(14) Unmap(15) … CopyResource(47))
+    pub const D3D11DeviceContext_VSSetConstantBuffers: usize = 7;
+    pub const D3D11DeviceContext_PSSetShaderResources: usize = 8;
+    pub const D3D11DeviceContext_PSSetShader: usize = 9;
+    pub const D3D11DeviceContext_PSSetSamplers: usize = 10;
+    pub const D3D11DeviceContext_VSSetShader: usize = 11;
+    pub const D3D11DeviceContext_Draw: usize = 13;
     pub const D3D11DeviceContext_Map: usize = 14;
     pub const D3D11DeviceContext_Unmap: usize = 15;
+    pub const D3D11DeviceContext_PSSetConstantBuffers: usize = 16;
+    pub const D3D11DeviceContext_IASetInputLayout: usize = 17;
+    pub const D3D11DeviceContext_IASetVertexBuffers: usize = 18;
+    pub const D3D11DeviceContext_DrawInstanced: usize = 21;
+    pub const D3D11DeviceContext_IASetPrimitiveTopology: usize = 24;
+    pub const D3D11DeviceContext_OMSetRenderTargets: usize = 33;
+    pub const D3D11DeviceContext_OMSetBlendState: usize = 35;
+    pub const D3D11DeviceContext_RSSetState: usize = 43;
+    pub const D3D11DeviceContext_RSSetViewports: usize = 44;
+    pub const D3D11DeviceContext_RSSetScissorRects: usize = 45;
+    pub const D3D11DeviceContext_CopySubresourceRegion: usize = 46;
     pub const D3D11DeviceContext_CopyResource: usize = 47;
+    pub const D3D11DeviceContext_UpdateSubresource: usize = 48;
+    pub const D3D11DeviceContext_ClearRenderTargetView: usize = 50;
+    pub const D3D11DeviceContext_ClearState: usize = 110;
+    pub const D3D11DeviceContext_Flush: usize = 111;
+
+    // ID3DBlob (IUnknown + GetBufferPointer/GetBufferSize).
+    pub const Blob_GetBufferPointer: usize = 3;
+    pub const Blob_GetBufferSize: usize = 4;
 
     // IDXGIObject: SetPrivateData(3) SetPrivateDataInterface(4)
     // GetPrivateData(5) GetParent(6)
@@ -221,6 +482,7 @@ pub const slot = struct {
 
     // IDXGIAdapter1 (IDXGIObject + EnumOutputs(7) GetDesc(8)
     // CheckInterfaceSupport(9) → GetDesc1(10))
+    pub const DXGIAdapter1_EnumOutputs: usize = 7;
     pub const DXGIAdapter1_GetDesc1: usize = 10;
 
     // IDXGIDeviceSubObject: GetDevice(7)
@@ -233,6 +495,31 @@ pub const slot = struct {
     // IDXGIResource (IDXGIDeviceSubObject + GetSharedHandle first)
     pub const DXGIResource_GetSharedHandle: usize = 8;
 };
+
+// ============================================================================
+// COM dispatch helpers
+// ============================================================================
+
+pub fn vtable(obj: *anyopaque) [*]const *const anyopaque {
+    const pp: *const [*]const *const anyopaque = @ptrCast(@alignCast(obj));
+    return pp.*;
+}
+
+pub fn comCall(obj: *anyopaque, comptime slot_index: usize, comptime Fn: type) Fn {
+    return @ptrCast(vtable(obj)[slot_index]);
+}
+
+pub fn comRelease(obj: *anyopaque) void {
+    const f = comCall(obj, slot.Release, *const fn (*anyopaque) callconv(.winapi) u32);
+    _ = f(obj);
+}
+
+pub fn comQueryInterface(obj: *anyopaque, iid: *const Guid) ?*anyopaque {
+    const f = comCall(obj, slot.QueryInterface, *const fn (*anyopaque, *const Guid, *?*anyopaque) callconv(.winapi) HRESULT);
+    var out: ?*anyopaque = null;
+    if (f(obj, iid, &out) < 0) return null;
+    return out;
+}
 
 // ============================================================================
 // PresentPolicy
@@ -411,9 +698,9 @@ test "guid parses canonical string into COM byte layout" {
     // In-memory layout: data1/data2/data3 little-endian, data4 verbatim.
     const expected = [16]u8{
         0xf2, 0xaa, 0x15, 0x6f,
-        0x08, 0xd2,
-        0x89, 0x4e,
-        0x9a, 0xb4, 0x48, 0x95, 0x35, 0xd3, 0x4f, 0x9c,
+        0x08, 0xd2, 0x89, 0x4e,
+        0x9a, 0xb4, 0x48, 0x95,
+        0x35, 0xd3, 0x4f, 0x9c,
     };
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(Guid));
     try std.testing.expectEqualSlices(u8, &expected, std.mem.asBytes(&g));
@@ -424,6 +711,8 @@ test "well-known interface IIDs round-trip their documented strings" {
     // transposed hex pair in the declarations can't reach the COM boundary.
     try std.testing.expectEqual(@as(u32, 0x54ec77fa), IID_IDXGIDevice.data1);
     try std.testing.expectEqual(@as(u8, 0x4c), IID_IDXGIDevice.data4[7]);
+    try std.testing.expectEqual(@as(u32, 0x29038f61), IID_IDXGIAdapter1.data1);
+    try std.testing.expectEqual(@as(u8, 0x05), IID_IDXGIAdapter1.data4[7]);
     try std.testing.expectEqual(@as(u32, 0x50c83a1c), IID_IDXGIFactory2.data1);
     try std.testing.expectEqual(@as(u8, 0xd0), IID_IDXGIFactory2.data4[7]);
     try std.testing.expectEqual(@as(u32, 0x035f3ab4), IID_IDXGIResource.data1);
@@ -442,6 +731,24 @@ test "DXGI_SWAP_CHAIN_DESC1 matches the documented 48-byte layout" {
     try std.testing.expectEqual(@as(usize, 36), @offsetOf(DXGI_SWAP_CHAIN_DESC1, "swap_effect"));
     try std.testing.expectEqual(@as(usize, 40), @offsetOf(DXGI_SWAP_CHAIN_DESC1, "alpha_mode"));
     try std.testing.expectEqual(@as(usize, 44), @offsetOf(DXGI_SWAP_CHAIN_DESC1, "flags"));
+}
+
+test "DXGI HRESULT failure classification names device loss signals" {
+    try std.testing.expectEqual(@as(u32, 0x887A0005), hresultBits(DXGI_ERROR_DEVICE_REMOVED));
+    try std.testing.expectEqual(DxgiFailureKind.ok, dxgiFailureKind(S_OK));
+    try std.testing.expectEqual(DxgiFailureKind.invalid_call, dxgiFailureKind(DXGI_ERROR_INVALID_CALL));
+    try std.testing.expectEqual(DxgiFailureKind.device_removed, dxgiFailureKind(DXGI_ERROR_DEVICE_REMOVED));
+    try std.testing.expectEqual(DxgiFailureKind.device_hung, dxgiFailureKind(DXGI_ERROR_DEVICE_HUNG));
+    try std.testing.expectEqual(DxgiFailureKind.device_reset, dxgiFailureKind(DXGI_ERROR_DEVICE_RESET));
+    try std.testing.expectEqual(DxgiFailureKind.driver_internal_error, dxgiFailureKind(DXGI_ERROR_DRIVER_INTERNAL_ERROR));
+    try std.testing.expectEqualStrings("device_removed", dxgiFailureName(DXGI_ERROR_DEVICE_REMOVED));
+    try std.testing.expect(dxgiFailureRequiresDeviceRecreate(DXGI_ERROR_DEVICE_RESET));
+    try std.testing.expect(!dxgiFailureRequiresDeviceRecreate(DXGI_ERROR_INVALID_CALL));
+    try std.testing.expectEqualStrings("flip_discard", dxgiSwapEffectName(DXGI_SWAP_EFFECT_FLIP_DISCARD));
+    try std.testing.expectEqual(@as(u32, 0x887A0002), hresultBits(DXGI_ERROR_NOT_FOUND));
+    try std.testing.expectEqualStrings("11_0", d3dFeatureLevelName(D3D_FEATURE_LEVEL_11_0));
+    try std.testing.expectEqualStrings("11_1", d3dFeatureLevelName(D3D_FEATURE_LEVEL_11_1));
+    try std.testing.expectEqualStrings("unknown", d3dFeatureLevelName(0));
 }
 
 test "D3D11_TEXTURE2D_DESC matches the documented 44-byte layout" {
@@ -497,6 +804,51 @@ test "D3D11_MAPPED_SUBRESOURCE matches the documented 64-bit layout" {
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(D3D11_MAPPED_SUBRESOURCE));
     try std.testing.expectEqual(@as(usize, 8), @offsetOf(D3D11_MAPPED_SUBRESOURCE, "row_pitch"));
     try std.testing.expectEqual(@as(usize, 12), @offsetOf(D3D11_MAPPED_SUBRESOURCE, "depth_pitch"));
+}
+
+test "D3D11_BUFFER_DESC matches the documented 24-byte layout" {
+    try std.testing.expectEqual(@as(usize, 24), @sizeOf(D3D11_BUFFER_DESC));
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(D3D11_BUFFER_DESC, "byte_width"));
+    try std.testing.expectEqual(@as(usize, 4), @offsetOf(D3D11_BUFFER_DESC, "usage"));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(D3D11_BUFFER_DESC, "bind_flags"));
+    try std.testing.expectEqual(@as(usize, 12), @offsetOf(D3D11_BUFFER_DESC, "cpu_access_flags"));
+    try std.testing.expectEqual(@as(usize, 20), @offsetOf(D3D11_BUFFER_DESC, "structure_byte_stride"));
+}
+
+test "D3D11_SUBRESOURCE_DATA matches the documented 64-bit layout" {
+    try std.testing.expectEqual(@as(usize, 16), @sizeOf(D3D11_SUBRESOURCE_DATA));
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(D3D11_SUBRESOURCE_DATA, "sys_mem"));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(D3D11_SUBRESOURCE_DATA, "sys_mem_pitch"));
+    try std.testing.expectEqual(@as(usize, 12), @offsetOf(D3D11_SUBRESOURCE_DATA, "sys_mem_slice_pitch"));
+}
+
+test "D3D11_VIEWPORT matches the documented 24-byte layout" {
+    try std.testing.expectEqual(@as(usize, 24), @sizeOf(D3D11_VIEWPORT));
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(D3D11_VIEWPORT, "top_left_x"));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(D3D11_VIEWPORT, "width"));
+    try std.testing.expectEqual(@as(usize, 16), @offsetOf(D3D11_VIEWPORT, "min_depth"));
+}
+
+test "Phase III D3D11 ABI structs match documented layouts" {
+    try std.testing.expectEqual(@as(usize, 24), @sizeOf(D3D11_BOX));
+    try std.testing.expectEqual(@as(usize, 12), @offsetOf(D3D11_BOX, "right"));
+
+    try std.testing.expectEqual(@as(usize, 16), @sizeOf(D3D11_RECT));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(D3D11_RECT, "right"));
+
+    try std.testing.expectEqual(@as(usize, 32), @sizeOf(D3D11_INPUT_ELEMENT_DESC));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(D3D11_INPUT_ELEMENT_DESC, "semantic_index"));
+    try std.testing.expectEqual(@as(usize, 24), @offsetOf(D3D11_INPUT_ELEMENT_DESC, "input_slot_class"));
+
+    try std.testing.expectEqual(@as(usize, 52), @sizeOf(D3D11_SAMPLER_DESC));
+    try std.testing.expectEqual(@as(usize, 28), @offsetOf(D3D11_SAMPLER_DESC, "border_color"));
+
+    try std.testing.expectEqual(@as(usize, 32), @sizeOf(D3D11_RENDER_TARGET_BLEND_DESC));
+    try std.testing.expectEqual(@as(usize, 28), @offsetOf(D3D11_RENDER_TARGET_BLEND_DESC, "render_target_write_mask"));
+    try std.testing.expectEqual(@as(usize, 264), @sizeOf(D3D11_BLEND_DESC));
+
+    try std.testing.expectEqual(@as(usize, 40), @sizeOf(D3D11_RASTERIZER_DESC));
+    try std.testing.expectEqual(@as(usize, 28), @offsetOf(D3D11_RASTERIZER_DESC, "scissor_enable"));
 }
 
 test "pciVendorForGlVendor maps the real GL vendor strings" {

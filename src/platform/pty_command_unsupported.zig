@@ -1,7 +1,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const process_shared = @import("process_shared.zig");
-const ssh_connection = @import("../ssh_connection.zig");
+const ssh_connection = @import("../ssh/connection.zig");
+
+const c = if (builtin.os.tag != .windows) @cImport({
+    @cInclude("sys/types.h");
+    @cInclude("unistd.h");
+    @cInclude("pwd.h");
+}) else {};
 
 pub const CommandLineBuffer = [256]u8;
 pub const CwdBuffer = [260]u8;
@@ -36,6 +42,28 @@ pub fn resolveShellCommandLine(out_buf: *CommandLineBuffer, cmd: []const u8) usi
     @memcpy(out_buf[0..len], cmd[0..len]);
     out_buf[len] = 0;
     return len;
+}
+
+pub fn detectDefaultShell(out: []u8) []const u8 {
+    if (builtin.os.tag != .windows) {
+        var passwd_buf: [4096]u8 = undefined;
+        var entry: c.struct_passwd = undefined;
+        var result: ?*c.struct_passwd = null;
+        if (c.getpwuid_r(c.getuid(), &entry, &passwd_buf, passwd_buf.len, &result) == 0 and result != null) {
+            if (entry.pw_shell) |shell_ptr| {
+                const shell = std.mem.sliceTo(shell_ptr, 0);
+                if (shell.len != 0) {
+                    const len = @min(out.len, shell.len);
+                    @memcpy(out[0..len], shell[0..len]);
+                    return out[0..len];
+                }
+            }
+        }
+    }
+    const fallback = guaranteedLocalShellCommand();
+    const len = @min(out.len, fallback.len);
+    @memcpy(out[0..len], fallback[0..len]);
+    return out[0..len];
 }
 
 pub fn allocCommandLineFromUtf8(allocator: std.mem.Allocator, command: []const u8) !OwnedCommandLine {
@@ -120,6 +148,15 @@ pub const Command = struct {
         return self.pid > 0;
     }
 
+    /// Best-effort SIGHUP (not SIGKILL): lets shells/REPLs exit gracefully,
+    /// matching what closing the controlling terminal does. Reaping is left to
+    /// the normal IO-thread exit path, so this does not touch `self.pid`.
+    pub fn kill(self: *Command) void {
+        if (self.pid <= 0) return;
+        if (builtin.os.tag == .windows) return;
+        std.posix.kill(self.pid, std.posix.SIG.HUP) catch {};
+    }
+
     /// PID usable for an OS cwd query (proc_pidinfo / /proc), or null.
     pub fn cwdQueryId(self: *const Command) ?i32 {
         return if (self.pid > 0) @intCast(self.pid) else null;
@@ -194,6 +231,7 @@ fn appendAscii(buf: []u8, pos: *usize, text: []const u8) bool {
     return true;
 }
 
+/// Append `value` as one POSIX single-quoted argument.
 fn appendPosixSingleQuotedArg(buf: []u8, pos: *usize, value: []const u8) bool {
     if (!appendAscii(buf, pos, "'")) return false;
     for (value) |ch| {
@@ -233,8 +271,21 @@ pub fn scpExecutableName() []const u8 {
 }
 
 pub fn sshInteractiveCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 {
+    return buildSshCommandLine(buf, options);
+}
+
+pub fn sshControlCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 {
+    return buildSshCommandLine(buf, options);
+}
+
+fn buildSshCommandLine(buf: []u8, options: SshCommandOptions) ?[]const u8 {
     var pos: usize = 0;
-    if (!appendAscii(buf, &pos, "ssh -tt ")) return null;
+    // ServerAlive*: 30s probes keep NAT/firewall state alive (kernel TCP
+    // keepalive defaults to 2h, far past middlebox idle timeouts); CountMax=20
+    // gives a 10-minute tolerance window so lossy links are ridden out by TCP
+    // retransmission instead of OpenSSH hard-killing the session after 3
+    // missed probes. Keep in sync with pty_command_windows.zig.
+    if (!appendAscii(buf, &pos, "ssh -tt -o ServerAliveInterval=30 -o ServerAliveCountMax=20 ")) return null;
     if (options.proxy_jump.len > 0) {
         if (!appendAscii(buf, &pos, "-o ProxyJump=")) return null;
         if (!appendAscii(buf, &pos, options.proxy_jump)) return null;
@@ -256,13 +307,12 @@ pub fn sshInteractiveCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 
     if (!appendAscii(buf, &pos, options.host)) return null;
     if (options.remote_command.len > 0) {
         if (!appendAscii(buf, &pos, " ")) return null;
+        // Preserve the caller's command byte-for-byte. In particular, do not
+        // forge TERM_PROGRAM: remote TUIs use it as a capability promise and
+        // may enter terminal-specific protocols WispTerm does not implement.
         if (!appendPosixSingleQuotedArg(buf, &pos, options.remote_command)) return null;
     }
     return buf[0..pos];
-}
-
-pub fn sshControlCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 {
-    return sshInteractiveCommand(buf, options);
 }
 
 pub fn launchKindForCommand(command: CommandLine) LaunchKind {
@@ -275,13 +325,13 @@ test "unsupported backend builds SSH interactive command lines with ProxyJump" {
 
     // No jump host keeps the existing bare invocation shape.
     try std.testing.expectEqualStrings(
-        "ssh -tt user@example.test",
+        "ssh -tt -o ServerAliveInterval=30 -o ServerAliveCountMax=20 user@example.test",
         sshInteractiveCommand(&buf, .{ .user = "user", .host = "example.test" }).?,
     );
 
     // ProxyJump is inserted before the destination, after any port flag.
     try std.testing.expectEqualStrings(
-        "ssh -tt -o ProxyJump=admin@jump.test user@example.test",
+        "ssh -tt -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o ProxyJump=admin@jump.test user@example.test",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -290,13 +340,31 @@ test "unsupported backend builds SSH interactive command lines with ProxyJump" {
     );
 
     try std.testing.expectEqualStrings(
-        "ssh -tt -o ProxyJump=admin@jump.test:2200 -p 2222 user@example.test",
+        "ssh -tt -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o ProxyJump=admin@jump.test:2200 -p 2222 user@example.test",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
             .port = "2222",
             .proxy_jump = "admin@jump.test:2200",
         }).?,
+    );
+}
+
+test "unsupported backend does not inject terminal identity into SSH remote commands (#579)" {
+    var buf: [512]u8 = undefined;
+
+    try std.testing.expectEqualStrings(
+        "ssh -tt -o ServerAliveInterval=30 -o ServerAliveCountMax=20 user@example.test 'cd '\\''/srv/p'\\'' && claude'",
+        sshInteractiveCommand(&buf, .{
+            .user = "user",
+            .host = "example.test",
+            .remote_command = "cd '/srv/p' && claude",
+        }).?,
+    );
+
+    try std.testing.expectEqualStrings(
+        "ssh -tt -o ServerAliveInterval=30 -o ServerAliveCountMax=20 user@example.test",
+        sshInteractiveCommand(&buf, .{ .user = "user", .host = "example.test" }).?,
     );
 }
 
@@ -319,4 +387,27 @@ test "unsupported backend uses UTF-8 native command and cwd storage" {
     defer freeCwd(std.testing.allocator, cwd);
     var utf8: [32]u8 = undefined;
     try std.testing.expectEqualStrings("/tmp", cwdToUtf8(&utf8, cwdFromOwned(cwd)).?);
+}
+
+test "Command.kill sends SIGHUP and the child is reaped as signaled" {
+    // No real Pty involved: this spawns a plain child via std.process.Child
+    // and drives the platform-impl Command directly by its pid, which is all
+    // kill() touches. Building a real Pty just to get a pid would pull in
+    // platform terminal setup unrelated to what's under test.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var child = std.process.Child.init(&.{ "sleep", "30" }, std.testing.allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    try child.spawn();
+
+    var cmd = Command{ .pid = child.id };
+    cmd.kill();
+
+    // Block for the reap ourselves (rather than child.wait()) so we can
+    // inspect the raw wait status and confirm it was SIGHUP specifically.
+    const result = std.posix.waitpid(child.id, 0);
+    try std.testing.expect(std.posix.W.IFSIGNALED(result.status));
+    try std.testing.expectEqual(@as(u32, @intCast(std.posix.SIG.HUP)), std.posix.W.TERMSIG(result.status));
 }

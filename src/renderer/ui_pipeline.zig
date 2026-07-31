@@ -1,14 +1,12 @@
 //! Shared UI render pipelines (solid quad / text-glyph / color-emoji), built
-//! from the gpu backend primitives. Relocated out of gl_init (A3). gl_init keeps
-//! compat mirror handles (set via gl_init.syncSharedHandles) + re-exports, so
-//! the not-yet-converted renderer files are unchanged.
+//! from the gpu backend primitives. Relocated out of the legacy init shim (A3).
+//! The shim keeps compat mirror handles for not-yet-converted renderer files.
 //!
 //! Draw helpers are self-contained: each use()s its pipeline and binds its VAO,
-//! so callers need no ambient GL program/VAO state.
+//! so callers need no ambient backend program/vertex-array state.
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const gpu = AppWindow.gpu;
-const c = gpu.c;
 const shaders = gpu.shaders;
 const ui_batch = @import("ui_batch.zig");
 
@@ -21,7 +19,7 @@ pub const Uv = struct { u0: f32, v0: f32, u1: f32, v1: f32 };
 
 pub threadlocal var text: Pipeline = .{ .program = 0, .vao = 0 };
 pub threadlocal var emoji: Pipeline = .{ .program = 0, .vao = 0 };
-pub threadlocal var overlay: Pipeline = .{ .program = 0, .vao = 0 }; // flat-color tint (was gl_init.overlay_shader)
+pub threadlocal var overlay: Pipeline = .{ .program = 0, .vao = 0 }; // flat-color tint
 pub threadlocal var quad: Buffer = .{ .handle = 0, .target = 0 };
 pub threadlocal var solid: Texture = .{ .handle = 0 };
 
@@ -41,7 +39,20 @@ const batching_supported = gpu.active == .opengl;
 threadlocal var batch: Pipeline = .{ .program = 0, .vao = 0 };
 threadlocal var batch_instances: Buffer = .{ .handle = 0, .target = 0 };
 threadlocal var batch_quad: Buffer = .{ .handle = 0, .target = 0 };
-threadlocal var batcher: ui_batch.Batcher = .{};
+// GL-only UI glyph batcher, heap-allocated on first use (~180 KB — kept out
+// of the TLS template, which Windows commits privately for every thread; on
+// non-GL backends it never allocates at all).
+threadlocal var g_batcher: ?*ui_batch.Batcher = null;
+
+fn batcher() *ui_batch.Batcher {
+    if (g_batcher == null) {
+        const b = std.heap.page_allocator.create(ui_batch.Batcher) catch
+            @panic("out of memory allocating UI batcher");
+        b.* = .{};
+        g_batcher = b;
+    }
+    return g_batcher.?;
+}
 /// Shadow of the text pipeline's projection (set in setProjection); the batch
 /// draw applies it at flush time. Flushes happen before any projection change,
 /// so pending instances always use the projection they were issued under.
@@ -61,7 +72,7 @@ const GlSink = struct {
         p.setInt("text", 0);
         p.bindVao();
         batch_instances.upload(std.mem.sliceAsBytes(instances));
-        p.drawArraysInstanced(c.GL_TRIANGLE_STRIP, 0, 4, @intCast(instances.len));
+        p.drawArraysInstanced(.triangle_strip, 0, 4, @intCast(instances.len));
         drawCallTick();
     }
 };
@@ -69,20 +80,20 @@ const GlSink = struct {
 /// Submit any pending batched UI draws. Registered into the gpu hooks; also
 /// called directly by frame tails that present without an endFrame (resize).
 pub fn flushBatch() void {
-    batcher.flush(GlSink{});
+    batcher().flush(GlSink{});
 }
 
-fn pipelineUseHook(program: c.GLuint) void {
-    if (ui_batch.shouldFlushOnPipelineUse(batcher.pending(), program, batch.program)) flushBatch();
+fn pipelineUseHook(program: gpu.ProgramHandle) void {
+    if (ui_batch.shouldFlushOnPipelineUse(batcher().pending(), program, batch.program)) flushBatch();
 }
 
 fn drawCallTick() void {
-    AppWindow.gpu.gl_init.g_draw_call_count += 1;
+    AppWindow.gpu.draw_call_count += 1;
 }
 
 /// Build a VAO with the shared text/emoji vertex layout (one vec4 attrib:
 /// xy = position, zw = texcoord), pointing at the shared quad buffer.
-fn buildQuadVao() c.GLuint {
+fn buildQuadVao() gpu.VertexArrayHandle {
     return gpu.vertex.buildVertexArray(&.{.{
         .buffer = quad,
         .attrs = &.{.{ .loc = 0, .count = 4, .stride = 4 * @sizeOf(f32), .offset = 0 }},
@@ -92,12 +103,8 @@ fn buildQuadVao() c.GLuint {
 /// Build the shared pipelines, quad buffer, and solid texture. Call once after
 /// the GL context is current (before any UI draw).
 pub fn init() void {
-    // Make the Metal backend's gl_init shim able to call back into ui_pipeline
-    // without an absolute import (see gpu/metal/gl_init.zig BackendHooks).
-    registerMetalBackendHooks();
-
-    quad = Buffer.init(c.GL_ARRAY_BUFFER);
-    quad.allocate(@sizeOf(f32) * 6 * 4, c.GL_DYNAMIC_DRAW);
+    quad = Buffer.initVertex();
+    quad.allocate(@sizeOf(f32) * 6 * 4, .dynamic);
 
     // Each pipeline owns its own VAO (identical layout) for clean deinit.
     const text_vao = buildQuadVao();
@@ -114,10 +121,8 @@ pub fn init() void {
     const white_pixel = [_]u8{255};
     solid = Texture.create();
     solid.upload2D(1, 1, &white_pixel, .{
-        .internal_format = c.GL_RED,
-        .format = c.GL_RED,
-        .filter = .nearest,
-        .wrap = .clamp_to_edge,
+        .format = .r8,
+        .sampler = .nearest_clamp,
         .unpack_alignment = 1,
     });
 
@@ -134,11 +139,11 @@ fn initBatch() void {
         .{ 0.0, 1.0 },
         .{ 1.0, 1.0 },
     };
-    batch_quad = Buffer.init(c.GL_ARRAY_BUFFER);
-    batch_quad.uploadData(std.mem.sliceAsBytes(quad_verts[0..]), c.GL_STATIC_DRAW);
+    batch_quad = Buffer.initVertex();
+    batch_quad.uploadData(std.mem.sliceAsBytes(quad_verts[0..]), .static);
 
-    batch_instances = Buffer.init(c.GL_ARRAY_BUFFER);
-    batch_instances.allocate(@sizeOf(ui_batch.Instance) * ui_batch.capacity, c.GL_STREAM_DRAW);
+    batch_instances = Buffer.initVertex();
+    batch_instances.allocate(@sizeOf(ui_batch.Instance) * ui_batch.capacity, .stream);
 
     const stride = @sizeOf(ui_batch.Instance);
     const batch_vao = gpu.vertex.buildVertexArray(&.{
@@ -171,7 +176,10 @@ pub fn deinit() void {
     if (comptime batching_supported) {
         gpu.state.pre_change_hook = null;
         Pipeline.pre_use_hook = null;
-        batcher.count = 0;
+        if (g_batcher) |b| {
+            std.heap.page_allocator.destroy(b);
+            g_batcher = null;
+        }
         batch.deinit();
         batch_instances.deinit();
         batch_quad.deinit();
@@ -194,7 +202,7 @@ fn quadVertices(rect: Rect, uv: Uv) [6][4]f32 {
     };
 }
 
-/// Set the text pipeline's ortho projection (frame-level; = old gl_init.setProjection).
+/// Set the text pipeline's frame-level orthographic projection.
 /// The emoji pipeline needs no frame-level update — drawColorGlyph re-derives its
 /// projection from the viewport per call.
 pub fn setProjection(width: f32, height: f32) void {
@@ -212,8 +220,7 @@ pub fn setProjection(width: f32, height: f32) void {
     if (comptime batching_supported) batch_projection = projection;
 }
 
-/// Enable scissor clipping to `rect` (window-space, same convention as the
-/// caller's existing glScissor: x/y are the lower-left corner in GL pixels).
+/// Enable scissor clipping to `rect` (window-space, lower-left pixel origin).
 /// Rounds to integer pixels, matching the prior @intFromFloat(@round(...)) calls.
 pub fn beginClip(rect: Rect) void {
     gpu.state.setScissor(.{
@@ -224,15 +231,15 @@ pub fn beginClip(rect: Rect) void {
     });
 }
 
-/// Disable scissor clipping (= the prior gl.Disable(GL_SCISSOR_TEST)). Flat
+/// Disable backend scissor clipping. Flat
 /// enable/disable — clip regions are not nested.
 pub fn endClip() void {
     gpu.state.disableScissor();
 }
 
-/// Toggle GL_BLEND. Lets callers that draw opaque content (e.g. a background
-/// image or post-process pass) disable blending for a draw and restore it,
-/// without touching raw GL (= the prior gl.Disable/Enable(GL_BLEND) bookends).
+/// Toggle backend blending. Lets callers that draw opaque content (e.g. a
+/// background image or post-process pass) disable blending for a draw and
+/// restore it.
 pub fn setBlendEnabled(enabled: bool) void {
     gpu.state.setBlendEnabled(enabled);
 }
@@ -241,17 +248,35 @@ pub fn fillQuad(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
     fillQuadAlpha(x, y, w, h, color, 1.0);
 }
 
-/// Solid color quad (= old gl_init.renderQuadAlpha). Preserves the alpha trick:
+/// Global fade multiplier for overlay open/close transitions. Overlay
+/// renderers set this around their draw calls (restoring to 1.0 afterwards);
+/// quads blend toward the theme background and glyphs dim by the same factor.
+pub threadlocal var g_ui_fade: f32 = 1.0;
+
+/// Blend a glyph color toward the theme background by the global UI fade.
+fn fadeGlyphColor(color: [3]f32) [3]f32 {
+    const f = g_ui_fade;
+    if (f >= 1.0) return color;
+    const bg = AppWindow.g_theme.background;
+    return .{
+        color[0] * f + bg[0] * (1 - f),
+        color[1] * f + bg[1] * (1 - f),
+        color[2] * f + bg[2] * (1 - f),
+    };
+}
+
+/// Solid color quad. Preserves the alpha trick:
 /// blends `color` toward g_theme.background by `alpha` and draws opaque via the
 /// solid texture (no BlendFunc needed — alpha is baked into the color channel).
-pub fn fillQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha: f32) void {
+pub fn fillQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha_in: f32) void {
+    const alpha = alpha_in * g_ui_fade;
     const bg = AppWindow.g_theme.background;
     const r = color[0] * alpha + bg[0] * (1 - alpha);
     const g = color[1] * alpha + bg[1] * (1 - alpha);
     const b = color[2] * alpha + bg[2] * (1 - alpha);
     if (comptime batching_supported) {
         if (batch.program != 0) {
-            batcher.push(solid.handle, .{
+            batcher().push(solid.handle, .{
                 .x = x,
                 .y = y,
                 .w = w,
@@ -273,15 +298,16 @@ pub fn fillQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha: f32) 
     text.setVec3("textColor", r, g, b);
     solid.bind(0);
     quad.upload(std.mem.sliceAsBytes(verts[0..]));
-    text.drawArrays(c.GL_TRIANGLES, 0, 6);
+    text.drawArrays(.triangles, 0, 6);
     drawCallTick();
 }
 
 /// Grayscale/text glyph via the text pipeline (atlas .r as alpha, modulated by color).
-pub fn drawGlyph(rect: Rect, uv: Uv, tex: c.GLuint, color: [3]f32) void {
+pub fn drawGlyph(rect: Rect, uv: Uv, tex: Texture, color_in: [3]f32) void {
+    const color = fadeGlyphColor(color_in);
     if (comptime batching_supported) {
         if (batch.program != 0) {
-            batcher.push(tex, .{
+            batcher().push(tex.handle, .{
                 .x = rect.x,
                 .y = rect.y,
                 .w = rect.w,
@@ -301,48 +327,48 @@ pub fn drawGlyph(rect: Rect, uv: Uv, tex: c.GLuint, color: [3]f32) void {
     text.use();
     text.bindVao();
     text.setVec3("textColor", color[0], color[1], color[2]);
-    Texture.fromHandle(tex).bind(0);
+    tex.bind(0);
     quad.upload(std.mem.sliceAsBytes(verts[0..]));
-    text.drawArrays(c.GL_TRIANGLES, 0, 6);
+    text.drawArrays(.triangles, 0, 6);
     drawCallTick();
 }
 
 /// Color-emoji via the emoji pipeline: premultiplied-alpha blend bookend +
 /// per-call projection from the current viewport (= old renderBellEmoji /
 /// renderTitlebarChar color branch).
-pub fn drawColorGlyph(rect: Rect, uv: Uv, tex: c.GLuint, opacity: f32) void {
+pub fn drawColorGlyph(rect: Rect, uv: Uv, tex: Texture, opacity: f32) void {
     const verts = quadVertices(rect, uv);
     emoji.use();
     emoji.bindVao();
     emoji.setProjection(); // viewport-derived ortho on the emoji program (Pipeline.setProjection)
-    emoji.setFloat("opacity", opacity);
+    emoji.setFloat("opacity", opacity * g_ui_fade);
     gpu.state.setBlendMode(.premultiplied);
-    Texture.fromHandle(tex).bind(0);
+    tex.bind(0);
     quad.upload(std.mem.sliceAsBytes(verts[0..]));
-    emoji.drawArrays(c.GL_TRIANGLES, 0, 6);
+    emoji.drawArrays(.triangles, 0, 6);
     drawCallTick();
     gpu.state.setBlendMode(.alpha);
 }
 
-/// Draw a textured RGBA quad through the emoji/color pipeline (the old
-/// gl_init.simple_color_shader path). `verts` is 6 vertices of (x, y, u, v).
+/// Draw a textured RGBA quad through the emoji/color pipeline. `verts` is 6
+/// vertices of (x, y, u, v).
 /// `opacity` modulates alpha; the texture is sampled on unit 0. Does NOT change
 /// blend state — the caller sets blend as needed.
-pub fn drawTextureQuad(verts: [6][4]f32, tex: c.GLuint, opacity: f32) void {
+pub fn drawTextureQuad(verts: [6][4]f32, tex: Texture, opacity: f32) void {
     emoji.use();
     emoji.bindVao();
     emoji.setProjection();
     emoji.setFloat("opacity", opacity);
     emoji.setInt("text", 0);
-    Texture.fromHandle(tex).bind(0);
+    tex.bind(0);
     quad.upload(std.mem.sliceAsBytes(verts[0..]));
-    emoji.drawArrays(c.GL_TRIANGLES, 0, 6);
+    emoji.drawArrays(.triangles, 0, 6);
     drawCallTick();
 }
 
-/// Draw a flat-color quad through the overlay pipeline (the old
-/// gl_init.overlay_shader path). `verts` is 6 vertices of (x, y, u, v) — the
-/// overlay shader ignores the uv. `color` is RGBA (alpha = tint strength).
+/// Draw a flat-color quad through the overlay pipeline. `verts` is 6 vertices
+/// of (x, y, u, v); the overlay shader ignores the uv. `color` is RGBA
+/// (alpha = tint strength).
 /// Does NOT change blend state.
 pub fn fillOverlay(verts: [6][4]f32, color: [4]f32) void {
     overlay.use();
@@ -350,35 +376,6 @@ pub fn fillOverlay(verts: [6][4]f32, color: [4]f32) void {
     overlay.setProjection();
     overlay.setVec4("overlayColor", color[0], color[1], color[2], color[3]);
     quad.upload(std.mem.sliceAsBytes(verts[0..]));
-    overlay.drawArrays(c.GL_TRIANGLES, 0, 6);
+    overlay.drawArrays(.triangles, 0, 6);
     drawCallTick();
-}
-
-// ---------------------------------------------------------------------------
-// Metal-backend dispatcher registration
-// ---------------------------------------------------------------------------
-// The Metal `gpu/metal/gl_init.zig` shim cannot `@import("../../ui_pipeline.zig")`
-// directly (the `test-metal` build step's module root is `gpu/metal/`, so the
-// path walks outside the allowed tree). Instead we hand it a small function-
-// pointer table at app startup. On the OpenGL backend `gpu.gl_init` is the
-// OpenGL `gl_init.zig`, which already imports `ui_pipeline` directly and
-// exposes neither `BackendHooks` nor `setBackendHooks` — guard with comptime
-// `@hasDecl` so the call compiles away to nothing there.
-fn metalFillQuad(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
-    fillQuad(x, y, w, h, color);
-}
-fn metalFillQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha: f32) void {
-    fillQuadAlpha(x, y, w, h, color, alpha);
-}
-fn metalSetProjection(width: f32, height: f32) void {
-    setProjection(width, height);
-}
-
-fn registerMetalBackendHooks() void {
-    if (!@hasDecl(AppWindow.gpu.gl_init, "setBackendHooks")) return;
-    AppWindow.gpu.gl_init.setBackendHooks(.{
-        .fillQuad = &metalFillQuad,
-        .fillQuadAlpha = &metalFillQuadAlpha,
-        .setProjection = &metalSetProjection,
-    });
 }

@@ -24,16 +24,17 @@ English | [简体中文](README.zh-CN.md)
 ## Features
 
 - **Ghostty's terminal emulation** - uses libghostty-vt for VT parsing and terminal state
-- **DirectWrite font discovery** - find system fonts by name, with per-glyph fallback for missing characters
+- **Native font discovery** - find system fonts by name via DirectWrite, CoreText, or fontconfig, with per-glyph fallback for missing characters
 - **FreeType rendering** - high-quality glyph rasterization with Ghostty-style font metrics
 - **Sprite rendering** - box drawing, block elements, braille patterns, powerline symbols
 - **Theme support** - Ghostty-compatible theme files, 450+ themes built in (default: Poimandres)
 - **Background image and shaders** - wallpaper blending plus Ghostty-compatible GLSL post-processing
 - **Splits and tabs** - vertical/horizontal splits, tab strip, focus-follows-mouse, equalize sizes
 - **File Explorer and previews** - browse local, WSL, and SSH files; preview Markdown/text/tables/images/PDFs without leaving the terminal
-- **Embedded browser panel** - open web URLs in a side WebView2 panel or the default browser, with persistent SSH loopback port forwarding for profile sessions
+- **Embedded browser panel** - open web URLs in a side WebView2 (Windows) or WKWebView (macOS) panel when available, with persistent SSH loopback port forwarding for profile sessions
 - **SSH port forwarding manager** - silently manage local and reverse SSH forwarding rules from a dedicated tab
 - **AI Agent sessions** - launch OpenAI-compatible Agent tabs, configure profiles, restore history, export Markdown transcripts, and distill reusable local skills
+- **Command-center Copilot History** - search saved AI Chat and Copilot sidebar conversations, grouped by date, with source filters for sidebar vs tab sessions
 - **In-session model switching** - use `/model` or click the model label to move an active AI chat/Copilot session to another saved profile with a context summary handoff
 - **AI history browser** - browse local, WSL, and SSH Codex / Claude Code / Reasonix history and resume sessions from their original project directories
 - **Kitty Graphics protocol** - display inline images and PDFs from remote shells via `imgcat.py` / `pdfcat.py`
@@ -48,6 +49,16 @@ English | [简体中文](README.zh-CN.md)
 - [SSH port forwarding](docs/port-forwarding.md)
 - [Development, architecture, packaging, and releases](docs/development.md)
 - [FAQ](docs/faq.md)
+
+## Versions
+
+The desktop app version is the repository root version in `build.zig.zon`
+(currently `1.34.0`) and is what `wispterm --version`, release notes, desktop
+packages, and the command center `Version` entry use.
+
+The WispTerm Remote web console/relay under `remote/` has an independent npm/web
+version (currently `0.32.0`). Desktop releases do not require a Remote version
+bump unless the release explicitly includes changes under `remote/`.
 
 ## Building
 
@@ -101,7 +112,7 @@ Options:
   --show-config-path           Print the resolved main config path
   --list-fonts                 List available system fonts
   --list-themes                List available themes
-  --test-font-discovery        Test DirectWrite font discovery
+  --test-font-discovery        Test platform font discovery
   --help, -h                   Show help
 ```
 
@@ -140,25 +151,35 @@ Use `keybind = clear` before custom bindings if you want to remove all defaults 
 | Select all text in preview | **Ctrl+A** | **Cmd+A** |
 | Copy selected text from preview | **Ctrl+Shift+C** | **Cmd+Shift+C** |
 | Download SSH remote file | Ctrl+Shift-click path in SSH output | Cmd+Shift-click path in SSH output |
-| Close focused panel, tab, or window | **Ctrl+Shift+W** | **Cmd+Shift+W** |
+| Close focused panel, tab, or window | **Ctrl+Shift+W** | **Cmd+W** |
 | Maximize or restore window | **Alt+Enter** | **Opt+Enter** |
 | Increase / decrease font size | **Ctrl++** / **Ctrl+-** | **Cmd++** / **Cmd+-** |
-| Copy terminal selection or AI Chat selection/transcript | **Ctrl+Shift+C** | **Cmd+Shift+C** |
+| Copy terminal selection or AI Chat selection/transcript | **Ctrl+Shift+C** | **Cmd+C** |
 | Select from the last terminal click anchor | Shift-click terminal text | Shift-click terminal text |
+| Select terminal text while tmux mouse mode is enabled | **Shift-drag** | **Shift-drag** |
 | Select part of an AI answer | Drag AI answer text | Drag AI answer text |
 | Select and copy part of an AI answer | Shift-drag AI answer text | Shift-drag AI answer text |
 | Select AI Chat input; select transcript when input is empty | **Ctrl+A** in AI Chat | **Cmd+A** in AI Chat |
 | Copy AI Chat selection or full transcript | **Ctrl+C** in AI Chat | **Cmd+C** in AI Chat |
 | Delete the selected saved Agent session | **D** / **Delete** in Agent History | **D** / **Delete** in Agent History |
+| Search saved Copilot History | Type / Backspace in command-center Copilot History | Type / Backspace in command-center Copilot History |
+| Cycle Copilot History source filter | Tab in command-center Copilot History | Tab in command-center Copilot History |
+| Move selected Copilot History row | Up / Down in command-center Copilot History | Up / Down in command-center Copilot History |
+| Reopen selected Copilot History row | Enter in command-center Copilot History | Enter in command-center Copilot History |
+| Delete selected Copilot History row | Delete in command-center Copilot History | Delete in command-center Copilot History |
 | Edit AI History filter | Type / Backspace in AI History | Type / Backspace in AI History |
 | Move selected AI History session | Up / Down in AI History | Up / Down in AI History |
 | Resume selected AI History session | Enter in AI History | Enter in AI History |
 | Preview selected AI History transcript | Space in AI History | Space in AI History |
+| Download selected AI History raw file | **D** in AI History | **D** in AI History |
+| Export selected AI History transcript as Markdown | **M** in AI History | **M** in AI History |
+| Attach selected AI History transcript to Copilot | **A** in AI History | **A** in AI History |
 | Refresh local AI History scan | **R** in local AI History | **R** in local AI History |
+| Run Memory Digest now | **D** in Memory Center | **D** in Memory Center |
 | Edit AI Chat input cursor | Left/Right/Home/End/Delete/Backspace | Left/Right/Home/End/Delete/Backspace |
 | Stop in-flight AI Chat or Agent request | **Esc** in AI Chat while working | **Esc** in AI Chat while working |
 | Copy selection (right-click) | Right-click a selection | Right-click a selection |
-| Paste text | **Ctrl+V** | **Cmd+V** |
+| Paste text | **Ctrl+V**; **Ctrl+Shift+V** also pastes text when the clipboard has no image | **Cmd+V**; **Cmd+Shift+V** also pastes text when the clipboard has no image |
 | Paste clipboard image | **Ctrl+Shift+V** | **Cmd+Shift+V** |
 | Move focus to adjacent panel | **Alt** + arrow keys | **Opt** + arrow keys |
 | Focus panel 1–9 by number | **Ctrl+1**–**9** | **Cmd+1**–**9** |
@@ -168,7 +189,7 @@ Use `keybind = clear` before custom bindings if you want to remove all defaults 
 | Next tab | **Ctrl+Tab** | **Ctrl+Tab** |
 | Previous tab | **Ctrl+Shift+Tab** | **Ctrl+Shift+Tab** |
 | Switch to tab 1–9 | **Alt+1**–**9** | **Opt+1**–**9** |
-| Open config file | **Ctrl+,** | **Cmd+,** |
+| Open visual settings | **Ctrl+,** | **Cmd+,** |
 
 ## AI Chat Markdown export
 
@@ -231,7 +252,7 @@ __wispterm_report_cwd
 
 - Original project: [arya-s/phantty](https://github.com/arya-s/phantty) - the
 Zig + libghostty-vt foundation and the Windows terminal core. WispTerm builds on
-that base and layers additional features on top: an embedded WebView2 browser
+that base and layers additional features on top: an embedded browser
 panel, a file explorer with Markdown/text/table/image/PDF preview, AI Agent sessions
 with Markdown export, an opt-in remote-access client, Kitty Graphics image
 protocol support, and a configurable background image.
@@ -252,8 +273,8 @@ MIT
 
 ## Citation
 
-Xu, Z.-G. (2026). *WispTerm* (Version 1.25.0) [Computer software]. Zenodo.
-https://doi.org/10.5281/zenodo.20660542
+Xu, Z.-G. (2026). *WispTerm* (Version 1.34.0) [Computer software]. Zenodo.
+https://doi.org/10.5281/zenodo.20660541
 
 Copyable acknowledgment template:
 
@@ -262,6 +283,6 @@ We used WispTerm as part of our computational environment for life sciences data
 analysis, remote computing workflows, reproducible command-line processing, and
 the organization of related literature and analysis code.
 
-Xu, Z.-G. (2026). WispTerm (Version 1.25.0) [Computer software]. Zenodo.
-https://doi.org/10.5281/zenodo.20660542
+Xu, Z.-G. (2026). WispTerm (Version 1.34.0) [Computer software]. Zenodo.
+https://doi.org/10.5281/zenodo.20660541
 ```

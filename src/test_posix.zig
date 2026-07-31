@@ -15,11 +15,8 @@ const std = @import("std");
 // Suppress unused build_options import expected by some imported modules.
 pub const build_options = @import("build_options");
 
-const run_on_main = @import("apprt/run_on_main.zig");
-
 comptime {
-    _ = @import("ai_loop_store.zig");
-    _ = @import("child_output.zig");
+    _ = @import("assistant/loop/store.zig");
     _ = @import("platform/pdf_render_linux.zig");
     // tmux posix-only tests: socketpair virtual PTY + pane I/O bridge. They need
     // libc and a real posix target, and are guarded out of the windows app test
@@ -27,100 +24,10 @@ comptime {
     _ = @import("platform/pty_virtual_test.zig");
     _ = @import("tmux/pane.zig");
     _ = @import("tmux/pane_io_test.zig");
-}
-
-test "ctl server answers a real loopback request and stops cleanly" {
-    const ctl_server = @import("ctl/server.zig");
-    const protocol = @import("ctl/protocol.zig");
-    const control_mod = @import("ctl/control.zig");
-
-    const C = struct {
-        fn list_panes(_: *anyopaque, a: std.mem.Allocator) anyerror!?[]u8 {
-            return try a.dupe(u8, "{\"activeTab\":0,\"tabs\":[]}");
-        }
-        fn get_text(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: ?u32) anyerror!?[]u8 {
-            return null;
-        }
-        fn send_text(_: *anyopaque, _: []const u8, _: []const u8) bool {
-            return false;
-        }
-        var dummy: u8 = 0;
-        fn iface() control_mod.Control {
-            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text } };
-        }
-    };
-
-    const srv = try ctl_server.Server.create(std.testing.allocator, C.iface(), "tok", 0);
-    defer srv.destroy(); // exercises stop()+join even on the success path
-    try srv.start();
-    try std.testing.expect(srv.port != 0);
-
-    const addr = try std.net.Address.parseIp4("127.0.0.1", srv.port);
-    var stream = try std.net.tcpConnectToAddress(addr);
-    defer stream.close();
-
-    const line = try protocol.encodeRequest(std.testing.allocator, .{ .token = "tok", .cmd = .panes });
-    defer std.testing.allocator.free(line);
-    try stream.writeAll(line);
-
-    var buf: [4096]u8 = undefined;
-    var total: usize = 0;
-    while (total < buf.len) {
-        const n = try stream.read(buf[total..]);
-        if (n == 0) break;
-        total += n;
-        if (std.mem.indexOfScalar(u8, buf[0..total], '\n') != null) break;
-    }
-    try std.testing.expect(std.mem.indexOf(u8, buf[0..total], "\"ok\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf[0..total], "activeTab") != null);
-
-    // A bad token is rejected over the wire too.
-    var s2 = try std.net.tcpConnectToAddress(addr);
-    defer s2.close();
-    const bad = try protocol.encodeRequest(std.testing.allocator, .{ .token = "nope", .cmd = .panes });
-    defer std.testing.allocator.free(bad);
-    try s2.writeAll(bad);
-    var buf2: [256]u8 = undefined;
-    const n2 = try s2.read(&buf2);
-    try std.testing.expect(std.mem.indexOf(u8, buf2[0..n2], "unauthorized") != null);
-}
-
-test "ctl server shutdown does not hang on a stalled (newline-less) connection" {
-    const ctl_server = @import("ctl/server.zig");
-    const control_mod = @import("ctl/control.zig");
-
-    const C = struct {
-        fn list_panes(_: *anyopaque, a: std.mem.Allocator) anyerror!?[]u8 {
-            return try a.dupe(u8, "{}");
-        }
-        fn get_text(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: ?u32) anyerror!?[]u8 {
-            return null;
-        }
-        fn send_text(_: *anyopaque, _: []const u8, _: []const u8) bool {
-            return false;
-        }
-        var dummy: u8 = 0;
-        fn iface() control_mod.Control {
-            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text } };
-        }
-    };
-
-    const srv = try ctl_server.Server.create(std.testing.allocator, C.iface(), "tok", 0);
-    try srv.start();
-
-    // Open a connection and send a partial request with NO trailing newline,
-    // then never read/close it until after shutdown — the worst case for the
-    // serial accept loop.
-    const addr = try std.net.Address.parseIp4("127.0.0.1", srv.port);
-    var stalled = try std.net.tcpConnectToAddress(addr);
-    try stalled.writeAll("{\"token\":\"tok\",\"cmd\":\"pa");
-    std.Thread.sleep(50 * std.time.ns_per_ms); // let the accept loop block in read()
-
-    // If the recv-timeout + stop-flag fix regressed, destroy() -> join() would
-    // block forever and this test would hang (a visible failure). With the fix
-    // it returns within the recv timeout.
-    srv.destroy();
-    stalled.close();
+    // agent-control loopback round-trip. Lives in ctl/socket_test.zig so the same
+    // tests also run on Windows via the `test-ctl` step (see build.zig); this
+    // import keeps them in test-full's POSIX coverage too.
+    _ = @import("ctl/socket_test.zig");
 }
 
 test "pdf_render_linux rasterizes a generated two-page PDF via poppler" {
@@ -184,34 +91,6 @@ fn buildMinimalTwoPagePdf(alloc: std.mem.Allocator) ![]u8 {
     return out.toOwnedSlice(alloc);
 }
 
-test "run_on_main marshals a task from a worker thread to the draining thread" {
-    var q = run_on_main.Queue{};
-    defer q.deinit(std.testing.allocator);
-
-    const State = struct { value: i32 = 0, done: std.Thread.ResetEvent = .{} };
-    var st = State{};
-
-    const Worker = struct {
-        fn go(queue: *run_on_main.Queue, state: *State) void {
-            const run = struct {
-                fn f(ctx: *anyopaque) void {
-                    const s: *State = @ptrCast(@alignCast(ctx));
-                    s.value = 42;
-                    s.done.set();
-                }
-            }.f;
-            queue.enqueue(std.testing.allocator, .{ .run = run, .ctx = state }) catch unreachable;
-        }
-    };
-    var t = try std.Thread.spawn(.{}, Worker.go, .{ &q, &st });
-    t.join();
-
-    try std.testing.expectEqual(@as(i32, 0), st.value); // not run until drained
-    q.drain(std.testing.allocator);
-    st.done.wait();
-    try std.testing.expectEqual(@as(i32, 42), st.value);
-}
-
 test "copilot hint flag I/O wrappers are callable" {
     const window_state = @import("platform/window_state.zig");
     const alloc = std.testing.allocator;
@@ -221,7 +100,7 @@ test "copilot hint flag I/O wrappers are callable" {
 }
 
 test "skill_local_fs aggHashHex matches the POSIX find|sha256sum recipe byte-for-byte" {
-    const skill_local_fs = @import("skill_local_fs.zig");
+    const skill_local_fs = @import("skill/local_fs.zig");
     const a = std.testing.allocator;
 
     var tmp = std.testing.tmpDir(.{});

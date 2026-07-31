@@ -1,4 +1,5 @@
 const std = @import("std");
+const agent_detector = @import("terminal_agents/detector.zig");
 
 /// Max bytes retained for a notification title / body. Longer input is truncated.
 pub const max_title: usize = 256;
@@ -137,6 +138,57 @@ pub fn decideRoute(
     return .badge;
 }
 
+// ---------------------------------------------------------------------------
+// Agent attention edges (in-app AI sessions + OSC 7748 terminal agents).
+// Pure classifiers; AppWindow's main loop polls once per frame and feeds edges
+// here, so notifications are edge-triggered — a pending approval never nags
+// twice, and re-entering a state re-notifies.
+// ---------------------------------------------------------------------------
+
+/// Attention phase of an in-app AI session (AI-chat tab / copilot sidebar),
+/// derived each frame from approvalView()/questionView() + request_inflight.
+pub const SessionPhase = enum { idle, running, waiting };
+
+pub const SessionEdge = enum { none, finished, needs_attention };
+
+/// Classify a phase change. `stopped` = the user pressed Stop during this turn
+/// (their own action — finishing silently, like Orca's `interrupted`).
+pub fn sessionEdge(prev: SessionPhase, cur: SessionPhase, stopped: bool) SessionEdge {
+    if (prev == cur) return .none;
+    if (cur == .waiting) return .needs_attention;
+    if (cur == .idle) return if (stopped) .none else .finished;
+    return .none;
+}
+
+/// Quiet window for a terminal agent's `done` marker: notify only if the agent
+/// is still done this long after the edge — goal-loop agents bounce
+/// done→running between milestones (calibrated to match Orca).
+pub const agent_done_quiet_ms: i64 = 1500;
+
+pub const AgentMarkerAction = enum { none, notify_attention, stage_done };
+
+/// A hook's own OSC 777 (richer, custom text) may announce the same completion
+/// the OSC 7748 marker signals — usually in the same burst, but the synthetic
+/// done fires `agent_done_quiet_ms` later, past the rate-limit window. Skip the
+/// synthetic when anything was delivered near/after the done edge.
+pub const done_announce_window_ms: i64 = 1000;
+
+pub fn doneAlreadyAnnounced(last_delivered_ms: i64, staged_ms: i64) bool {
+    if (last_delivered_ms == 0) return false;
+    return last_delivered_ms + done_announce_window_ms >= staged_ms;
+}
+
+/// Classify an OSC 7748 state edge. `stage_done` starts the quiet window; the
+/// caller cancels the stage whenever the state leaves `.done` before it fires.
+pub fn agentMarkerAction(prev: agent_detector.State, cur: agent_detector.State) AgentMarkerAction {
+    if (prev == cur) return .none;
+    return switch (cur) {
+        .waiting_approval, .needs_input => .notify_attention,
+        .done => .stage_done,
+        else => .none,
+    };
+}
+
 test "makeItem copies and truncates title/body" {
     const long_title = "T" ** 300;
     const item = makeItem(long_title, "hello");
@@ -210,4 +262,63 @@ test "makeItem without the marker keeps body intact and forward_wechat false" {
     const item = makeItem("t", "完成，轮到你了");
     try std.testing.expect(!item.forward_wechat);
     try std.testing.expectEqualStrings("完成，轮到你了", item.body());
+}
+
+test "sessionEdge: turn end notifies finished unless the user stopped it" {
+    // running → idle = turn finished
+    try std.testing.expectEqual(SessionEdge.finished, sessionEdge(.running, .idle, false));
+    // waiting → idle (approval answered elsewhere / turn aborted by agent) also finishes
+    try std.testing.expectEqual(SessionEdge.finished, sessionEdge(.waiting, .idle, false));
+    // user pressed Stop → silent
+    try std.testing.expectEqual(SessionEdge.none, sessionEdge(.running, .idle, true));
+    try std.testing.expectEqual(SessionEdge.none, sessionEdge(.waiting, .idle, true));
+}
+
+test "sessionEdge: entering waiting needs attention" {
+    try std.testing.expectEqual(SessionEdge.needs_attention, sessionEdge(.running, .waiting, false));
+    // approval popped before we ever observed running (fast first frame)
+    try std.testing.expectEqual(SessionEdge.needs_attention, sessionEdge(.idle, .waiting, false));
+    // a Stop in flight doesn't suppress a *new* attention request
+    try std.testing.expectEqual(SessionEdge.needs_attention, sessionEdge(.running, .waiting, true));
+}
+
+test "sessionEdge: no edge without a phase change; starting a turn is silent" {
+    try std.testing.expectEqual(SessionEdge.none, sessionEdge(.idle, .idle, false));
+    try std.testing.expectEqual(SessionEdge.none, sessionEdge(.running, .running, false));
+    try std.testing.expectEqual(SessionEdge.none, sessionEdge(.waiting, .waiting, false));
+    try std.testing.expectEqual(SessionEdge.none, sessionEdge(.idle, .running, false));
+    try std.testing.expectEqual(SessionEdge.none, sessionEdge(.waiting, .running, false));
+}
+
+test "agentMarkerAction: attention states notify immediately, done is staged" {
+    try std.testing.expectEqual(AgentMarkerAction.notify_attention, agentMarkerAction(.running, .waiting_approval));
+    try std.testing.expectEqual(AgentMarkerAction.notify_attention, agentMarkerAction(.running, .needs_input));
+    // done goes through the quiet window, not straight to a toast
+    try std.testing.expectEqual(AgentMarkerAction.stage_done, agentMarkerAction(.running, .done));
+    // even done → waiting (agent finished then asked) re-notifies attention
+    try std.testing.expectEqual(AgentMarkerAction.notify_attention, agentMarkerAction(.done, .waiting_approval));
+}
+
+test "agentMarkerAction: silent transitions" {
+    try std.testing.expectEqual(AgentMarkerAction.none, agentMarkerAction(.none, .running));
+    try std.testing.expectEqual(AgentMarkerAction.none, agentMarkerAction(.done, .running));
+    try std.testing.expectEqual(AgentMarkerAction.none, agentMarkerAction(.running, .running));
+    try std.testing.expectEqual(AgentMarkerAction.none, agentMarkerAction(.running, .halted));
+    try std.testing.expectEqual(AgentMarkerAction.none, agentMarkerAction(.running, .failed));
+    try std.testing.expectEqual(AgentMarkerAction.none, agentMarkerAction(.waiting_approval, .none));
+}
+
+test "agent done quiet window is Orca-calibrated (1.5s)" {
+    try std.testing.expectEqual(@as(i64, 1500), agent_done_quiet_ms);
+}
+
+test "doneAlreadyAnnounced: hook's own OSC 777 near the done edge wins" {
+    // OSC 777 delivered just before the marker (same hook run) → skip synthetic
+    try std.testing.expect(doneAlreadyAnnounced(9500, 10_000));
+    // delivered right after the edge (marker first, notify second) → skip
+    try std.testing.expect(doneAlreadyAnnounced(10_200, 10_000));
+    // an old unrelated notification does not count
+    try std.testing.expect(!doneAlreadyAnnounced(3000, 10_000));
+    // nothing ever delivered (0 sentinel) → fire
+    try std.testing.expect(!doneAlreadyAnnounced(0, 10_000));
 }

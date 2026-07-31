@@ -1,6 +1,6 @@
 const std = @import("std");
 const ghostty_vt = @import("ghostty-vt");
-const png_dimensions = @import("png_dimensions.zig");
+const png_dimensions = @import("preview/png_dimensions.zig");
 
 const c = @cImport({
     @cInclude("stb_image.h");

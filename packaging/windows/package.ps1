@@ -4,9 +4,8 @@ param(
     [string]$WebView2Version = '1.0.3912.50',
     [string]$ConPtyVersion = '1.24.260512001',
     [switch]$SkipBuild,
-    [switch]$SkipInstaller,
     [switch]$SkipCompatBundle,
-    [switch]$SkipNoWebViewBundle,
+    [switch]$SkipOpenGLBundle,
     [switch]$DebugConsole,
     [string]$Optimize = 'ReleaseFast'
 )
@@ -185,7 +184,7 @@ if ($DebugConsole) {
     exit 0
 }
 
-$noWebViewInstallDir = Join-Path $repoRoot 'zig-out-no-webview'
+$openGLInstallDir = Join-Path $repoRoot 'zig-out-opengl'
 
 if (-not $SkipBuild) {
     Push-Location $repoRoot
@@ -194,11 +193,11 @@ if (-not $SkipBuild) {
         if ($LASTEXITCODE -ne 0) {
             throw 'zig build -Doptimize=ReleaseFast failed.'
         }
-        if (-not $SkipNoWebViewBundle) {
-            Remove-Item -Path $noWebViewInstallDir -Recurse -Force -ErrorAction SilentlyContinue
-            & zig build -Doptimize=ReleaseFast -Dwebview=false -p $noWebViewInstallDir
+        if (-not $SkipOpenGLBundle) {
+            Remove-Item -Path $openGLInstallDir -Recurse -Force -ErrorAction SilentlyContinue
+            & zig build -Doptimize=ReleaseFast -Dgpu-backend=opengl -p $openGLInstallDir
             if ($LASTEXITCODE -ne 0) {
-                throw 'zig build -Doptimize=ReleaseFast -Dwebview=false failed.'
+                throw 'zig build -Doptimize=ReleaseFast -Dgpu-backend=opengl failed.'
             }
         }
     } finally {
@@ -210,19 +209,14 @@ $binaryPath = Join-Path $repoRoot 'zig-out\bin\wispterm.exe'
 if (-not (Test-Path $binaryPath)) {
     throw "Expected release binary was not found: $binaryPath"
 }
-$noWebViewBinaryPath = Join-Path $noWebViewInstallDir 'bin\wispterm.exe'
-if (-not $SkipNoWebViewBundle -and -not (Test-Path $noWebViewBinaryPath)) {
-    throw "Expected no-WebView release binary was not found: $noWebViewBinaryPath"
+$openGLBinaryPath = Join-Path $openGLInstallDir 'bin\wispterm.exe'
+if (-not $SkipOpenGLBundle -and -not (Test-Path $openGLBinaryPath)) {
+    throw "Expected OpenGL fallback release binary was not found: $openGLBinaryPath"
 }
 
 $portableDir = Join-Path $resolvedOutputDir 'portable'
 $portableCompatDir = Join-Path $resolvedOutputDir 'portable-compat'
-$portableNoWebViewDir = Join-Path $resolvedOutputDir 'portable-no-webview'
-$installerDir = Join-Path $resolvedOutputDir 'installer'
-$stagingDir = Join-Path $installerDir 'staging'
-$setupExe = Join-Path $installerDir 'wispterm-setup.exe'
-$versionFile = Join-Path $stagingDir 'version.txt'
-$sedFile = Join-Path $installerDir 'wispterm-installer.sed'
+$portableOpenGLDir = Join-Path $resolvedOutputDir 'portable-opengl'
 $webView2LoaderPath = $null
 $conPtyPair = $null
 
@@ -231,115 +225,20 @@ if (-not $SkipCompatBundle) {
     $conPtyPair = Get-ConPtyPair -RepoRoot $repoRoot -Version $ConPtyVersion
 }
 
-Remove-Item -Path $portableDir, $portableCompatDir, $portableNoWebViewDir, $installerDir -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path $portableDir, $portableCompatDir, $portableOpenGLDir, (Join-Path $resolvedOutputDir 'installer') -Recurse -Force -ErrorAction SilentlyContinue
 
 Copy-PortablePayload -BinaryPath $binaryPath -TargetDir $portableDir -ReleaseVersion $releaseVersion
 if ($webView2LoaderPath) {
     Copy-PortablePayload -BinaryPath $binaryPath -TargetDir $portableCompatDir -ReleaseVersion $releaseVersion -WebView2LoaderPath $webView2LoaderPath -ConPtyPair $conPtyPair
 }
-if (-not $SkipNoWebViewBundle) {
-    Copy-PortablePayload -BinaryPath $noWebViewBinaryPath -TargetDir $portableNoWebViewDir -ReleaseVersion $releaseVersion
-}
-
-if ($SkipInstaller) {
-    Write-Host "Portable build: $(Join-Path $portableDir 'wispterm.exe')"
-    if ($webView2LoaderPath) {
-        Write-Host "Portable compat build: $(Join-Path $portableCompatDir 'wispterm.exe')"
-    }
-    if (-not $SkipNoWebViewBundle) {
-        Write-Host "Portable no-WebView build: $(Join-Path $portableNoWebViewDir 'wispterm.exe')"
-    }
-    Write-Host 'Installer build skipped. Unsigned IExpress installers are prone to Windows Defender false positives.'
-    exit 0
-}
-
-New-Item -ItemType Directory -Path $installerDir, $stagingDir -Force | Out-Null
-
-Copy-Item -Path $binaryPath -Destination (Join-Path $stagingDir 'wispterm.exe') -Force
-$sourceAskPassHelper = Join-Path (Split-Path -Parent $binaryPath) 'wispterm-ssh-askpass.exe'
-if (-not (Test-Path $sourceAskPassHelper)) {
-    throw "Expected SSH askpass helper was not found: $sourceAskPassHelper"
-}
-Copy-Item -Path $sourceAskPassHelper -Destination (Join-Path $stagingDir 'wispterm-ssh-askpass.exe') -Force
-Copy-Item -Path (Join-Path $PSScriptRoot 'Install-WispTerm.ps1') -Destination (Join-Path $stagingDir 'Install-WispTerm.ps1') -Force
-Copy-Item -Path (Join-Path $PSScriptRoot 'install.cmd') -Destination (Join-Path $stagingDir 'install.cmd') -Force
-if ($webView2LoaderPath) {
-    Copy-Item -Path $webView2LoaderPath -Destination (Join-Path $stagingDir 'WebView2Loader.dll') -Force
-}
-Set-Content -Path $versionFile -Value $releaseVersion -Encoding ASCII
-
-$sedFiles = @(
-    'FILE0=wispterm.exe',
-    'FILE1=Install-WispTerm.ps1',
-    'FILE2=install.cmd',
-    'FILE3=version.txt',
-    'FILE4=wispterm-ssh-askpass.exe'
-)
-$sedSourceFiles = @(
-    '%FILE0%=',
-    '%FILE1%=',
-    '%FILE2%=',
-    '%FILE3%=',
-    '%FILE4%='
-)
-if ($webView2LoaderPath) {
-    $sedFiles += 'FILE5=WebView2Loader.dll'
-    $sedSourceFiles += '%FILE5%='
-}
-
-$sedBody = @"
-[Version]
-Class=IEXPRESS
-SEDVersion=3
-[Options]
-PackagePurpose=InstallApp
-ShowInstallProgramWindow=0
-HideExtractAnimation=1
-UseLongFileName=1
-InsideCompressed=1
-CAB_FixedSize=0
-CAB_ResvCodeSigning=0
-RebootMode=N
-InstallPrompt=
-DisplayLicense=
-FinishMessage=WispTerm has been installed to your user profile and added to the Start menu.
-TargetName=%TargetName%
-FriendlyName=%FriendlyName%
-AppLaunched=%AppLaunched%
-PostInstallCmd=<None>
-AdminQuietInstCmd=%AdminQuietInstCmd%
-UserQuietInstCmd=%UserQuietInstCmd%
-SourceFiles=SourceFiles
-[Strings]
-TargetName=$setupExe
-FriendlyName=WispTerm Setup
-AppLaunched=cmd.exe /c install.cmd
-AdminQuietInstCmd=cmd.exe /c install.cmd /quiet
-UserQuietInstCmd=cmd.exe /c install.cmd /quiet
-$($sedFiles -join "`r`n")
-[SourceFiles]
-SourceFiles0=$stagingDir\
-[SourceFiles0]
-$($sedSourceFiles -join "`r`n")
-"@
-
-Set-Content -Path $sedFile -Value $sedBody -Encoding ASCII
-
-Push-Location $installerDir
-try {
-    & iexpress.exe /N $sedFile
-    if ($LASTEXITCODE -ne 0) {
-        throw 'IExpress failed to create the installer.'
-    }
-} finally {
-    Pop-Location
+if (-not $SkipOpenGLBundle) {
+    Copy-PortablePayload -BinaryPath $openGLBinaryPath -TargetDir $portableOpenGLDir -ReleaseVersion $releaseVersion
 }
 
 Write-Host "Portable build: $(Join-Path $portableDir 'wispterm.exe')"
 if ($webView2LoaderPath) {
     Write-Host "Portable compat build: $(Join-Path $portableCompatDir 'wispterm.exe')"
 }
-if (-not $SkipNoWebViewBundle) {
-    Write-Host "Portable no-WebView build: $(Join-Path $portableNoWebViewDir 'wispterm.exe')"
+if (-not $SkipOpenGLBundle) {
+    Write-Host "Portable OpenGL fallback build: $(Join-Path $portableOpenGLDir 'wispterm.exe')"
 }
-Write-Host "Installer build: $setupExe"

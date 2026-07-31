@@ -17,5 +17,12 @@ slightly slower than the normal release — use it only to reproduce a problem.
    - any `%APPDATA%\wispterm\crash-*.txt` files, and
    - the text in the console window if the app crashed.
 
+For Ctrl-click preview/browser problems, the debug log also contains copyable
+single-line records beginning with `preview-diagnostic`. After reproducing the
+problem, you can paste just those nearby lines into the GitHub issue if the full
+log is too large. Useful scopes include `preview`, `preview-read`,
+`image-decode`, `html`, `html-server`, `url`, `browser-panel`, and
+`ssh-tunnel`.
+
 Open the folder quickly by pasting `%APPDATA%\wispterm` into the Explorer
 address bar.

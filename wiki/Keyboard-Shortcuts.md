@@ -101,5 +101,10 @@ the session launcher, and the Copilot input box each take their own navigation
 and editing keys before the app-level bindings apply. Those modal keys are not
 remappable through `keybind`.
 
+In command-center **Copilot History**, type to search saved conversations by
+title/model, press `Tab` to cycle the **All / Sidebar / Tab** source filter, use
+Up/Down to move, `Enter` to reopen, `Delete` to remove the selected row, and
+`Esc` to return to the normal command center.
+
 ---
 *See also: [[Configuration]] · [[Tabs-Splits-Panels]]*

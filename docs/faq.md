@@ -65,12 +65,35 @@ To confirm a background tool is responsible, select text with **Shift + arrow
 keys** (keyboard only, no mouse): if that does *not* trigger the interrupt, a
 pointing-device/selection utility is the cause.
 
-## Why Is WispTerm Laggy or Black on a Low-Spec PC (Weak Integrated GPU)?
+## How Do I Copy and Paste While tmux Mouse Mode Is Enabled?
 
-On Windows, WispTerm presents frames through a DXGI flip-model swapchain by
-default. On machines with a weak integrated GPU — typically Win11
-thin-and-light laptops — that path can be noticeably slow (v1.18.0), and
-v1.19.0 could even leave the window black.
+When tmux enables mouse reporting, an unmodified drag belongs to tmux rather
+than WispTerm. Hold **Shift** while dragging to bypass tmux and create a local
+WispTerm selection. Then use **Ctrl+Shift+C** on Windows/Linux or **Cmd+C** on
+macOS to copy it to the system clipboard.
+
+Use **Ctrl+V** on Windows/Linux or **Cmd+V** on macOS to paste clipboard text.
+**Ctrl+Shift+V** / **Cmd+Shift+V** pastes a clipboard image when present and
+falls back to text otherwise.
+
+WispTerm uses a configurable right-click action instead of a native context
+menu. With tmux mouse reporting active, hold **Shift** while right-clicking so
+the click stays local. To copy an existing selection and paste when there is no
+selection, add this to the WispTerm config:
+
+```conf
+right-click-action = copy-or-paste
+```
+
+These shortcuts operate on the local system clipboard. tmux's own copy-mode
+buffer remains separate unless tmux is configured to synchronize it.
+
+## Why Is the OpenGL Fallback Laggy or Black on a Low-Spec PC?
+
+This section applies to the separately published OpenGL fallback package. Its
+OpenGL renderer normally presents frames through a DXGI flip-model swapchain.
+On machines with a weak integrated GPU, that path can be noticeably slow or
+leave the window black.
 
 Since v1.19.1 WispTerm detects a sustained-slow or broken present path on its
 own: the first launch after upgrading may still feel slow once, and from the
@@ -78,6 +101,44 @@ next launch onward the app permanently switches to the classic GDI presenter
 on that machine — both the lag and the black screen disappear. Running on a
 discrete or external GPU avoids the slow path entirely. To opt out manually
 at any time, set `wispterm-d3d-present = false`.
+
+## What Should I Do If the First Launch Opens a Black Window?
+
+Starting with v1.34.0, first close all WispTerm windows and replace the default
+package with `wispterm-windows-portable-opengl-*.zip`. Renderer backends are
+fixed at build time, so the running native D3D11 binary cannot switch itself to
+OpenGL.
+
+If the OpenGL fallback also opens black, disable its DXGI presenter. Create or
+edit `%APPDATA%\wispterm\config` and add:
+
+```conf
+wispterm-d3d-present = false
+```
+
+If WispTerm cannot stay open long enough to use `Ctrl+,`, run this from
+PowerShell and then reopen WispTerm:
+
+```powershell
+New-Item -ItemType Directory -Force "$env:APPDATA\wispterm" | Out-Null
+Add-Content -Path "$env:APPDATA\wispterm\config" -Value "wispterm-d3d-present = false"
+```
+
+## Which Windows Package Should I Download?
+
+Use `wispterm-windows-portable-*.zip` by default. Starting with v1.34.0 it uses
+the native Direct3D 11 renderer and is the recommended Windows package.
+
+Use `wispterm-windows-portable-compat-*.zip` on older Windows 10 machines or
+when you want the embedded browser loader and bundled modern ConPTY next to the
+exe.
+
+Use `wispterm-windows-portable-opengl-*.zip` as the renderer fallback. Choose it
+if the default build opens a black window, crashes, misses UI, fails resize, or
+behaves badly over RDP, VM, hybrid GPU, or mixed-DPI monitor setups. Include a
+diagnostic report plus GPU/driver, Windows version, RDP/VM status, hybrid-GPU
+status, and monitor/DPI topology when reporting the issue. The OpenGL package
+tracks its own OpenGL release asset during in-app updates.
 
 ## Why Does WispTerm Remote Mirror the Local Terminal Size on Phones?
 
@@ -110,7 +171,9 @@ The switch only affects the current session. It does not change your global
 default profile or overwrite the saved profile. WispTerm asks the new model to
 summarize the prior transcript in the background and shows that handoff as a
 collapsible **Conversation summary** card; if the summary fails, the full raw
-history stays available.
+history stays available. Before compacting, WispTerm also saves the original
+conversation as a separate history checkpoint, so you can type `/resume` and
+reopen the pre-switch conversation even if the summary request fails.
 
 ## How Do I Update WispTerm?
 
@@ -140,6 +203,18 @@ Open **Skill Center** from the command center to inventory, install, and sync
 your Claude Code / Codex skills across servers — including installing the latest
 skills from a GitHub repository. Existing conversations keep the skill version
 they originally loaded, so updating does not change past chats.
+
+Skill Center also accepts local executable tools. Tools are imported as skills:
+WispTerm stores the binary, keeps a canonical `SKILL.md`, and exposes enabled
+tools as AI Agent function tools. If a binary has neither `--skill` nor a
+packaged `SKILL.md`, WispTerm can draft one from limited metadata with your
+configured AI profile and asks you to review it before enabling the tool.
+Imported executable tools keep their existing enable/disable state.
+First-party WispTerm Agent tools, including web, terminal, file, docs, and
+memory tools, appear in the same inventory with separate state in
+`agent_tools.json`. Turning a built-in tool off hides it from newly built AI
+request schemas/tool lists, and runtime execution rejects stale or hallucinated
+calls for that disabled tool.
 
 ## How Do I Generate a Diagnostic Report?
 
@@ -192,3 +267,10 @@ it crashes). To help diagnose a hard-to-reproduce issue — for example a crash
 when opening the WeChat connection, or a freeze when Ctrl+clicking a remote
 file — download it, reproduce the problem, then attach `wispterm-debug.log` (and
 any `crash-*.txt`) to your report.
+
+For Ctrl+click preview/browser issues, the debug log also includes copyable
+single-line records that begin with `preview-diagnostic`. After reproducing the
+problem, paste the nearby `preview-diagnostic` lines into the issue if the full
+log is too large. They cover preview path resolution, async file reads, image
+decode, HTML server startup, SSH browser tunnels, URL routing, and the embedded
+browser panel.

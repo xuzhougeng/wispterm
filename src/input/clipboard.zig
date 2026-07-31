@@ -5,13 +5,13 @@ const AppWindow = @import("../AppWindow.zig");
 const file_explorer = AppWindow.file_explorer;
 const browser_panel = AppWindow.browser_panel;
 const overlays = AppWindow.overlays;
-const scp = @import("../scp.zig");
+const scp = @import("../ssh/scp.zig");
 const platform_clipboard = @import("../platform/clipboard.zig");
 const platform_remote_file = @import("../platform/remote_file.zig");
 const Surface = @import("../Surface.zig");
 const selection_unit = @import("../selection_unit.zig");
 const file_drop_path = @import("file_drop_path.zig");
-const ai_chat_composer_layout = @import("../ai_chat_composer_layout.zig");
+const ai_chat_composer_layout = @import("../assistant/conversation/composer_layout.zig");
 
 fn isPasteStripByte(byte: u8) bool {
     return switch (byte) {
@@ -54,9 +54,19 @@ fn mutatePasteData(data: []u8, bracketed: bool) void {
     }
 }
 
+const pty_write_log = std.log.scoped(.pty_write);
+
 /// Write data to the PTY's input pipe (us -> child stdin).
+///
+/// This is the keyboard/paste input boundary, so it is intentionally
+/// fire-and-forget: there is no caller positioned to recover from backpressure.
+/// queuePtyWrite still surfaces its outcome — on failure we log a visible
+/// warning instead of silently swallowing input.
 pub fn writeToPty(surface: *Surface, data: []const u8) void {
-    surface.queuePtyWrite(data);
+    surface.queuePtyWrite(data) catch |err| pty_write_log.warn(
+        "dropped {d} bytes of input: {s}",
+        .{ data.len, @errorName(err) },
+    );
 }
 
 pub fn writePasteToPty(surface: *Surface, allocator: std.mem.Allocator, data: []const u8) void {
@@ -411,6 +421,21 @@ pub fn copyAiChatMessageToClipboard(chat: *AppWindow.ai_chat.Session, message_in
     }
 }
 
+/// Copy a single code block or table (a byte sub-range of a message) located by
+/// the renderer's per-block copy button.
+pub fn copyAiChatSpanToClipboard(chat: *AppWindow.ai_chat.Session, message_index: usize, start: usize, end: usize) void {
+    const allocator = AppWindow.g_allocator orelse return;
+    const text = chat.allocMessageSpanText(allocator, message_index, start, end) catch return;
+    defer allocator.free(text);
+    if (text.len == 0) return;
+    if (copyTextToClipboard(text)) {
+        overlays.showCopyToast(text.len);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        std.debug.print("Copied {} AI chat block bytes to clipboard\n", .{text.len});
+    }
+}
+
 pub fn copySelectionToClipboard() void {
     const surface = selectionSurfaceForClipboard() orelse return;
     const allocator = AppWindow.g_allocator orelse return;
@@ -545,6 +570,14 @@ pub fn pasteClipboardIntoSessionLauncher() bool {
     return overlays.sessionLauncherPasteText(text);
 }
 
+pub fn pasteClipboardIntoMcpForm() bool {
+    const allocator = AppWindow.g_allocator orelse return false;
+    const text = readClipboardText(allocator) orelse return false;
+    defer allocator.free(text);
+
+    return overlays.mcpServersPasteText(text);
+}
+
 pub fn pasteFromClipboardIntoAiChat(chat: *AppWindow.ai_chat.Session) void {
     const allocator = AppWindow.g_allocator orelse return;
     const text = readClipboardText(allocator) orelse return;
@@ -588,14 +621,13 @@ test "encodeImageBase64 produces standard base64" {
     try std.testing.expectEqualStrings("QUJD", out);
 }
 
-/// Ctrl+Shift+V target when an AI chat composer is focused: read a clipboard
-/// image, and either attach it to the composer (vision models) or drop it with a
-/// log + toast (non-vision models / oversized images).
-pub fn pasteImageIntoAiChat(chat: *AppWindow.ai_chat.Session) void {
-    const allocator = AppWindow.g_allocator orelse return;
-    const owner = clipboardOwner() orelse return;
+/// Returns false only when the clipboard does not contain an image, allowing
+/// Ctrl+Shift+V to fall back to ordinary text paste.
+pub fn pasteImageIntoAiChat(chat: *AppWindow.ai_chat.Session) bool {
+    const allocator = AppWindow.g_allocator orelse return false;
+    const owner = clipboardOwner() orelse return false;
 
-    const image_path = platform_clipboard.readImageAsPngTemp(allocator, owner) orelse return;
+    const image_path = platform_clipboard.readImageAsPngTemp(allocator, owner) orelse return false;
     defer allocator.free(image_path);
     // The temp PNG belongs to us once read; remove it either way.
     defer std.fs.deleteFileAbsolute(image_path) catch {};
@@ -603,7 +635,7 @@ pub fn pasteImageIntoAiChat(chat: *AppWindow.ai_chat.Session) void {
     const max_bytes = AppWindow.ai_chat.MAX_PASTED_IMAGE_BYTES;
     const bytes = std.fs.cwd().readFileAlloc(allocator, image_path, max_bytes + 1) catch |err| {
         std.debug.print("Chat image paste: could not read {s}: {s}\n", .{ image_path, @errorName(err) });
-        return;
+        return true;
     };
     defer allocator.free(bytes);
 
@@ -617,11 +649,11 @@ pub fn pasteImageIntoAiChat(chat: *AppWindow.ai_chat.Session) void {
             overlays.showStatusToast("Vision off for this model \xe2\x80\x94 image ignored");
         },
         .attached => {
-            const b64 = encodeImageBase64(allocator, bytes) catch return;
+            const b64 = encodeImageBase64(allocator, bytes) catch return true;
             defer allocator.free(b64);
             chat.addPendingImage(b64, "image/png") catch {
                 std.debug.print("Chat image paste: out of memory attaching image\n", .{});
-                return;
+                return true;
             };
             std.debug.print("Chat image paste: attached image ({d} bytes, {d} pending)\n", .{ bytes.len, chat.pendingImageCount() });
             var placeholder_buf: [32]u8 = undefined;
@@ -632,17 +664,21 @@ pub fn pasteImageIntoAiChat(chat: *AppWindow.ai_chat.Session) void {
             AppWindow.g_cells_valid = false;
         },
     }
+    return true;
 }
 
-pub fn pasteImageFromClipboard() void {
-    const surface = AppWindow.activeSurface() orelse return;
-    const allocator = AppWindow.g_allocator orelse return;
-    const owner = clipboardOwner() orelse return;
+/// Returns false only when the clipboard does not contain an image, allowing
+/// Ctrl+Shift+V to fall back to ordinary text paste.
+pub fn pasteImageFromClipboard() bool {
+    const surface = AppWindow.activeSurface() orelse return false;
+    const allocator = AppWindow.g_allocator orelse return false;
+    const owner = clipboardOwner() orelse return false;
 
-    const image_path = platform_clipboard.readImageAsPngTemp(allocator, owner) orelse return;
+    const image_path = platform_clipboard.readImageAsPngTemp(allocator, owner) orelse return false;
     defer allocator.free(image_path);
 
     _ = pasteSavedClipboardImage(surface, allocator, image_path);
+    return true;
 }
 
 pub fn writeTextToActivePty(text: []const u8) void {

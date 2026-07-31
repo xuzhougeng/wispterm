@@ -3,7 +3,7 @@
 //! be reused by dependency-light modules and unit-tested in the fast suite.
 //! Depends only on std and the std-only markdown_preview module.
 const std = @import("std");
-const markdown_preview = @import("../markdown_preview.zig");
+const markdown_preview = @import("../preview/markdown.zig");
 
 fn endsWithIgnoreCase(text: []const u8, suffix: []const u8) bool {
     if (text.len < suffix.len) return false;

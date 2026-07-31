@@ -23,16 +23,17 @@
 ## 功能特性
 
 - **Ghostty 的终端模拟** —— 使用 libghostty-vt 进行 VT 解析与终端状态管理
-- **DirectWrite 字体发现** —— 按名称查找系统字体，并对缺失字符做逐字形回退
+- **原生字体发现** —— 通过 DirectWrite、CoreText 或 fontconfig 按名称查找系统字体，并对缺失字符做逐字形回退
 - **FreeType 渲染** —— 高质量字形栅格化，采用 Ghostty 风格的字体度量
 - **Sprite 渲染** —— 制表线、块元素、盲文点阵、Powerline 符号
 - **主题支持** —— 兼容 Ghostty 主题文件，内置 450+ 主题（默认：Poimandres）
 - **背景图与着色器** —— 壁纸混合，外加 Ghostty 兼容的 GLSL 后处理
 - **分屏与标签页** —— 横/纵向分屏、标签栏、焦点跟随鼠标、均分尺寸
 - **文件浏览器与预览** —— 浏览本地、WSL、SSH 文件；无需离开终端即可预览 Markdown / 文本 / 表格 / 图片 / PDF
-- **内嵌浏览器面板** —— 在侧边 WebView2 面板或默认浏览器中打开网址，并为 profile 会话提供持久的 SSH 回环端口转发
+- **内嵌浏览器面板** —— 可用时在侧边 WebView2（Windows）或 WKWebView（macOS）面板中打开网址，并为 profile 会话提供持久的 SSH 回环端口转发
 - **SSH 端口转发管理器** —— 在专用标签页中静默管理本地与反向 SSH 转发规则
 - **AI 智能体会话** —— 启动 OpenAI 兼容的智能体标签页，配置 profile、恢复历史，导出完整或精简的 Markdown 对话记录
+- **命令中心副驾历史** —— 搜索已保存的 AI Chat 与 Copilot 侧栏对话，按日期分组，并可按侧栏/标签页来源筛选
 - **会话内切换模型** —— 输入 `/model` 或点击模型标签，把当前 AI Chat/Copilot 会话切到另一个已保存 profile，并用摘要交接上下文
 - **AI 历史浏览器** —— 浏览本地、WSL 与 SSH 上的 Codex / Claude Code / Reasonix 历史，并从原始项目目录恢复会话
 - **Kitty 图形协议** —— 通过 `imgcat.py` / `pdfcat.py` 在远程 shell 中内联显示图片和 PDF
@@ -49,6 +50,15 @@
 - [常见问题](docs/faq.md)
 
 > 注：上述文档目前均为英文。
+
+## 版本
+
+桌面应用版本来自仓库根目录的 `build.zig.zon`（当前为 `1.34.0`），也是
+`wispterm --version`、release notes、桌面发布包和命令中心 `Version` 条目使用的版本。
+
+`remote/` 下的 WispTerm Remote 网页控制台/中继有独立的 npm/web 版本（当前为
+`0.32.0`）。除非某次发布明确包含 `remote/` 变更，桌面版本发布不要求同步提升 Remote
+版本。
 
 ## 构建
 
@@ -103,7 +113,7 @@ wispterm [options]
   --show-config-path           打印解析出的主配置路径
   --list-fonts                 列出可用的系统字体
   --list-themes                列出可用的主题
-  --test-font-discovery        测试 DirectWrite 字体发现
+  --test-font-discovery        测试平台字体发现
   --help, -h                   显示帮助
 ```
 
@@ -145,16 +155,22 @@ keybind = global:ctrl+backquote=toggle_quake
 | 在图库中查看上一张 / 下一张图片或 PDF（预览面板聚焦时） | Left / Right | Left / Right |
 | PDF 预览上一页 / 下一页（PDF 预览面板聚焦时） | PageUp / PageDown | PageUp / PageDown |
 | 下载 SSH 远程文件 | 在 SSH 输出中 Ctrl+Shift 单击路径 | 在 SSH 输出中 Cmd+Shift 单击路径 |
-| 关闭聚焦的面板、标签页或窗口 | **Ctrl+Shift+W** | **Cmd+Shift+W** |
+| 关闭聚焦的面板、标签页或窗口 | **Ctrl+Shift+W** | **Cmd+W** |
 | 最大化或还原窗口 | **Alt+Enter** | **Opt+Enter** |
 | 增大 / 减小字号 | **Ctrl++** / **Ctrl+-** | **Cmd++** / **Cmd+-** |
-| 复制终端选区或 AI 聊天选区/记录 | **Ctrl+Shift+C** | **Cmd+Shift+C** |
+| 复制终端选区或 AI 聊天选区/记录 | **Ctrl+Shift+C** | **Cmd+C** |
 | 从上一次终端单击锚点开始选择 | 在终端文本上 Shift 单击 | 在终端文本上 Shift 单击 |
+| tmux 鼠标模式开启时选择终端文本 | **Shift 拖选** | **Shift 拖选** |
 | 选择 AI 回答的一部分 | 拖选 AI 回答文本 | 拖选 AI 回答文本 |
 | 选择并复制 AI 回答的一部分 | Shift 拖选 AI 回答文本 | Shift 拖选 AI 回答文本 |
 | 选择 AI 聊天输入；输入为空时选择整段记录 | 在 AI 聊天中 **Ctrl+A** | 在 AI 聊天中 **Cmd+A** |
 | 复制 AI 聊天选区或完整记录 | 在 AI 聊天中 **Ctrl+C** | 在 AI 聊天中 **Cmd+C** |
 | 删除选中的已保存智能体会话 | 在智能体历史中 **D** / **Delete** | 在智能体历史中 **D** / **Delete** |
+| 搜索已保存的副驾历史 | 命令中心副驾历史中输入 / Backspace | 命令中心副驾历史中输入 / Backspace |
+| 切换副驾历史来源筛选 | 命令中心副驾历史中 Tab | 命令中心副驾历史中 Tab |
+| 移动选中的副驾历史行 | 命令中心副驾历史中 Up / Down | 命令中心副驾历史中 Up / Down |
+| 重开选中的副驾历史行 | 命令中心副驾历史中 Enter | 命令中心副驾历史中 Enter |
+| 删除选中的副驾历史行 | 命令中心副驾历史中 Delete | 命令中心副驾历史中 Delete |
 | 编辑 AI 历史筛选条件 | 在 AI 历史中输入 / Backspace | 在 AI 历史中输入 / Backspace |
 | 移动选中的 AI 历史会话 | AI 历史中 Up / Down | AI 历史中 Up / Down |
 | 恢复选中的 AI 历史会话 | AI 历史中 Enter | AI 历史中 Enter |
@@ -163,7 +179,7 @@ keybind = global:ctrl+backquote=toggle_quake
 | 编辑 AI 聊天输入光标 | Left/Right/Home/End/Delete/Backspace | Left/Right/Home/End/Delete/Backspace |
 | 停止进行中的 AI 聊天或智能体请求 | 工作时在 AI 聊天中按 **Esc** | 工作时在 AI 聊天中按 **Esc** |
 | 复制选区（右键） | 右键点击选区 | 右键点击选区 |
-| 粘贴文本 | **Ctrl+V** | **Cmd+V** |
+| 粘贴文本 | **Ctrl+V**；剪贴板没有图片时，**Ctrl+Shift+V** 也会粘贴文本 | **Cmd+V**；剪贴板没有图片时，**Cmd+Shift+V** 也会粘贴文本 |
 | 粘贴剪贴板图片 | **Ctrl+Shift+V** | **Cmd+Shift+V** |
 | 把焦点移到相邻面板 | **Alt** + 方向键 | **Opt** + 方向键 |
 | 按编号聚焦面板 1–9 | **Ctrl+1**–**9** | **Cmd+1**–**9** |
@@ -229,7 +245,7 @@ __wispterm_report_cwd
 
 - 原始项目：[arya-s/phantty](https://github.com/arya-s/phantty) —— Zig + libghostty-vt
 的基础与 Windows 终端核心。WispTerm 在此基础上构建，并在其上叠加了更多特性：内嵌
-WebView2 浏览器面板、带 Markdown/文本/表格/图片/PDF 预览的文件浏览器、可导出 Markdown 的
+内嵌浏览器面板、带 Markdown/文本/表格/图片/PDF 预览的文件浏览器、可导出 Markdown 的
 AI 智能体会话、可选的远程访问客户端、Kitty 图形图片协议支持，以及可配置的背景图。
 - 终端模拟：[ghostty-org/ghostty](https://github.com/ghostty-org/ghostty)，通过
 `libghostty-vt`。
@@ -247,8 +263,8 @@ MIT
 
 ## 引用
 
-Xu, Z.-G. (2026). *WispTerm* (Version 1.25.0) [Computer software]. Zenodo.
-https://doi.org/10.5281/zenodo.20660542
+Xu, Z.-G. (2026). *WispTerm* (Version 1.34.0) [Computer software]. Zenodo.
+https://doi.org/10.5281/zenodo.20660541
 
 可直接复制的致谢模板：
 
@@ -256,6 +272,6 @@ https://doi.org/10.5281/zenodo.20660542
 我们在生命科学数据分析中使用 WispTerm 作为计算环境的一部分，用于远程计算流程、
 可重复的命令行处理，以及相关文献与分析代码的整理。
 
-Xu, Z.-G. (2026). WispTerm (Version 1.25.0) [Computer software]. Zenodo.
-https://doi.org/10.5281/zenodo.20660542
+Xu, Z.-G. (2026). WispTerm (Version 1.34.0) [Computer software]. Zenodo.
+https://doi.org/10.5281/zenodo.20660541
 ```

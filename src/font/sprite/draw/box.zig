@@ -316,7 +316,7 @@ fn dashHorizontal(metrics: Metrics, canvas: *Canvas, count: u32, thickness: Thic
     const thick_px: i32 = @intCast(thickness.height(metrics.box_thickness));
     const y: i32 = @divFloor(@as(i32, @intCast(metrics.cell_height)) - thick_px, 2);
     const w: i32 = @intCast(metrics.cell_width);
-    
+
     // Dashes fill the cell with small gaps between them
     // Gap is 1 pixel (or line thickness, whichever is smaller)
     const n: i32 = @intCast(count);
@@ -341,7 +341,7 @@ fn dashVertical(metrics: Metrics, canvas: *Canvas, count: u32, thickness: Thickn
     const thick_px: i32 = @intCast(thickness.height(metrics.box_thickness));
     const x: i32 = @divFloor(@as(i32, @intCast(metrics.cell_width)) - thick_px, 2);
     const h: i32 = @intCast(metrics.cell_height);
-    
+
     // Dashes fill the cell with small gaps between them
     const n: i32 = @intCast(count);
     const gap: i32 = @min(thick_px, @max(1, @divFloor(h, n * 4)));

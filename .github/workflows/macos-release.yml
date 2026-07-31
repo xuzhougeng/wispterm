@@ -1,6 +1,12 @@
 name: Publish macOS Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build the aarch64 DMG for (e.g. v1.29.0)
+        required: true
+        type: string
   push:
     tags:
       - '[0-9]*'
@@ -9,10 +15,13 @@ on:
 permissions:
   contents: write
 
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+
 jobs:
   build-macos:
     name: Build macOS (${{ matrix.arch }})
-    runs-on: macos-latest
+    runs-on: macos-15
     # x86_64 (Intel) is built on demand via macos-release-x86_64.yml, not here,
     # because of a toolchain issue affecting the Intel build (see issue #114).
     # The automatic tag-triggered release ships Apple Silicon (aarch64) only.
@@ -28,11 +37,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
       - name: Validate release tag
         shell: bash
         run: |
-          tag="${{ github.ref_name }}"
+          tag="${RELEASE_TAG}"
           if [[ ! "$tag" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+(\.[0-9]+)?)$ ]]; then
             echo "Release tag must match vX.Y.Z, X.Y, or X.Y.Z. Received: $tag" >&2
             exit 1
@@ -103,7 +114,7 @@ jobs:
       - name: Fetch dependencies and build release
         shell: bash
         env:
-          WISPTERM_MACOS_VERSION: ${{ github.ref_name }}
+          WISPTERM_MACOS_VERSION: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
 
@@ -136,7 +147,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="${{ github.ref_name }}"
+          tag="${RELEASE_TAG}"
           dmg_tag="$tag"
           [[ "$dmg_tag" != v* ]] && dmg_tag="v$dmg_tag"
           dmg_path="zig-out/dist/macos/wispterm-macos-${dmg_tag}.dmg"
@@ -155,7 +166,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="${{ github.ref_name }}"
+          tag="${RELEASE_TAG}"
           dmg_tag="$tag"
           [[ "$dmg_tag" != v* ]] && dmg_tag="v$dmg_tag"
           src="zig-out/dist/macos/wispterm-macos-${dmg_tag}.dmg"
@@ -166,7 +177,7 @@ jobs:
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wispterm-macos-${{ matrix.arch }}-${{ github.ref_name }}
+          name: wispterm-macos-${{ matrix.arch }}-${{ env.RELEASE_TAG }}
           path: ${{ env.ASSET_PATH }}
           if-no-files-found: error
 
@@ -199,7 +210,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          tag="${{ github.ref_name }}"
+          tag="${RELEASE_TAG}"
 
           files=()
           while IFS= read -r -d '' f; do

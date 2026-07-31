@@ -13,11 +13,12 @@ const std = @import("std");
 const Context = @import("Context.zig");
 const c = @import("c.zig");
 const render_state = @import("render_state.zig");
+const types = @import("../types.zig");
 const vertex = @import("vertex.zig");
 const Pipeline = @This();
 
-program: c.GLuint,
-vao: c.GLuint,
+program: types.ProgramHandle,
+vao: types.VertexArrayHandle,
 
 extern fn wispterm_metal_pipeline_create(device: ?*anyopaque, vs_src: [*c]const u8, fs_src: [*c]const u8, vao: c.GLuint, error_buf: [*]u8, error_buf_len: usize) c.GLuint;
 extern fn wispterm_metal_pipeline_destroy(program: c.GLuint) void;
@@ -40,13 +41,17 @@ pub fn compileShader(shader_type: c.GLenum, source: [*c]const u8) ?c.GLuint {
 
 /// Build a pipeline from vertex/fragment sources, paired with a caller-built
 /// VAO handle.
-pub fn init(vs_src: [*c]const u8, fs_src: [*c]const u8, vao: c.GLuint) Pipeline {
-    const program = wispterm_metal_pipeline_create(Context.deviceHandle(), vs_src, fs_src, vao, &scratch_error, scratch_error.len);
+pub fn init(vs_src: [*c]const u8, fs_src: [*c]const u8, vao: types.VertexArrayHandle) Pipeline {
+    const program = wispterm_metal_pipeline_create(Context.deviceHandle(), vs_src, fs_src, @intCast(vao), &scratch_error, scratch_error.len);
     if (program == 0) {
         const end = std.mem.indexOfScalar(u8, &scratch_error, 0) orelse scratch_error.len;
         std.debug.print("Metal pipeline init failed: {s}\n", .{scratch_error[0..end]});
     }
-    return .{ .program = program, .vao = vao };
+    return .{ .program = @intCast(program), .vao = vao };
+}
+
+fn backendProgram(self: Pipeline) c.GLuint {
+    return @intCast(self.program);
 }
 
 pub fn use(self: Pipeline) void {
@@ -58,13 +63,13 @@ pub fn bindVao(self: Pipeline) void {
     // Vertex layouts are tracked by the VAO/vertex registry.
 }
 pub fn setVec2(self: Pipeline, name: [*c]const u8, x: f32, y: f32) void {
-    wispterm_metal_pipeline_set_vec2(self.program, name, x, y);
+    wispterm_metal_pipeline_set_vec2(self.backendProgram(), name, x, y);
 }
 pub fn setFloat(self: Pipeline, name: [*c]const u8, v: f32) void {
-    wispterm_metal_pipeline_set_float(self.program, name, v);
+    wispterm_metal_pipeline_set_float(self.backendProgram(), name, v);
 }
 pub fn setInt(self: Pipeline, name: [*c]const u8, v: i32) void {
-    wispterm_metal_pipeline_set_int(self.program, name, v);
+    wispterm_metal_pipeline_set_int(self.backendProgram(), name, v);
 }
 pub fn setProjection(self: Pipeline) void {
     const size = render_state.viewportSize();
@@ -80,34 +85,41 @@ pub fn setProjection(self: Pipeline) void {
     self.setMat4("projection", &projection);
 }
 pub fn setMat4(self: Pipeline, name: [*c]const u8, m: *const [16]f32) void {
-    wispterm_metal_pipeline_set_mat4(self.program, name, m);
+    wispterm_metal_pipeline_set_mat4(self.backendProgram(), name, m);
 }
 pub fn setVec3(self: Pipeline, name: [*c]const u8, x: f32, y: f32, z: f32) void {
-    wispterm_metal_pipeline_set_vec3(self.program, name, x, y, z);
+    wispterm_metal_pipeline_set_vec3(self.backendProgram(), name, x, y, z);
 }
 pub fn setVec4(self: Pipeline, name: [*c]const u8, x: f32, y: f32, z: f32, w: f32) void {
-    wispterm_metal_pipeline_set_vec4(self.program, name, x, y, z, w);
+    wispterm_metal_pipeline_set_vec4(self.backendProgram(), name, x, y, z, w);
 }
-pub fn drawArrays(self: Pipeline, mode: c.GLenum, first: c.GLint, count: c.GLsizei) void {
-    draw(self, mode, first, count, 1);
+pub fn drawArrays(self: Pipeline, topology: types.PrimitiveTopology, first: c.GLint, count: c.GLsizei) void {
+    draw(self, topology, first, count, 1);
 }
-pub fn drawArraysInstanced(self: Pipeline, mode: c.GLenum, first: c.GLint, count: c.GLsizei, instances: c.GLsizei) void {
-    draw(self, mode, first, count, instances);
+pub fn drawArraysInstanced(self: Pipeline, topology: types.PrimitiveTopology, first: c.GLint, count: c.GLsizei, instances: c.GLsizei) void {
+    draw(self, topology, first, count, instances);
 }
 pub fn deinit(self: *Pipeline) void {
-    if (self.program != 0) wispterm_metal_pipeline_destroy(self.program);
+    if (self.program != 0) wispterm_metal_pipeline_destroy(@intCast(self.program));
     self.* = .{ .program = 0, .vao = 0 };
 }
 
 threadlocal var scratch_error: [512]u8 = @splat(0);
 
-fn draw(self: Pipeline, mode: c.GLenum, first: c.GLint, count: c.GLsizei, instances: c.GLsizei) void {
+fn topologyEnum(topology: types.PrimitiveTopology) c.GLenum {
+    return switch (topology) {
+        .triangles => c.GL_TRIANGLES,
+        .triangle_strip => c.GL_TRIANGLE_STRIP,
+    };
+}
+
+fn draw(self: Pipeline, topology: types.PrimitiveTopology, first: c.GLint, count: c.GLsizei, instances: c.GLsizei) void {
     const buffer0 = vertex.bufferHandle(self.vao, 0);
     const buffer1 = vertex.bufferHandle(self.vao, 1);
     last_draw_succeeded = wispterm_metal_pipeline_draw_arrays(
         &Context.handles,
-        self.program,
-        mode,
+        self.backendProgram(),
+        topologyEnum(topology),
         first,
         count,
         instances,

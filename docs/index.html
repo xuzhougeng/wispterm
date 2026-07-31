@@ -49,7 +49,7 @@
         <h1>WispTerm</h1>
         <p class="tagline">A fast, modern terminal for <strong>Windows, macOS, and experimental Linux</strong>, written in Zig, powered by <a href="https://github.com/ghostty-org/ghostty" target="_blank" rel="noopener">libghostty-vt</a>.</p>
         <div class="cta-row">
-          <a class="cta primary" href="https://github.com/xuzhougeng/wispterm/releases/latest" target="_blank" rel="noopener">Download latest release</a>
+          <a class="cta primary" href="#install">Download latest release</a>
           <a class="cta secondary" href="https://github.com/xuzhougeng/wispterm" target="_blank" rel="noopener">View on GitHub</a>
         </div>
         <p class="platform-note">Ships for <strong>Windows</strong>, <strong>macOS</strong> (Apple Silicon &amp; Intel), and an <strong>experimental Linux AppImage</strong>.</p>
@@ -71,7 +71,7 @@
           <div class="tp-body">
             <pre><span class="prompt">PS C:\Users\you&gt;</span> <span class="cmd">wispterm --theme Poimandres</span>
 <span class="muted">  loading config from %APPDATA%\wispterm\config</span>
-<span class="muted">  fonts: Cascadia Code (DirectWrite + FreeType)</span>
+<span class="muted">  fonts: Cascadia Code (native discovery + FreeType)</span>
 <span class="muted">  themes: 453 built-in</span>
 <span class="ok">  ready.</span>
 
@@ -117,7 +117,7 @@ nothing to commit, working tree clean
           </div>
           <div class="feature">
             <h3>Native font stack</h3>
-            <p>DirectWrite font discovery with per-glyph fallback, FreeType rasterization, Ghostty-style metrics.</p>
+            <p>Native font discovery with per-glyph fallback, FreeType rasterization, Ghostty-style metrics.</p>
           </div>
           <div class="feature">
             <h3>Splits &amp; tabs</h3>
@@ -145,7 +145,7 @@ nothing to commit, working tree clean
           </div>
           <div class="feature">
             <h3>Embedded browser</h3>
-            <p>Open <code>http(s)</code> URLs in a side WebView2 panel (Windows). SSH sessions tunnel loopback URLs automatically.</p>
+            <p>Open <code>http(s)</code> URLs in a side WebView2 (Windows) or WKWebView (macOS) panel. SSH sessions tunnel loopback URLs automatically.</p>
           </div>
           <div class="feature">
             <h3>Kitty Graphics</h3>
@@ -179,26 +179,35 @@ nothing to commit, working tree clean
           <div class="install-card">
             <span class="badge">Windows · Recommended</span>
             <h3>Portable</h3>
-            <p>Single executable — download the zip, extract, and run <code>wispterm.exe</code>.</p>
-            <a class="cta primary small" href="https://github.com/xuzhougeng/wispterm/releases/latest" target="_blank" rel="noopener">Latest release →</a>
+            <p>Native Direct3D 11 renderer — download the zip, extract, and run <code>wispterm.exe</code>.</p>
+            <a class="cta primary small" href="https://github.com/xuzhougeng/wispterm/releases/latest" data-cloudflare-download="/downloads/latest/wispterm-windows-portable.zip" target="_blank" rel="noopener">Download zip →</a>
           </div>
           <div class="install-card">
-            <span class="badge">Windows · With browser</span>
-            <h3>Portable + WebView2</h3>
-            <p>Bundles <code>WebView2Loader.dll</code> for the embedded browser side panel.</p>
-            <a class="cta primary small" href="https://github.com/xuzhougeng/wispterm/releases/latest" target="_blank" rel="noopener">Latest release →</a>
+            <span class="badge">Windows · Compatibility</span>
+            <h3>Portable compat</h3>
+            <p>Native Direct3D 11 build with <code>WebView2Loader.dll</code> and a bundled modern ConPTY for older Windows 10 machines.</p>
+            <a class="cta primary small" href="https://github.com/xuzhougeng/wispterm/releases/latest" data-cloudflare-download="/downloads/latest/wispterm-windows-portable-compat.zip" target="_blank" rel="noopener">Download zip →</a>
+          </div>
+          <div class="install-card">
+            <span class="badge">Windows · Renderer fallback</span>
+            <h3>Portable OpenGL</h3>
+            <p>Use this fallback if the recommended native D3D11 build opens black, crashes, or renders incorrectly.</p>
+            <a class="cta secondary small" href="https://github.com/xuzhougeng/wispterm/releases/latest" data-cloudflare-download="/downloads/latest/wispterm-windows-portable-opengl.zip" target="_blank" rel="noopener">Download fallback →</a>
           </div>
           <div class="install-card">
             <span class="badge">macOS · Beta</span>
             <h3>macOS DMG</h3>
             <p>Signed and notarized <code>.dmg</code> for Apple Silicon and Intel. Requires macOS 13+. Open the DMG and drag <code>WispTerm.app</code> to Applications.</p>
-            <a class="cta primary small" href="https://github.com/xuzhougeng/wispterm/releases/latest" target="_blank" rel="noopener">Latest release →</a>
+            <div class="download-row">
+              <a class="cta primary small" href="https://github.com/xuzhougeng/wispterm/releases/latest" data-cloudflare-download="/downloads/latest/wispterm-macos-aarch64.dmg" target="_blank" rel="noopener">Apple Silicon →</a>
+              <a class="cta secondary small" href="https://github.com/xuzhougeng/wispterm/releases/latest" data-cloudflare-download="/downloads/latest/wispterm-macos-x86_64.dmg" target="_blank" rel="noopener">Intel →</a>
+            </div>
           </div>
           <div class="install-card">
             <span class="badge">Linux · Experimental</span>
             <h3>AppImage</h3>
             <p>Portable x86_64 AppImage for community testing. It bundles SDL3; expect rough edges while the Linux port matures.</p>
-            <a class="cta primary small" href="https://github.com/xuzhougeng/wispterm/releases/latest" target="_blank" rel="noopener">Latest release →</a>
+            <a class="cta primary small" href="https://github.com/xuzhougeng/wispterm/releases/latest" data-cloudflare-download="/downloads/latest/wispterm-linux-x86_64.AppImage" target="_blank" rel="noopener">Download AppImage →</a>
           </div>
           <div class="install-card">
             <span class="badge">Source</span>
@@ -343,6 +352,10 @@ __wispterm_report_cwd</code></pre>
           <div class="feature">
             <h3>How do I connect to older bastions or SSH servers?</h3>
             <p>Set <code>ssh-legacy-algorithms = true</code> in your config file. This enables compatibility options for older hosts that still require <code>ssh-rsa</code>, <code>ssh-dss</code>, legacy Diffie-Hellman key exchange, or CBC ciphers.</p>
+          </div>
+          <div class="feature">
+            <h3>First launch opens a black window?</h3>
+            <p>Close all WispTerm windows and use the Portable OpenGL fallback package. Renderer backends are fixed at build time, so the native D3D11 executable cannot switch itself to OpenGL.</p>
           </div>
           <div class="feature">
             <h3>Can I switch AI models without starting over?</h3>

@@ -37,7 +37,7 @@ pub const SurfaceSnap = union(enum) {
 };
 
 pub const PreviewSnap = struct {
-    kind: @import("markdown_preview.zig").Kind = .markdown,
+    kind: @import("preview/markdown.zig").Kind = .markdown,
     path: []const u8 = "",
 };
 
@@ -77,6 +77,13 @@ pub const TabSnap = struct {
     // placeholder. Absent in older snapshots → null → ordinary terminal tab.
     ai_session_id: ?[]const u8 = null,
     ai_history: ?AiHistorySnap = null,
+    // Active Copilot sidebar conversation for a `.terminal` tab. The conversation
+    // lives in the agent-history store; this only points at it (mirrors
+    // `ai_session_id`). Null in older snapshots → no Copilot conversation.
+    copilot_session_id: ?[]const u8 = null,
+    // Whether the Copilot sidebar was open when snapshotted. False in older
+    // snapshots → sidebar starts collapsed (conversation still loaded).
+    copilot_visible: bool = false,
 };
 
 pub const Session = struct {
@@ -148,48 +155,6 @@ pub fn countLeaves(node: *const NodeSnap) u32 {
     return switch (node.*) {
         .leaf => 1,
         .split => |sp| countLeaves(sp.left) + countLeaves(sp.right),
-    };
-}
-
-/// Return a pointer to the Nth leaf in pre-order, or null if out of range.
-pub fn leafByIndex(root: *const NodeSnap, target: u32) ?*const NodeSnap {
-    var idx: u32 = 0;
-    return walk(root, target, &idx);
-}
-
-fn walk(node: *const NodeSnap, target: u32, idx: *u32) ?*const NodeSnap {
-    return switch (node.*) {
-        .leaf => blk: {
-            if (idx.* == target) break :blk node;
-            idx.* += 1;
-            break :blk null;
-        },
-        .split => |sp| blk: {
-            if (walk(sp.left, target, idx)) |found| break :blk found;
-            if (walk(sp.right, target, idx)) |found| break :blk found;
-            break :blk null;
-        },
-    };
-}
-
-/// Return the pre-order leaf index of the given leaf node, or null if not in tree.
-pub fn indexOfLeaf(root: *const NodeSnap, target: *const NodeSnap) ?u32 {
-    var idx: u32 = 0;
-    return findIndex(root, target, &idx);
-}
-
-fn findIndex(node: *const NodeSnap, target: *const NodeSnap, idx: *u32) ?u32 {
-    return switch (node.*) {
-        .leaf => blk: {
-            if (node == target) break :blk idx.*;
-            idx.* += 1;
-            break :blk null;
-        },
-        .split => |sp| blk: {
-            if (findIndex(sp.left, target, idx)) |found| break :blk found;
-            if (findIndex(sp.right, target, idx)) |found| break :blk found;
-            break :blk null;
-        },
     };
 }
 
@@ -332,7 +297,7 @@ test "session_persist: preview leaf round-trips through JSON" {
     try std.testing.expectEqual(NodeSnap.LeafSnap.Kind.preview, leaf.kind);
     try std.testing.expect(leaf.preview != null);
     try std.testing.expectEqualStrings("README.md", leaf.preview.?.path);
-    try std.testing.expectEqual(@import("markdown_preview.zig").Kind.markdown, leaf.preview.?.kind);
+    try std.testing.expectEqual(@import("preview/markdown.zig").Kind.markdown, leaf.preview.?.kind);
 }
 
 test "session_persist: old terminal leaf JSON (no kind field) still parses as terminal" {
@@ -577,29 +542,6 @@ test "session_persist: normalize() clamps ratio above 1" {
     try std.testing.expect(sp.ratio <= 0.95);
 }
 
-test "session_persist: leafByIndexPreOrder walks pre-order" {
-    var l1 = NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
-    var l2 = NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
-    var l3 = NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
-    var inner = NodeSnap{ .split = .{ .layout = .vertical, .ratio = 0.5, .left = &l1, .right = &l2 } };
-    var root = NodeSnap{ .split = .{ .layout = .horizontal, .ratio = 0.5, .left = &inner, .right = &l3 } };
-
-    try std.testing.expectEqual(@as(u32, 3), countLeaves(&root));
-    try std.testing.expectEqual(@as(?*const NodeSnap, &l1), leafByIndex(&root, 0));
-    try std.testing.expectEqual(@as(?*const NodeSnap, &l2), leafByIndex(&root, 1));
-    try std.testing.expectEqual(@as(?*const NodeSnap, &l3), leafByIndex(&root, 2));
-    try std.testing.expectEqual(@as(?*const NodeSnap, null), leafByIndex(&root, 3));
-}
-
-test "session_persist: indexOfLeafBySurfaceAddress finds leaf in pre-order" {
-    var l1 = NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{ .cwd = "/A" } } } };
-    var l2 = NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{ .cwd = "/B" } } } };
-    var root = NodeSnap{ .split = .{ .layout = .horizontal, .ratio = 0.5, .left = &l1, .right = &l2 } };
-
-    try std.testing.expectEqual(@as(?u32, 0), indexOfLeaf(&root, &l1));
-    try std.testing.expectEqual(@as(?u32, 1), indexOfLeaf(&root, &l2));
-}
-
 /// Escape a path so that wrapping it in single quotes (`'...'`) produces a
 /// single shell argument. Inside single quotes, only the closing quote needs
 /// special handling: `'` becomes `'\''` (close, escape, reopen).
@@ -749,4 +691,31 @@ test "session_persist: corrupt file is renamed to .bak and loadSession returns n
         break :blk true;
     };
     try std.testing.expect(!orig_exists);
+}
+
+test "TabSnap copilot fields round-trip through JSON" {
+    const allocator = std.testing.allocator;
+    const snap = TabSnap{
+        .tree = .{ .leaf = .{ .surface = .{ .local_shell = .{} } } },
+        .copilot_session_id = "copilot-7",
+        .copilot_visible = true,
+    };
+    const json = try std.json.Stringify.valueAlloc(allocator, snap, .{});
+    defer allocator.free(json);
+
+    const parsed = try std.json.parseFromSlice(TabSnap, allocator, json, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("copilot-7", parsed.value.copilot_session_id.?);
+    try std.testing.expect(parsed.value.copilot_visible);
+}
+
+test "old TabSnap without copilot fields parses to null/false" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"tree":{"leaf":{"surface":{"local_shell":{}}}}}
+    ;
+    const parsed = try std.json.parseFromSlice(TabSnap, allocator, json, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(?[]const u8, null), parsed.value.copilot_session_id);
+    try std.testing.expect(!parsed.value.copilot_visible);
 }

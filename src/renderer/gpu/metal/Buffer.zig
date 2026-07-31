@@ -4,6 +4,7 @@ const std = @import("std");
 
 const Context = @import("Context.zig");
 const c = @import("c.zig");
+const types = @import("../types.zig");
 const Buffer = @This();
 
 handle: c.GLuint = 0,
@@ -16,20 +17,25 @@ extern fn wispterm_metal_buffer_upload(handle: c.GLuint, device: ?*anyopaque, by
 extern fn wispterm_metal_buffer_length(handle: c.GLuint) usize;
 extern fn wispterm_metal_buffer_destroy(handle: c.GLuint) void;
 
-pub fn init(target: c.GLenum) Buffer {
+fn initTarget(target: c.GLenum) Buffer {
     return .{ .handle = wispterm_metal_buffer_create(target), .target = target };
 }
+
+pub fn initVertex() Buffer {
+    return initTarget(c.GL_ARRAY_BUFFER);
+}
+
 pub fn bind(self: Buffer) void {
     _ = self;
     // Metal binds buffers on the render command encoder, not globally.
 }
 /// Allocate `size` bytes of uninitialized storage with the given usage hint.
-pub fn allocate(self: Buffer, size: usize, usage: c.GLenum) void {
+pub fn allocate(self: Buffer, size: usize, usage: types.BufferUsage) void {
     _ = usage;
     _ = runBool("Metal buffer allocate failed", wispterm_metal_buffer_allocate(self.handle, Context.deviceHandle(), size, &scratch_error, scratch_error.len));
 }
 /// Allocate + fill with `bytes`.
-pub fn uploadData(self: Buffer, bytes: []const u8, usage: c.GLenum) void {
+pub fn uploadData(self: Buffer, bytes: []const u8, usage: types.BufferUsage) void {
     _ = usage;
     _ = runBool("Metal buffer uploadData failed", wispterm_metal_buffer_upload_data(self.handle, Context.deviceHandle(), bytes.ptr, bytes.len, &scratch_error, scratch_error.len));
 }

@@ -46,18 +46,18 @@ path in terminal output to underline it, then click to download that remote file
 `%USERPROFILE%\Downloads`. Downloads run in the background.
 
 Open the command center with `Ctrl+Shift+P` and run `Toggle Browser` to open
-the embedded WebView2 browser panel when WebView2 support is available.
+the embedded browser panel when the platform backend is available.
 `Ctrl`-clicking (`Cmd`-click on macOS) an `http://` or `https://` URL in terminal
-output opens it in the same right-side WebView2 panel when available; builds without embedded
-WebView2 support, or without a usable WebView2 loader/runtime, open URLs in the
-system default browser instead. Set `url-open-mode = system-browser` to always
-open web URLs in the Windows default browser, including when embedded WebView2
-support is available. In SSH profile sessions, loopback URLs such as
+output opens it in the same right-side panel when available; builds without an
+embedded browser backend, or without a usable runtime, open URLs in the system
+default browser instead. Set `url-open-mode = system-browser` to always open
+web URLs in the system default browser, including when an embedded browser
+backend is available. In SSH profile sessions, loopback URLs such as
 `http://127.0.0.1:4232` and
 `http://localhost:43455` are opened through automatic local SSH tunnels.
 Tunnels are shared by the embedded panel and the system browser, so setting
 `url-open-mode = system-browser` lets the remote web app open in your normal
-Windows browser. Each remote port keeps its own forward; WispTerm prefers the
+browser. Each remote port keeps its own forward; WispTerm prefers the
 same local port and only increments when that port is already occupied.
 
 Non-loopback URLs such as `https://10.10.x.x` or public websites open directly.
@@ -68,7 +68,8 @@ The left File Explorer and right-side preview/browser panels can be resized by
 dragging their inner edges. Markdown, text, CSV, and TSV previews scroll with
 the mouse wheel; CSV and TSV cells show a larger hover popup when their content
 does not fit in the visible cell. Image and PDF previews zoom in and out with
-the mouse wheel and can be dragged to pan after zooming. `Ctrl+Shift+W` closes
+the mouse wheel and can be dragged to pan after zooming. `Ctrl+Shift+W` (`Cmd+W`
+on macOS) closes
 the focused pane — click a preview pane (or press `Ctrl+1-9`) to select it, then
 close it like any other split.
 

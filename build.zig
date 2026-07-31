@@ -14,6 +14,13 @@ comptime {
 
 const linux_system_libraries = [_][]const u8{ "SDL3", "fontconfig" };
 
+fn fastTestsNeedLibc(os_tag: std.Target.Os.Tag) bool {
+    return switch (os_tag) {
+        .linux, .macos => true,
+        else => false,
+    };
+}
+
 const windows_system_libraries = [_][]const u8{
     "user32",
     "advapi32", // registry access for WSL availability detection
@@ -105,7 +112,7 @@ const PlatformFeatures = struct {
             .embedded_browser_backend = embedded_browser_backend,
             .supports_resource_manifest = uses_windows_backend,
             .supports_gui_subsystem = uses_windows_backend,
-            .supports_remote_transport = uses_windows_backend,
+            .supports_remote_transport = uses_windows_backend or uses_macos_backend,
             .supports_app_bundle = has_app_bundle,
             .system_libraries = if (uses_windows_backend) &windows_system_libraries else if (uses_linux_backend) &linux_system_libraries else &.{},
             .app_frameworks = if (has_app_bundle) &macos_app_frameworks else &.{},
@@ -278,6 +285,36 @@ fn defaultEmitSharedCompileChecks(features: PlatformFeatures) bool {
     return !features.supports_desktop_exe;
 }
 
+fn resolveGpuBackendBuildOption(raw: ?[]const u8, os_tag: std.Target.Os.Tag) []const u8 {
+    const value = raw orelse "auto";
+    if (std.mem.eql(u8, value, "auto")) {
+        return switch (os_tag) {
+            .macos, .ios => "metal",
+            .windows => "d3d11",
+            else => "opengl",
+        };
+    }
+    if (std.mem.eql(u8, value, "opengl") or
+        std.mem.eql(u8, value, "metal"))
+    {
+        return value;
+    }
+    if (std.mem.eql(u8, value, "d3d11")) {
+        if (os_tag != .windows) @panic("-Dgpu-backend=d3d11 requires a Windows target");
+        return value;
+    }
+    @panic("-Dgpu-backend must be one of: auto, opengl, metal, d3d11");
+}
+
+test "GPU backend build option resolves platform defaults and explicit overrides" {
+    try std.testing.expectEqualStrings("d3d11", resolveGpuBackendBuildOption(null, .windows));
+    try std.testing.expectEqualStrings("d3d11", resolveGpuBackendBuildOption("auto", .windows));
+    try std.testing.expectEqualStrings("metal", resolveGpuBackendBuildOption("auto", .macos));
+    try std.testing.expectEqualStrings("opengl", resolveGpuBackendBuildOption("auto", .linux));
+    try std.testing.expectEqualStrings("opengl", resolveGpuBackendBuildOption("opengl", .windows));
+    try std.testing.expectEqualStrings("d3d11", resolveGpuBackendBuildOption("d3d11", .windows));
+}
+
 test "default development target remains x86_64 windows gnu" {
     const query = defaultDevelopmentTarget();
 
@@ -313,17 +350,19 @@ test "platform feature gates enable implemented desktop artifacts" {
     try std.testing.expectEqual(EmbeddedBrowserBackend.webkit, macos.embedded_browser_backend);
     try std.testing.expect(!macos.supports_resource_manifest);
     try std.testing.expect(!macos.supports_gui_subsystem);
-    try std.testing.expect(!macos.supports_remote_transport);
+    try std.testing.expect(macos.supports_remote_transport);
     try std.testing.expect(macos.supports_app_bundle);
     try std.testing.expect(macos.opengl_system_library == null);
 }
 
 test "windows system libraries are gated by platform" {
     const windows = PlatformFeatures.forOs(.windows);
-    try std.testing.expectEqual(@as(usize, 13), systemLibrariesFor(windows).len);
+    try std.testing.expectEqual(@as(usize, windows_system_libraries.len), systemLibrariesFor(windows).len);
     try std.testing.expectEqualStrings("user32", systemLibrariesFor(windows)[0]);
-    try std.testing.expectEqualStrings("psapi", systemLibrariesFor(windows)[11]);
-    try std.testing.expectEqualStrings("shcore", systemLibrariesFor(windows)[12]);
+    try expectContainsString(systemLibrariesFor(windows), "winhttp");
+    try expectContainsString(systemLibrariesFor(windows), "ole32");
+    try expectContainsString(systemLibrariesFor(windows), "psapi");
+    try expectContainsString(systemLibrariesFor(windows), "shcore");
 
     const linux = PlatformFeatures.forOs(.linux);
     try std.testing.expectEqual(@as(usize, 2), systemLibrariesFor(linux).len);
@@ -332,6 +371,12 @@ test "windows system libraries are gated by platform" {
 
     const macos = PlatformFeatures.forOs(.macos);
     try std.testing.expectEqual(@as(usize, 0), systemLibrariesFor(macos).len);
+}
+
+test "fast tests link libc on hosts whose platform adapters import C headers" {
+    try std.testing.expect(fastTestsNeedLibc(.linux));
+    try std.testing.expect(fastTestsNeedLibc(.macos));
+    try std.testing.expect(!fastTestsNeedLibc(.windows));
 }
 
 test "macOS platform advertises required app frameworks" {
@@ -392,6 +437,21 @@ test "desktop executable emission defaults to implemented platform backends" {
     try std.testing.expect(defaultEmitDesktopExe(PlatformFeatures.forOs(.windows)));
     try std.testing.expect(defaultEmitDesktopExe(PlatformFeatures.forOs(.linux)));
     try std.testing.expect(defaultEmitDesktopExe(PlatformFeatures.forOs(.macos)));
+}
+
+test "standalone filetool build contract is declared" {
+    const source = @embedFile("build.zig");
+    try expectSourceContains(source, ".name = \"wispterm-filetool\"");
+    try expectSourceContains(source, "src/wispterm_filetool.zig");
+    try expectSourceContains(source, "b.step(\"wispterm-filetool\"");
+}
+
+test "standalone benchmark CLI build contract is declared" {
+    const source = @embedFile("build.zig");
+    try expectSourceContains(source, ".name = \"wispterm-bench\"");
+    try expectSourceContains(source, "src/wispterm_bench.zig");
+    try expectSourceContains(source, "b.step(\"bench\"");
+    try expectSourceContains(source, "-Demit-bench");
 }
 
 test "shared compile checks default to platforms without desktop backends" {
@@ -540,6 +600,10 @@ pub fn build(b: *std.Build) void {
         "debug-console",
         "Force a console subsystem and enable on-disk debug logging + crash capture (diagnostic builds).",
     ) orelse false;
+    const gpu_backend = resolveGpuBackendBuildOption(
+        b.option([]const u8, "gpu-backend", "Select the renderer GPU backend: auto, opengl, metal, or d3d11."),
+        target.result.os.tag,
+    );
     const run_foreign_tests = b.option(
         bool,
         "run-foreign-tests",
@@ -558,10 +622,18 @@ pub fn build(b: *std.Build) void {
         "emit-shared-compile-checks",
         "Compile shared modules without running them on targets that do not have desktop host backends yet.",
     ) orelse defaultEmitSharedCompileChecks(platform);
+    // Standalone CPU-side benchmark CLI (Ghostty-aligned `wispterm-bench`). Off
+    // by default: it links ghostty-vt and is meant for branch-to-branch
+    // performance comparisons, not for app packaging or the pre-merge gate.
+    const emit_bench = b.option(
+        bool,
+        "emit-bench",
+        "Build the standalone wispterm-bench CPU benchmark CLI (links ghostty-vt).",
+    ) orelse false;
     const app_version = packageVersion(b);
 
     if (emit_desktop_exe) {
-        const exe_mod = createAppModule(b, target, optimize, app_version, platform, webview, debug_console);
+        const exe_mod = createAppModule(b, target, optimize, app_version, platform, webview, debug_console, gpu_backend);
 
         const exe = b.addExecutable(.{
             .name = "wispterm",
@@ -592,7 +664,7 @@ pub fn build(b: *std.Build) void {
 
         if (target.result.os.tag == .windows) {
             const askpass_mod = b.createModule(.{
-                .root_source_file = b.path("src/ssh_askpass.zig"),
+                .root_source_file = b.path("src/ssh/askpass.zig"),
                 .target = target,
                 .optimize = optimize,
             });
@@ -627,6 +699,70 @@ pub fn build(b: *std.Build) void {
         wisptermctl_step.dependOn(&b.addInstallArtifact(ctl_exe, .{}).step);
     }
 
+    const filetool_mod = b.createModule(.{
+        .root_source_file = b.path("src/wispterm_filetool.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const filetool_exe = b.addExecutable(.{
+        .name = "wispterm-filetool",
+        .root_module = filetool_mod,
+    });
+    if (platform.supports_gui_subsystem) filetool_exe.subsystem = .Console;
+    const filetool_step = b.step("wispterm-filetool", "Build the standalone remote-side file edit helper");
+    filetool_step.dependOn(&b.addInstallArtifact(filetool_exe, .{}).step);
+
+    // ponytail: root_source_file is a thin forwarder at the src/ module
+    // boundary — memory_digest/scan_main.zig itself reaches into
+    // ../platform and ../terminal_agents (via run.zig), so it can't be the
+    // module root directly (Zig 0.15 forbids imports outside the root's
+    // directory). See src/wispterm_memory_digest_main.zig.
+    const memory_digest_mod = b.createModule(.{
+        .root_source_file = b.path("src/wispterm_memory_digest_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const memory_digest_exe = b.addExecutable(.{
+        .name = "wispterm-memory-digest",
+        .root_module = memory_digest_mod,
+    });
+    if (platform.supports_gui_subsystem) memory_digest_exe.subsystem = .Console;
+    const memory_digest_step = b.step("memory-digest", "Build the dev memory-digest scanner CLI (not bundled with the app)");
+    memory_digest_step.dependOn(&b.addInstallArtifact(memory_digest_exe, .{}).step);
+
+    // Standalone CPU benchmark CLI. Mirrors Ghostty's `zig build -Demit-bench`:
+    // a separate artifact that links ghostty-vt for the TerminalStream case.
+    // Built only on explicit request (`-Demit-bench` or `zig build bench`).
+    const bench_step = b.step("bench", "Build the standalone wispterm-bench CPU benchmark CLI (separate artifact; not bundled with the app)");
+    if (emit_bench) {
+        const bench_mod = createBenchModule(b, target, optimize);
+        const bench_exe = b.addExecutable(.{
+            .name = "wispterm-bench",
+            .root_module = bench_mod,
+        });
+        if (platform.supports_gui_subsystem) bench_exe.subsystem = .Console;
+        const install_bench = b.addInstallArtifact(bench_exe, .{});
+        bench_step.dependOn(&install_bench.step);
+        // Include in the default install too, so `zig build -Demit-bench`
+        // actually produces the binary (the named `bench` step alone is not
+        // run by a bare `zig build`).
+        b.getInstallStep().dependOn(&install_bench.step);
+    } else {
+        bench_step.dependOn(&b.addFail("bench requires -Demit-bench").step);
+    }
+
+    // `test-bench`: runs the bench modules' own tests (TerminalStream + cli),
+    // which link ghostty-vt and so cannot live in the lean fast suite. Kept
+    // separate from test-full so it does not slow the pre-merge gate; run it
+    // explicitly when touching the benchmark code.
+    const bench_test_mod = createBenchModule(b, target, optimize);
+    const bench_tests = b.addTest(.{
+        .name = "wispterm-bench-test",
+        .root_module = bench_test_mod,
+    });
+    const test_bench_step = b.step("test-bench", "Run the wispterm-bench module tests (links ghostty-vt)");
+    test_bench_step.dependOn(&b.addRunArtifact(bench_tests).step);
+
     b.installDirectory(.{
         .source_dir = b.path("plugins"),
         .install_dir = .bin,
@@ -650,7 +786,7 @@ pub fn build(b: *std.Build) void {
             macos_app_step.dependOn(&b.addFail("macos-app supports only aarch64-macos and x86_64-macos targets").step);
             macos_dist_step.dependOn(&b.addFail("macos-dist supports only aarch64-macos and x86_64-macos targets").step);
         } else {
-            const macos_app_install = addMacosAppBundle(b, target, optimize, app_version, platform);
+            const macos_app_install = addMacosAppBundle(b, target, optimize, app_version, platform, debug_console, gpu_backend);
             macos_app_step.dependOn(&macos_app_install.step);
             const macos_package = b.addSystemCommand(&.{ "bash", macosPackageScriptPath() });
             macos_package.step.dependOn(&macos_app_install.step);
@@ -671,6 +807,7 @@ pub fn build(b: *std.Build) void {
     const fast_test_options = b.addOptions();
     fast_test_options.addOption([]const u8, "app_version", app_version);
     fast_test_options.addOption([]const u8, "release_notes", "");
+    fast_test_options.addOption([]const u8, "gpu_backend", "auto");
     fast_test_mod.addOptions("build_options", fast_test_options);
     // Mirror the app's doc embeds: a fast-test module (ai_chat_protocol) pulls in
     // wispterm_docs, whose @embedFile names must resolve here too.
@@ -684,10 +821,10 @@ pub fn build(b: *std.Build) void {
         .name = "wispterm-fast-test",
         .root_module = fast_test_mod,
     });
+    fast_test_mod.link_libc = fastTestsNeedLibc(b.graph.host.result.os.tag);
     switch (b.graph.host.result.os.tag) {
         .windows => fast_test_mod.linkSystemLibrary("winhttp", .{}),
         .macos => {
-            fast_test_mod.link_libc = true;
             fast_test_mod.addCSourceFile(.{
                 .file = b.path("src/platform/http_client_macos_bridge.m"),
                 .flags = &.{},
@@ -711,6 +848,29 @@ pub fn build(b: *std.Build) void {
     }
     test_step.dependOn(&b.addRunArtifact(fast_tests).step);
 
+    // The fast suite carries the architecture guards (src/source_guards/* plus
+    // the existing input/overlay guards), so make the pre-merge gate a superset
+    // of the fast loop instead of silently skipping them. Previously test-full
+    // did not run the fast tests at all.
+    test_full_step.dependOn(test_step);
+
+    // Standalone file-size backstop: `zig build check-sizes`. The fast suite
+    // also exercises it; this is the quick, dependency-free command. Runs from
+    // the repo root so the test can walk src/.
+    const check_sizes_mod = b.createModule(.{
+        .root_source_file = b.path("src/source_guards/file_size_guard.zig"),
+        .target = b.resolveTargetQuery(.{}),
+        .optimize = optimize,
+    });
+    const check_sizes_tests = b.addTest(.{
+        .name = "wispterm-check-sizes",
+        .root_module = check_sizes_mod,
+    });
+    const run_check_sizes = b.addRunArtifact(check_sizes_tests);
+    run_check_sizes.setCwd(b.path("."));
+    const check_sizes_step = b.step("check-sizes", "Fail if any src/*.zig crosses the file-size backstop");
+    check_sizes_step.dependOn(&run_check_sizes.step);
+
     // Posix-native libc-linked tests: file I/O, libc (localtime), fork, plus the
     // socketpair virtual-PTY and tmux pane I/O bridge tests. Runs on any
     // non-Windows host. Added to test-full so the store tests (ai_loop_store)
@@ -727,6 +887,7 @@ pub fn build(b: *std.Build) void {
         const posix_test_options = b.addOptions();
         posix_test_options.addOption([]const u8, "app_version", app_version);
         posix_test_options.addOption([]const u8, "release_notes", "");
+        posix_test_options.addOption([]const u8, "gpu_backend", "auto");
         posix_test_mod.addOptions("build_options", posix_test_options);
         const posix_tests = b.addTest(.{
             .name = "wispterm-posix-test",
@@ -734,6 +895,26 @@ pub fn build(b: *std.Build) void {
         });
         test_full_step.dependOn(&b.addRunArtifact(posix_tests).step);
     }
+
+    // `test-ctl`: the agent-control loopback socket round-trip, runnable on EVERY
+    // host including Windows. This is the regression guard the v1.30.0 "malformed
+    // response" bug slipped through — the round-trip only ran on non-Windows hosts
+    // (posix_tests above), and the broken Stream.read it replaced misbehaves only
+    // on Windows overlapped sockets. Lean (pure std + sockets), so it links
+    // without the app graph; libc only where the socket syscalls need it (Windows
+    // uses ws2_32 directly via ctl/transport.zig, so no libc there).
+    const ctl_socket_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/ctl/socket_test.zig"),
+        .target = b.resolveTargetQuery(.{}),
+        .optimize = optimize,
+        .link_libc = b.graph.host.result.os.tag != .windows,
+    });
+    const ctl_socket_tests = b.addTest(.{
+        .name = "wispterm-ctl-socket-test",
+        .root_module = ctl_socket_test_mod,
+    });
+    const test_ctl_step = b.step("test-ctl", "Run the agent-control loopback socket round-trip (all hosts, incl. Windows)");
+    test_ctl_step.dependOn(&b.addRunArtifact(ctl_socket_tests).step);
 
     const shared_test_mod = b.createModule(.{
         .root_source_file = b.path("src/shared_compile_test.zig"),
@@ -743,6 +924,7 @@ pub fn build(b: *std.Build) void {
     const shared_test_options = b.addOptions();
     shared_test_options.addOption([]const u8, "app_version", app_version);
     shared_test_options.addOption([]const u8, "release_notes", "");
+    shared_test_options.addOption([]const u8, "gpu_backend", gpu_backend);
     shared_test_mod.addOptions("build_options", shared_test_options);
 
     const shared_tests = b.addTest(.{
@@ -868,6 +1050,7 @@ pub fn build(b: *std.Build) void {
             PlatformFeatures.forOs(.macos),
             false,
             false,
+            "auto",
         );
         const macos_ui_tests = b.addTest(.{
             .name = "wispterm-macos-ui-test",
@@ -885,6 +1068,7 @@ pub fn build(b: *std.Build) void {
             PlatformFeatures.forOs(.macos),
             false,
             false,
+            "auto",
         );
         const macos_menu_tests = b.addTest(.{
             .name = "wispterm-macos-menu-test",
@@ -902,32 +1086,66 @@ pub fn build(b: *std.Build) void {
     }
 
     if (platform.supports_desktop_exe) {
-        const test_mod = createAppModuleWithRoot(
-            b,
-            "src/test_main.zig",
-            target,
-            optimize,
-            app_version,
-            platform,
-            webview,
-            false,
-        );
+        const app_test_shards = [_][]const u8{
+            "guards",
+            "assistant",
+            "app",
+            "platform",
+            "input_renderer",
+            "integrations",
+            "behavior",
+        };
+        for (app_test_shards) |app_test_shard| {
+            const test_mod = if (std.mem.eql(u8, app_test_shard, "guards"))
+                createAppGuardTestModule(b, target, optimize)
+            else
+                createAppModuleWithRootAndTestShard(
+                    b,
+                    "src/test_main.zig",
+                    target,
+                    optimize,
+                    app_version,
+                    platform,
+                    webview,
+                    false,
+                    gpu_backend,
+                    app_test_shard,
+                );
 
-        const tests = b.addTest(.{
-            .root_module = test_mod,
-        });
-        if (platform.supports_app_bundle) {
-            apple_sdk.addPaths(b, tests) catch @panic("failed to locate native Apple SDK for app tests");
+            const tests = b.addTest(.{
+                .name = b.fmt("wispterm-app-test-{s}", .{app_test_shard}),
+                .root_module = test_mod,
+            });
+            if (platform.supports_app_bundle) {
+                apple_sdk.addPaths(b, tests) catch @panic("failed to locate native Apple SDK for app tests");
+            }
+
+            const run_tests = b.addRunArtifact(tests);
+            run_tests.skip_foreign_checks = shouldSkipForeignTestRun(
+                b.graph.host.result.os.tag,
+                target.result.os.tag,
+                run_foreign_tests,
+            );
+            test_full_step.dependOn(&run_tests.step);
         }
-
-        const run_tests = b.addRunArtifact(tests);
-        run_tests.skip_foreign_checks = shouldSkipForeignTestRun(
-            b.graph.host.result.os.tag,
-            target.result.os.tag,
-            run_foreign_tests,
-        );
-        test_full_step.dependOn(&run_tests.step);
     }
+}
+
+fn createAppGuardTestModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    const app_mod = b.createModule(.{
+        .root_source_file = b.path("src/test_main_guards.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const app_options = b.addOptions();
+    app_options.addOption([]const u8, "app_test_shard", "guards");
+    app_mod.addOptions("build_options", app_options);
+    return app_mod;
 }
 
 fn createAppModule(
@@ -938,8 +1156,9 @@ fn createAppModule(
     platform: PlatformFeatures,
     webview: bool,
     debug_console: bool,
+    gpu_backend: []const u8,
 ) *std.Build.Module {
-    return createAppModuleWithRoot(b, "src/main.zig", target, optimize, app_version, platform, webview, debug_console);
+    return createAppModuleWithRoot(b, "src/main.zig", target, optimize, app_version, platform, webview, debug_console, gpu_backend);
 }
 
 fn createAppModuleWithRoot(
@@ -951,6 +1170,33 @@ fn createAppModuleWithRoot(
     platform: PlatformFeatures,
     webview: bool,
     debug_console: bool,
+    gpu_backend: []const u8,
+) *std.Build.Module {
+    return createAppModuleWithRootAndTestShard(
+        b,
+        root_source_path,
+        target,
+        optimize,
+        app_version,
+        platform,
+        webview,
+        debug_console,
+        gpu_backend,
+        "all",
+    );
+}
+
+fn createAppModuleWithRootAndTestShard(
+    b: *std.Build,
+    root_source_path: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    app_version: []const u8,
+    platform: PlatformFeatures,
+    webview: bool,
+    debug_console: bool,
+    gpu_backend: []const u8,
+    app_test_shard: []const u8,
 ) *std.Build.Module {
     const app_mod = b.createModule(.{
         .root_source_file = b.path(root_source_path),
@@ -962,6 +1208,8 @@ fn createAppModuleWithRoot(
     const app_options = b.addOptions();
     app_options.addOption(bool, "webview", webview);
     app_options.addOption(bool, "debug_console", debug_console);
+    app_options.addOption([]const u8, "gpu_backend", gpu_backend);
+    app_options.addOption([]const u8, "app_test_shard", app_test_shard);
     app_options.addOption([]const u8, "app_version", app_version);
     app_options.addOption([]const u8, "release_notes", readReleaseNotes(b, app_version));
     app_mod.addOptions("build_options", app_options);
@@ -1065,8 +1313,10 @@ fn createAppModuleWithRoot(
     }
 
     // OpenGL backend (Windows + Linux): the glad loader needs its include path
-    // and C source compiled in. macOS uses Metal and skips this.
-    if (target.result.os.tag == .windows or target.result.os.tag == .linux) {
+    // and C source compiled in. macOS uses Metal and skips this; the native
+    // D3D11 flavor never touches GL, so it skips glad and opengl32 entirely.
+    const links_opengl = std.mem.eql(u8, gpu_backend, "opengl");
+    if (links_opengl and (target.result.os.tag == .windows or target.result.os.tag == .linux)) {
         app_mod.addIncludePath(b.path("vendor/glad/include"));
         app_mod.addCSourceFile(.{
             .file = b.path("vendor/glad/src/gl.c"),
@@ -1077,8 +1327,10 @@ fn createAppModuleWithRoot(
     // Windows links the system OpenGL (opengl32); Linux gets its GL context and
     // function loader from SDL3 (linked via systemLibrariesFor above), so it
     // needs no separate GL system library.
-    if (platform.opengl_system_library) |library| {
-        app_mod.linkSystemLibrary(library, .{});
+    if (links_opengl) {
+        if (platform.opengl_system_library) |library| {
+            app_mod.linkSystemLibrary(library, .{});
+        }
     }
 
     if (target.result.os.tag == .linux) {
@@ -1129,15 +1381,51 @@ fn createAppModuleWithRoot(
     return app_mod;
 }
 
+fn createBenchModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    const bench_mod = b.createModule(.{
+        .root_source_file = b.path("src/wispterm_bench.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    // env.zig reads app_version + gpu_backend from build_options. The bench
+    // CLI links no GPU backend, so gpu_backend is reported as "n/a".
+    const bench_options = b.addOptions();
+    bench_options.addOption([]const u8, "app_version", packageVersion(b));
+    bench_options.addOption([]const u8, "gpu_backend", "n/a");
+    bench_mod.addOptions("build_options", bench_options);
+    // The TerminalStream case drives ghostty-vt; wire the same dep + stb the
+    // app uses so the VT parser is the exact shipped code path.
+    if (b.lazyDependency("ghostty", .{
+        .target = target,
+        .optimize = optimize,
+        .simd = false,
+    })) |dep| {
+        bench_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
+        bench_mod.addIncludePath(dep.path("src/stb"));
+        bench_mod.addCSourceFile(.{
+            .file = dep.path("src/stb/stb.c"),
+            .flags = &.{},
+        });
+    }
+    return bench_mod;
+}
+
 fn addMacosAppBundle(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     app_version: []const u8,
     platform: PlatformFeatures,
+    debug_console: bool,
+    gpu_backend: []const u8,
 ) *std.Build.Step.InstallDir {
     const metadata = macosBundleMetadata();
-    const macos_mod = createAppModule(b, target, optimize, app_version, platform, platform.supports_embedded_browser, false);
+    const macos_mod = createAppModule(b, target, optimize, app_version, platform, platform.supports_embedded_browser, debug_console, gpu_backend);
 
     const exe = b.addExecutable(.{
         .name = metadata.executable_name,

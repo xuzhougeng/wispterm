@@ -94,5 +94,9 @@ keybind = global:ctrl+backquote=toggle_quake
 有些按键会先被当前获得焦点的浮层处理 —— 命令中心、会话启动器、Copilot 输入框各自会在
 应用级绑定生效前先吃掉自己的导航与编辑按键。这些 modal 按键无法通过 `keybind` 重映射。
 
+在命令中心的 **Copilot History** 中，直接输入可按标题/模型搜索已保存对话，`Tab` 在
+**全部 / 侧栏 / 标签页**来源筛选之间切换，Up/Down 移动，`Enter` 重开，`Delete` 删除
+选中行，`Esc` 返回普通命令中心。
+
 ---
 *另见：[[配置|Configuration-zh]] · [[标签、分屏与面板|Tabs-Splits-Panels-zh]]*

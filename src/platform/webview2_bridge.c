@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <strsafe.h>
 
 typedef struct ICoreWebView2 ICoreWebView2;
 typedef struct ICoreWebView2Controller ICoreWebView2Controller;
@@ -81,6 +82,31 @@ typedef struct ICoreWebView2Vtbl {
     HRESULT (STDMETHODCALLTYPE *get_Source)(ICoreWebView2 *This, LPWSTR *uri);
     HRESULT (STDMETHODCALLTYPE *Navigate)(ICoreWebView2 *This, LPCWSTR uri);
     HRESULT (STDMETHODCALLTYPE *NavigateToString)(ICoreWebView2 *This, LPCWSTR htmlContent);
+    // Keep the hand-written ABI layout in sync with WebView2.h through Reload.
+    HRESULT (STDMETHODCALLTYPE *add_NavigationStarting)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_NavigationStarting)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *add_ContentLoading)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_ContentLoading)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *add_SourceChanged)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_SourceChanged)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *add_HistoryChanged)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_HistoryChanged)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *add_NavigationCompleted)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_NavigationCompleted)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *add_FrameNavigationStarting)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_FrameNavigationStarting)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *add_FrameNavigationCompleted)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_FrameNavigationCompleted)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *add_ScriptDialogOpening)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_ScriptDialogOpening)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *add_PermissionRequested)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_PermissionRequested)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *add_ProcessFailed)(ICoreWebView2 *This, void *eventHandler, void *token);
+    HRESULT (STDMETHODCALLTYPE *remove_ProcessFailed)(ICoreWebView2 *This, int64_t token);
+    HRESULT (STDMETHODCALLTYPE *AddScriptToExecuteOnDocumentCreated)(ICoreWebView2 *This, LPCWSTR javaScript, void *handler);
+    HRESULT (STDMETHODCALLTYPE *RemoveScriptToExecuteOnDocumentCreated)(ICoreWebView2 *This, LPCWSTR id);
+    HRESULT (STDMETHODCALLTYPE *ExecuteScript)(ICoreWebView2 *This, LPCWSTR javaScript, void *handler);
+    HRESULT (STDMETHODCALLTYPE *CapturePreview)(ICoreWebView2 *This, int imageFormat, void *imageStream, void *handler);
     HRESULT (STDMETHODCALLTYPE *Reload)(ICoreWebView2 *This);
 } ICoreWebView2Vtbl;
 
@@ -377,13 +403,16 @@ static HMODULE try_load_from_nuget(void) {
     DWORD profile_len = GetEnvironmentVariableW(L"USERPROFILE", user_profile, MAX_PATH);
     if (profile_len == 0 || profile_len >= MAX_PATH) return NULL;
 
+    // wsprintfW ignores the destination size; a relocated (long) USERPROFILE
+    // would overflow these MAX_PATH stack buffers. StringCchPrintfW bounds the
+    // write and fails closed on truncation instead.
     WCHAR base[MAX_PATH];
-    if (wsprintfW(base, L"%s\\.nuget\\packages\\microsoft.web.webview2", user_profile) <= 0) {
+    if (FAILED(StringCchPrintfW(base, MAX_PATH, L"%s\\.nuget\\packages\\microsoft.web.webview2", user_profile))) {
         return NULL;
     }
 
     WCHAR pattern[MAX_PATH];
-    if (wsprintfW(pattern, L"%s\\*", base) <= 0) return NULL;
+    if (FAILED(StringCchPrintfW(pattern, MAX_PATH, L"%s\\*", base))) return NULL;
 
     WIN32_FIND_DATAW data;
     HANDLE find = FindFirstFileW(pattern, &data);
@@ -395,7 +424,7 @@ static HMODULE try_load_from_nuget(void) {
         if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) continue;
 
         WCHAR candidate[MAX_PATH];
-        if (wsprintfW(candidate, L"%s\\%s\\build\\native\\x64\\WebView2Loader.dll", base, data.cFileName) <= 0) {
+        if (FAILED(StringCchPrintfW(candidate, MAX_PATH, L"%s\\%s\\build\\native\\x64\\WebView2Loader.dll", base, data.cFileName))) {
             continue;
         }
         result = LoadLibraryW(candidate);
@@ -440,9 +469,9 @@ static void build_user_data_folder(WCHAR *buf, size_t len) {
     if (n == 0 || n >= MAX_PATH) return;
 
     WCHAR root[MAX_PATH];
-    if (wsprintfW(root, L"%s\\wispterm", local_app_data) <= 0) return;
+    if (FAILED(StringCchPrintfW(root, MAX_PATH, L"%s\\wispterm", local_app_data))) return;
     CreateDirectoryW(root, NULL);
-    wsprintfW(buf, L"%s\\webview2", root);
+    if (FAILED(StringCchPrintfW(buf, len, L"%s\\webview2", root))) return;
     CreateDirectoryW(buf, NULL);
 }
 

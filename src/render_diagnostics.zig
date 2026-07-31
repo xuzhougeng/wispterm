@@ -69,10 +69,6 @@ pub fn close() void {
     g_file_open = false;
 }
 
-pub fn logFilePath(allocator: std.mem.Allocator) ![]const u8 {
-    return platform_dirs.pathInConfigDir(allocator, LOG_BASENAME);
-}
-
 fn ensureFile() !*std.fs.File {
     if (g_file_open) return &g_file;
 

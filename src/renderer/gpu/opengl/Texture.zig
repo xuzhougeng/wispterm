@@ -2,9 +2,18 @@
 //! ownership/upload of the font atlas is taken over in A4.
 const Context = @import("Context.zig");
 const c = @import("c.zig").c;
+const types = @import("../types.zig");
 const Texture = @This();
 
 handle: c.GLuint,
+
+pub fn invalid() Texture {
+    return .{ .handle = 0 };
+}
+
+pub fn isValid(self: Texture) bool {
+    return self.handle != 0;
+}
 
 pub fn fromHandle(h: c.GLuint) Texture {
     return .{ .handle = h };
@@ -15,31 +24,39 @@ pub fn bind(self: Texture, unit: u32) void {
     Context.gl.BindTexture.?(c.GL_TEXTURE_2D, self.handle);
 }
 
-pub const Filter = enum { nearest, linear };
-pub const Wrap = enum { clamp_to_edge, repeat };
-
 /// Options for a 2D texture data upload.
 pub const Upload = struct {
-    /// Uses GLenum (unsigned int) to match GL_RGBA8 etc.; cast to GLint at TexImage2D call.
-    internal_format: c.GLenum = c.GL_RGBA8,
-    format: c.GLenum = c.GL_RGBA,
-    data_type: c.GLenum = c.GL_UNSIGNED_BYTE,
-    filter: Filter = .linear,
-    wrap: Wrap = .clamp_to_edge,
-    /// When non-null, calls glPixelStorei(GL_UNPACK_ALIGNMENT, v) before upload.
-    unpack_alignment: ?c.GLint = null,
+    format: types.TextureFormat = .rgba8,
+    sampler: types.SamplerMode = .linear_clamp,
+    /// When non-null, sets the backend's unpack row alignment before upload.
+    unpack_alignment: ?i32 = null,
 };
 
-fn filterEnum(f: Filter) c.GLint {
-    return switch (f) {
-        .nearest => c.GL_NEAREST,
-        .linear => c.GL_LINEAR,
+const FormatEnums = struct {
+    internal: c.GLenum,
+    source: c.GLenum,
+    data_type: c.GLenum = c.GL_UNSIGNED_BYTE,
+};
+
+fn formatEnums(format: types.TextureFormat) FormatEnums {
+    return switch (format) {
+        .r8 => .{ .internal = c.GL_RED, .source = c.GL_RED },
+        .rgba8 => .{ .internal = c.GL_RGBA8, .source = c.GL_RGBA },
+        .bgra8 => .{ .internal = c.GL_RGBA8, .source = c.GL_BGRA },
     };
 }
-fn wrapEnum(w: Wrap) c.GLint {
-    return switch (w) {
-        .clamp_to_edge => c.GL_CLAMP_TO_EDGE,
-        .repeat => c.GL_REPEAT,
+
+fn filterEnum(sampler: types.SamplerMode) c.GLint {
+    return switch (sampler) {
+        .nearest_clamp => c.GL_NEAREST,
+        .linear_clamp, .linear_repeat => c.GL_LINEAR,
+    };
+}
+
+fn wrapEnum(sampler: types.SamplerMode) c.GLint {
+    return switch (sampler) {
+        .nearest_clamp, .linear_clamp => c.GL_CLAMP_TO_EDGE,
+        .linear_repeat => c.GL_REPEAT,
     };
 }
 
@@ -55,31 +72,34 @@ pub fn create() Texture {
 /// TexImage2D sequences being replaced.
 pub fn upload2D(self: Texture, width: c_int, height: c_int, data: ?*const anyopaque, o: Upload) void {
     const gl = Context.gl;
+    const format = formatEnums(o.format);
     gl.BindTexture.?(c.GL_TEXTURE_2D, self.handle);
-    gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, filterEnum(o.filter));
-    gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, filterEnum(o.filter));
-    gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, wrapEnum(o.wrap));
-    gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, wrapEnum(o.wrap));
-    if (o.unpack_alignment) |a| gl.PixelStorei.?(c.GL_UNPACK_ALIGNMENT, a);
-    gl.TexImage2D.?(c.GL_TEXTURE_2D, 0, @intCast(o.internal_format), width, height, 0, o.format, o.data_type, data);
+    gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, filterEnum(o.sampler));
+    gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, filterEnum(o.sampler));
+    gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, wrapEnum(o.sampler));
+    gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, wrapEnum(o.sampler));
+    if (o.unpack_alignment) |a| gl.PixelStorei.?(c.GL_UNPACK_ALIGNMENT, @intCast(a));
+    gl.TexImage2D.?(c.GL_TEXTURE_2D, 0, @intCast(format.internal), width, height, 0, format.source, format.data_type, data);
 }
 
-/// Update only the wrap_s/wrap_t parameters (binds the texture).
-pub fn setWrap(self: Texture, wrap: Wrap) void {
+/// Update sampler parameters (binds the texture).
+pub fn setSamplerMode(self: Texture, sampler: types.SamplerMode) void {
     const gl = Context.gl;
     gl.BindTexture.?(c.GL_TEXTURE_2D, self.handle);
-    gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, wrapEnum(wrap));
-    gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, wrapEnum(wrap));
+    gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, filterEnum(sampler));
+    gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, filterEnum(sampler));
+    gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, wrapEnum(sampler));
+    gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, wrapEnum(sampler));
 }
 
 /// Update a sub-region (glTexSubImage2D) of an already-allocated texture.
-/// Uses o.format / o.data_type / o.unpack_alignment (the filter/wrap/internal_format
-/// fields of Upload are ignored here).
+/// Uses o.format / o.unpack_alignment (the sampler field is ignored here).
 pub fn subImage2D(self: Texture, x: c_int, y: c_int, width: c_int, height: c_int, data: ?*const anyopaque, o: Upload) void {
     const gl = Context.gl;
+    const format = formatEnums(o.format);
     gl.BindTexture.?(c.GL_TEXTURE_2D, self.handle);
-    if (o.unpack_alignment) |a| gl.PixelStorei.?(c.GL_UNPACK_ALIGNMENT, a);
-    gl.TexSubImage2D.?(c.GL_TEXTURE_2D, 0, x, y, width, height, o.format, o.data_type, data);
+    if (o.unpack_alignment) |a| gl.PixelStorei.?(c.GL_UNPACK_ALIGNMENT, @intCast(a));
+    gl.TexSubImage2D.?(c.GL_TEXTURE_2D, 0, x, y, width, height, format.source, format.data_type, data);
 }
 
 /// Read back the width of mip level 0 (glGetTexLevelParameteriv GL_TEXTURE_WIDTH).

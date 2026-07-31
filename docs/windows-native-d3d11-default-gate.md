@@ -1,0 +1,150 @@
+# Windows Native D3D11 Default Migration Gate
+
+This document records the Phase V closeout gate and the Phase VI migration
+constraints. Phase VI ships in v1.34.0: Windows `auto` and the normal portable
+packages now use native D3D11, while OpenGL remains a separately built and
+published fallback.
+
+## Current Boundary
+
+- Windows `auto` resolves to D3D11.
+- Explicit `-Dgpu-backend=opengl` builds the compatibility fallback.
+- Releases publish the fallback as `wispterm-windows-portable-opengl-*.zip`.
+- There is no same-process D3D11-to-OpenGL renderer switch.
+- The version+adapter-scoped `d3d11-fallback` marker remains diagnostic policy;
+  it does not override the compile-time backend selected in a published binary.
+
+## Ghostty Comparison
+
+Ghostty keeps renderer backend selection as a small backend enum and default
+selector: WebAssembly uses WebGL, Darwin uses Metal, and other native targets
+use OpenGL. Ghostty does not have a D3D11 backend, DXGI device-loss recovery, or
+a Windows fallback marker model to copy.
+
+WispTerm should keep Ghostty's thin backend boundary shape while treating
+Windows D3D11 reliability, fallback markers, Win32 window state, and environment
+classification as WispTerm-specific Phase V hardening work.
+
+## Required Evidence
+
+Before Phase VI can start, keep evidence for each item below. A skipped or
+unavailable environment is missing evidence, not a passing result.
+
+| Gate | Required evidence |
+|---|---|
+| D3D11 normal session | `debug/test-d3d11-normal-session.ps1` passes after `zig build -Dgpu-backend=d3d11`. |
+| Device recreate success | `-RecreateSmoke` records exactly one successful recreate/restore path. |
+| Device recreate failure | `-RecreateFailureSmoke` escalates exactly once to a fallback candidate and writes a marker. |
+| Fallback marker policy | `-FallbackMarkerSmoke` proves explicit D3D11 still wins, current auto stays D3D11, and the marker-aware policy would select OpenGL from a matching marker. |
+| Future-auto dry-run | `-AutoDryRunSmoke` proves current auto, future eligible D3D11, matching-marker OpenGL, explicit D3D11, explicit OpenGL, and stale-marker selector outcomes. |
+| OpenGL fallback | `zig build -Dgpu-backend=opengl` plus `-Backend opengl` proves the compatibility renderer still runs the normal-session UI subset. |
+| Rapid resize | `-RapidResizeSmoke` proves nonblank frames, resize diagnostics, and no resize/present failures. |
+| Window state | `-WindowStateSmoke` proves maximize, restore, minimize, and restore-from-minimize. |
+| Fullscreen startup | `-FullscreenStartupSmoke` proves config startup fullscreen, Alt+Enter exit, and restored baseline size. |
+| Long-run soak | `-SoakMinutes 20` records periodic nonblank screenshots, process liveness, resize diagnostics, and no failure lines. |
+| Accepted partial soak | Optional operator-accepted evidence under `zig-out/d3d11-accepted-soak/`; this closes the local soak gap only when explicitly accepted and remains distinct from the automated 20-minute gate. |
+| Environment package | `debug/test-d3d11-environment-smoke.ps1` emits `environment.json`, `matrix-summary.md`, normal-session JSON, screenshots, adapter facts, Win32 session facts, record-only matrix fields, and policy fields. |
+| Environment ledger | `debug/summarize-d3d11-environment-matrix.ps1` emits `matrix-ledger.md` / `matrix-ledger.json` showing recorded, failing, mismatched, operator-review, and missing classes, plus `matrix-collection-plan.md` / `matrix-collection-plan.json` for the remaining collector commands. |
+| Accepted matrix gaps | Optional operator acceptance under `KNOWN_ISSUES.md` section `Accepted D3D11 Phase V Environment Matrix Gaps`; this closes unavailable environment gaps as `accepted`, not `pass`. |
+| Artifact audit | `debug/audit-d3d11-default-gate.ps1` emits `default-gate-audit.md` / `default-gate-audit.json` from existing smoke, matrix, accepted-soak, and known-issues artifacts without rerunning them. |
+| Test gates | `zig build check-sizes`, `zig build test`, `zig build test-full --summary all`, `zig build`, and PR CI pass. |
+
+## Environment Matrix
+
+The matrix evidence should cover at least these classes before default
+migration. Use the environment collector for each run, pass the matching
+`-MatrixClass`, and keep the generated artifact directory with the PR or issue
+that records the result. The ledger format lives in
+[windows-native-d3d11-environment-matrix.md](windows-native-d3d11-environment-matrix.md).
+
+| Environment class | Evidence expectation |
+|---|---|
+| Local physical Windows machine | D3D11 normal, resize/window/fullscreen, and soak evidence. |
+| RDP session | Environment facts classify the remote session and the app does not black-window or loop recovery. |
+| Virtual machine | Adapter/session facts are recorded; failures are classified rather than silent. |
+| Hybrid GPU laptop | Adapter identity is stable enough for marker scoping. |
+| Weak integrated GPU | Feature level and memory facts are recorded; failure mode is classified if unhealthy. |
+| Single monitor | Baseline smoke evidence. |
+| Multi-monitor same DPI | Resize/window evidence remains nonblank after monitor moves when available. |
+| Multi-monitor mixed DPI | DPI facts are recorded; failures are classified and documented. |
+
+## Phase VI Entry Conditions (completed for v1.34.0)
+
+Phase VI may start only when all of these are true:
+
+1. The required evidence table is complete.
+2. Matrix gaps are either closed or explicitly accepted in `KNOWN_ISSUES.md`.
+3. No healthy-path D3D11 smoke records present failure, resize sync failure,
+   shader compile failure, backbuffer probe failure, unexpected recovery, or
+   fallback marker writes.
+4. OpenGL fallback still passes its normal-session smoke on the same branch.
+5. The future-auto dry-run explains each selector outcome: D3D11 eligible,
+   OpenGL from marker, OpenGL from explicit selection, and stale marker ignored.
+6. The Phase VI default migration is a separate PR limited to selector,
+   packaging/updater policy, tests, and documentation needed for that policy.
+7. Reverting the Phase VI PR restores Windows `auto` to OpenGL without reverting
+   the native renderer implementation.
+
+## Phase VI PR Rules
+
+The Phase VI PR must be small. It may update selector policy, tests, user docs,
+release notes, and troubleshooting text. It must not combine the default change
+with renderer rewrites, fallback architecture changes, or unrelated features.
+
+The PR body must include:
+
+- exact commit or branch where Phase V evidence was collected
+- environment matrix summary
+- fallback marker behavior
+- how to force OpenGL
+- how to force D3D11
+- how to clear or inspect a fallback marker
+- rollback command or revert plan
+
+## Operator Commands
+
+```powershell
+zig build -Dgpu-backend=d3d11
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -RecreateSmoke
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -RecreateFailureSmoke
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -FallbackMarkerSmoke
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -AutoDryRunSmoke
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -RapidResizeSmoke
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -WindowStateSmoke
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -FullscreenStartupSmoke
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -SoakMinutes 20
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-environment-smoke.ps1 -MatrixClass local-physical
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\summarize-d3d11-environment-matrix.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\audit-d3d11-default-gate.ps1
+
+zig build -Dgpu-backend=opengl
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -Backend opengl
+
+zig build check-sizes
+zig build test
+zig build test-full --summary all
+```
+
+The artifact audit is intentionally read-only. It reports `complete` only when
+the collected JSON artifacts satisfy the smoke evidence gates and the matrix
+classes are either recorded or explicitly accepted in `KNOWN_ISSUES.md`; it
+does not run the build/test gates and does not turn unavailable matrix classes
+into passes. Use `-FailOnIncomplete` only for final closeout automation after
+the evidence directories and accepted-gap record are expected to be complete.
+When an operator explicitly accepts a shorter soak, place the summary under
+`zig-out\d3d11-accepted-soak\`; the audit reports that gate as `accepted`, not
+`pass`, so reviewers can distinguish manual acceptance from the full automated
+20-minute soak JSON.
+When an operator explicitly accepts unavailable environment classes, list each
+class as its own backticked bullet under the `KNOWN_ISSUES.md` heading
+`Accepted D3D11 Phase V Environment Matrix Gaps`; the audit reports the
+environment-ledger gate as `accepted` and keeps the original ledger status in
+the generated matrix table.
+
+## Rollback Rule
+
+If a post-merge D3D11-default regression appears, first direct affected users to
+the OpenGL fallback package. If the default itself must be rolled back, revert
+only the Phase VI selector/packaging PR; do not revert the Phase I-V renderer
+implementation unless the bug is proven to live outside default policy.

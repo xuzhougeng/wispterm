@@ -19,12 +19,9 @@ const Allocator = std.mem.Allocator;
 const ghostty_vt = @import("ghostty-vt");
 const Surface = @import("../Surface.zig");
 const AppWindow = @import("../AppWindow.zig");
-const c = AppWindow.gpu.c;
+const gpu = AppWindow.gpu;
 
 const Renderer = @This();
-
-/// OpenGL handle type (GLuint)
-pub const GLuint = u32;
 
 // ============================================================================
 // Constants
@@ -49,7 +46,7 @@ pub const KittyTexture = struct {
     width: u32,
     height: u32,
     transmit_time: std.time.Instant,
-    texture: GLuint,
+    texture: gpu.Texture,
 };
 
 pub const KittyPendingUpload = struct {
@@ -162,14 +159,11 @@ mutex: std.Thread.Mutex,
 needs_redraw: std.atomic.Value(bool),
 
 // ============================================================================
-// FBO (Framebuffer Object) for off-screen rendering
+// Off-screen render target for per-surface compositing.
 // ============================================================================
 
-/// OpenGL framebuffer object - renders to texture instead of screen
-fbo: GLuint,
-
-/// Color texture attached to FBO - contains rendered surface
-fbo_texture: GLuint,
+/// Backend framebuffer that renders to a color texture instead of the window.
+fbo: gpu.Framebuffer,
 
 /// Current FBO dimensions (resized when surface size changes)
 fbo_width: u32,
@@ -232,8 +226,7 @@ pub fn init(surface: *Surface) Renderer {
         .is_focused = true,
         .mutex = .{},
         .needs_redraw = std.atomic.Value(bool).init(true),
-        .fbo = 0,
-        .fbo_texture = 0,
+        .fbo = .{},
         .fbo_width = 0,
         .fbo_height = 0,
         .fbo_initialized = false,
@@ -254,8 +247,7 @@ pub fn deinit(self: *Renderer) void {
 
     // FBO resources are cleaned up by AppWindow.cleanupRendererFBO()
     // We just reset our state
-    self.fbo = 0;
-    self.fbo_texture = 0;
+    self.fbo = .{};
     self.fbo_width = 0;
     self.fbo_height = 0;
     self.fbo_initialized = false;
@@ -315,9 +307,8 @@ pub fn fboPixelBytes(self: *const Renderer) usize {
 
 fn deinitKittyResources(self: *Renderer) void {
     for (self.kitty_textures.items) |*tex| {
-        var t = AppWindow.gpu.Texture.fromHandle(tex.texture);
-        t.destroy();
-        tex.texture = 0;
+        tex.texture.destroy();
+        tex.texture = gpu.Texture.invalid();
     }
     self.kitty_textures.deinit(self.surface.allocator);
 
@@ -329,7 +320,7 @@ fn deinitKittyResources(self: *Renderer) void {
 }
 
 // ============================================================================
-// FBO State (GL operations done by AppWindow)
+// Render-target state (GPU operations done by the renderer backend)
 // ============================================================================
 
 /// Check if FBO needs to be created or resized
@@ -339,32 +330,30 @@ pub fn needsFBOUpdate(self: *const Renderer, width: u32, height: u32) bool {
     return self.fbo_width != width or self.fbo_height != height;
 }
 
-/// Set FBO handles after creation by AppWindow
-pub fn setFBOHandles(self: *Renderer, fbo: GLuint, texture: GLuint, width: u32, height: u32) void {
-    self.fbo = fbo;
-    self.fbo_texture = texture;
+/// Set render target after backend creation.
+pub fn setFramebuffer(self: *Renderer, framebuffer: gpu.Framebuffer, width: u32, height: u32) void {
+    self.fbo = framebuffer;
     self.fbo_width = width;
     self.fbo_height = height;
     self.fbo_initialized = true;
 }
 
-/// Clear FBO handles (called before AppWindow deletes them)
-pub fn clearFBOHandles(self: *Renderer) void {
-    self.fbo = 0;
-    self.fbo_texture = 0;
+/// Clear render-target state after backend cleanup.
+pub fn clearFramebuffer(self: *Renderer) void {
+    self.fbo = .{};
     self.fbo_width = 0;
     self.fbo_height = 0;
     self.fbo_initialized = false;
 }
 
-/// Get the FBO handle
-pub fn getFBO(self: *const Renderer) GLuint {
+/// Get the backend framebuffer wrapper.
+pub fn getFramebuffer(self: *const Renderer) gpu.Framebuffer {
     return self.fbo;
 }
 
-/// Get the texture handle for compositing
-pub fn getTexture(self: *const Renderer) GLuint {
-    return self.fbo_texture;
+/// Get the texture wrapper used for compositing.
+pub fn getTexture(self: *const Renderer) gpu.Texture {
+    return self.fbo.colorTexture();
 }
 
 /// Get FBO dimensions
@@ -374,7 +363,7 @@ pub fn getFBOSize(self: *const Renderer) struct { width: u32, height: u32 } {
 
 /// Check if FBO is ready for use
 pub fn isFBOReady(self: *const Renderer) bool {
-    return self.fbo_initialized and self.fbo != 0 and self.fbo_texture != 0;
+    return self.fbo_initialized and self.fbo.isValid();
 }
 
 // ============================================================================

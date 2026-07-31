@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"],
+      "enabled": false
+    },
+    "jina": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.jina.ai/v1"],
+      "enabled": false
+    }
+  }
+}

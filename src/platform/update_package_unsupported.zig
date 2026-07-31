@@ -2,16 +2,20 @@ const std = @import("std");
 const builtin = @import("builtin");
 const release_package = @import("../release_package.zig");
 
-pub fn currentPackage(allocator: std.mem.Allocator, webview_enabled: bool) !release_package.Package {
+pub fn currentPackage(
+    allocator: std.mem.Allocator,
+    webview_enabled: bool,
+    gpu_backend: []const u8,
+) !release_package.Package {
     _ = allocator;
     _ = webview_enabled;
+    _ = gpu_backend;
     return defaultPackageForOs(builtin.os.tag);
 }
 
 fn defaultPackageForOs(os_tag: std.Target.Os.Tag) release_package.Package {
     return switch (os_tag) {
         .macos => .{ .platform = .macos },
-        .linux => .{ .platform = .linux },
         else => .{ .platform = .unsupported },
     };
 }

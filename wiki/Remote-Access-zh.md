@@ -13,7 +13,7 @@
 启用后，WispTerm 为运行中的实例创建一个共享出站 RemoteClient。所有标签和分屏都通过该
 client 发布各自的 PTY 输出。
 
-远程访问支持 **Windows 和 macOS**（macOS 传输在 v1.23.0 中加入）。Linux 支持仍在开发中。
+远程访问支持 **Windows 和 macOS**。Linux 传输支持仍在开发中。
 
 ## 启用方式
 

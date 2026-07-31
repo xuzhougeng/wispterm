@@ -9,11 +9,20 @@
 //!   - direct2d-zig: https://github.com/marler8997/direct2d-zig
 
 const std = @import("std");
+const builtin = @import("builtin");
+const build_options = @import("build_options");
 const windows = std.os.windows;
 const platform_input = @import("../platform/input_events.zig");
 const platform_window = @import("../platform/window.zig");
 const render_diagnostics = @import("../render_diagnostics.zig");
 const dx_present = @import("win32_dx_present.zig");
+const gpu_backend = @import("../renderer/gpu/backend.zig");
+
+/// Whether this build's renderer runs on a WGL/OpenGL context. The native
+/// D3D11 backend must never touch WGL: creating any GL context loads the
+/// vendor's GL ICD (nvoglv64 + nvgpucomp64 on NVIDIA) and pins hundreds of
+/// MB of driver-private memory the backend never uses.
+const needs_gl = gpu_backend.Backend.resolve(builtin.os.tag, build_options.gpu_backend) != .d3d11;
 
 // ============================================================================
 // Win32 API types
@@ -536,6 +545,7 @@ const WAIT_TIMEOUT: DWORD = 0x00000102;
 const INFINITE: DWORD = 0xFFFFFFFF;
 
 extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) DWORD;
+extern "kernel32" fn ProcessIdToSessionId(dwProcessId: DWORD, pSessionId: *DWORD) callconv(.winapi) BOOL;
 extern "kernel32" fn SetHandleInformation(hObject: windows.HANDLE, dwMask: DWORD, dwFlags: DWORD) callconv(.winapi) BOOL;
 
 extern "kernel32" fn CreatePipe(
@@ -691,8 +701,17 @@ pub fn setFlipPresentEnabled(enabled: bool) void {
     g_flip_present_enabled = enabled;
 }
 
+/// Override the Present sync interval (0 = vsync off, 1 = on). Used by the
+/// in-app GPU benchmark to spin the main loop at max frame rate. Safe to call
+/// after window creation; the next `presentFrame`/`SwapBuffers` honors it.
+pub fn setPresentInterval(interval: c_int) void {
+    setSwapInterval(interval);
+}
+
 fn setSwapInterval(interval: c_int) void {
     g_present_interval = interval;
+    // No GL context in the D3D11 build; its interval goes through gpu.Context.
+    if (comptime !needs_gl) return;
     if (!g_swap_interval_loaded) {
         g_swap_interval_loaded = true;
         if (wglGetProcAddress("wglSwapIntervalEXT")) |p| {
@@ -723,6 +742,7 @@ extern "user32" fn GetSystemMetrics(nIndex: INT) callconv(.winapi) INT;
 const SM_CXSIZEFRAME: INT = 32;
 const SM_CYSIZEFRAME: INT = 33;
 const SM_CXPADDEDBORDER: INT = 92;
+const SM_REMOTESESSION: INT = 0x1000;
 
 // IsZoomed (maximized check)
 extern "user32" fn IsZoomed(hWnd: HWND) callconv(.winapi) BOOL;
@@ -835,11 +855,29 @@ fn RingBuffer(comptime T: type, comptime N: usize) type {
 
 pub const CaptionButton = platform_window.CaptionButton;
 
+const ImeCaretPosition = struct {
+    x: i32,
+    y: i32,
+    height: i32,
+};
+
+const ImeWindowSync = struct {
+    caret: ImeCaretPosition,
+    client_width: i32,
+    client_height: i32,
+};
+
+const ImeCompositionActions = struct {
+    push_result: bool,
+    update_preedit: bool,
+};
+
 /// Platform window handle and associated state.
 pub const Window = struct {
     hwnd: HWND,
     hdc: HDC,
-    hglrc: HGLRC,
+    /// Null in the native D3D11 build (no WGL context exists at all).
+    hglrc: ?HGLRC = null,
     /// DXGI flip-model presenter; null = legacy GDI SwapBuffers path (either
     /// disabled by config or unavailable/failed on this machine).
     dx: ?dx_present.Presenter = null,
@@ -888,6 +926,9 @@ pub const Window = struct {
     ime_caret_x: i32 = 12,
     ime_caret_y: i32 = TITLEBAR_HEIGHT + 10,
     ime_caret_height: i32 = 20,
+    /// Last client/caret state pushed to the Win32 IME. Render paths may call
+    /// setImeCaret every frame; avoid resending identical IMM window updates.
+    ime_window_sync: ?ImeWindowSync = null,
     /// UTF-8 preedit text currently owned by the IME composition session.
     /// WispTerm renders this inline, so Windows' default white composition
     /// popup is hidden.
@@ -914,9 +955,15 @@ pub const Window = struct {
     on_file_drop: ?FileDropHandler = null,
 
     pub fn setImeCaret(self: *Window, x: i32, y: i32, height: i32) void {
-        self.ime_caret_x = @max(0, x);
-        self.ime_caret_y = @max(0, y);
-        self.ime_caret_height = @max(1, height);
+        const caret = normalizeImeCaret(x, y, height);
+        const next_sync = imeWindowSyncFor(self, caret);
+        if (self.ime_window_sync) |synced| {
+            if (imeWindowSyncEqual(synced, next_sync)) return;
+        }
+
+        self.ime_caret_x = caret.x;
+        self.ime_caret_y = caret.y;
+        self.ime_caret_height = caret.height;
         updateImeWindowPosition(self);
     }
 
@@ -961,16 +1008,7 @@ pub const Window = struct {
         const physical_height = scaleFrom96(height, initial_dpi);
 
         // --- Step 1: Register window classes ---
-        const dummy_class = std.unicode.utf8ToUtf16LeStringLiteral("WispTermDummyClass");
         const real_class = std.unicode.utf8ToUtf16LeStringLiteral("WispTermWindowClass");
-
-        const dummy_wc = WNDCLASSEXW{
-            .style = CS_OWNDC,
-            .lpfnWndProc = DefWindowProcW,
-            .hInstance = hInstance,
-            .lpszClassName = dummy_class,
-        };
-        _ = RegisterClassExW(&dummy_wc);
 
         // Load application icon from embedded resource (resource ID 1, set in wispterm.rc).
         // MAKEINTRESOURCE(1) = 1, IMAGE_ICON = 1, LR_SHARED = 0x8000
@@ -992,30 +1030,8 @@ pub const Window = struct {
             // May already be registered from a previous call — that's OK
         }
 
-        // --- Step 2: Create dummy window + legacy context to load WGL extensions ---
-        const dummy_hwnd = CreateWindowExW(
-            0,
-            dummy_class,
-            std.unicode.utf8ToUtf16LeStringLiteral(""),
-            0, // not visible
-            0,
-            0,
-            1,
-            1,
-            null,
-            null,
-            hInstance,
-            null,
-        ) orelse {
-            std.debug.print("Win32: Failed to create dummy window\n", .{});
-            return error.CreateWindowFailed;
-        };
-
-        const dummy_hdc = GetDC(dummy_hwnd) orelse {
-            _ = DestroyWindow(dummy_hwnd);
-            return error.GetDCFailed;
-        };
-
+        // --- Step 2: Create dummy window + legacy context to load WGL extensions
+        // (GL hosts only — see `needs_gl`) ---
         const pfd = PIXELFORMATDESCRIPTOR{
             .dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER,
             .iPixelType = PFD_TYPE_RGBA,
@@ -1024,36 +1040,70 @@ pub const Window = struct {
             .cStencilBits = 8,
             .iLayerType = PFD_MAIN_PLANE,
         };
+        var createContextAttribs: ?*const fn (HDC, ?HGLRC, ?[*]const i32) callconv(.winapi) ?HGLRC = null;
+        var wglChoosePixelFormatARB_ptr: ?*const anyopaque = null;
+        if (comptime needs_gl) {
+            const dummy_class = std.unicode.utf8ToUtf16LeStringLiteral("WispTermDummyClass");
+            const dummy_wc = WNDCLASSEXW{
+                .style = CS_OWNDC,
+                .lpfnWndProc = DefWindowProcW,
+                .hInstance = hInstance,
+                .lpszClassName = dummy_class,
+            };
+            _ = RegisterClassExW(&dummy_wc);
 
-        const dummy_pf = ChoosePixelFormat(dummy_hdc, &pfd);
-        if (dummy_pf == 0) {
+            const dummy_hwnd = CreateWindowExW(
+                0,
+                dummy_class,
+                std.unicode.utf8ToUtf16LeStringLiteral(""),
+                0, // not visible
+                0,
+                0,
+                1,
+                1,
+                null,
+                null,
+                hInstance,
+                null,
+            ) orelse {
+                std.debug.print("Win32: Failed to create dummy window\n", .{});
+                return error.CreateWindowFailed;
+            };
+
+            const dummy_hdc = GetDC(dummy_hwnd) orelse {
+                _ = DestroyWindow(dummy_hwnd);
+                return error.GetDCFailed;
+            };
+
+            const dummy_pf = ChoosePixelFormat(dummy_hdc, &pfd);
+            if (dummy_pf == 0) {
+                _ = DestroyWindow(dummy_hwnd);
+                return error.ChoosePixelFormatFailed;
+            }
+            _ = SetPixelFormat(dummy_hdc, dummy_pf, &pfd);
+
+            const dummy_gl = wglCreateContext(dummy_hdc) orelse {
+                _ = DestroyWindow(dummy_hwnd);
+                return error.WGLCreateContextFailed;
+            };
+            _ = wglMakeCurrent(dummy_hdc, dummy_gl);
+
+            // Load the modern context creation function
+            const wglCreateContextAttribsARB_ptr = wglGetProcAddress("wglCreateContextAttribsARB");
+            wglChoosePixelFormatARB_ptr = wglGetProcAddress("wglChoosePixelFormatARB");
+
+            // Clean up dummy resources
+            _ = wglMakeCurrent(dummy_hdc, null);
+            _ = wglDeleteContext(dummy_gl);
             _ = DestroyWindow(dummy_hwnd);
-            return error.ChoosePixelFormatFailed;
+
+            if (wglCreateContextAttribsARB_ptr == null) {
+                std.debug.print("Win32: wglCreateContextAttribsARB not available\n", .{});
+                return error.WGLExtensionNotAvailable;
+            }
+
+            createContextAttribs = @ptrCast(wglCreateContextAttribsARB_ptr.?);
         }
-        _ = SetPixelFormat(dummy_hdc, dummy_pf, &pfd);
-
-        const dummy_gl = wglCreateContext(dummy_hdc) orelse {
-            _ = DestroyWindow(dummy_hwnd);
-            return error.WGLCreateContextFailed;
-        };
-        _ = wglMakeCurrent(dummy_hdc, dummy_gl);
-
-        // Load the modern context creation function
-        const wglCreateContextAttribsARB_ptr = wglGetProcAddress("wglCreateContextAttribsARB");
-        const wglChoosePixelFormatARB_ptr = wglGetProcAddress("wglChoosePixelFormatARB");
-
-        // Clean up dummy resources
-        _ = wglMakeCurrent(dummy_hdc, null);
-        _ = wglDeleteContext(dummy_gl);
-        _ = DestroyWindow(dummy_hwnd);
-
-        if (wglCreateContextAttribsARB_ptr == null) {
-            std.debug.print("Win32: wglCreateContextAttribsARB not available\n", .{});
-            return error.WGLExtensionNotAvailable;
-        }
-
-        const createContextAttribs: *const fn (HDC, ?HGLRC, ?[*]const i32) callconv(.winapi) ?HGLRC =
-            @ptrCast(wglCreateContextAttribsARB_ptr.?);
 
         // --- Step 3: Create the real window ---
         const hwnd = CreateWindowExW(
@@ -1106,84 +1156,88 @@ pub const Window = struct {
             return error.GetDCFailed;
         };
 
-        // Set pixel format on the real window
-        // If we have wglChoosePixelFormatARB, use it for better format selection
-        var pixel_format: i32 = 0;
-        if (wglChoosePixelFormatARB_ptr) |choose_ptr| {
-            const choosePixelFormat: *const fn (
-                HDC,
-                [*]const i32,
-                ?[*]const f32,
-                u32,
-                *i32,
-                *u32,
-            ) callconv(.winapi) BOOL = @ptrCast(choose_ptr);
+        var hglrc: ?HGLRC = null;
+        if (comptime needs_gl) {
+            // Set pixel format on the real window
+            // If we have wglChoosePixelFormatARB, use it for better format selection
+            var pixel_format: i32 = 0;
+            if (wglChoosePixelFormatARB_ptr) |choose_ptr| {
+                const choosePixelFormat: *const fn (
+                    HDC,
+                    [*]const i32,
+                    ?[*]const f32,
+                    u32,
+                    *i32,
+                    *u32,
+                ) callconv(.winapi) BOOL = @ptrCast(choose_ptr);
 
-            const WGL_DRAW_TO_WINDOW_ARB: i32 = 0x2001;
-            const WGL_SUPPORT_OPENGL_ARB: i32 = 0x2010;
-            const WGL_DOUBLE_BUFFER_ARB: i32 = 0x2011;
-            const WGL_PIXEL_TYPE_ARB: i32 = 0x2013;
-            const WGL_TYPE_RGBA_ARB: i32 = 0x202B;
-            const WGL_COLOR_BITS_ARB: i32 = 0x2014;
-            const WGL_DEPTH_BITS_ARB: i32 = 0x2022;
-            const WGL_STENCIL_BITS_ARB: i32 = 0x2023;
+                const WGL_DRAW_TO_WINDOW_ARB: i32 = 0x2001;
+                const WGL_SUPPORT_OPENGL_ARB: i32 = 0x2010;
+                const WGL_DOUBLE_BUFFER_ARB: i32 = 0x2011;
+                const WGL_PIXEL_TYPE_ARB: i32 = 0x2013;
+                const WGL_TYPE_RGBA_ARB: i32 = 0x202B;
+                const WGL_COLOR_BITS_ARB: i32 = 0x2014;
+                const WGL_DEPTH_BITS_ARB: i32 = 0x2022;
+                const WGL_STENCIL_BITS_ARB: i32 = 0x2023;
 
-            const attribs = [_]i32{
-                WGL_DRAW_TO_WINDOW_ARB, 1,
-                WGL_SUPPORT_OPENGL_ARB, 1,
-                WGL_DOUBLE_BUFFER_ARB,  1,
-                WGL_PIXEL_TYPE_ARB,     WGL_TYPE_RGBA_ARB,
-                WGL_COLOR_BITS_ARB,     32,
-                WGL_DEPTH_BITS_ARB,     24,
-                WGL_STENCIL_BITS_ARB,   8,
+                const attribs = [_]i32{
+                    WGL_DRAW_TO_WINDOW_ARB, 1,
+                    WGL_SUPPORT_OPENGL_ARB, 1,
+                    WGL_DOUBLE_BUFFER_ARB,  1,
+                    WGL_PIXEL_TYPE_ARB,     WGL_TYPE_RGBA_ARB,
+                    WGL_COLOR_BITS_ARB,     32,
+                    WGL_DEPTH_BITS_ARB,     24,
+                    WGL_STENCIL_BITS_ARB,   8,
+                    0, // terminator
+                };
+                var num_formats: u32 = 0;
+                _ = choosePixelFormat(hdc, &attribs, null, 1, &pixel_format, &num_formats);
+            }
+
+            if (pixel_format == 0) {
+                // Fallback to basic ChoosePixelFormat
+                pixel_format = ChoosePixelFormat(hdc, &pfd);
+            }
+
+            if (pixel_format == 0) {
+                _ = DestroyWindow(hwnd);
+                return error.ChoosePixelFormatFailed;
+            }
+            if (SetPixelFormat(hdc, pixel_format, &pfd) == 0) {
+                _ = DestroyWindow(hwnd);
+                return error.SetPixelFormatFailed;
+            }
+
+            // --- Step 4: Create OpenGL 3.3 core profile context ---
+            const WGL_CONTEXT_MAJOR_VERSION_ARB: i32 = 0x2091;
+            const WGL_CONTEXT_MINOR_VERSION_ARB: i32 = 0x2092;
+            const WGL_CONTEXT_PROFILE_MASK_ARB: i32 = 0x9126;
+            const WGL_CONTEXT_CORE_PROFILE_BIT_ARB: i32 = 0x00000001;
+
+            const ctx_attribs = [_]i32{
+                WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
+                WGL_CONTEXT_MINOR_VERSION_ARB, 3,
+                WGL_CONTEXT_PROFILE_MASK_ARB,  WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
                 0, // terminator
             };
-            var num_formats: u32 = 0;
-            _ = choosePixelFormat(hdc, &attribs, null, 1, &pixel_format, &num_formats);
+
+            const ctx = createContextAttribs.?(hdc, null, &ctx_attribs) orelse {
+                std.debug.print("Win32: Failed to create OpenGL 3.3 core context\n", .{});
+                _ = DestroyWindow(hwnd);
+                return error.WGLCreateContextFailed;
+            };
+
+            if (wglMakeCurrent(hdc, ctx) == 0) {
+                _ = wglDeleteContext(ctx);
+                _ = DestroyWindow(hwnd);
+                return error.WGLMakeCurrentFailed;
+            }
+            hglrc = ctx;
+
+            // Vsync on for steady-state rendering; the modal resize loop drops it to 0
+            // (see WM_ENTERSIZEMOVE) so border-drag paints don't block on vblank.
+            setSwapInterval(1);
         }
-
-        if (pixel_format == 0) {
-            // Fallback to basic ChoosePixelFormat
-            pixel_format = ChoosePixelFormat(hdc, &pfd);
-        }
-
-        if (pixel_format == 0) {
-            _ = DestroyWindow(hwnd);
-            return error.ChoosePixelFormatFailed;
-        }
-        if (SetPixelFormat(hdc, pixel_format, &pfd) == 0) {
-            _ = DestroyWindow(hwnd);
-            return error.SetPixelFormatFailed;
-        }
-
-        // --- Step 4: Create OpenGL 3.3 core profile context ---
-        const WGL_CONTEXT_MAJOR_VERSION_ARB: i32 = 0x2091;
-        const WGL_CONTEXT_MINOR_VERSION_ARB: i32 = 0x2092;
-        const WGL_CONTEXT_PROFILE_MASK_ARB: i32 = 0x9126;
-        const WGL_CONTEXT_CORE_PROFILE_BIT_ARB: i32 = 0x00000001;
-
-        const ctx_attribs = [_]i32{
-            WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
-            WGL_CONTEXT_MINOR_VERSION_ARB, 3,
-            WGL_CONTEXT_PROFILE_MASK_ARB,  WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
-            0, // terminator
-        };
-
-        const hglrc = createContextAttribs(hdc, null, &ctx_attribs) orelse {
-            std.debug.print("Win32: Failed to create OpenGL 3.3 core context\n", .{});
-            _ = DestroyWindow(hwnd);
-            return error.WGLCreateContextFailed;
-        };
-
-        if (wglMakeCurrent(hdc, hglrc) == 0) {
-            _ = wglDeleteContext(hglrc);
-            _ = DestroyWindow(hwnd);
-            return error.WGLMakeCurrentFailed;
-        }
-
-        // Vsync on for steady-state rendering; the modal resize loop drops it to 0
-        // (see WM_ENTERSIZEMOVE) so border-drag paints don't block on vblank.
-        setSwapInterval(1);
 
         // Get actual client area size
         var rect: RECT = undefined;
@@ -1199,21 +1253,25 @@ pub const Window = struct {
         // what produced the cross-DPI / resize artifacts of #46/#47/#88 on
         // Intel Arc and AMD iGPU drivers. Requires the GL context current.
         // The GL vendor pins the D3D device to the GPU the context runs on.
-        const gl_vendor: []const u8 = if (glGetString(GL_VENDOR)) |v| std.mem.span(v) else "";
-        const dx: ?dx_present.Presenter = if (g_flip_present_enabled)
-            dx_present.Presenter.init(hwnd, rect.right - rect.left, rect.bottom - rect.top, gl_vendor) catch |err| blk: {
-                render_diagnostics.log("dx-present unavailable ({s}, GL vendor \"{s}\") — using GDI SwapBuffers", .{ @errorName(err), gl_vendor });
-                std.debug.print("Win32: DXGI flip present unavailable ({s}), using SwapBuffers\n", .{@errorName(err)});
-                break :blk null;
+        // GL hosts only: the native D3D11 backend presents through its own
+        // swapchain (gpu.Context), never through this interop presenter.
+        var dx: ?dx_present.Presenter = null;
+        if (comptime needs_gl) {
+            if (g_flip_present_enabled) {
+                const gl_vendor: []const u8 = if (glGetString(GL_VENDOR)) |v| std.mem.span(v) else "";
+                dx = dx_present.Presenter.init(hwnd, rect.right - rect.left, rect.bottom - rect.top, gl_vendor) catch |err| blk: {
+                    render_diagnostics.log("dx-present unavailable ({s}, GL vendor \"{s}\") — using GDI SwapBuffers", .{ @errorName(err), gl_vendor });
+                    std.debug.print("Win32: DXGI flip present unavailable ({s}), using SwapBuffers\n", .{@errorName(err)});
+                    break :blk null;
+                };
+                if (dx != null) {
+                    render_diagnostics.log(
+                        "dx-present active: flip-model swapchain {}x{} (GL vendor \"{s}\")",
+                        .{ rect.right - rect.left, rect.bottom - rect.top, gl_vendor },
+                    );
+                    std.debug.print("Win32: presenting via DXGI flip-model swapchain\n", .{});
+                }
             }
-        else
-            null;
-        if (dx != null) {
-            render_diagnostics.log(
-                "dx-present active: flip-model swapchain {}x{} (GL vendor \"{s}\")",
-                .{ rect.right - rect.left, rect.bottom - rect.top, gl_vendor },
-            );
-            std.debug.print("Win32: presenting via DXGI flip-model swapchain\n", .{});
         }
 
         var window = Window{
@@ -1254,8 +1312,10 @@ pub const Window = struct {
             dx.deinit();
             self.dx = null;
         }
-        _ = wglMakeCurrent(self.hdc, null);
-        _ = wglDeleteContext(self.hglrc);
+        if (comptime needs_gl) {
+            _ = wglMakeCurrent(self.hdc, null);
+            if (self.hglrc) |ctx| _ = wglDeleteContext(ctx);
+        }
         _ = DestroyWindow(self.hwnd);
     }
 
@@ -1389,15 +1449,43 @@ fn currentSystemDpi() u32 {
     return if (dpi == 0) 96 else dpi;
 }
 
+const MonitorTopologySummary = struct {
+    count: u32 = 0,
+    primary_dpi_x: UINT = 0,
+    primary_dpi_y: UINT = 0,
+    first_dpi_x: UINT = 0,
+    first_dpi_y: UINT = 0,
+    mixed_dpi: bool = false,
+
+    fn note(self: *MonitorTopologySummary, primary: bool, dx: UINT, dy: UINT) void {
+        if (self.count == 0) {
+            self.first_dpi_x = dx;
+            self.first_dpi_y = dy;
+        } else if (dx != self.first_dpi_x or dy != self.first_dpi_y) {
+            self.mixed_dpi = true;
+        }
+        if (primary) {
+            self.primary_dpi_x = dx;
+            self.primary_dpi_y = dy;
+        }
+        self.count += 1;
+    }
+};
+
 /// EnumDisplayMonitors callback: log every monitor's bounds + effective DPI.
 /// Used to record the full multi-monitor topology when diagnostics start, so
 /// the high-vs-low DPI pair behind drag-between-monitors glitches is visible.
-fn logMonitorEnumProc(hmon: HMONITOR, _: ?HDC, _: *RECT, _: LPARAM) callconv(.winapi) BOOL {
+fn logMonitorEnumProc(hmon: HMONITOR, _: ?HDC, _: *RECT, data: LPARAM) callconv(.winapi) BOOL {
     var mi = MONITORINFO{};
     if (GetMonitorInfoW(hmon, &mi) == 0) return 1;
     var dx: UINT = 0;
     var dy: UINT = 0;
     _ = GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &dx, &dy);
+    const primary = (mi.dwFlags & 1) != 0; // MONITORINFOF_PRIMARY
+    if (data != 0) {
+        const summary: *MonitorTopologySummary = @ptrFromInt(@as(usize, @intCast(data)));
+        summary.note(primary, dx, dy);
+    }
     render_diagnostics.log(
         "monitor-enum rcMonitor=({},{} {}x{}) rcWork=({},{} {}x{}) dpi={}x{} primary={}",
         .{
@@ -1406,7 +1494,7 @@ fn logMonitorEnumProc(hmon: HMONITOR, _: ?HDC, _: *RECT, _: LPARAM) callconv(.wi
             mi.rcWork.left,                         mi.rcWork.top,
             mi.rcWork.right - mi.rcWork.left,       mi.rcWork.bottom - mi.rcWork.top,
             dx,                                     dy,
-            (mi.dwFlags & 1) != 0, // MONITORINFOF_PRIMARY
+            primary,
         },
     );
     return 1;
@@ -1416,7 +1504,22 @@ fn logMonitorEnumProc(hmon: HMONITOR, _: ?HDC, _: *RECT, _: LPARAM) callconv(.wi
 /// diagnostics are enabled.
 pub fn logDisplayTopology() void {
     if (!render_diagnostics.enabled()) return;
-    _ = EnumDisplayMonitors(null, null, &logMonitorEnumProc, 0);
+    var summary = MonitorTopologySummary{};
+    _ = EnumDisplayMonitors(null, null, &logMonitorEnumProc, @intCast(@intFromPtr(&summary)));
+    var session_id: DWORD = 0;
+    const have_session_id = ProcessIdToSessionId(GetCurrentProcessId(), &session_id) != 0;
+    render_diagnostics.log(
+        "windows-environment remote_session={} session_id={} monitor_count={} mixed_dpi={} primary_dpi={}x{} system_dpi={}",
+        .{
+            GetSystemMetrics(SM_REMOTESESSION) != 0,
+            if (have_session_id) session_id else 0,
+            summary.count,
+            summary.mixed_dpi,
+            summary.primary_dpi_x,
+            summary.primary_dpi_y,
+            currentSystemDpi(),
+        },
+    );
 }
 
 /// Log the monitor the given window currently sits on, tagged with `tag`
@@ -1516,6 +1619,82 @@ fn pushMouseButtonEvent(w: *Window, button: MouseButton, action: MouseButtonActi
 fn filteredImeSetContextLParam(lParam: LPARAM) LPARAM {
     const flags: usize = @intCast(lParam);
     return @intCast(flags & ~ISC_SHOWUICOMPOSITIONWINDOW);
+}
+
+fn normalizeImeCaret(x: i32, y: i32, height: i32) ImeCaretPosition {
+    return .{
+        .x = @max(0, x),
+        .y = @max(0, y),
+        .height = @max(1, height),
+    };
+}
+
+fn imeWindowSyncFor(w: *const Window, caret: ImeCaretPosition) ImeWindowSync {
+    return .{
+        .caret = caret,
+        .client_width = w.width,
+        .client_height = w.height,
+    };
+}
+
+fn imeWindowSyncEqual(a: ImeWindowSync, b: ImeWindowSync) bool {
+    return a.caret.x == b.caret.x and
+        a.caret.y == b.caret.y and
+        a.caret.height == b.caret.height and
+        a.client_width == b.client_width and
+        a.client_height == b.client_height;
+}
+
+fn currentImeWindowSync(w: *const Window) ImeWindowSync {
+    return imeWindowSyncFor(w, .{
+        .x = w.ime_caret_x,
+        .y = w.ime_caret_y,
+        .height = w.ime_caret_height,
+    });
+}
+
+fn imeCompositionActions(lParam: LPARAM) ImeCompositionActions {
+    const flags: usize = @intCast(lParam);
+    return .{
+        .push_result = (flags & GCS_RESULTSTR) != 0,
+        .update_preedit = (flags & GCS_COMPSTR) != 0,
+    };
+}
+
+test "win32 IME composition handles result and preedit flags independently" {
+    const actions = imeCompositionActions(@as(LPARAM, @intCast(GCS_RESULTSTR | GCS_COMPSTR)));
+    try std.testing.expect(actions.push_result);
+    try std.testing.expect(actions.update_preedit);
+
+    const result_only = imeCompositionActions(@as(LPARAM, @intCast(GCS_RESULTSTR)));
+    try std.testing.expect(result_only.push_result);
+    try std.testing.expect(!result_only.update_preedit);
+}
+
+test "win32 IME caret sync dedup includes normalized caret and client size" {
+    const caret = normalizeImeCaret(-4, 12, 0);
+    try std.testing.expectEqual(@as(i32, 0), caret.x);
+    try std.testing.expectEqual(@as(i32, 12), caret.y);
+    try std.testing.expectEqual(@as(i32, 1), caret.height);
+
+    const first = ImeWindowSync{
+        .caret = caret,
+        .client_width = 800,
+        .client_height = 600,
+    };
+    const same = ImeWindowSync{
+        .caret = normalizeImeCaret(0, 12, 1),
+        .client_width = 800,
+        .client_height = 600,
+    };
+    const resized = ImeWindowSync{
+        .caret = normalizeImeCaret(0, 12, 1),
+        .client_width = 801,
+        .client_height = 600,
+    };
+
+    try std.testing.expect(imeWindowSyncEqual(first, same));
+    try std.testing.expect(!imeWindowSyncEqual(first, resized));
 }
 
 fn readImeCompositionString(hIMC: HIMC, index: DWORD, out: []WCHAR) usize {
@@ -1853,13 +2032,15 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
             return 0;
         },
         WM_IME_COMPOSITION => {
-            updateImeWindowPosition(w);
+            const actions = imeCompositionActions(lParam);
 
-            if ((@as(usize, @intCast(lParam)) & GCS_RESULTSTR) != 0) {
+            if (actions.push_result) {
                 pushImeResultString(w);
-            } else if ((@as(usize, @intCast(lParam)) & GCS_COMPSTR) != 0) {
+            }
+            if (actions.update_preedit) {
                 updateImePreeditString(w);
             }
+            updateImeWindowPosition(w);
             return 0;
         },
         WM_IME_ENDCOMPOSITION => {
@@ -2182,7 +2363,10 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
 }
 
 fn updateImeWindowPosition(w: *Window) void {
-    const hIMC = ImmGetContext(w.hwnd) orelse return;
+    const hIMC = ImmGetContext(w.hwnd) orelse {
+        w.ime_window_sync = null;
+        return;
+    };
     defer _ = ImmReleaseContext(w.hwnd, hIMC);
 
     const x = @max(0, @min(w.width - 1, w.ime_caret_x));
@@ -2213,6 +2397,8 @@ fn updateImeWindowPosition(w: *Window) void {
         },
     };
     _ = ImmSetCandidateWindow(hIMC, &candidate);
+
+    w.ime_window_sync = currentImeWindowSync(w);
 }
 
 fn handleDropFiles(wParam: WPARAM, w: *Window) void {

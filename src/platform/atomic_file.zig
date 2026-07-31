@@ -1,17 +1,115 @@
 //! Replace-safe file writes for persisted application state.
 
 const std = @import("std");
+const builtin = @import("builtin");
+
+const WINDOWS_RENAME_RETRY_ATTEMPTS: u8 = 20;
+const WINDOWS_RENAME_RETRY_DELAY_NS: u64 = 10 * std.time.ns_per_ms;
+
+pub const WriteOptions = struct {
+    mode: std.fs.File.Mode = std.fs.File.default_mode,
+    sync_file: bool = false,
+    sync_parent_dir: bool = false,
+};
 
 /// Write `data` to `path` through `std.fs.AtomicFile`.
 ///
 /// Keeps platform-specific replacement semantics and temporary file cleanup
 /// details out of callers that only need a durable replace-safe write.
 pub fn writeFileReplaceSafe(path: []const u8, data: []const u8) !void {
-    var write_buffer: [0]u8 = .{};
-    var atomic = try std.fs.cwd().atomicFile(path, .{ .write_buffer = &write_buffer });
+    try writeFileReplaceSafeWithOptions(path, data, .{});
+}
+
+/// Same as `writeFileReplaceSafe`, with opt-in sync knobs for state that needs
+/// stronger power-loss durability than the default crash-safe replace.
+pub fn writeFileReplaceSafeWithOptions(path: []const u8, data: []const u8, options: WriteOptions) !void {
+    var write_buffer: [4096]u8 = undefined;
+    var atomic = try std.fs.cwd().atomicFile(path, .{
+        .mode = options.mode,
+        .make_path = true,
+        .write_buffer = &write_buffer,
+    });
     defer atomic.deinit();
     try atomic.file_writer.file.writeAll(data);
-    try atomic.finish();
+    try atomic.flush();
+    if (options.sync_file) try atomic.file_writer.file.sync();
+    try renameIntoPlaceReplaceSafe(&atomic);
+    if (options.sync_parent_dir) syncParentDir(path);
+}
+
+/// Rename an absolute path, retrying the short-lived Windows AccessDenied
+/// window that can appear after files or directories were just closed.
+pub fn renameAbsoluteRetryingAccessDenied(old_path: []const u8, new_path: []const u8) !void {
+    if (builtin.os.tag != .windows) {
+        try std.fs.renameAbsolute(old_path, new_path);
+        return;
+    }
+
+    var attempts: u8 = 0;
+    while (true) : (attempts += 1) {
+        std.fs.renameAbsolute(old_path, new_path) catch |err| switch (err) {
+            error.AccessDenied => {
+                if (attempts >= WINDOWS_RENAME_RETRY_ATTEMPTS) return err;
+                std.Thread.sleep(WINDOWS_RENAME_RETRY_DELAY_NS);
+                continue;
+            },
+            else => return err,
+        };
+        return;
+    }
+}
+
+fn renameIntoPlaceReplaceSafe(atomic: *std.fs.AtomicFile) !void {
+    if (builtin.os.tag != .windows) {
+        try atomic.renameIntoPlace();
+        return;
+    }
+
+    var attempts: u8 = 0;
+    while (true) : (attempts += 1) {
+        atomic.renameIntoPlace() catch |err| switch (err) {
+            error.AccessDenied => {
+                if (attempts >= WINDOWS_RENAME_RETRY_ATTEMPTS) return err;
+                std.Thread.sleep(WINDOWS_RENAME_RETRY_DELAY_NS);
+                continue;
+            },
+            else => return err,
+        };
+        return;
+    }
+}
+
+test "platform atomic file retry helper renames absolute directories" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const stage = try std.fs.path.join(std.testing.allocator, &.{ root, "stage" });
+    defer std.testing.allocator.free(stage);
+    const final = try std.fs.path.join(std.testing.allocator, &.{ root, "final" });
+    defer std.testing.allocator.free(final);
+
+    try tmp.dir.makePath("stage");
+    try tmp.dir.writeFile(.{ .sub_path = "stage/file.txt", .data = "ok" });
+
+    try renameAbsoluteRetryingAccessDenied(stage, final);
+
+    const got = try tmp.dir.readFileAlloc(std.testing.allocator, "final/file.txt", 8);
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqualStrings("ok", got);
+}
+
+fn syncParentDir(path: []const u8) void {
+    if (builtin.os.tag == .windows) return;
+    const parent = std.fs.path.dirname(path) orelse ".";
+    var dir = std.fs.cwd().openDir(parent, .{}) catch return;
+    defer dir.close();
+    const rc = std.posix.system.fsync(dir.fd);
+    switch (std.posix.errno(rc)) {
+        .SUCCESS, .INVAL, .ROFS => return,
+        else => return,
+    }
 }
 
 test "platform atomic file replaces existing contents" {
@@ -29,4 +127,72 @@ test "platform atomic file replaces existing contents" {
     const got = try tmp.dir.readFileAlloc(std.testing.allocator, "state.json", 16);
     defer std.testing.allocator.free(got);
     try std.testing.expectEqualStrings("new", got);
+}
+
+test "platform atomic file can replace existing contents with an empty file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const path = try std.fs.path.join(std.testing.allocator, &.{ root, "state.json" });
+    defer std.testing.allocator.free(path);
+
+    try writeFileReplaceSafe(path, "old");
+    try writeFileReplaceSafe(path, "");
+
+    const got = try tmp.dir.readFileAlloc(std.testing.allocator, "state.json", 16);
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqualStrings("", got);
+}
+
+test "platform atomic file creates parent directories" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const path = try std.fs.path.join(std.testing.allocator, &.{ root, "nested", "state.json" });
+    defer std.testing.allocator.free(path);
+
+    try writeFileReplaceSafe(path, "new");
+
+    const got = try tmp.dir.readFileAlloc(std.testing.allocator, "nested/state.json", 16);
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqualStrings("new", got);
+}
+
+test "platform atomic file preserves requested file mode" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const path = try std.fs.path.join(std.testing.allocator, &.{ root, "secret.json" });
+    defer std.testing.allocator.free(path);
+
+    try writeFileReplaceSafeWithOptions(path, "secret", .{ .mode = 0o600 });
+
+    const stat = try tmp.dir.statFile("secret.json");
+    try std.testing.expectEqual(@as(std.fs.File.Mode, 0o600), stat.mode & 0o777);
+}
+
+test "platform atomic file optional sync path writes successfully" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const path = try std.fs.path.join(std.testing.allocator, &.{ root, "durable.json" });
+    defer std.testing.allocator.free(path);
+
+    try writeFileReplaceSafeWithOptions(path, "durable", .{ .sync_file = true, .sync_parent_dir = true });
+
+    const got = try tmp.dir.readFileAlloc(std.testing.allocator, "durable.json", 16);
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqualStrings("durable", got);
 }

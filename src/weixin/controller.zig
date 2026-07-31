@@ -7,7 +7,7 @@ const types = @import("types.zig");
 const state_store = @import("state_store.zig");
 const ilink = @import("ilink_client.zig");
 const poller = @import("poller.zig");
-const control_mod = @import("control.zig");
+const control_mod = @import("../chatops/control.zig");
 
 const log = std.log.scoped(.weixin);
 
@@ -342,7 +342,6 @@ pub const Controller = struct {
             .allocator = self.allocator,
             .client = self.client.api(),
             .control = self.control,
-            .settings = self.settings,
             .owner = self.owner,
             .account_id = self.bot_id,
             .sync_buf = try self.allocator.dupe(u8, binding.sync_buf),
@@ -521,6 +520,12 @@ const NoopControl = struct {
     fn resolve_ai_approval(_: *anyopaque, _: bool) bool {
         return false;
     }
+    fn ai_question_option_count(_: *anyopaque) usize {
+        return 0;
+    }
+    fn resolve_ai_question(_: *anyopaque, _: types.QuestionReply) bool {
+        return false;
+    }
     fn inbound_file_dir(_: *anyopaque, _: []u8) []const u8 {
         return "";
     }
@@ -544,6 +549,8 @@ const NoopControl = struct {
             .latest_transcript = latest_transcript,
             .ai_approval_pending = ai_approval_pending,
             .resolve_ai_approval = resolve_ai_approval,
+            .ai_question_option_count = ai_question_option_count,
+            .resolve_ai_question = resolve_ai_question,
             .inbound_file_dir = inbound_file_dir,
             .list_ai_conversations = list_ai_conversations,
             .pin_ai_conversation_by_index = pin_ai_conversation_by_index,

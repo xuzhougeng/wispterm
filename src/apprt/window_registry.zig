@@ -15,8 +15,12 @@ pub const Registry = struct {
         defer self.mutex.unlock();
         var free: ?usize = null;
         for (self.entries, 0..) |e, i| {
-            if (e) |entry| { if (entry.id == id) { self.entries[i] = .{ .id = id, .ptr = ptr }; return; } }
-            else if (free == null) free = i;
+            if (e) |entry| {
+                if (entry.id == id) {
+                    self.entries[i] = .{ .id = id, .ptr = ptr };
+                    return;
+                }
+            } else if (free == null) free = i;
         }
         if (free) |i| self.entries[i] = .{ .id = id, .ptr = ptr };
     }
@@ -24,14 +28,21 @@ pub const Registry = struct {
     pub fn find(self: *Registry, id: u32) ?*anyopaque {
         self.mutex.lock();
         defer self.mutex.unlock();
-        for (self.entries) |e| if (e) |entry| { if (entry.id == id) return entry.ptr; };
+        for (self.entries) |e| if (e) |entry| {
+            if (entry.id == id) return entry.ptr;
+        };
         return null;
     }
 
     pub fn remove(self: *Registry, id: u32) void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        for (self.entries, 0..) |e, i| if (e) |entry| { if (entry.id == id) { self.entries[i] = null; return; } };
+        for (self.entries, 0..) |e, i| if (e) |entry| {
+            if (entry.id == id) {
+                self.entries[i] = null;
+                return;
+            }
+        };
     }
 };
 

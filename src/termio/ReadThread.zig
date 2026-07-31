@@ -9,6 +9,7 @@
 ///
 /// Shutdown is delegated to the platform PTY backend.
 const std = @import("std");
+const Command = @import("../Command.zig");
 const Surface = @import("../Surface.zig");
 const window_backend = @import("../platform/window_backend.zig");
 const read_coalesce = @import("read_coalesce.zig");
@@ -20,6 +21,8 @@ const read_coalesce = @import("read_coalesce.zig");
 const READ_BUF_SIZE = 64 * 1024;
 
 pub fn threadMain(surface: *Surface) void {
+    defer surface.markStopped();
+
     var buf: [READ_BUF_SIZE]u8 = undefined;
     var resize_pending: std.ArrayListUnmanaged(u8) = .empty;
     defer resize_pending.deinit(surface.allocator);
@@ -28,26 +31,15 @@ pub fn threadMain(surface: *Surface) void {
 
     while (!surface.exited.load(.acquire)) {
         const bytes_read = surface.pty.readOutput(&buf) catch |err| {
-            switch (err) {
-                // Backend interrupted the blocking read. Retry unless we're shutting down.
-                error.ReadInterrupted => continue,
-
-                // Pipe closed — child process exited
-                error.BrokenPipe => {
-                    surface.exited.store(true, .release);
-                    return;
-                },
-
-                // Any other error — exit
-                else => {
-                    std.debug.print("ReadThread: read error: {}\n", .{err});
-                    surface.exited.store(true, .release);
-                    return;
-                },
+            switch (handleReadError(surface, err)) {
+                .retry => continue,
+                .stop => return,
             }
         };
         if (bytes_read == 0) {
-            surface.exited.store(true, .release);
+            if (!surface.exited.load(.acquire)) {
+                surface.markExited(.eof, surface.pollExitStatus());
+            }
             return;
         }
 
@@ -64,6 +56,7 @@ pub fn threadMain(surface: *Surface) void {
             if (resize_pending.items.len == 0) continue;
             processOutput(surface, resize_pending.items);
             resize_pending.clearRetainingCapacity();
+            if (markExitedIfProcessEndedAfterOutput(surface)) return;
             continue;
         }
 
@@ -72,12 +65,15 @@ pub fn threadMain(surface: *Surface) void {
                 processOutput(surface, resize_pending.items);
                 resize_pending.clearRetainingCapacity();
                 processOutputCoalesced(surface, data, &output_pending, &buf);
+                if (markExitedIfProcessEndedAfterOutput(surface)) return;
                 continue;
             };
             processOutput(surface, resize_pending.items);
             resize_pending.clearRetainingCapacity();
+            if (markExitedIfProcessEndedAfterOutput(surface)) return;
         } else {
             processOutputCoalesced(surface, data, &output_pending, &buf);
+            if (markExitedIfProcessEndedAfterOutput(surface)) return;
         }
     }
 }
@@ -96,12 +92,17 @@ fn drainResizeOutput(
         }
 
         const to_read = @min(available, scratch.len);
-        const bytes_read = surface.pty.readOutput(scratch[0..to_read]) catch |err| switch (err) {
-            error.ReadInterrupted => continue,
-            else => return,
+        const bytes_read = surface.pty.readOutput(scratch[0..to_read]) catch |err| switch (handleReadError(surface, err)) {
+            .retry => continue,
+            .stop => return,
         };
 
-        if (bytes_read == 0) return;
+        if (bytes_read == 0) {
+            if (!surface.exited.load(.acquire)) {
+                surface.markExited(.eof, surface.pollExitStatus());
+            }
+            return;
+        }
 
         const data = scratch[0..bytes_read];
         if (surface.remote_client) |client| {
@@ -142,11 +143,16 @@ fn drainAvailableOutput(
         const to_read = read_coalesce.nextDrainLen(available, scratch.len, pending.items.len);
         if (to_read == 0) return;
 
-        const bytes_read = surface.pty.readOutput(scratch[0..to_read]) catch |err| switch (err) {
-            error.ReadInterrupted => continue,
-            else => return,
+        const bytes_read = surface.pty.readOutput(scratch[0..to_read]) catch |err| switch (handleReadError(surface, err)) {
+            .retry => continue,
+            .stop => return,
         };
-        if (bytes_read == 0) return;
+        if (bytes_read == 0) {
+            if (!surface.exited.load(.acquire)) {
+                surface.markExited(.eof, surface.pollExitStatus());
+            }
+            return;
+        }
 
         const data = scratch[0..bytes_read];
         if (surface.remote_client) |client| {
@@ -170,9 +176,53 @@ fn processOutput(surface: *Surface, data: []const u8) void {
     surface.resetOscBatch();
     surface.feedVtWithWispTermImageFallback(data);
     surface.scanForOscTitle(data);
-    surface.noteAgentOutput(data);
     // One wakeup per UI consume cycle is enough — the render loop drains all
     // pending output on a single frame; per-chunk posts only flood the
     // platform event queue during output bursts.
     if (surface.markOutputDirty()) window_backend.postWakeup();
+}
+
+const ExitAfterOutput = struct {
+    available: ?usize,
+    status: ?Command.Exit,
+};
+
+fn shouldMarkExitedAfterOutput(sample: ExitAfterOutput) bool {
+    return sample.available != null and sample.available.? == 0 and sample.status != null;
+}
+
+fn markExitedIfProcessEndedAfterOutput(surface: *Surface) bool {
+    const available = surface.pty.outputAvailable();
+    if (available == null or available.? != 0) return false;
+
+    const status = surface.pollExitStatus() orelse return false;
+    if (!shouldMarkExitedAfterOutput(.{ .available = available, .status = status })) return false;
+
+    surface.markExited(.eof, status);
+    return true;
+}
+
+const ReadErrorAction = enum { retry, stop };
+
+fn handleReadError(surface: *Surface, err: anyerror) ReadErrorAction {
+    if (err == error.ReadInterrupted) {
+        return if (surface.exited.load(.acquire)) .stop else .retry;
+    }
+
+    if (surface.exited.load(.acquire)) return .stop;
+
+    if (err == error.BrokenPipe) {
+        surface.markExited(.broken_pipe, surface.pollExitStatus());
+        return .stop;
+    }
+
+    surface.failIo(.pty_read, err);
+    return .stop;
+}
+
+test "read thread marks process exit after drained output only" {
+    try std.testing.expect(shouldMarkExitedAfterOutput(.{ .available = 0, .status = Command.Exit{ .exited = 0 } }));
+    try std.testing.expect(!shouldMarkExitedAfterOutput(.{ .available = 12, .status = Command.Exit{ .exited = 0 } }));
+    try std.testing.expect(!shouldMarkExitedAfterOutput(.{ .available = 0, .status = null }));
+    try std.testing.expect(!shouldMarkExitedAfterOutput(.{ .available = null, .status = Command.Exit{ .exited = 0 } }));
 }

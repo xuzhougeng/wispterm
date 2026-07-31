@@ -89,6 +89,12 @@ pub const setGlobalWindow = impl.setGlobalWindow;
 pub fn setFlipPresentEnabled(enabled: bool) void {
     if (comptime @hasDecl(impl, "setFlipPresentEnabled")) impl.setFlipPresentEnabled(enabled);
 }
+
+/// Override the Present vsync interval (0 = off, 1 = on). Used by the in-app
+/// GPU benchmark to disable vsync. No-op on backends without the seam.
+pub fn setPresentInterval(interval: i32) void {
+    if (comptime @hasDecl(impl, "setPresentInterval")) impl.setPresentInterval(interval);
+}
 /// Renderer surface seam (host → GPU backend). This is OpenGL-shaped: the host
 /// supplies a GL proc-address loader, which `gpu.Context.init` consumes. The
 /// seam is per-backend by design — a macOS/AppKit host pairs with the Metal

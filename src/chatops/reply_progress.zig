@@ -1,0 +1,498 @@
+//! AI-reply progress detection by diffing the rendered AI chat transcript
+//! against a baseline. Port of poller.ts aiReplyProgress + parseAiSections.
+const std = @import("std");
+const text_search = @import("../text_search.zig");
+
+pub const Progress = struct {
+    done: bool = false,
+    text: []const u8 = "",
+    needs_approval: bool = false,
+    approval_tool: []const u8 = "", // borrows from `current`
+    approval_command: []const u8 = "", // borrows from `current`
+    needs_question: bool = false,
+    question_text: []const u8 = "", // borrows from `current`; question + numbered options
+};
+
+const Role = enum { metadata, user, assistant, tool, reasoning, approval, question };
+const Section = struct { role: Role, label: []const u8, content: []const u8 };
+
+const MAX_SECTIONS = 256;
+
+/// Compares baseline vs current transcript. `text` borrows from `current`
+/// (or from a static literal for the in-progress messages).
+pub fn progress(baseline: []const u8, current: []const u8) Progress {
+    var base_buf: [MAX_SECTIONS]Section = undefined;
+    var cur_buf: [MAX_SECTIONS]Section = undefined;
+    var base_msg_buf: [MAX_SECTIONS]Section = undefined;
+    var cur_msg_buf: [MAX_SECTIONS]Section = undefined;
+
+    const base_sections = parseSections(baseline, &base_buf);
+    const cur_sections = parseSections(current, &cur_buf);
+    const base_msgs = filterMessages(base_sections, &base_msg_buf);
+    const cur_msgs = filterMessages(cur_sections, &cur_msg_buf);
+    const new_msgs = afterBaseline(base_msgs, cur_msgs);
+    const status = latestStatus(cur_sections);
+
+    // Approval is a live-state signal, intentionally NOT baseline-diffed: the
+    // snapshot writer only emits an `Approval:` section while the copilot is
+    // actually blocked (approval_pending and not resolved), so its presence in
+    // `current` means the approval is pending right now. Sending the WeChat
+    // prompt only once per episode is the caller's job (the poller's
+    // ApprovalAnnouncer), not this pure detector's.
+    for (cur_sections) |s| {
+        if (s.role == .approval) {
+            var tool = trim(s.content);
+            var command: []const u8 = "";
+            if (std.mem.indexOfScalar(u8, tool, '\n')) |nl| {
+                command = trim(tool[nl + 1 ..]);
+                tool = trim(tool[0..nl]);
+            }
+            return .{
+                .needs_approval = true,
+                .done = false,
+                .approval_tool = tool,
+                .approval_command = command,
+            };
+        }
+    }
+
+    // A pending ask_user question, like approval, is a live-state signal emitted
+    // into the snapshot only while the copilot is blocked on it. Mutually
+    // exclusive with approval (the worker blocks on one tool at a time).
+    for (cur_sections) |s| {
+        if (s.role == .question) {
+            return .{ .needs_question = true, .done = false, .question_text = trim(s.content) };
+        }
+    }
+
+    var last_assistant: ?[]const u8 = null;
+    for (new_msgs) |m| {
+        if (m.role == .assistant and trim(m.content).len != 0) last_assistant = trim(m.content);
+    }
+
+    if (last_assistant) |content| {
+        if (!isActiveStatus(status)) return .{ .done = true, .text = content };
+    }
+    // "Stopped" is a terminal state (manual stop in the copilot UI): the run
+    // ended without an answer, so finish the follow-up with an explicit notice.
+    // Checked before the tool branch — a stopped run may have tool messages.
+    // Note "Stopped"/"Stopping..." don't contain each other, so this never
+    // fires while the stop is still winding down (isActiveStatus covers that).
+    if (containsIgnoreCase(status, "stopped")) {
+        return .{ .done = true, .text = "本次处理已停止，未生成新的回复。" };
+    }
+    if (containsIgnoreCase(status, "running tools") or hasRole(new_msgs, .tool)) {
+        if (latestSubagentProgress(new_msgs)) |detail| return .{ .done = false, .text = detail };
+        return .{ .done = false, .text = "还在处理中，工具调用仍在执行。" };
+    }
+    if (new_msgs.len != 0 or last_assistant != null) {
+        return .{ .done = false, .text = "还在处理中，等待 AI 回复。" };
+    }
+    return .{ .done = false, .text = "" };
+}
+
+fn trim(s: []const u8) []const u8 {
+    return std.mem.trim(u8, s, " \t\r\n");
+}
+
+/// A section starts at a line that is exactly a known label followed by ':'.
+/// Content is every following line until the next label (whitespace-trimmed).
+fn parseSections(transcript: []const u8, buf: []Section) []Section {
+    var count: usize = 0;
+    var pos: usize = 0;
+    var cur_role: ?Role = null;
+    var cur_label: []const u8 = "";
+    var content_start: usize = 0;
+    var content_end: usize = 0;
+
+    while (pos <= transcript.len) {
+        const nl = std.mem.indexOfScalarPos(u8, transcript, pos, '\n') orelse transcript.len;
+        const line = transcript[pos..nl];
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (asLabel(trimmed)) |role| {
+            if (cur_role) |r| {
+                if (count < buf.len) {
+                    buf[count] = .{ .role = r, .label = cur_label, .content = trim(transcript[content_start..content_end]) };
+                    count += 1;
+                }
+            }
+            cur_role = role;
+            cur_label = trimmed[0 .. trimmed.len - 1]; // strip trailing ':'
+            content_start = if (nl < transcript.len) nl + 1 else transcript.len;
+            content_end = content_start;
+        } else if (cur_role != null) {
+            content_end = nl;
+        }
+        if (nl == transcript.len) break;
+        pos = nl + 1;
+    }
+    if (cur_role) |r| {
+        if (count < buf.len) {
+            buf[count] = .{ .role = r, .label = cur_label, .content = trim(transcript[content_start..content_end]) };
+            count += 1;
+        }
+    }
+    return buf[0..count];
+}
+
+fn asLabel(line: []const u8) ?Role {
+    if (line.len < 2 or line[line.len - 1] != ':') return null;
+    const name = line[0 .. line.len - 1];
+    if (eq(name, "You") or eq(name, "User")) return .user;
+    if (eq(name, "AI") or eq(name, "Assistant")) return .assistant;
+    if (eq(name, "Tool")) return .tool;
+    if (eq(name, "Reasoning")) return .reasoning;
+    if (eq(name, "Model") or eq(name, "Status")) return .metadata;
+    if (eq(name, "Approval")) return .approval;
+    if (eq(name, "Question")) return .question;
+    return null;
+}
+
+fn filterMessages(sections: []const Section, out: []Section) []Section {
+    var n: usize = 0;
+    for (sections) |s| {
+        if (s.role == .user or s.role == .assistant or s.role == .tool) {
+            if (n >= out.len) break;
+            out[n] = s;
+            n += 1;
+        }
+    }
+    return out[0..n];
+}
+
+/// Returns the suffix of `current` that does not overlap the tail of `baseline`.
+fn afterBaseline(baseline: []const Section, current: []const Section) []const Section {
+    if (baseline.len == 0) return current;
+    if (current.len == 0) return current[0..0];
+    const max_overlap = @min(baseline.len, current.len);
+    var overlap = max_overlap;
+    while (overlap > 0) : (overlap -= 1) {
+        const base_start = baseline.len - overlap;
+        var matched = true;
+        var i: usize = 0;
+        while (i < overlap) : (i += 1) {
+            if (baseline[base_start + i].role != current[i].role or
+                !std.mem.eql(u8, baseline[base_start + i].content, current[i].content))
+            {
+                matched = false;
+                break;
+            }
+        }
+        if (matched) return current[overlap..];
+    }
+    return current;
+}
+
+fn latestStatus(sections: []const Section) []const u8 {
+    var i: usize = sections.len;
+    while (i > 0) : (i -= 1) {
+        if (eq(sections[i - 1].label, "Status")) return trim(sections[i - 1].content);
+    }
+    return "";
+}
+
+fn isActiveStatus(status: []const u8) bool {
+    return containsIgnoreCase(status, "running tools") or containsIgnoreCase(status, "thinking") or
+        containsIgnoreCase(status, "streaming") or containsIgnoreCase(status, "stopping");
+}
+
+fn hasRole(msgs: []const Section, role: Role) bool {
+    for (msgs) |m| if (m.role == role) return true;
+    return false;
+}
+
+fn latestSubagentProgress(msgs: []const Section) ?[]const u8 {
+    var i = msgs.len;
+    while (i > 0) : (i -= 1) {
+        const m = msgs[i - 1];
+        if (m.role != .tool) continue;
+        const content = firstLine(trim(m.content));
+        if (std.mem.startsWith(u8, content, "subagent:")) return content;
+    }
+    return null;
+}
+
+fn firstLine(s: []const u8) []const u8 {
+    const end = std.mem.indexOfScalar(u8, s, '\n') orelse s.len;
+    return trim(s[0..end]);
+}
+
+fn eq(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    return text_search.containsIgnoreCase(haystack, needle);
+}
+
+const t = std.testing;
+
+test "done when a new assistant message exists and status is idle" {
+    const baseline = "You:\nhi\n";
+    const current = "You:\nhi\nAI:\nthere\nStatus:\nidle\n";
+    const p = progress(baseline, current);
+    try t.expect(p.done);
+    try t.expectEqualStrings("there", p.text);
+}
+
+test "not done while tools are running" {
+    const baseline = "You:\nhi\n";
+    const current = "You:\nhi\nStatus:\nrunning tools\n";
+    const p = progress(baseline, current);
+    try t.expect(!p.done);
+    try t.expect(p.text.len != 0);
+}
+
+test "empty when nothing new" {
+    const p = progress("You:\nhi\n", "You:\nhi\n");
+    try t.expect(!p.done);
+}
+
+test "done with realistic remote snapshot shape after a tool turn (issue 118)" {
+    // Mirrors allocRemoteSnapshot: Model + Status header, then message bodies.
+    // The turn finished ("Done in ...s"), a tool ran, and a new AI answer exists.
+    const baseline = "Model:\nGLM\n\nStatus:\nReady\n\nYou:\nq\n";
+    const current =
+        "Model:\nGLM\n\nStatus:\nDone in 280.9s\n\n" ++
+        "You:\nq\n\nTool:\nterminal completed.\n\nAI:\nthe captain model is ...\n";
+    const p = progress(baseline, current);
+    try t.expect(p.done);
+    try t.expectEqualStrings("the captain model is ...", p.text);
+}
+
+test "not done while a tool turn is still streaming" {
+    const baseline = "Model:\nGLM\n\nStatus:\nReady\n\nYou:\nq\n";
+    const current =
+        "Model:\nGLM\n\nStatus:\nRunning tools...\n\n" ++
+        "You:\nq\n\nTool:\nterminal completed.\n";
+    const p = progress(baseline, current);
+    try t.expect(!p.done);
+    try t.expect(p.text.len != 0);
+}
+
+test "subagent progress beats generic tool-running text" {
+    const baseline = "Model:\nGLM\n\nStatus:\nReady\n\nYou:\nq\n";
+    const current =
+        "Model:\nGLM\n\nStatus:\nRunning tools...\n\n" ++
+        "You:\nq\n\nTool:\nsubagent: running web_search\n";
+    const p = progress(baseline, current);
+    try t.expect(!p.done);
+    try t.expectEqualStrings("subagent: running web_search", p.text);
+}
+
+test "approval section is detected and takes priority over done/tool branches" {
+    const baseline = "Model:\nGLM\n\nStatus:\nReady\n\nYou:\nclean up\n";
+    const current =
+        "Model:\nGLM\n\nStatus:\nApproval needed\n\n" ++
+        "Approval:\nterminal_repl_exec\nrm -rf /tmp/x\n\n" ++
+        "You:\nclean up\n\nTool:\nrunning\n\nAI:\npre-tool note\n";
+    const p = progress(baseline, current);
+    try t.expect(p.needs_approval);
+    try t.expect(!p.done);
+    try t.expectEqualStrings("terminal_repl_exec", p.approval_tool);
+    try t.expectEqualStrings("rm -rf /tmp/x", p.approval_command);
+}
+
+test "no approval section leaves needs_approval false" {
+    const p = progress("You:\nhi\n", "You:\nhi\nAI:\nthere\nStatus:\nidle\n");
+    try t.expect(!p.needs_approval);
+    try t.expect(p.done);
+}
+
+test "question section is detected and takes priority over done/tool branches" {
+    const baseline = "Model:\nGLM\n\nStatus:\nReady\n\nYou:\nwhich db\n";
+    const current =
+        "Model:\nGLM\n\nStatus:\nWaiting for your answer\n\n" ++
+        "Question:\nWhich database?\n1. Postgres — prod\n2. SQLite\n\n" ++
+        "You:\nwhich db\n\nAI:\nlet me ask\n";
+    const p = progress(baseline, current);
+    try t.expect(p.needs_question);
+    try t.expect(!p.done);
+    try t.expect(std.mem.indexOf(u8, p.question_text, "Which database?") != null);
+    try t.expect(std.mem.indexOf(u8, p.question_text, "1. Postgres") != null);
+    try t.expect(std.mem.indexOf(u8, p.question_text, "2. SQLite") != null);
+}
+
+test "no question section leaves needs_question false" {
+    const p = progress("You:\nhi\n", "You:\nhi\nAI:\nthere\nStatus:\nidle\n");
+    try t.expect(!p.needs_question);
+}
+
+test "manual stop with no new assistant message reports done with a stop notice" {
+    // The user stopped the run in the copilot UI: status becomes "Stopped" and
+    // no assistant answer was produced. The follow-up must end (done) with an
+    // explicit notice instead of "还在处理中" until the 30-minute window expires.
+    const baseline = "Model:\nGLM\n\nStatus:\nReady\n";
+    const current = "Model:\nGLM\n\nStatus:\nStopped\n\nYou:\n重新做个任务\n";
+    const p = progress(baseline, current);
+    try t.expect(p.done);
+    try t.expect(std.mem.indexOf(u8, p.text, "已停止") != null);
+}
+
+test "manual stop after a tool ran still reports done (stop beats the tool branch)" {
+    const baseline = "Model:\nGLM\n\nStatus:\nReady\n";
+    const current =
+        "Model:\nGLM\n\nStatus:\nStopped\n\n" ++
+        "You:\nq\n\nTool:\nterminal completed.\n";
+    const p = progress(baseline, current);
+    try t.expect(p.done);
+    try t.expect(std.mem.indexOf(u8, p.text, "已停止") != null);
+}
+
+test "manual stop with a partial assistant answer reports done with that answer" {
+    const baseline = "Model:\nGLM\n\nStatus:\nReady\n";
+    const current =
+        "Model:\nGLM\n\nStatus:\nStopped\n\nYou:\nq\n\nAI:\npartial answer\n";
+    const p = progress(baseline, current);
+    try t.expect(p.done);
+    try t.expectEqualStrings("partial answer", p.text);
+}
+
+test "Stopping... still counts as in progress" {
+    const baseline = "Model:\nGLM\n\nStatus:\nReady\n";
+    const current = "Model:\nGLM\n\nStatus:\nStopping...\n\nYou:\nq\n";
+    const p = progress(baseline, current);
+    try t.expect(!p.done);
+    try t.expect(p.text.len != 0);
+}
+
+/// Render the current transcript into a compact progress markdown string for the streaming card.
+/// Returns owned []u8; caller must free. Never returns empty.
+pub fn renderProgress(alloc: std.mem.Allocator, baseline: []const u8, current: []const u8) ![]u8 {
+    var base_buf: [MAX_SECTIONS]Section = undefined;
+    var cur_buf: [MAX_SECTIONS]Section = undefined;
+    var base_msg_buf: [MAX_SECTIONS]Section = undefined;
+    var cur_msg_buf: [MAX_SECTIONS]Section = undefined;
+
+    const base_sections = parseSections(baseline, &base_buf);
+    const cur_sections = parseSections(current, &cur_buf);
+    const base_msgs = filterMessages(base_sections, &base_msg_buf);
+    const cur_msgs = filterMessages(cur_sections, &cur_msg_buf);
+    // Only THIS episode's messages — without baseline scoping the card would
+    // render the *previous* episode's last answer until the new one appears.
+    const new_msgs = afterBaseline(base_msgs, cur_msgs);
+    const status = latestStatus(cur_sections);
+
+    // Find last non-empty assistant section in this episode
+    var last_assistant: ?[]const u8 = null;
+    for (new_msgs) |m| {
+        if (m.role == .assistant and trim(m.content).len != 0) last_assistant = trim(m.content);
+    }
+
+    // Find last tool section's first line (tool name) in this episode
+    var last_tool_name: ?[]const u8 = null;
+    for (new_msgs) |m| {
+        if (m.role == .tool and trim(m.content).len != 0) {
+            const c = trim(m.content);
+            // ponytail: first line = tool name heuristic, good enough for v1
+            const nl = std.mem.indexOfScalar(u8, c, '\n') orelse c.len;
+            last_tool_name = trim(c[0..nl]);
+        }
+    }
+
+    // ponytail: hasRole(.tool) removed — it flags completed tools as active;
+    // isActiveStatus covers "running tools" while truly active.
+    const active = isActiveStatus(status);
+
+    if (last_assistant) |content| {
+        if (!active) return alloc.dupe(u8, content);
+        // Active: append tool status line
+        if (last_tool_name) |tool| {
+            return std.fmt.allocPrint(alloc, "{s}\n\n🔧 正在执行 {s}…", .{ content, tool });
+        }
+        return std.fmt.allocPrint(alloc, "{s}\n\n🔧 正在执行…", .{content});
+    }
+
+    // No assistant content yet
+    if (active) {
+        if (last_tool_name) |tool| {
+            return std.fmt.allocPrint(alloc, "🔧 正在执行 {s}…", .{tool});
+        }
+        return alloc.dupe(u8, "🔧 正在执行…");
+    }
+    return alloc.dupe(u8, "处理中…");
+}
+
+test "renderProgress: active with tool shows tool name" {
+    const transcript =
+        "User:\n帮我读 README\nAI:\n好的，我来读取。\nTool:\nread_file\nStatus:\nrunning tools\n";
+    const md = try renderProgress(t.allocator, "", transcript);
+    defer t.allocator.free(md);
+    try t.expect(std.mem.indexOf(u8, md, "我来读取") != null);
+    try t.expect(std.mem.indexOf(u8, md, "🔧") != null);
+}
+
+test "renderProgress: done state shows assistant content only" {
+    const transcript = "AI:\n这是最终答案。\nStatus:\ndone\n";
+    const md = try renderProgress(t.allocator, "", transcript);
+    defer t.allocator.free(md);
+    try t.expect(std.mem.indexOf(u8, md, "最终答案") != null);
+    try t.expect(std.mem.indexOf(u8, md, "🔧") == null);
+}
+
+test "renderProgress: no assistant content returns non-empty placeholder" {
+    const transcript = "Status:\nrunning tools\n";
+    const md = try renderProgress(t.allocator, "", transcript);
+    defer t.allocator.free(md);
+    try t.expect(md.len > 0);
+}
+
+test "renderProgress: empty transcript returns placeholder" {
+    const md = try renderProgress(t.allocator, "", "");
+    defer t.allocator.free(md);
+    try t.expect(md.len > 0);
+}
+
+test "renderProgress: ignores prior-episode answer before baseline (regression)" {
+    // baseline = previous episode (its answer already in the transcript).
+    // current = baseline + a new turn still running (no new assistant text yet).
+    // The card must NOT show the prior answer — it must show this episode's progress.
+    const baseline = "User:\n上一条\nAI:\n上一轮的旧答案\n";
+    const current = "User:\n上一条\nAI:\n上一轮的旧答案\nUser:\n新问题\nTool:\nsearch\nStatus:\nrunning tools\n";
+    const md = try renderProgress(t.allocator, baseline, current);
+    defer t.allocator.free(md);
+    try t.expect(std.mem.indexOf(u8, md, "旧答案") == null); // not the previous answer
+    try t.expect(std.mem.indexOf(u8, md, "🔧") != null); // this episode's progress
+}
+
+test "renderProgress: shows only this episode's assistant answer (regression)" {
+    const baseline = "User:\n上一条\nAI:\n旧答案\n";
+    const current = "User:\n上一条\nAI:\n旧答案\nUser:\n新问题\nAI:\n新答案\nStatus:\ndone\n";
+    const md = try renderProgress(t.allocator, baseline, current);
+    defer t.allocator.free(md);
+    try t.expect(std.mem.indexOf(u8, md, "新答案") != null);
+    try t.expect(std.mem.indexOf(u8, md, "旧答案") == null);
+}
+
+test "renderProgress: done with completed tool section — no 🔧 (bug2 regression)" {
+    // A done transcript that contains a Tool section (already completed).
+    // active = isActiveStatus("Done in 5s") → false → must NOT append 🔧.
+    const baseline = "User:\nq\n";
+    const current =
+        "User:\nq\nTool:\nterminal completed.\nAI:\nthe answer\nStatus:\nDone in 5s\n";
+    const md = try renderProgress(t.allocator, baseline, current);
+    defer t.allocator.free(md);
+    try t.expect(std.mem.indexOf(u8, md, "the answer") != null);
+    try t.expect(std.mem.indexOf(u8, md, "🔧") == null); // must be absent
+}
+
+test "renderProgress: running tools status shows 🔧 (regression guard)" {
+    const baseline = "User:\nq\n";
+    const current = "User:\nq\nTool:\nsearch\nStatus:\nRunning tools\n";
+    const md = try renderProgress(t.allocator, baseline, current);
+    defer t.allocator.free(md);
+    try t.expect(std.mem.indexOf(u8, md, "🔧") != null);
+}
+
+test "a resolved approval (gone from current) does not re-fire even if baseline had one" {
+    // Detection reads `current`, not the baseline: once the copilot resolves the
+    // approval the snapshot stops emitting the section, so the turn completes
+    // normally rather than reporting needs_approval again.
+    const baseline =
+        "Model:\nGLM\n\nApproval:\nterminal_repl_exec\nrm -rf /tmp/x\n\nYou:\nclean up\n";
+    const current =
+        "Model:\nGLM\n\nYou:\nclean up\n\nAI:\ndone\nStatus:\nidle\n";
+    const p = progress(baseline, current);
+    try t.expect(!p.needs_approval);
+    try t.expect(p.done);
+}

@@ -13,11 +13,12 @@
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const gpu = AppWindow.gpu;
-const c = gpu.c;
 const ui_pipeline = @import("ui_pipeline.zig");
 const cell_renderer = AppWindow.cell_renderer;
 const background_image = AppWindow.background_image;
 const Renderer = @import("Renderer.zig");
+const policy = @import("post_process_policy.zig");
+const render_diagnostics = @import("../render_diagnostics.zig");
 
 // Post-processing state (gpu-primitive-backed)
 threadlocal var g_post_fb: gpu.Framebuffer = .{};
@@ -110,8 +111,8 @@ fn initPostShader(allocator: std.mem.Allocator, shader_path: []const u8) bool {
         -1.0, 1.0,  0.0, 1.0,
     };
 
-    g_post_vbo_buf = gpu.Buffer.init(c.GL_ARRAY_BUFFER);
-    g_post_vbo_buf.uploadData(std.mem.sliceAsBytes(quad_verts[0..]), c.GL_STATIC_DRAW);
+    g_post_vbo_buf = gpu.Buffer.initVertex();
+    g_post_vbo_buf.uploadData(std.mem.sliceAsBytes(quad_verts[0..]), .static);
 
     // Fullscreen quad VAO: vec2 position (loc 0) + vec2 texcoord (loc 1), interleaved.
     const vao = gpu.vertex.buildVertexArray(&.{
@@ -173,8 +174,8 @@ fn renderPostProcess(width: c_int, height: c_int) void {
 
     // Draw fullscreen quad
     g_post_pipeline.bindVao();
-    g_post_pipeline.drawArrays(c.GL_TRIANGLES, 0, 6);
-    AppWindow.gpu.gl_init.g_draw_call_count += 1;
+    g_post_pipeline.drawArrays(.triangles, 0, 6);
+    AppWindow.gpu.draw_call_count += 1;
 
     // Re-enable blending for next terminal render pass
     ui_pipeline.setBlendEnabled(true);
@@ -202,6 +203,21 @@ pub fn renderFrameWithPostFromCells(rend: *const Renderer, width: c_int, height:
 /// Initialize post-processing from a shader path. Returns true if enabled.
 pub fn init(allocator: std.mem.Allocator, shader_path: ?[]const u8) void {
     const sp = shader_path orelse return;
+    switch (policy.decide(gpu.active)) {
+        .load => {},
+        .disabled => |reason| {
+            const msg = reason.message();
+            std.debug.print(
+                "Custom post-processing shader disabled for gpu-backend={s}: {s}. Ignoring shader path: {s}\n",
+                .{ @tagName(gpu.active), msg, sp },
+            );
+            render_diagnostics.log(
+                "post-process custom shader disabled gpu-backend={s} reason=\"{s}\" path=\"{s}\"",
+                .{ @tagName(gpu.active), msg, sp },
+            );
+            return;
+        },
+    }
     if (initPostShader(allocator, sp)) {
         g_post_enabled = true;
         g_start_time = std.time.milliTimestamp();
@@ -216,4 +232,7 @@ pub fn deinit() void {
     g_post_pipeline.deinit();
     g_post_vbo_buf.deinit();
     g_post_fb.deinit();
+    g_post_enabled = false;
+    g_frame_count = 0;
+    g_start_time = 0;
 }

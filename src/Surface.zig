@@ -9,6 +9,7 @@
 ///
 /// TabState in main.zig becomes a thin wrapper: `{ surface: *Surface }`.
 const std = @import("std");
+const builtin = @import("builtin");
 const ghostty_vt = @import("ghostty-vt");
 const Pty = @import("pty.zig").Pty;
 const Command = @import("Command.zig");
@@ -17,19 +18,19 @@ const termio = @import("termio.zig");
 const Config = @import("config.zig");
 const Renderer = @import("renderer/Renderer.zig");
 const remote = @import("remote_client.zig");
-const threading = @import("threading.zig");
-const agent_detector = @import("agent_detector.zig");
-const agent_detect_throttle = @import("agent_detect_throttle.zig");
+const threading = @import("platform/threading.zig");
+const agent_detector = @import("terminal_agents/detector.zig");
 const window_backend = @import("platform/window_backend.zig");
 const sync_output = @import("sync_output.zig");
 const notification = @import("notification.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const surface_registry = @import("surface_registry.zig");
 const platform_process = @import("platform/process.zig");
-const ssh_connection_mod = @import("ssh_connection.zig");
+const ssh_connection_mod = @import("ssh/connection.zig");
 const clipboard_osc52 = @import("clipboard_osc52.zig");
 
 const Surface = @This();
+const io_log = std.log.scoped(.surface_io);
 
 // ============================================================================
 // Types
@@ -47,6 +48,44 @@ pub const Selection = struct {
     end_row: usize = 0,
     /// Active selections are rendered and copied; anchor-only clicks are not.
     active: bool = false,
+};
+
+pub const Operation = enum {
+    event_loop,
+    pty_read,
+    pty_write,
+    pty_resize,
+    terminal_resize,
+    thread_spawn,
+    thread_shutdown,
+    respawn,
+};
+
+pub const IoFailure = struct {
+    operation: Operation,
+    error_code: anyerror,
+    timestamp_ms: i64,
+};
+
+pub const ExitReason = enum {
+    eof,
+    broken_pipe,
+    user_closed,
+};
+
+pub const ExitInfo = struct {
+    reason: ExitReason,
+    status: ?Command.Exit = null,
+    timestamp_ms: i64,
+};
+
+pub const IoState = union(enum) {
+    starting,
+    running,
+    stopping,
+    stopped,
+    exited: ExitInfo,
+    failed: IoFailure,
 };
 
 /// OSC parser state machine — handles sequences split across PTY reads.
@@ -108,10 +147,30 @@ pub const VtHandler = struct {
     surface: *Surface,
 
     pub fn init(terminal: *ghostty_vt.Terminal, surface: *Surface) VtHandler {
+        var inner = terminal.vtHandler();
+        // Answer terminal query sequences by writing the reply back to the PTY.
+        // This notably includes the Kitty keyboard protocol query (`CSI ? u`):
+        // full-screen TUIs (Claude Code, Codex, …) probe for protocol support
+        // and, without a reply, conclude it is unsupported and never enable it —
+        // leaving Shift+Enter indistinguishable from Enter. See issue #302.
+        inner.effects.write_pty = &writePtyResponse;
         return .{
-            .inner = terminal.vtHandler(),
+            .inner = inner,
             .surface = surface,
         };
+    }
+
+    /// Forward a terminal-generated response (Kitty keyboard query, DSR, mode
+    /// reports, …) to the PTY. Invoked on the IO reader thread while parsing
+    /// output; `queuePtyWrite` copies the bytes and hands them to the IO writer
+    /// thread, so this is safe from here. The owning Surface is recovered from
+    /// the handler's terminal pointer, which aliases `&surface.terminal`.
+    fn writePtyResponse(handler: *InnerHandler, data: [:0]const u8) void {
+        const surface: *Surface = @fieldParentPtr("terminal", handler.terminal);
+        surface.queuePtyWrite(data) catch |err| mailbox_log.warn(
+            "dropped terminal query reply ({d} bytes): {s}",
+            .{ data.len, @errorName(err) },
+        );
     }
 
     pub fn deinit(self: *VtHandler) void {
@@ -186,6 +245,12 @@ ssh_connection: ?SshConnection,
 remote_client: ?*remote.Client,
 remote_id: [16]u8,
 
+/// The command + cwd this surface was launched with, owned copies kept so the
+/// panel can be re-run in place after its process exits (Enter-to-reconnect).
+/// Null for virtual/tmux panes (no child) and if the dup ever fails.
+respawn_command: ?platform_pty_command.OwnedCommandLine = null,
+respawn_cwd: ?platform_pty_command.OwnedCwd = null,
+
 /// Size information for this surface (screen size, cell size, padding).
 /// Used by the renderer to position content correctly.
 size: renderer.size.Size = .{},
@@ -223,6 +288,20 @@ sync_output_state: sync_output.State = .{},
 
 /// Set when the PTY process has exited.
 exited: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+/// Thread-safe terminal IO lifecycle. `exited` remains as the cheap legacy
+/// stop flag; this carries the reason surfaced to callers and UI.
+io_state_mutex: std.Thread.Mutex = .{},
+io_state: IoState = .starting,
+
+/// SSH password autofill timing. When an SSH session (re)connects the saved
+/// password is typed once the remote password prompt appears. Per-surface (not
+/// a single global slot) so many sessions restoring at once each get filled.
+/// `deadline` == 0 means not armed; `due` is the earliest inject time (gives
+/// the prompt a moment to settle). The password itself is read from
+/// `ssh_connection` at inject time — not stored here.
+ssh_autofill_due_ms: i64 = 0,
+ssh_autofill_deadline_ms: i64 = 0,
 
 /// Set while the IO writer thread is resizing PTY and terminal state.
 /// The reader thread still drains PTY output during this window, but
@@ -320,8 +399,7 @@ wispterm_agent_osc_buf: [WISPTERM_AGENT_OSC_MAX]u8 = undefined,
 wispterm_agent_osc_buf_len: usize = 0,
 
 /// True once this surface has received an authoritative OSC 7748 agent-state
-/// marker. While true, the heuristic `refreshAgentDetection` is skipped (the
-/// hook signal is ground truth). Reset is handled elsewhere (B3, on command change).
+/// marker. Reset when the foreground command is no longer a known agent.
 agent_osc_active: bool = false,
 
 // Raw CWD path from OSC 7 (Unix-style, e.g., "/home/user/dir")
@@ -332,14 +410,17 @@ cwd_path_len: usize = 0,
 initial_cwd_path: [512]u8 = undefined,
 initial_cwd_path_len: usize = 0,
 
-// Lightweight app/agent detection state. Updated by the PTY reader from recent
-// output and OSC title changes, then read by chrome/remote/AI tooling.
+// Lightweight app/agent state. State transitions come from OSC 7748 hook
+// markers; app identity may also be seeded from the foreground command.
 agent_detection: agent_detector.Detection = .{},
-agent_recent_output: [4096]u8 = undefined,
-agent_recent_output_len: usize = 0,
-// Throttles the (substring-scan heavy) agent detection during output floods.
-// Mutated only under render_state.mutex; pendingPeek is the lock-free UI probe.
-agent_throttle: agent_detect_throttle.Throttle = .{},
+
+/// Last agent state seen by the main loop's notification poll (edge detection;
+/// UI thread only — see AppWindow.pollAgentMarker).
+agent_notify_prev_state: agent_detector.State = .none,
+/// When a `done` edge was staged (ms since epoch); 0 = none. The notification
+/// only fires if the agent is still done `notification.agent_done_quiet_ms`
+/// later — goal-loop agents bounce done→running between milestones.
+agent_done_staged_ms: i64 = 0,
 
 // ============================================================================
 // VT stream
@@ -409,7 +490,9 @@ pub fn init(
     try surface.command.start(&surface.pty, shell_cmd, cwd);
     errdefer surface.command.deinit();
 
-    return finishInit(surface, allocator, cols, rows, platform_pty_command.launchKindForCommand(shell_cmd), cwd);
+    const ready = try finishInit(surface, allocator, cols, rows, platform_pty_command.launchKindForCommand(shell_cmd), cwd);
+    ready.setRespawnTarget(allocator, shell_cmd, cwd);
+    return ready;
 }
 
 /// Shared constructor tail for `init` (real PTY + child) and `initVirtual`
@@ -430,6 +513,10 @@ fn finishInit(
     surface.render_state = renderer.State.init(&surface.terminal);
     surface.launch_kind = launch_kind;
     surface.ssh_connection = null;
+    surface.ssh_autofill_due_ms = 0;
+    surface.ssh_autofill_deadline_ms = 0;
+    surface.respawn_command = null;
+    surface.respawn_cwd = null;
     surface.remote_client = null;
     remote.nextSurfaceId(&surface.remote_id);
     surface.vt_stream = surface.initVtStream();
@@ -437,6 +524,8 @@ fn finishInit(
     surface.dirty = std.atomic.Value(bool).init(true);
     surface.sync_output_state = .{};
     surface.exited = std.atomic.Value(bool).init(false);
+    surface.io_state_mutex = .{};
+    surface.io_state = .starting;
     surface.resize_in_progress = std.atomic.Value(bool).init(false);
 
     // Desktop-notification state. `allocator.create` returns undefined memory
@@ -487,8 +576,6 @@ fn finishInit(
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.agent_detection = .{};
-    surface.agent_recent_output_len = 0;
-    surface.agent_throttle = .{};
     surface.captureInitialCwd(cwd);
 
     // Init bell state
@@ -515,6 +602,7 @@ fn finishInit(
     // Spawn IO writer thread (xev event loop — handles resize, future messages)
     surface.io_writer_thread = std.Thread.spawn(threading.surface_thread_spawn_config, termio.Thread.threadMain, .{ thread_state, surface }) catch |err| {
         std.debug.print("Failed to spawn IO writer thread: {}\n", .{err});
+        surface.failIo(.thread_spawn, err);
         return err;
     };
     errdefer {
@@ -526,8 +614,11 @@ fn finishInit(
     // Spawn IO reader thread (blocking PTY output loop)
     surface.io_reader_thread = std.Thread.spawn(threading.surface_thread_spawn_config, termio.ReadThread.threadMain, .{surface}) catch |err| {
         std.debug.print("Failed to spawn IO reader thread: {}\n", .{err});
+        surface.failIo(.thread_spawn, err);
         return err;
     };
+
+    surface.setIoRunning();
 
     // The renderer thread is kept as a future integration point, but the actual
     // snapshot/rebuild path still runs on the main thread today. Starting it now
@@ -607,7 +698,7 @@ pub fn deinit(self: *Surface, allocator: std.mem.Allocator) void {
     }
 
     // 2. Signal both IO threads to stop.
-    self.exited.store(true, .release);
+    self.beginStopping();
 
     // Stop the writer thread (xev event loop) via its stop async
     if (self.io_thread_state) |state| {
@@ -626,6 +717,7 @@ pub fn deinit(self: *Surface, allocator: std.mem.Allocator) void {
         thread.join();
         self.io_reader_thread = null;
     }
+    self.markStopped();
     self.remote_client = null;
 
     // Clean up writer thread state and mailbox
@@ -641,6 +733,7 @@ pub fn deinit(self: *Surface, allocator: std.mem.Allocator) void {
         self.allocator.free(pending);
         self.clipboard_write_pending = null;
     }
+    self.freeRespawnTarget(allocator);
     self.wispterm_image_osc_buf.deinit(allocator);
     self.vt_stream.deinit();
     self.command.deinit();
@@ -693,6 +786,315 @@ pub fn setSshConnectionValue(self: *Surface, conn: SshConnection) void {
     self.ssh_connection = conn;
 }
 
+pub fn currentIoState(self: *Surface) IoState {
+    self.io_state_mutex.lock();
+    defer self.io_state_mutex.unlock();
+    return self.io_state;
+}
+
+pub fn acceptsInput(self: *Surface) bool {
+    return switch (self.currentIoState()) {
+        .running => true,
+        else => false,
+    };
+}
+
+pub fn isExited(self: *Surface) bool {
+    return switch (self.currentIoState()) {
+        .exited => true,
+        else => false,
+    };
+}
+
+/// Whether this existing surface can be restarted in place. The original
+/// command and identity stay attached to the same tab/split.
+pub fn canRespawn(self: *Surface) bool {
+    if (self.respawn_command == null) return false;
+    return switch (self.currentIoState()) {
+        .exited, .failed => true,
+        else => false,
+    };
+}
+
+fn setIoRunning(self: *Surface) void {
+    self.io_state_mutex.lock();
+    defer self.io_state_mutex.unlock();
+    if (self.io_state == .starting) self.io_state = .running;
+}
+
+pub fn beginStopping(self: *Surface) void {
+    self.io_state_mutex.lock();
+    defer self.io_state_mutex.unlock();
+    switch (self.io_state) {
+        .failed, .exited, .stopped => {},
+        else => self.io_state = .stopping,
+    }
+    self.exited.store(true, .release);
+}
+
+pub fn markStopped(self: *Surface) void {
+    self.io_state_mutex.lock();
+    defer self.io_state_mutex.unlock();
+    switch (self.io_state) {
+        .failed, .exited, .stopped => {},
+        else => self.io_state = .stopped,
+    }
+}
+
+pub fn pollExitStatus(self: *Surface) ?Command.Exit {
+    return self.command.wait(false) catch |err| {
+        io_log.warn("process exit poll failed err={s}", .{@errorName(err)});
+        return null;
+    };
+}
+
+pub fn markExited(self: *Surface, reason: ExitReason, status: ?Command.Exit) void {
+    const info: ExitInfo = .{
+        .reason = reason,
+        .status = status,
+        .timestamp_ms = std.time.milliTimestamp(),
+    };
+    var should_notify = false;
+
+    self.io_state_mutex.lock();
+    switch (self.io_state) {
+        .failed, .exited, .stopped => {},
+        .stopping => self.io_state = .stopped,
+        else => {
+            self.io_state = .{ .exited = info };
+            should_notify = true;
+        },
+    }
+    self.exited.store(true, .release);
+    self.io_state_mutex.unlock();
+
+    if (!should_notify) return;
+    io_log.info("surface io exited reason={s}", .{@tagName(reason)});
+    self.requestWriterStop();
+    self.paintIoStatus(.{ .exited = info });
+    window_backend.postWakeup();
+}
+
+pub fn failIo(self: *Surface, operation: Operation, err: anyerror) void {
+    const failure: IoFailure = .{
+        .operation = operation,
+        .error_code = err,
+        .timestamp_ms = std.time.milliTimestamp(),
+    };
+    var should_notify = false;
+
+    self.io_state_mutex.lock();
+    switch (self.io_state) {
+        .failed, .exited, .stopped => {},
+        else => {
+            self.io_state = .{ .failed = failure };
+            should_notify = true;
+        },
+    }
+    self.exited.store(true, .release);
+    self.io_state_mutex.unlock();
+
+    if (!should_notify) return;
+    if (builtin.is_test) {
+        io_log.warn("surface io failed operation={s} err={s}", .{ @tagName(operation), @errorName(err) });
+    } else {
+        io_log.err("surface io failed operation={s} err={s}", .{ @tagName(operation), @errorName(err) });
+    }
+    self.requestWriterStop();
+    if (self.io_reader_thread != null) self.pty.cancelOutputRead();
+    self.paintIoStatus(.{ .failed = failure });
+    window_backend.postWakeup();
+}
+
+fn requestWriterStop(self: *Surface) void {
+    if (self.io_thread_state) |state| {
+        state.stop.notify() catch |err| {
+            io_log.warn("failed to notify io writer stop err={s}", .{@errorName(err)});
+        };
+    }
+}
+
+/// Build the terminal status line printed when IO ends. Pure (no terminal
+/// access) so it is unit-testable. `show_reconnect_hint` appends the
+/// Enter-to-reconnect prompt to a normal exit message.
+fn formatIoStatusMessage(buf: []u8, state: IoState, show_reconnect_hint: bool) ?[]const u8 {
+    const hint = if (show_reconnect_hint) " Press Enter to reconnect." else "";
+    return switch (state) {
+        .failed => |failure| std.fmt.bufPrint(
+            buf,
+            "\r\n[WispTerm] Terminal IO failed during {s}: {s}\r\n",
+            .{ @tagName(failure.operation), @errorName(failure.error_code) },
+        ) catch null,
+        .exited => |info| exited: {
+            if (info.status) |status| switch (status) {
+                .exited => |code| break :exited std.fmt.bufPrint(
+                    buf,
+                    "\r\n[WispTerm] Process exited with code {d}.{s}\r\n",
+                    .{ code, hint },
+                ) catch null,
+                .unknown => {},
+            };
+            break :exited std.fmt.bufPrint(
+                buf,
+                "\r\n[WispTerm] Process exited.{s}\r\n",
+                .{hint},
+            ) catch null;
+        },
+        else => null,
+    };
+}
+
+fn paintIoStatus(self: *Surface, state: IoState) void {
+    self.render_state.mutex.lock();
+    defer self.render_state.mutex.unlock();
+
+    var buf: [256]u8 = undefined;
+    // Only a panel with a stored command can actually reconnect (virtual/tmux
+    // panes and dup failures leave respawn_command null), so gate the hint.
+    const message = formatIoStatusMessage(&buf, state, self.respawn_command != null) orelse return;
+
+    self.terminal.printString(message) catch |err| {
+        io_log.warn("failed to paint io status err={s}", .{@errorName(err)});
+        return;
+    };
+    self.clearSynchronizedOutputLocked();
+}
+
+/// Re-run this panel's original command in place after its process exited
+/// (Enter-to-reconnect). Keeps the terminal/scrollback; replaces the whole IO
+/// subsystem. Main-thread only (spawns threads, touches the mailbox). No-op
+/// unless the panel has exited or failed and has a stored command.
+pub fn respawn(self: *Surface) void {
+    switch (self.currentIoState()) {
+        // .failed too: a respawn that fails to acquire a PTY lands here, and
+        // the user must still be able to press Enter to retry.
+        .exited, .failed => {},
+        else => return,
+    }
+    const owned_cmd = self.respawn_command orelse {
+        io_log.warn("respawn requested but no stored command", .{});
+        return;
+    };
+    const cmd = platform_pty_command.commandLineFromOwned(owned_cmd);
+    const cwd: platform_pty_command.Cwd =
+        if (self.respawn_cwd) |c| platform_pty_command.cwdFromOwned(c) else null;
+    const cols = self.size.grid.cols;
+    const rows = self.size.grid.rows;
+
+    // Both IO threads already returned (reader on EOF, writer on the stop
+    // notify markExited sent) but were never joined. Collect them before
+    // anything new starts.
+    if (self.io_thread_state) |state| state.stop.notify() catch {};
+    self.pty.cancelOutputRead();
+    if (self.io_writer_thread) |t| {
+        t.join();
+        self.io_writer_thread = null;
+    }
+    if (self.io_reader_thread) |t| {
+        t.join();
+        self.io_reader_thread = null;
+    }
+
+    // Acquire the new IO subsystem into locals FIRST. On any failure the OLD
+    // pty/command/mailbox/thread_state are still the surface's fields and stay
+    // deinit-safe — we just report failure and the old "exited" state holds.
+    var new_pty = Pty.open(.{ .ws_col = cols, .ws_row = rows }) catch |err|
+        return self.respawnFailed(err);
+    var new_command: Command = .{};
+    new_command.start(&new_pty, cmd, cwd) catch |err| {
+        new_pty.deinit();
+        return self.respawnFailed(err);
+    };
+    var new_mailbox = termio.Mailbox.init() catch |err| {
+        new_command.deinit();
+        new_pty.deinit();
+        return self.respawnFailed(err);
+    };
+    const new_state = self.allocator.create(termio.Thread) catch |err| {
+        new_mailbox.deinit();
+        new_command.deinit();
+        new_pty.deinit();
+        return self.respawnFailed(err);
+    };
+    new_state.* = termio.Thread.init() catch |err| {
+        self.allocator.destroy(new_state);
+        new_mailbox.deinit();
+        new_command.deinit();
+        new_pty.deinit();
+        return self.respawnFailed(err);
+    };
+
+    // Commit: tear down the OLD subsystem, swap in the new one.
+    if (self.io_thread_state) |state| {
+        state.deinit();
+        self.allocator.destroy(state);
+        self.io_thread_state = null;
+    }
+    self.mailbox.deinit();
+    self.command.deinit();
+    self.pty.deinit();
+    self.pty = new_pty;
+    self.command = new_command;
+    self.mailbox = new_mailbox;
+    self.io_thread_state = new_state;
+
+    // Sync the retained grid to the (possibly resized-while-exited) pane size,
+    // clear the visible screen, then print a separator.
+    //
+    // The clear is load-bearing for SSH reconnect: the previous session's
+    // "password:" prompt would otherwise linger in the viewport, and the SSH
+    // password autofill (which scans the viewport for a prompt) would match that
+    // stale line and type the password in plaintext BEFORE the real prompt shows
+    // up. Erasing the screen makes the only on-screen prompt the reconnect's own.
+    // Scrollback above the viewport is preserved (ED 2 erases the screen only).
+    {
+        self.render_state.mutex.lock();
+        defer self.render_state.mutex.unlock();
+        self.terminal.resize(self.allocator, cols, rows) catch {};
+        self.vt_stream.nextSlice("\x1b[2J\x1b[H");
+        self.terminal.printString("[WispTerm] Reconnecting...\r\n") catch {};
+        self.clearSynchronizedOutputLocked();
+    }
+
+    // The reader loops on `!exited`; clear it and reset lifecycle BEFORE spawn.
+    self.exited.store(false, .release);
+    self.io_state_mutex.lock();
+    self.io_state = .starting;
+    self.io_state_mutex.unlock();
+
+    // ponytail: thread-spawn failure after the swap marks the surface failed
+    // with the NEW resources owned (still deinit-safe); we don't unwind the
+    // swap. Same residual exposure finishInit already has. Make spawn pre-swap
+    // only if this ever actually bites.
+    self.io_writer_thread = std.Thread.spawn(
+        threading.surface_thread_spawn_config,
+        termio.Thread.threadMain,
+        .{ new_state, self },
+    ) catch |err| {
+        self.failIo(.thread_spawn, err);
+        return;
+    };
+    self.io_reader_thread = std.Thread.spawn(
+        threading.surface_thread_spawn_config,
+        termio.ReadThread.threadMain,
+        .{self},
+    ) catch |err| {
+        self.failIo(.thread_spawn, err);
+        return;
+    };
+
+    self.setIoRunning();
+    self.dirty.store(true, .release);
+    window_backend.postWakeup();
+}
+
+/// Reconnect could not open a fresh PTY/command. The old (exited) resources are
+/// untouched and remain owned by the surface; surface a failure message.
+fn respawnFailed(self: *Surface, err: anyerror) void {
+    io_log.warn("respawn failed: {s}", .{@errorName(err)});
+    self.failIo(.respawn, err);
+}
+
 // ============================================================================
 // Size and Resize
 // ============================================================================
@@ -711,17 +1113,6 @@ pub const ResizePolicy = enum {
 /// on the IO thread via queueIo() with 25ms coalescing.
 ///
 /// Returns true if the grid dimensions changed (resize was queued).
-pub fn setScreenSize(
-    self: *Surface,
-    screen_width: u32,
-    screen_height: u32,
-    cell_width: f32,
-    cell_height: f32,
-    explicit_padding: renderer.size.Padding,
-) bool {
-    return self.setScreenSizeWithPolicy(screen_width, screen_height, cell_width, cell_height, explicit_padding, .coalesced);
-}
-
 pub fn setScreenSizeWithPolicy(
     self: *Surface,
     screen_width: u32,
@@ -762,6 +1153,8 @@ pub fn setScreenSizeWithPolicy(
         // Terminal rows/cols and pixel dimensions are updated together in
         // the IO thread, under the render-state lock.
         const grid: renderer.size.GridSize = .{ .cols = new_cols, .rows = new_rows };
+        // queueIo stores the resize on the mailbox's infallible control lane;
+        // a grid change always triggers a UI rebuild regardless of IO state.
         switch (resize_policy) {
             .coalesced => self.queueIo(.{ .resize = grid }),
             .immediate => self.queueIo(.{ .resize_immediate = grid }),
@@ -772,18 +1165,78 @@ pub fn setScreenSizeWithPolicy(
     return false;
 }
 
-/// Send a message to the IO writer thread via the mailbox.
+/// Number of notify+yield attempts to give the writer thread a chance to drain
+/// a full mailbox before we give up on a write. Bounded so we never spin.
+const MAILBOX_FULL_RETRIES = 64;
+
+const mailbox_log = std.log.scoped(.mailbox);
+
+/// Failure modes of queuePtyWrite. A caller MUST handle these — there is no
+/// silent-drop path. A fire-and-forget caller may `catch |e| log...` but the
+/// outcome is always surfaced.
+pub const QueueWriteError = error{
+    /// The owning surface is no longer accepting input (stopping/exited/failed);
+    /// the PTY process is gone and the IO writer thread is tearing down.
+    SurfaceExited,
+    /// The payload ring stayed full across the bounded notify+retry window;
+    /// the write was NOT delivered and NOT dropped behind the caller's back.
+    BackpressureTimeout,
+    /// Allocating the heap copy for a large write failed.
+    OutOfMemory,
+};
+
+/// Queue a resize (control-lane) message to the IO writer thread. Infallible:
+/// resize uses the mailbox's last-writer-wins control fields, which never
+/// occupy a payload slot and can never report `.full`. Writes must NOT go
+/// through here — use queuePtyWrite, which surfaces backpressure.
 pub fn queueIo(self: *Surface, msg: termio.Message) void {
-    self.mailbox.send(msg);
+    switch (msg) {
+        .resize => |grid| self.mailbox.setResize(grid),
+        .resize_immediate => |grid| self.mailbox.setImmediateResize(grid),
+        .write_small, .write_alloc => unreachable, // use queuePtyWrite
+    }
     self.mailbox.notify();
 }
 
 /// Queue bytes to the PTY input pipe through the IO writer thread.
 /// This mirrors Ghostty's write-message boundary so local and remote input
 /// share the same PTY write path instead of writing directly to the pipe.
-pub fn queuePtyWrite(self: *Surface, data: []const u8) void {
-    const msg = termio.Message.writeReq(self.allocator, data) catch return;
-    self.queueIo(msg);
+///
+/// On a full payload ring we notify the writer and retry a bounded number of
+/// times, yielding between attempts to let it drain (the mutex is released
+/// between attempts). If it is still full after the bound we RETURN
+/// `error.BackpressureTimeout` rather than discarding the bytes and pretending
+/// success — the caller decides how loud to be. We NEVER use msg.deinit() to
+/// implicitly mean "delivered".
+pub fn queuePtyWrite(self: *Surface, data: []const u8) QueueWriteError!void {
+    if (!self.acceptsInput()) return error.SurfaceExited;
+
+    const msg = termio.Message.writeReq(self.allocator, data) catch
+        return error.OutOfMemory;
+
+    var attempt: usize = 0;
+    while (true) {
+        switch (self.mailbox.sendWrite(msg)) {
+            .queued => {
+                self.mailbox.notify();
+                return;
+            },
+            .full => {
+                // Wake the writer so it drains, then yield and retry. The mutex
+                // is released between attempts (sendWrite locks per call), so
+                // the writer's popWrite() can make progress.
+                self.mailbox.notify();
+                attempt += 1;
+                if (attempt >= MAILBOX_FULL_RETRIES) {
+                    // The bytes were never enqueued; free our copy and report
+                    // the backpressure instead of silently dropping input.
+                    msg.deinit();
+                    return error.BackpressureTimeout;
+                }
+                std.Thread.yield() catch {};
+            },
+        }
+    }
 }
 
 pub fn attachRemoteClient(self: *Surface, client: ?*remote.Client) void {
@@ -795,7 +1248,10 @@ pub fn attachRemoteClient(self: *Surface, client: ?*remote.Client) void {
 
 fn remoteWrite(ctx: *anyopaque, data: []const u8) void {
     const surface: *Surface = @ptrCast(@alignCast(ctx));
-    surface.queuePtyWrite(data);
+    surface.queuePtyWrite(data) catch |err| mailbox_log.warn(
+        "dropped remote write ({d} bytes): {s}",
+        .{ data.len, @errorName(err) },
+    );
 }
 
 /// Get the padding for rendering. Returns the computed padding
@@ -825,53 +1281,6 @@ pub fn setTitleOverride(self: *Surface, title: []const u8) void {
     const len = @min(title.len, self.title_override.len);
     @memcpy(self.title_override[0..len], title[0..len]);
     self.title_override_len = len;
-    self.refreshAgentDetection();
-}
-
-pub fn noteAgentOutput(self: *Surface, data: []const u8) void {
-    self.noteAgentOutputAt(data, std.time.milliTimestamp());
-}
-
-/// Record recent PTY output for agent detection. The ring buffer always
-/// updates, but the detection scan itself is throttled (it runs dozens of
-/// substring searches over the ring); skipped scans are caught up by
-/// `flushAgentDetection` from the UI thread. Caller holds render_state.mutex.
-pub fn noteAgentOutputAt(self: *Surface, data: []const u8, now_ms: i64) void {
-    if (data.len == 0) return;
-
-    if (data.len >= self.agent_recent_output.len) {
-        const start = data.len - self.agent_recent_output.len;
-        @memcpy(self.agent_recent_output[0..], data[start..]);
-        self.agent_recent_output_len = self.agent_recent_output.len;
-    } else {
-        const keep_existing = @min(self.agent_recent_output_len, self.agent_recent_output.len - data.len);
-        if (keep_existing > 0 and keep_existing < self.agent_recent_output_len) {
-            const start = self.agent_recent_output_len - keep_existing;
-            std.mem.copyForwards(u8, self.agent_recent_output[0..keep_existing], self.agent_recent_output[start..self.agent_recent_output_len]);
-        }
-        @memcpy(self.agent_recent_output[keep_existing .. keep_existing + data.len], data);
-        self.agent_recent_output_len = keep_existing + data.len;
-    }
-
-    if (self.agent_throttle.noteOutput(now_ms)) self.refreshAgentDetection();
-}
-
-/// Run a deferred agent detection if one is due (trailing edge of an output
-/// burst, e.g. an approval prompt arriving as the last chunk). Returns whether
-/// a detection ran. Caller holds render_state.mutex.
-pub fn flushAgentDetection(self: *Surface, now_ms: i64) bool {
-    if (!self.agent_throttle.flush(now_ms)) return false;
-    self.refreshAgentDetection();
-    return true;
-}
-
-fn refreshAgentDetection(self: *Surface) void {
-    // OSC 7748 marker is authoritative; don't let the heuristic clobber it.
-    if (self.agent_osc_active) return;
-    self.agent_detection = agent_detector.detect(
-        self.getTitle(),
-        self.agent_recent_output[0..self.agent_recent_output_len],
-    );
 }
 
 /// Set the working directory used for path resolution. Used by the tmux
@@ -960,6 +1369,31 @@ fn captureInitialCwd(self: *Surface, cwd: platform_pty_command.Cwd) void {
 
     const path = std.process.getCwd(&self.initial_cwd_path) catch return;
     self.initial_cwd_path_len = path.len;
+}
+
+/// Store owned copies of the launch command/cwd for Enter-to-reconnect.
+/// `CommandLine`/`Cwd` are platform-native (`u8` POSIX / `u16` Windows); we
+/// dup with the element unit so this is cross-platform. Best-effort: on dup
+/// failure the field stays null and reconnect is simply unavailable.
+fn setRespawnTarget(
+    self: *Surface,
+    allocator: std.mem.Allocator,
+    cmd: platform_pty_command.CommandLine,
+    cwd: platform_pty_command.Cwd,
+) void {
+    const CmdUnit = std.meta.Child(platform_pty_command.CommandLine);
+    self.respawn_command = allocator.dupeZ(CmdUnit, cmd) catch null;
+    self.respawn_cwd = if (cwd) |c|
+        (allocator.dupeZ(platform_pty_command.CwdUnit, std.mem.span(c)) catch null)
+    else
+        null;
+}
+
+fn freeRespawnTarget(self: *Surface, allocator: std.mem.Allocator) void {
+    if (self.respawn_command) |c| platform_pty_command.freeCommandLine(allocator, c);
+    if (self.respawn_cwd) |c| platform_pty_command.freeCwd(allocator, c);
+    self.respawn_command = null;
+    self.respawn_cwd = null;
 }
 
 /// Reset OSC batch state — call before each PTY read batch.
@@ -1099,7 +1533,10 @@ pub fn feedVtWithWispTermImageFallback(self: *Surface, data: []const u8) void {
                         self.wispterm_image_osc_state = .image_overflow;
                     } else if (self.wispterm_image_osc_buf.items.len == WISPTERM_IMAGE_OSC_PREFIX.len) {
                         self.wispterm_image_osc_buf.clearRetainingCapacity();
-                        self.wispterm_image_osc_state = .image_osc;
+                        self.wispterm_image_osc_state = if (self.reserveWispTermImageOscPayload())
+                            .image_osc
+                        else
+                            .image_overflow;
                     }
                     passthrough_start = i + 1;
                 } else if (matched == WISPTERM_PRIVATE_OSC_SHARED.len and byte == '8') {
@@ -1287,6 +1724,11 @@ fn appendWispTermImageOscByte(self: *Surface, byte: u8) bool {
     return true;
 }
 
+fn reserveWispTermImageOscPayload(self: *Surface) bool {
+    self.wispterm_image_osc_buf.ensureTotalCapacity(self.allocator, WISPTERM_IMAGE_OSC_MAX) catch return false;
+    return true;
+}
+
 fn replayNonImageOscPrefix(self: *Surface) void {
     self.vt_stream.nextSlice("\x1b]");
     if (self.wispterm_image_osc_buf.items.len > 0) {
@@ -1441,8 +1883,6 @@ fn updateTitle(self: *Surface, title: []const u8, osc_num: u8) void {
         @memcpy(self.window_title[0..friendly_len], friendly[0..friendly_len]);
         self.window_title_len = friendly_len;
     }
-
-    self.refreshAgentDetection();
 }
 
 test "Surface exposes init and initVirtual (forces analysis of the shared finishInit refactor)" {
@@ -1456,4 +1896,253 @@ test "Surface exposes init and initVirtual (forces analysis of the shared finish
     // allocator, cols, rows, pty, scrollback_limit, cursor_style, cursor_blink
     try std.testing.expectEqual(@as(usize, 7), info.params.len);
     try std.testing.expect(info.params[3].type.? == Pty);
+}
+
+// Build just enough of a Surface to drive the VT stream and capture the bytes
+// the terminal writes back to the PTY (no real PTY or IO threads).
+fn vtResponseHarness(surface: *Surface) !void {
+    surface.allocator = std.testing.allocator;
+    surface.terminal = try ghostty_vt.Terminal.init(std.testing.allocator, .{
+        .cols = 80,
+        .rows = 24,
+    });
+    surface.mailbox = try termio.Mailbox.init();
+    surface.vt_stream = surface.initVtStream();
+    surface.io_state_mutex = .{};
+    surface.io_state = .running;
+    surface.exited = std.atomic.Value(bool).init(false);
+}
+
+fn vtResponseHarnessDeinit(surface: *Surface) void {
+    surface.vt_stream.deinit();
+    surface.mailbox.deinit();
+    surface.terminal.deinit(std.testing.allocator);
+}
+
+fn expectPtyResponse(surface: *Surface, expected: []const u8) !void {
+    // The popped message owns the bytes; assert while it is still in scope so
+    // the slice into write_small.data stays valid.
+    const msg = surface.mailbox.popWrite() orelse return error.NoPtyResponse;
+    switch (msg) {
+        .write_small => |*w| try std.testing.expectEqualStrings(expected, w.data[0..w.len]),
+        else => return error.UnexpectedMessage,
+    }
+}
+
+test "kitty keyboard query is answered back to the PTY (issue #302)" {
+    var surface: Surface = undefined;
+    try vtResponseHarness(&surface);
+    defer vtResponseHarnessDeinit(&surface);
+
+    // crossterm/Claude Code probe support with `CSI ? u`. With no flags pushed
+    // yet the terminal must report 0 so the app knows the protocol exists.
+    surface.vt_stream.nextSlice("\x1b[?u");
+    try expectPtyResponse(&surface, "\x1b[?0u");
+
+    // After the app pushes the disambiguate flag, the query reflects it — this
+    // is the round-trip that makes the app actually turn the protocol on.
+    surface.vt_stream.nextSlice("\x1b[>1u");
+    surface.vt_stream.nextSlice("\x1b[?u");
+    try expectPtyResponse(&surface, "\x1b[?1u");
+}
+
+// queuePtyWrite needs surface.allocator, surface.mailbox, and the IO lifecycle
+// state (acceptsInput gates writes), so a tiny harness is enough to exercise its
+// outcome contract. io_state must be .running for writes to be accepted.
+fn writeOutcomeHarness(surface: *Surface) !void {
+    surface.allocator = std.testing.allocator;
+    surface.mailbox = try termio.Mailbox.init();
+    surface.exited = std.atomic.Value(bool).init(false);
+    surface.io_state_mutex = .{};
+    surface.io_state = .running;
+}
+
+fn writeOutcomeHarnessDeinit(surface: *Surface) void {
+    surface.mailbox.deinit();
+}
+
+test "queuePtyWrite returns SurfaceExited when the surface stops accepting input" {
+    var surface: Surface = undefined;
+    try writeOutcomeHarness(&surface);
+    defer writeOutcomeHarnessDeinit(&surface);
+
+    surface.io_state = .stopped; // acceptsInput() is true only while .running
+    try std.testing.expectError(error.SurfaceExited, surface.queuePtyWrite("hello"));
+}
+
+test "queuePtyWrite returns BackpressureTimeout when the payload ring stays full" {
+    var surface: Surface = undefined;
+    try writeOutcomeHarness(&surface);
+    defer writeOutcomeHarnessDeinit(&surface);
+
+    // Saturate the payload ring directly so every queuePtyWrite retry sees a
+    // full ring (no writer thread is draining it in this harness).
+    while (true) {
+        var small: termio.Message.WriteSmall = .{ .len = 1 };
+        small.data[0] = 'x';
+        if (surface.mailbox.sendWrite(.{ .write_small = small }) == .full) break;
+    }
+
+    // The write is neither delivered nor silently dropped — it is reported.
+    try std.testing.expectError(error.BackpressureTimeout, surface.queuePtyWrite("y"));
+
+    // The original queued writes are untouched: the full ring evicted nothing.
+    var drained: usize = 0;
+    while (surface.mailbox.popWrite()) |msg| {
+        msg.deinit();
+        drained += 1;
+    }
+    try std.testing.expect(drained > 0);
+}
+
+test "queuePtyWrite enqueues a write onto the payload ring on success" {
+    var surface: Surface = undefined;
+    try writeOutcomeHarness(&surface);
+    defer writeOutcomeHarnessDeinit(&surface);
+
+    try surface.queuePtyWrite("ok");
+
+    const msg = surface.mailbox.popWrite() orelse return error.MissingMessage;
+    defer msg.deinit();
+    switch (msg) {
+        .write_small => |*w| try std.testing.expectEqualStrings("ok", w.data[0..w.len]),
+        else => return error.UnexpectedMessage,
+    }
+}
+
+fn ioStateHarness(surface: *Surface) !void {
+    surface.allocator = std.testing.allocator;
+    surface.terminal = try ghostty_vt.Terminal.init(std.testing.allocator, .{
+        .cols = 80,
+        .rows = 24,
+    });
+    surface.render_state = renderer.State.init(&surface.terminal);
+    surface.surface_renderer = Renderer.init(surface);
+    surface.io_state_mutex = .{};
+    surface.io_state = .running;
+    surface.exited = std.atomic.Value(bool).init(false);
+    surface.dirty = std.atomic.Value(bool).init(false);
+    surface.io_thread_state = null;
+    surface.io_writer_thread = null;
+    surface.io_reader_thread = null;
+}
+
+fn ioStateHarnessDeinit(surface: *Surface) void {
+    surface.surface_renderer.deinit();
+    surface.terminal.deinit(std.testing.allocator);
+}
+
+test "Surface failIo records first failure, wakes rendering, and blocks input" {
+    var surface: Surface = undefined;
+    try ioStateHarness(&surface);
+    defer ioStateHarnessDeinit(&surface);
+
+    try std.testing.expect(surface.acceptsInput());
+
+    surface.failIo(.pty_write, error.BrokenPipe);
+    try std.testing.expect(!surface.acceptsInput());
+    try std.testing.expect(surface.exited.load(.acquire));
+    try std.testing.expect(surface.dirty.load(.acquire));
+
+    switch (surface.currentIoState()) {
+        .failed => |failure| {
+            try std.testing.expectEqual(Operation.pty_write, failure.operation);
+            try std.testing.expectEqual(error.BrokenPipe, failure.error_code);
+        },
+        else => return error.ExpectedFailedState,
+    }
+
+    surface.failIo(.pty_resize, error.ResizeFailed);
+    switch (surface.currentIoState()) {
+        .failed => |failure| {
+            try std.testing.expectEqual(Operation.pty_write, failure.operation);
+            try std.testing.expectEqual(error.BrokenPipe, failure.error_code);
+        },
+        else => return error.ExpectedFailedState,
+    }
+}
+
+test "Surface markExited preserves a normal exit as non-failure and blocks input" {
+    var surface: Surface = undefined;
+    try ioStateHarness(&surface);
+    defer ioStateHarnessDeinit(&surface);
+
+    surface.markExited(.eof, .{ .exited = 0 });
+
+    try std.testing.expect(!surface.acceptsInput());
+    try std.testing.expect(surface.exited.load(.acquire));
+    switch (surface.currentIoState()) {
+        .exited => |info| {
+            try std.testing.expectEqual(ExitReason.eof, info.reason);
+            try std.testing.expectEqual(@as(?Command.Exit, .{ .exited = 0 }), info.status);
+        },
+        else => return error.ExpectedExitedState,
+    }
+}
+
+test "Surface respawn target stores command and frees it without leaking" {
+    var surface: Surface = undefined;
+    surface.respawn_command = null;
+    surface.respawn_cwd = null;
+
+    // Build a platform CommandLine from utf8 so this compiles on Windows too.
+    const owned = try platform_pty_command.allocCommandLineFromUtf8(
+        std.testing.allocator,
+        "ssh demo@host",
+    );
+    defer platform_pty_command.freeCommandLine(std.testing.allocator, owned);
+    const cmd = platform_pty_command.commandLineFromOwned(owned);
+
+    surface.setRespawnTarget(std.testing.allocator, cmd, null);
+    try std.testing.expect(surface.respawn_command != null);
+    try std.testing.expect(surface.respawn_cwd == null);
+
+    var disp: [64]u8 = undefined;
+    const got = platform_pty_command.commandLineDisplay(
+        platform_pty_command.commandLineFromOwned(surface.respawn_command.?),
+        &disp,
+    );
+    try std.testing.expectEqualStrings("ssh demo@host", got);
+
+    // testing.allocator fails the test if freeRespawnTarget leaks or
+    // double-frees.
+    surface.freeRespawnTarget(std.testing.allocator);
+    try std.testing.expect(surface.respawn_command == null);
+}
+
+test "respawn is a no-op unless the surface has exited with a stored command" {
+    var surface: Surface = undefined;
+    try ioStateHarness(&surface);
+    defer ioStateHarnessDeinit(&surface);
+    surface.respawn_command = null;
+    surface.respawn_cwd = null;
+
+    // .running (harness default): guard returns immediately, state unchanged.
+    try std.testing.expect(!surface.isExited());
+    surface.respawn();
+    try std.testing.expect(surface.acceptsInput());
+
+    // .exited but no stored command: returns at the command guard, before any
+    // pty/thread work (which would crash on the null-threaded harness).
+    surface.markExited(.eof, .{ .exited = 0 });
+    try std.testing.expect(surface.isExited());
+    surface.respawn();
+    try std.testing.expect(surface.isExited());
+}
+
+test "exit status message shows the reconnect hint only when asked" {
+    var buf: [256]u8 = undefined;
+    const state: IoState = .{ .exited = .{
+        .reason = .eof,
+        .status = .{ .exited = 0 },
+        .timestamp_ms = 0,
+    } };
+
+    const with_hint = formatIoStatusMessage(&buf, state, true).?;
+    try std.testing.expect(std.mem.indexOf(u8, with_hint, "Process exited with code 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, with_hint, "Press Enter to reconnect") != null);
+
+    var buf2: [256]u8 = undefined;
+    const no_hint = formatIoStatusMessage(&buf2, state, false).?;
+    try std.testing.expect(std.mem.indexOf(u8, no_hint, "Press Enter to reconnect") == null);
 }

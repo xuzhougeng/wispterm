@@ -18,7 +18,7 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
 const Surface = @import("Surface.zig");
-const PreviewPane = @import("preview_pane.zig");
+const PreviewPane = @import("preview/pane.zig");
 
 const SplitTree = @This();
 
@@ -1155,7 +1155,7 @@ fn dimensions(self: *const SplitTree, current: Node.Handle) struct {
 ///
 /// Splits are always binary; ratios are clamped to [0.05, 0.95] for safety.
 /// Pre-order traversal: root first, then left subtree, then right subtree.
-/// Pre-order leaf order matches session_persist.leafByIndex semantics, so
+/// Pre-order leaf order matches persisted focused-leaf indexes, so
 /// `focused_leaf` from a TabSnap can be resolved against the resulting nodes.
 pub fn fromSnapshot(
     gpa: Allocator,

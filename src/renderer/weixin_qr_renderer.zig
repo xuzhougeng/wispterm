@@ -3,11 +3,10 @@
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const qr_panel = @import("../weixin/qr_panel.zig");
+const qr_layout = @import("qr_panel_layout.zig");
+const ui_pipeline = @import("ui_pipeline.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
-const gl_init = AppWindow.gpu.gl_init;
-
-const c = AppWindow.gpu.c;
 
 fn mix(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
     const amount = @max(0.0, @min(1.0, t));
@@ -31,11 +30,11 @@ fn textWidth(text: []const u8) f32 {
 }
 
 fn textYFromTop(window_height: f32, top_px: f32) f32 {
-    return @round(window_height - top_px - font.g_titlebar_cell_height);
+    return qr_layout.textYFromTop(window_height, top_px, font.g_titlebar_cell_height);
 }
 
 fn rectY(window_height: f32, rect: qr_panel.Rect) f32 {
-    return @round(window_height - rect.top_px - rect.h);
+    return qr_layout.rectY(window_height, rect);
 }
 
 pub fn render(window_width: f32, window_height: f32, top_offset: f32) void {
@@ -43,8 +42,7 @@ pub fn render(window_width: f32, window_height: f32, top_offset: f32) void {
 
     const allocator = AppWindow.g_allocator orelse std.heap.page_allocator;
     if (qr_panel.refresh(allocator)) {
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        AppWindow.applyUiEffect(.repaint);
     }
     if (!qr_panel.visible()) return;
 
@@ -52,8 +50,8 @@ pub fn render(window_width: f32, window_height: f32, top_offset: f32) void {
     AppWindow.gpu.state.setBlendMode(.alpha);
 
     const l = qr_panel.layout(window_width, window_height, top_offset);
-    const panel_y = rectY(window_height, l.panel);
-    const qr_y = rectY(window_height, l.qr);
+    const chrome = qr_layout.panelChrome(l.panel, window_width, window_height);
+    const frame = qr_layout.qrFrame(l.qr, window_height);
 
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
@@ -66,9 +64,9 @@ pub fn render(window_width: f32, window_height: f32, top_offset: f32) void {
     const muted = mix(bg, fg, 0.62);
     const danger = .{ 0.88, 0.28, 0.24 };
 
-    AppWindow.overlays.renderRoundedQuadAlpha(0, 0, window_width, window_height, 1, .{ 0.0, 0.0, 0.0 }, 0.28);
-    AppWindow.overlays.renderRoundedQuadAlpha(l.panel.x - 1, panel_y - 1, l.panel.w + 2, l.panel.h + 2, 10, panel_border, 0.50);
-    AppWindow.overlays.renderRoundedQuadAlpha(l.panel.x, panel_y, l.panel.w, l.panel.h, 9, panel_bg, 0.98);
+    AppWindow.overlays.renderRoundedQuadAlpha(chrome.scrim.x, chrome.scrim.y, chrome.scrim.w, chrome.scrim.h, 1, .{ 0.0, 0.0, 0.0 }, 0.28);
+    AppWindow.overlays.renderRoundedQuadAlpha(chrome.border.x, chrome.border.y, chrome.border.w, chrome.border.h, 10, panel_border, 0.50);
+    AppWindow.overlays.renderRoundedQuadAlpha(chrome.panel.x, chrome.panel.y, chrome.panel.w, chrome.panel.h, 9, panel_bg, 0.98);
 
     const pad_x: f32 = 28;
     const title_y = textYFromTop(window_height, l.panel.top_px + 24);
@@ -87,8 +85,8 @@ pub fn render(window_width: f32, window_height: f32, top_offset: f32) void {
     const detail_y = textYFromTop(window_height, l.panel.top_px + 94);
     _ = titlebar.renderTextLimited(qr_panel.statusDetail(qr_panel.status()), l.panel.x + pad_x, detail_y, muted, l.panel.w - pad_x * 2);
 
-    gl_init.renderQuadAlpha(l.qr.x - 10, qr_y - 10, l.qr.w + 20, l.qr.h + 20, qr_border, 0.42);
-    gl_init.renderQuadAlpha(l.qr.x - 8, qr_y - 8, l.qr.w + 16, l.qr.h + 16, qr_bg, 1.0);
+    ui_pipeline.fillQuadAlpha(frame.border.x, frame.border.y, frame.border.w, frame.border.h, qr_border, 0.42);
+    ui_pipeline.fillQuadAlpha(frame.fill.x, frame.fill.y, frame.fill.w, frame.fill.h, qr_bg, 1.0);
 
     if (qr_panel.qrMatrix()) |matrix| {
         renderQrMatrix(matrix, l.qr, window_height);
@@ -108,40 +106,31 @@ pub fn render(window_width: f32, window_height: f32, top_offset: f32) void {
 }
 
 fn renderQrMatrix(matrix: qr_panel.QrMatrixView, rect: qr_panel.Rect, window_height: f32) void {
-    const quiet_modules: usize = 4;
-    const total_modules = matrix.size + quiet_modules * 2;
-    const module_px = @max(1.0, @floor(rect.w / @as(f32, @floatFromInt(total_modules))));
-    const draw_size = module_px * @as(f32, @floatFromInt(total_modules));
-    const start_x = @round(rect.x + (rect.w - draw_size) / 2.0 + module_px * @as(f32, @floatFromInt(quiet_modules)));
-    const start_top = @round(rect.top_px + (rect.h - draw_size) / 2.0 + module_px * @as(f32, @floatFromInt(quiet_modules)));
-
+    const layout = qr_layout.qrModules(rect, matrix.size);
     const black = .{ 0.03, 0.04, 0.05 };
     for (0..matrix.size) |y| {
-        const y_top = start_top + module_px * @as(f32, @floatFromInt(y));
-        const gl_y = @round(window_height - y_top - module_px);
         for (0..matrix.size) |x| {
             if (!matrix.isBlack(x, y)) continue;
-            const gl_x = start_x + module_px * @as(f32, @floatFromInt(x));
-            gl_init.renderQuadAlpha(gl_x, gl_y, module_px, module_px, black, 1.0);
+            const module = layout.moduleRect(window_height, x, y);
+            ui_pipeline.fillQuadAlpha(module.x, module.y, module.size, module.size, black, 1.0);
         }
     }
 }
 
 fn renderQrFallback(l: qr_panel.Layout, window_height: f32, normal: [3]f32, muted: [3]f32) void {
-    const qr_y = rectY(window_height, l.qr);
     const message = if (qr_panel.qrGenerationFailed())
         "QR code could not be generated"
     else
         "Requesting QR code...";
 
     const msg_w = textWidth(message);
-    const msg_y = qr_y + l.qr.h * 0.52;
-    _ = titlebar.renderTextLimited(message, l.qr.x + @max(8.0, (l.qr.w - msg_w) / 2.0), msg_y, normal, l.qr.w - 16);
+    const message_layout = qr_layout.fallbackMessage(l.qr, window_height, msg_w);
+    _ = titlebar.renderTextLimited(message, message_layout.x, message_layout.y, normal, message_layout.max_w);
 
     const qr_text = qr_panel.qrString();
     if (qr_panel.qrGenerationFailed() and qr_text.len > 0) {
-        const text_y = msg_y - font.g_titlebar_cell_height - 10;
-        _ = titlebar.renderTextLimited(qr_text, l.qr.x + 12, text_y, muted, l.qr.w - 24);
+        const detail = qr_layout.fallbackDetail(l.qr, window_height, font.g_titlebar_cell_height);
+        _ = titlebar.renderTextLimited(qr_text, detail.x, detail.y, muted, detail.max_w);
     }
 }
 
@@ -153,8 +142,8 @@ fn renderButton(rect: qr_panel.Rect, window_height: f32, label: []const u8, base
     AppWindow.overlays.renderRoundedQuadAlpha(rect.x, y, rect.w, rect.h, 5, bg, if (primary) 0.92 else 0.58);
 
     const label_w = textWidth(label);
-    const text_y = @round(y + (rect.h - font.g_titlebar_cell_height) / 2.0);
-    _ = titlebar.renderTextLimited(label, rect.x + @max(8.0, (rect.w - label_w) / 2.0), text_y, text_color, rect.w - 16);
+    const label_layout = qr_layout.buttonLabel(rect, window_height, font.g_titlebar_cell_height, label_w);
+    _ = titlebar.renderTextLimited(label, label_layout.x, label_layout.y, text_color, label_layout.max_w);
 }
 
 pub fn deinit() void {}

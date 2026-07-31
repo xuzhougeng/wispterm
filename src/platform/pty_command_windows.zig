@@ -1,6 +1,6 @@
 const std = @import("std");
 const windows = std.os.windows;
-const ssh_connection = @import("../ssh_connection.zig");
+const ssh_connection = @import("../ssh/connection.zig");
 
 const PseudoConsoleHandle = windows.HANDLE;
 pub const CommandLineBuffer = [256]u16;
@@ -160,6 +160,13 @@ pub fn resolveShellCommandLine(out_buf: *CommandLineBuffer, cmd: []const u8) usi
     return len;
 }
 
+pub fn detectDefaultShell(out: []u8) []const u8 {
+    const value = "cmd";
+    const len = @min(out.len, value.len);
+    @memcpy(out[0..len], value[0..len]);
+    return out[0..len];
+}
+
 fn commandLineLowerAscii(command: CommandLine, out: *[512]u8) []const u8 {
     const len = @min(command.len, out.len);
     for (command[0..len], 0..) |unit, i| {
@@ -251,6 +258,7 @@ fn appendAscii(buf: []u8, pos: *usize, text: []const u8) bool {
     return true;
 }
 
+/// Append `arg` as one double-quoted Windows command-line argument.
 fn appendCommandLineQuotedArg(buf: []u8, pos: *usize, arg: []const u8) bool {
     if (pos.* >= buf.len) return false;
     buf[pos.*] = '"';
@@ -357,7 +365,12 @@ pub fn scpExecutableName() []const u8 {
 
 pub fn sshInteractiveCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 {
     var pos: usize = 0;
-    if (!appendAscii(buf, &pos, "cmd.exe /k ssh.exe -tt ")) return null;
+    // `/c` (run then terminate), not `/k` (keep open): when ssh exits the cmd
+    // host exits too, so the panel's process actually ends. That lets the
+    // exited-panel reconnect flow fire ("Press Enter to reconnect") instead of
+    // dropping the user into a lingering local cmd prompt. The cmd wrapper is
+    // kept (vs bare ssh.exe) so the remote-command quoting below is unchanged.
+    if (!appendAscii(buf, &pos, "cmd.exe /c ssh.exe -tt ")) return null;
     if (!appendSshOptionString(buf, &pos, options, .interactive)) return null;
     if (options.port.len > 0) {
         if (!appendAscii(buf, &pos, "-p ")) return null;
@@ -368,6 +381,9 @@ pub fn sshInteractiveCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 
     if (!appendAscii(buf, &pos, "@")) return null;
     if (!appendAscii(buf, &pos, options.host)) return null;
     if (options.remote_command.len > 0) {
+        // Preserve the caller's command byte-for-byte. In particular, do not
+        // forge TERM_PROGRAM: remote TUIs use it as a capability promise and
+        // may enter terminal-specific protocols WispTerm does not implement.
         if (!appendAscii(buf, &pos, " ")) return null;
         if (!appendCommandLineQuotedArg(buf, &pos, options.remote_command)) return null;
     }
@@ -377,8 +393,9 @@ pub fn sshInteractiveCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 
 pub fn sshControlCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 {
     var pos: usize = 0;
     // Hidden controller transport: launch ssh.exe directly so process exit
-    // means the transport is really gone. Interactive SSH tabs keep the cmd.exe
-    // wrapper above so the user sees a normal shell after ssh exits.
+    // means the transport is really gone. Interactive SSH tabs wrap in
+    // `cmd.exe /c` (above) — also exits on ssh close, but via cmd so the
+    // remote-command quoting matches the interactive path.
     if (!appendAscii(buf, &pos, "ssh.exe -tt ")) return null;
     if (!appendSshOptionString(buf, &pos, options, .control)) return null;
     if (options.port.len > 0) {
@@ -404,9 +421,11 @@ fn effectiveSshAuthMethod(options: SshCommandOptions) ssh_connection.SshAuthMeth
 }
 
 fn appendSshOptionString(buf: []u8, pos: *usize, options: SshCommandOptions, mode: SshInvocationMode) bool {
-    // ServerAlive* prevents long-idle interactive sessions from hanging behind
-    // NAT/firewall drops while preserving the existing OpenSSH invocation shape.
-    if (!appendAscii(buf, pos, "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 ")) return false;
+    // ServerAlive*: 30s probes keep NAT/firewall state alive; CountMax=20 gives
+    // a 10-minute tolerance window so lossy links (e.g. cross-border routes) are
+    // ridden out by TCP retransmission instead of OpenSSH hard-killing the
+    // session after 3 missed probes. Keep both platforms' builders in sync.
+    if (!appendAscii(buf, pos, "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 ")) return false;
     const auth_method = effectiveSshAuthMethod(options);
     switch (auth_method) {
         .password => {
@@ -486,7 +505,11 @@ fn appendWslenvEntry(allocator: std.mem.Allocator, env: *std.process.EnvMap, ent
 fn applyWslTerminalEnvironment(allocator: std.mem.Allocator, env: *std.process.EnvMap) !void {
     try env.put("TERM", "xterm-256color");
     try env.put("COLORTERM", "truecolor");
-    try env.put("TERM_PROGRAM", "wispterm");
+    // Advertise as Ghostty (our embedded VT engine) so TUIs that gate the Kitty
+    // keyboard protocol on a TERM_PROGRAM allowlist (Claude Code, …) enable it
+    // and Shift+Enter becomes a distinct CSI-u sequence. See pty_posix.zig and
+    // issue #302.
+    try env.put("TERM_PROGRAM", "ghostty");
 
     try appendWslenvEntry(allocator, env, "TERM/u");
     try appendWslenvEntry(allocator, env, "COLORTERM/u");
@@ -632,6 +655,13 @@ pub const Command = struct {
         return self.process != INVALID_HANDLE_VALUE;
     }
 
+    /// Best-effort termination. No graceful-shutdown signal equivalent to
+    /// POSIX SIGHUP exists for console processes here, so this hard-kills.
+    pub fn kill(self: *Command) void {
+        if (self.process == INVALID_HANDLE_VALUE) return;
+        windows.TerminateProcess(self.process, 1) catch {};
+    }
+
     /// No POSIX-style pid cwd query on Windows (local preview uses OSC 7).
     pub fn cwdQueryId(self: *const Command) ?i32 {
         _ = self;
@@ -684,7 +714,7 @@ test "windows pty command maps native shell titles to friendly display labels" {
 test "windows pty command classifies launch context from native command lines" {
     const allocator = std.testing.allocator;
 
-    const ssh = try allocCommandLineFromUtf8(allocator, "cmd.exe /k ssh.exe -tt user@example.test");
+    const ssh = try allocCommandLineFromUtf8(allocator, "cmd.exe /c ssh.exe -tt user@example.test");
     defer freeCommandLine(allocator, ssh);
     try std.testing.expectEqual(LaunchKind.ssh, launchKindForCommand(commandLineFromOwned(ssh)));
 
@@ -720,7 +750,7 @@ test "windows pty command builds SSH interactive command lines" {
     var buf: [1024]u8 = undefined;
 
     try std.testing.expectEqualStrings(
-        "cmd.exe /k ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -p 2222 user@example.test",
+        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -p 2222 user@example.test",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -731,7 +761,7 @@ test "windows pty command builds SSH interactive command lines" {
     );
 
     try std.testing.expectEqualStrings(
-        "cmd.exe /k ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o HostkeyAlgorithms=+ssh-rsa,ssh-dss -o PubkeyAcceptedAlgorithms=+ssh-rsa,ssh-dss -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1 -o Ciphers=+aes128-cbc,3des-cbc user@example.test",
+        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o HostkeyAlgorithms=+ssh-rsa,ssh-dss -o PubkeyAcceptedAlgorithms=+ssh-rsa,ssh-dss -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1 -o Ciphers=+aes128-cbc,3des-cbc user@example.test",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -743,7 +773,7 @@ test "windows pty command builds SSH interactive command lines" {
 
     // ProxyJump is inserted after the auth/legacy flags, before any port flag.
     try std.testing.expectEqualStrings(
-        "cmd.exe /k ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o ProxyJump=admin@jump.test:2200 -p 2222 user@example.test",
+        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o ProxyJump=admin@jump.test:2200 -p 2222 user@example.test",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -753,12 +783,21 @@ test "windows pty command builds SSH interactive command lines" {
     );
 
     try std.testing.expectEqualStrings(
-        "cmd.exe /k ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -i \"C:/Users/user/.ssh/id_ed25519\" user@example.test",
+        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -i \"C:/Users/user/.ssh/id_ed25519\" user@example.test",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
             .auth_method = .key,
             .identity_file = "C:/Users/user/.ssh/id_ed25519",
+        }).?,
+    );
+
+    try std.testing.expectEqualStrings(
+        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 user@example.test \"cd /srv && claude\"",
+        sshInteractiveCommand(&buf, .{
+            .user = "user",
+            .host = "example.test",
+            .remote_command = "cd /srv && claude",
         }).?,
     );
 }
@@ -767,7 +806,7 @@ test "windows pty command builds direct SSH control command lines" {
     var buf: [1024]u8 = undefined;
 
     try std.testing.expectEqualStrings(
-        "ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o BatchMode=yes -p 2222 user@example.test \"tmux -CC new -A -s wispterm-test\"",
+        "ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o BatchMode=yes -p 2222 user@example.test \"tmux -CC new -A -s wispterm-test\"",
         sshControlCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -777,7 +816,7 @@ test "windows pty command builds direct SSH control command lines" {
     );
 
     try std.testing.expectEqualStrings(
-        "ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 user@example.test \"tmux -CC new -A -s wispterm-test\"",
+        "ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 user@example.test \"tmux -CC new -A -s wispterm-test\"",
         sshControlCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -787,7 +826,7 @@ test "windows pty command builds direct SSH control command lines" {
     );
 
     try std.testing.expectEqualStrings(
-        "ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o BatchMode=yes -i \"C:/Users/user/.ssh/id_ed25519\" user@example.test \"tmux -CC new -A -s wispterm-test\"",
+        "ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o BatchMode=yes -i \"C:/Users/user/.ssh/id_ed25519\" user@example.test \"tmux -CC new -A -s wispterm-test\"",
         sshControlCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -817,7 +856,7 @@ test "windows pty command applies WSL terminal environment bridge" {
 
     try std.testing.expectEqualStrings("xterm-256color", env.get("TERM").?);
     try std.testing.expectEqualStrings("truecolor", env.get("COLORTERM").?);
-    try std.testing.expectEqualStrings("wispterm", env.get("TERM_PROGRAM").?);
+    try std.testing.expectEqualStrings("ghostty", env.get("TERM_PROGRAM").?);
 
     const wslenv = env.get("WSLENV").?;
     try std.testing.expect(wslenvContainsEntry(wslenv, "EXISTING/u"));

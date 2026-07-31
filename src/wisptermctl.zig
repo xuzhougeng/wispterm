@@ -7,6 +7,7 @@
 //!   wisptermctl get-text  -t <surface-id> [--recent N]
 //!   wisptermctl send-text -t <surface-id> "<text with \n \t \xNN escapes>"
 //!   wisptermctl wait-for  -t <surface-id> "<substring>" [--timeout SECONDS]
+//!   wisptermctl spawn     [--cwd DIR] [-- program args...]
 //!
 //! Lean by design: imports only ctl/* + platform/dirs.zig (std/builtin), so it
 //! links without any GUI/SDL dependencies.
@@ -14,6 +15,7 @@ const std = @import("std");
 const protocol = @import("ctl/protocol.zig");
 const discovery = @import("ctl/discovery.zig");
 const client = @import("ctl/client.zig");
+const transport = @import("ctl/transport.zig");
 
 const ResultKind = enum { raw, text, ok_only };
 
@@ -45,11 +47,17 @@ pub fn main() !void {
 
     switch (action) {
         .panes => try runOnce(allocator, info, .{ .token = info.token, .cmd = .panes }, .raw),
+        .ui_state => try runOnce(allocator, info, .{ .token = info.token, .cmd = .ui_state }, .raw),
         .get_text => |g| try runOnce(allocator, info, .{ .token = info.token, .cmd = .get_text, .id = g.id, .recent = g.recent }, .text),
         .send_text => |s| {
             const data = try client.decodeEscapes(allocator, s.data);
             defer allocator.free(data);
             try runOnce(allocator, info, .{ .token = info.token, .cmd = .send_text, .id = s.id, .data = data }, .ok_only);
+        },
+        .spawn => |sp| {
+            const command = try std.mem.join(allocator, " ", sp.command);
+            defer allocator.free(command);
+            try runOnce(allocator, info, .{ .token = info.token, .cmd = .spawn, .data = command, .cwd = sp.cwd }, .ok_only);
         },
         .wait_for => |w| try runWaitFor(allocator, info, w),
         .help => try stdoutAll(USAGE),
@@ -65,13 +73,16 @@ fn requestOnce(allocator: std.mem.Allocator, info: discovery.Info, req: protocol
 
     const line = try protocol.encodeRequest(allocator, req);
     defer allocator.free(line);
-    try stream.writeAll(line);
+    // posix.send/recv, not the deprecated Stream.write/read: the read path is
+    // broken on Windows overlapped sockets and returned 0 bytes for every reply
+    // ("malformed response from WispTerm"). See ctl/transport.zig.
+    try transport.sendAll(stream.handle, line);
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(allocator);
     var chunk: [4096]u8 = undefined;
     while (buf.items.len < 16 * 1024 * 1024) {
-        const n = stream.read(&chunk) catch break;
+        const n = transport.recv(stream.handle, &chunk) catch break;
         if (n == 0) break;
         try buf.appendSlice(allocator, chunk[0..n]);
         if (std.mem.indexOfScalar(u8, buf.items, '\n') != null) break;
@@ -155,19 +166,28 @@ fn stderrPrint(allocator: std.mem.Allocator, comptime fmt: []const u8, args: any
 
 const USAGE =
     \\wisptermctl — control WispTerm terminals from external agents/scripts
-        \\
-        \\Usage:
-        \\  wisptermctl panes
-        \\      List tabs/panes as JSON (id, title, cwd, cols/rows, cursor, focus, geometry).
-        \\  wisptermctl get-text -t <surface-id> [--recent N]
-        \\      Print a surface's terminal text. --recent N prepends N scrollback rows.
-        \\  wisptermctl send-text -t <surface-id> "<text>"
-        \\      Send input to a surface. Escapes: \n \r \t \0 \\ \xNN (e.g. "ls\n").
-        \\  wisptermctl wait-for -t <surface-id> "<substring>" [--timeout SECONDS]
-        \\      Poll get-text until the output contains <substring> (default 60s).
-        \\      Exit 0 on match, 2 on timeout.
-        \\
-        \\Enable in WispTerm config:  agent-control-enabled = true
-        \\Surface ids come from `wisptermctl panes`.
-        \\
+    \\
+    \\Usage:
+    \\  wisptermctl panes
+    \\      List tabs/panes as JSON (id, title, cwd, cols/rows, cursor, focus, geometry).
+    \\  wisptermctl ui-state
+    \\      Print overlay UI state as JSON (active overlay, command-palette
+    \\      selection/filter/mode, session launcher, settings visibility).
+    \\  wisptermctl get-text -t <surface-id> [--recent N]
+    \\      Print a surface's terminal text. --recent N prepends N scrollback rows.
+    \\  wisptermctl send-text -t <surface-id> "<text>"
+    \\      Send input to a surface. Escapes: \n \r \t \0 \\ \xNN (e.g. "ls\n").
+    \\  wisptermctl wait-for -t <surface-id> "<substring>" [--timeout SECONDS]
+    \\      Poll get-text until the output contains <substring> (default 60s).
+    \\      Exit 0 on match, 2 on timeout.
+    \\  wisptermctl spawn [--cwd DIR] [-- program args...]
+    \\      Open a new tab in the running instance. --cwd sets its working
+    \\      directory (default: the active tab's cwd). Everything after `--` is
+    \\      the command to run (default: your configured shell). Examples:
+    \\        wisptermctl spawn --cwd "F:\proj" -- claude -r 1b42b2ea
+    \\        wisptermctl spawn --cwd /home/me/code
+    \\
+    \\Enable in WispTerm config:  agent-control-enabled = true
+    \\Surface ids come from `wisptermctl panes`.
+    \\
 ;

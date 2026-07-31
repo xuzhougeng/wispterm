@@ -1,4 +1,4 @@
-//! Input handling for AppWindow.
+﻿//! Input handling for AppWindow.
 //!
 //! Processes platform input events (keyboard, mouse, resize) and dispatches
 //! to appropriate handlers. Manages clipboard, selection, scrollbar dragging,
@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 const AppWindow = @import("AppWindow.zig");
 const tab = AppWindow.tab;
 const active_tab_state = @import("appwindow/active_tab.zig");
@@ -15,15 +16,14 @@ const overlays = AppWindow.overlays;
 const split_layout = AppWindow.split_layout;
 const file_explorer = AppWindow.file_explorer;
 const file_backend = @import("file_backend.zig");
-const markdown_preview = @import("markdown_preview.zig");
-const markdown_preview_panel = AppWindow.markdown_preview_panel;
-const preview_gallery = @import("preview_gallery.zig");
-const preview_token = @import("preview_token.zig");
+const markdown_preview = @import("preview/markdown.zig");
+const preview_gallery = @import("preview/gallery.zig");
+const preview_token = @import("preview/token.zig");
 const browser_panel = AppWindow.browser_panel;
-const html_server = @import("html_server.zig");
-const html_server_model = @import("html_server_model.zig");
-const ai_sidebar = @import("ai_sidebar.zig");
-const copilot_hint_gate = @import("copilot_hint_gate.zig");
+const html_server = @import("html/server.zig");
+const html_server_model = @import("html/server_model.zig");
+const ai_sidebar = @import("assistant/sidebar/panel.zig");
+const copilot_hint_gate = @import("assistant/sidebar/hint_gate.zig");
 const ui_perf = AppWindow.ui_perf;
 const render_diagnostics = @import("render_diagnostics.zig");
 const link_open = @import("link_open.zig");
@@ -39,14 +39,21 @@ const platform_input = @import("platform/input_events.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const platform_wsl = @import("platform/wsl.zig");
 const window_backend = @import("platform/window_backend.zig");
+const window_metrics = @import("ui/window_metrics.zig");
+const WindowMetrics = window_metrics.WindowMetrics;
 const input_key = @import("input/key.zig");
+const feishu_reg_panel = @import("feishu/registration_panel.zig");
+const assistant_conversation = @import("input/assistant_conversation.zig");
 const command_dispatch = @import("input/command_dispatch.zig");
+const file_explorer_keymap = @import("input/file_explorer_keymap.zig");
+const input_effects = @import("input/effects.zig");
+const ui_effect = @import("appwindow/ui_effect.zig");
+const command_palette_input = @import("renderer/overlays/command_palette_input.zig");
 const Config = @import("config.zig");
 const Surface = @import("Surface.zig");
 const SplitTree = @import("split_tree.zig");
-const PreviewPane = @import("preview_pane.zig");
+const PreviewPane = @import("preview/pane.zig");
 const PreviewImageDrag = @import("input/preview_image_drag.zig");
-const preview_close_button = @import("input/preview_close_button.zig");
 const selection_unit = @import("selection_unit.zig");
 const Selection = Surface.Selection;
 const CellPos = struct { col: usize, row: usize };
@@ -55,15 +62,19 @@ const clipboard = @import("input/clipboard.zig");
 const click_tracker = @import("input/click_tracker.zig");
 const hit_test = @import("input/hit_test.zig");
 const preview_source = @import("input/preview_source.zig");
+const preview_diagnostics = @import("preview/diagnostics.zig");
 const ls_path_context = @import("input/ls_path_context.zig");
 const terminal_link_action = @import("input/terminal_link_action.zig");
 const underline_span = @import("input/underline_span.zig");
 const mouse_report = @import("input/mouse_report.zig");
+const mouse_dispatch = @import("input/mouse_dispatch.zig");
 const mouse_wheel_scroll = @import("input/mouse_wheel_scroll.zig");
 const close_confirm = @import("close_confirm.zig");
-const jupyter_picker = @import("jupyter_picker.zig");
-const jupyter_detect = @import("jupyter_detect.zig");
-const scp = @import("scp.zig");
+const close_confirm_state = @import("ui/close_shortcut_confirm.zig");
+const jupyter_picker = @import("jupyter/picker.zig");
+const copilot_picker = @import("assistant/sidebar/picker.zig");
+const jupyter_detect = @import("jupyter/detect.zig");
+const scp = @import("ssh/scp.zig");
 const writeToPty = clipboard.writeToPty;
 pub const copyTextToClipboard = clipboard.copyTextToClipboard;
 const activeTerminalSelectionExists = clipboard.activeTerminalSelectionExists;
@@ -71,11 +82,13 @@ const handleConfiguredRightClick = clipboard.handleConfiguredRightClick;
 const copyAiChatToClipboard = clipboard.copyAiChatToClipboard;
 const copyAiChatCutToClipboard = clipboard.copyAiChatCutToClipboard;
 const copyAiChatMessageToClipboard = clipboard.copyAiChatMessageToClipboard;
+const copyAiChatSpanToClipboard = clipboard.copyAiChatSpanToClipboard;
 pub const handleFileDrop = clipboard.handleFileDrop;
 pub const copySelectionToClipboard = clipboard.copySelectionToClipboard;
 pub const pasteFromClipboard = clipboard.pasteFromClipboard;
 const pasteClipboardIntoBrowserUrlBar = clipboard.pasteClipboardIntoBrowserUrlBar;
 const pasteClipboardIntoSessionLauncher = clipboard.pasteClipboardIntoSessionLauncher;
+const pasteClipboardIntoMcpForm = clipboard.pasteClipboardIntoMcpForm;
 const pasteFromClipboardIntoAiChat = clipboard.pasteFromClipboardIntoAiChat;
 const pasteImageIntoAiChat = clipboard.pasteImageIntoAiChat;
 pub const pasteImageFromClipboard = clipboard.pasteImageFromClipboard;
@@ -116,7 +129,17 @@ const terminalPathClickAction = terminal_link_action.terminalPathClickAction;
 const interactiveUnderlineTokenKind = terminal_link_action.interactiveUnderlineTokenKind;
 const looksLikeDownloadPath = terminal_link_action.looksLikeDownloadPath;
 
+fn appTestShardIs(comptime name: []const u8) bool {
+    return std.mem.eql(u8, build_options.app_test_shard, "all") or
+        std.mem.eql(u8, build_options.app_test_shard, name);
+}
+
+fn skipUnlessInputRendererShard() !void {
+    if (!appTestShardIs("input_renderer")) return error.SkipZigTest;
+}
+
 test "input: WeChat QR panel consumes text input while visible" {
+    try skipUnlessInputRendererShard();
     AppWindow.weixin_qr_panel.g_visible = true;
     defer AppWindow.weixin_qr_panel.g_visible = false;
 
@@ -124,6 +147,7 @@ test "input: WeChat QR panel consumes text input while visible" {
 }
 
 test "input: command palette shortcut toggles command center" {
+    try skipUnlessInputRendererShard();
     const previous_keybinds = AppWindow.g_keybinds;
     defer AppWindow.g_keybinds = previous_keybinds;
     defer overlays.commandPaletteClose();
@@ -149,12 +173,62 @@ test "input: command palette shortcut toggles command center" {
     try std.testing.expect(!overlays.commandPaletteVisible());
 }
 
+test "input: btw overlay owns text input and Escape closes it" {
+    try skipUnlessInputRendererShard();
+    const allocator = std.testing.allocator;
+    const previous_allocator = AppWindow.g_allocator;
+    defer AppWindow.g_allocator = previous_allocator;
+    AppWindow.g_allocator = allocator;
+
+    const source = try AppWindow.ai_chat.Session.init(
+        allocator,
+        "Source",
+        "https://example.invalid",
+        "",
+        "test-model",
+        "system",
+        "disabled",
+        "low",
+        "false",
+        "false",
+    );
+    defer source.deinit();
+    defer overlays.closeBtwConversation();
+
+    overlays.openBtwConversation(source, "");
+    try std.testing.expect(overlays.btwConversationVisible());
+    const child = overlays.btwConversationSession().?;
+
+    handleChar(.{ .codepoint = 'h' });
+    try std.testing.expectEqualStrings("h", child.input());
+
+    handleKey(.{
+        .key_code = platform_input.key_enter,
+        .ctrl = false,
+        .shift = false,
+        .alt = false,
+        .super = false,
+    });
+    try std.testing.expect(std.mem.startsWith(u8, child.status(), "Missing API key"));
+
+    handleKey(.{
+        .key_code = platform_input.key_escape,
+        .ctrl = false,
+        .shift = false,
+        .alt = false,
+        .super = false,
+    });
+    try std.testing.expect(!overlays.btwConversationVisible());
+}
+
 test "input: browser toolbar has a refresh action entrypoint" {
+    try skipUnlessInputRendererShard();
     const info = @typeInfo(@TypeOf(refreshBrowserPanel)).@"fn";
     try std.testing.expectEqual(@as(usize, 0), info.params.len);
 }
 
 test "input: preview gallery neighbor opens next raster sibling" {
+    try skipUnlessInputRendererShard();
     const gpa = std.testing.allocator;
     const prev_allocator = AppWindow.g_allocator;
     defer AppWindow.g_allocator = prev_allocator;
@@ -187,6 +261,7 @@ test "input: preview gallery neighbor opens next raster sibling" {
 }
 
 test "input: focused preview ignores shift-modified navigation keys" {
+    try skipUnlessInputRendererShard();
     const gpa = std.testing.allocator;
     const prev_allocator = AppWindow.g_allocator;
     const previous_tabs = tab.g_tabs;
@@ -278,6 +353,7 @@ const escape_event = platform_input.KeyEvent{
 };
 
 test "input: command palette arrow navigation requests a repaint" {
+    try skipUnlessInputRendererShard();
     const previous_keybinds = AppWindow.g_keybinds;
     defer AppWindow.g_keybinds = previous_keybinds;
     defer overlays.commandPaletteClose();
@@ -294,7 +370,64 @@ test "input: command palette arrow navigation requests a repaint" {
     try std.testing.expect(!AppWindow.g_cells_valid);
 }
 
+test "input: command palette dispatchKey returns repaint effect" {
+    try skipUnlessInputRendererShard();
+    const previous_keybinds = AppWindow.g_keybinds;
+    defer AppWindow.g_keybinds = previous_keybinds;
+    defer overlays.commandPaletteClose();
+
+    AppWindow.g_keybinds = keybind.Set.defaults();
+    overlays.commandPaletteOpen();
+
+    const effect = dispatchKey(arrow_down_event);
+
+    try std.testing.expect(effect.consumed);
+    try std.testing.expect(effect.needs_rebuild);
+    try std.testing.expect(effect.cells_invalid);
+}
+
+test "input: command palette dispatchKey preserves repaint for unmapped palette keys" {
+    try skipUnlessInputRendererShard();
+    const previous_keybinds = AppWindow.g_keybinds;
+    defer AppWindow.g_keybinds = previous_keybinds;
+    defer overlays.commandPaletteClose();
+
+    AppWindow.g_keybinds = keybind.Set.defaults();
+    overlays.commandPaletteOpen();
+
+    const effect = dispatchKey(.{
+        .key_code = 0x5A,
+        .ctrl = false,
+        .shift = false,
+        .alt = false,
+        .super = false,
+    });
+
+    try std.testing.expect(effect.consumed);
+    try std.testing.expect(effect.needs_rebuild);
+    try std.testing.expect(effect.cells_invalid);
+}
+
+test "input: window close confirm dispatchKey returns repaint effect" {
+    try skipUnlessInputRendererShard();
+    defer overlays.windowCloseConfirmClose();
+    overlays.closeConfirmOpen(.window, .window_generic);
+
+    const effect = dispatchKey(.{
+        .key_code = platform_input.key_escape,
+        .ctrl = false,
+        .shift = false,
+        .alt = false,
+        .super = false,
+    });
+
+    try std.testing.expect(effect.consumed);
+    try std.testing.expect(effect.needs_rebuild);
+    try std.testing.expect(effect.cells_invalid);
+}
+
 test "input: command palette text filtering requests a repaint" {
+    try skipUnlessInputRendererShard();
     defer overlays.commandPaletteClose();
     overlays.commandPaletteOpen();
     try std.testing.expect(overlays.commandPaletteVisible());
@@ -307,7 +440,32 @@ test "input: command palette text filtering requests a repaint" {
     try std.testing.expect(!AppWindow.g_cells_valid);
 }
 
+test "input: command palette dispatchChar returns repaint effect for text filtering" {
+    try skipUnlessInputRendererShard();
+    defer overlays.commandPaletteClose();
+    overlays.commandPaletteOpen();
+
+    const effect = dispatchChar(.{ .codepoint = 'a' });
+
+    try std.testing.expect(effect.consumed);
+    try std.testing.expect(effect.needs_rebuild);
+    try std.testing.expect(effect.cells_invalid);
+}
+
+test "input: command palette dispatchChar consumes ctrl text without repaint" {
+    try skipUnlessInputRendererShard();
+    defer overlays.commandPaletteClose();
+    overlays.commandPaletteOpen();
+
+    const effect = dispatchChar(.{ .codepoint = 'a', .ctrl = true, .alt = false });
+
+    try std.testing.expect(effect.consumed);
+    try std.testing.expect(!effect.needs_rebuild);
+    try std.testing.expect(!effect.cells_invalid);
+}
+
 test "input: session launcher arrow navigation requests a repaint" {
+    try skipUnlessInputRendererShard();
     const previous_keybinds = AppWindow.g_keybinds;
     defer AppWindow.g_keybinds = previous_keybinds;
     defer overlays.sessionLauncherClose();
@@ -324,7 +482,24 @@ test "input: session launcher arrow navigation requests a repaint" {
     try std.testing.expect(!AppWindow.g_cells_valid);
 }
 
+test "input: session launcher dispatchKey returns repaint effect" {
+    try skipUnlessInputRendererShard();
+    const previous_keybinds = AppWindow.g_keybinds;
+    defer AppWindow.g_keybinds = previous_keybinds;
+    defer overlays.sessionLauncherClose();
+
+    AppWindow.g_keybinds = keybind.Set.defaults();
+    overlays.sessionLauncherOpen();
+
+    const effect = dispatchKey(arrow_down_event);
+
+    try std.testing.expect(effect.consumed);
+    try std.testing.expect(effect.needs_rebuild);
+    try std.testing.expect(effect.cells_invalid);
+}
+
 test "input: command center child escape returns to command center" {
+    try skipUnlessInputRendererShard();
     const previous_keybinds = AppWindow.g_keybinds;
     defer AppWindow.g_keybinds = previous_keybinds;
     defer overlays.commandPaletteClose();
@@ -347,11 +522,30 @@ test "input: command center child escape returns to command center" {
 }
 
 test "input: settings page arrow navigation requests a repaint" {
+    try skipUnlessInputRendererShard();
     const previous_keybinds = AppWindow.g_keybinds;
-    defer AppWindow.g_keybinds = previous_keybinds;
-    defer overlays.settingsPageClose();
+    const previous_allocator = AppWindow.g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_should_close = AppWindow.g_should_close;
+    var settings_tab = tab.TabState{ .kind = .settings, .tree = .empty };
+    defer {
+        overlays.settingsPageClose();
+        AppWindow.g_keybinds = previous_keybinds;
+        AppWindow.g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        AppWindow.g_should_close = previous_should_close;
+    }
 
     AppWindow.g_keybinds = keybind.Set.defaults();
+    AppWindow.g_allocator = std.testing.allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tabs[0] = &settings_tab;
+    tab.g_tab_count = 1;
+    active_tab_state.g_active_tab = 0;
     overlays.settingsPageOpen();
     try std.testing.expect(overlays.settingsPageVisible());
 
@@ -363,7 +557,42 @@ test "input: settings page arrow navigation requests a repaint" {
     try std.testing.expect(!AppWindow.g_cells_valid);
 }
 
+test "input: settings page dispatchKey returns repaint effect" {
+    try skipUnlessInputRendererShard();
+    const previous_keybinds = AppWindow.g_keybinds;
+    const previous_allocator = AppWindow.g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_should_close = AppWindow.g_should_close;
+    var settings_tab = tab.TabState{ .kind = .settings, .tree = .empty };
+    defer {
+        overlays.settingsPageClose();
+        AppWindow.g_keybinds = previous_keybinds;
+        AppWindow.g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        AppWindow.g_should_close = previous_should_close;
+    }
+
+    AppWindow.g_keybinds = keybind.Set.defaults();
+    AppWindow.g_allocator = std.testing.allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tabs[0] = &settings_tab;
+    tab.g_tab_count = 1;
+    active_tab_state.g_active_tab = 0;
+    overlays.settingsPageOpen();
+
+    const effect = dispatchKey(arrow_down_event);
+
+    try std.testing.expect(effect.consumed);
+    try std.testing.expect(effect.needs_rebuild);
+    try std.testing.expect(effect.cells_invalid);
+}
+
 test "input: port forwarding arrow navigation requests a repaint" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     const previous_count = tab.g_tab_count;
     const previous_active = active_tab_state.g_active_tab;
@@ -389,7 +618,940 @@ test "input: port forwarding arrow navigation requests a repaint" {
     try std.testing.expect(!AppWindow.g_cells_valid);
 }
 
+test "input: skill center tool toggle requests a repaint" {
+    try skipUnlessInputRendererShard();
+    const allocator = std.testing.allocator;
+    const previous_allocator = AppWindow.g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_force_rebuild = AppWindow.g_force_rebuild;
+    const previous_cells_valid = AppWindow.g_cells_valid;
+    defer {
+        AppWindow.g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        AppWindow.g_force_rebuild = previous_force_rebuild;
+        AppWindow.g_cells_valid = previous_cells_valid;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("tools/fake_tool/bin");
+    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/SKILL.md", .data = "---\nname: fake_tool\n---\n" });
+    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/bin/fake_tool", .data = "" });
+    const manifest =
+        \\{
+        \\  "kind": "binary_tool",
+        \\  "id": "fake_tool",
+        \\  "function_name": "fake_tool",
+        \\  "enabled": false,
+        \\  "executable": "bin/fake_tool",
+        \\  "source_path": "/tmp/fake_tool",
+        \\  "sha256": "abc123",
+        \\  "imported_at_ms": 1,
+        \\  "description": "fake"
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/manifest.json", .data = manifest });
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+
+    AppWindow.g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = AppWindow.activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    const executable_path = try std.fs.path.join(allocator, &.{ root, "tools", "fake_tool", "bin", "fake_tool" });
+    var executable_path_owned = true;
+    errdefer if (executable_path_owned) allocator.free(executable_path);
+    const skill_path = try std.fs.path.join(allocator, &.{ root, "tools", "fake_tool", "SKILL.md" });
+    var skill_path_owned = true;
+    errdefer if (skill_path_owned) allocator.free(skill_path);
+    const name = try allocator.dupe(u8, "fake_tool");
+    var name_owned = true;
+    errdefer if (name_owned) allocator.free(name);
+    const entries = try allocator.alloc(AppWindow.skill_center.LibraryEntry, 1);
+    var entries_owned = true;
+    errdefer if (entries_owned) allocator.free(entries);
+    entries[0] = .{ .tool = .{
+        .name = name,
+        .executable_path = executable_path,
+        .skill_path = skill_path,
+        .enabled = false,
+    } };
+    session.mutex.lock();
+    session.model.setEntries(entries);
+    entries_owned = false;
+    name_owned = false;
+    executable_path_owned = false;
+    skill_path_owned = false;
+    session.mutex.unlock();
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = 0x45, .ctrl = false, .shift = false, .alt = false, .super = false });
+
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+
+    const persisted_manifest = try tmp.dir.readFileAlloc(allocator, "tools/fake_tool/manifest.json", 4096);
+    defer allocator.free(persisted_manifest);
+    try std.testing.expect(std.mem.indexOf(u8, persisted_manifest, "\"enabled\": true") != null);
+
+    _ = AppWindow.skillCenterToggleToolEnabled();
+}
+
+test "input: skill center first-party tool toggle writes state and requests a repaint" {
+    try skipUnlessInputRendererShard();
+    const allocator = std.testing.allocator;
+    const previous_allocator = AppWindow.g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_force_rebuild = AppWindow.g_force_rebuild;
+    const previous_cells_valid = AppWindow.g_cells_valid;
+    defer {
+        AppWindow.g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        AppWindow.g_force_rebuild = previous_force_rebuild;
+        AppWindow.g_cells_valid = previous_cells_valid;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+
+    AppWindow.g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = AppWindow.activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    const name = try allocator.dupe(u8, "webread");
+    var name_owned = true;
+    errdefer if (name_owned) allocator.free(name);
+    const description = try allocator.dupe(u8, "Read web pages.");
+    var description_owned = true;
+    errdefer if (description_owned) allocator.free(description);
+    const entries = try allocator.alloc(AppWindow.skill_center.LibraryEntry, 1);
+    var entries_owned = true;
+    errdefer if (entries_owned) allocator.free(entries);
+    entries[0] = .{ .first_party_tool = .{
+        .name = name,
+        .description = description,
+        .enabled = true,
+        .disableable = true,
+    } };
+    session.mutex.lock();
+    session.model.setEntries(entries);
+    entries_owned = false;
+    name_owned = false;
+    description_owned = false;
+    session.mutex.unlock();
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = 0x45, .ctrl = false, .shift = false, .alt = false, .super = false });
+
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+
+    const state = try tmp.dir.readFileAlloc(allocator, "agent_tools.json", 4096);
+    defer allocator.free(state);
+    try std.testing.expect(std.mem.indexOf(u8, state, "\"webread\"") != null);
+
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        const entry = session.model.selectedEntry() orelse return error.ExpectedFirstPartyTool;
+        switch (entry) {
+            .first_party_tool => |tool| try std.testing.expect(!tool.enabled),
+            else => return error.ExpectedFirstPartyTool,
+        }
+    }
+
+    const settings = AppWindow.ai_chat.currentAgentSettings();
+    try std.testing.expectEqual(@as(usize, 1), settings.disabled_first_party_tools.len);
+    try std.testing.expectEqualStrings("webread", settings.disabled_first_party_tools[0]);
+
+    try std.testing.expect(AppWindow.skillCenterToggleToolEnabled());
+}
+
+test "input: skill center tool toggle is blocked while selection overlay is active" {
+    try skipUnlessInputRendererShard();
+    const allocator = std.testing.allocator;
+    const previous_allocator = AppWindow.g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_force_rebuild = AppWindow.g_force_rebuild;
+    const previous_cells_valid = AppWindow.g_cells_valid;
+    defer {
+        AppWindow.g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        AppWindow.g_force_rebuild = previous_force_rebuild;
+        AppWindow.g_cells_valid = previous_cells_valid;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("tools/fake_tool/bin");
+    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/SKILL.md", .data = "---\nname: fake_tool\n---\n" });
+    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/bin/fake_tool", .data = "" });
+    const manifest =
+        \\{
+        \\  "kind": "binary_tool",
+        \\  "id": "fake_tool",
+        \\  "function_name": "fake_tool",
+        \\  "enabled": true,
+        \\  "executable": "bin/fake_tool",
+        \\  "source_path": "/tmp/fake_tool",
+        \\  "sha256": "abc123",
+        \\  "imported_at_ms": 1,
+        \\  "description": "fake"
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/manifest.json", .data = manifest });
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+
+    AppWindow.g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = AppWindow.activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    const executable_path = try std.fs.path.join(allocator, &.{ root, "tools", "fake_tool", "bin", "fake_tool" });
+    var executable_path_owned = true;
+    errdefer if (executable_path_owned) allocator.free(executable_path);
+    const skill_path = try std.fs.path.join(allocator, &.{ root, "tools", "fake_tool", "SKILL.md" });
+    var skill_path_owned = true;
+    errdefer if (skill_path_owned) allocator.free(skill_path);
+    const name = try allocator.dupe(u8, "fake_tool");
+    var name_owned = true;
+    errdefer if (name_owned) allocator.free(name);
+    const entries = try allocator.alloc(AppWindow.skill_center.LibraryEntry, 1);
+    var entries_owned = true;
+    errdefer if (entries_owned) allocator.free(entries);
+    entries[0] = .{ .tool = .{
+        .name = name,
+        .executable_path = executable_path,
+        .skill_path = skill_path,
+        .enabled = true,
+    } };
+
+    const picker_labels = try allocator.alloc([]u8, 1);
+    var picker_labels_owned = true;
+    errdefer if (picker_labels_owned) allocator.free(picker_labels);
+    picker_labels[0] = try allocator.dupe(u8, "Local · Claude Code");
+    var picker_label_0_owned = true;
+    errdefer if (picker_label_0_owned) allocator.free(picker_labels[0]);
+    const picker_targets = try allocator.alloc(AppWindow.skill_center.Target, 1);
+    var picker_targets_owned = true;
+    errdefer if (picker_targets_owned) allocator.free(picker_targets);
+    picker_targets[0] = try AppWindow.skill_center.Target.dupe(allocator, "local", "Local", .claude, true);
+    var picker_target_0_owned = true;
+    errdefer if (picker_target_0_owned) picker_targets[0].deinit(allocator);
+    const picker_skill_name = try allocator.dupe(u8, "prompt_skill");
+    var picker_skill_name_owned = true;
+    errdefer if (picker_skill_name_owned) allocator.free(picker_skill_name);
+
+    session.mutex.lock();
+    session.model.setEntries(entries);
+    entries_owned = false;
+    name_owned = false;
+    executable_path_owned = false;
+    skill_path_owned = false;
+    session.model.setOverlay(.{ .picker = .{
+        .purpose = .deploy,
+        .skill_name = picker_skill_name,
+        .labels = picker_labels,
+        .targets = picker_targets,
+        .sel = 0,
+    } });
+    picker_skill_name_owned = false;
+    picker_labels_owned = false;
+    picker_label_0_owned = false;
+    picker_targets_owned = false;
+    picker_target_0_owned = false;
+    session.mutex.unlock();
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = 0x45, .ctrl = false, .shift = false, .alt = false, .super = false });
+
+    const persisted_manifest = try tmp.dir.readFileAlloc(allocator, "tools/fake_tool/manifest.json", 4096);
+    defer allocator.free(persisted_manifest);
+    try std.testing.expect(std.mem.indexOf(u8, persisted_manifest, "\"enabled\": true") != null);
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    const entry = session.model.selectedEntry() orelse return error.ExpectedSkillCenterTool;
+    switch (entry) {
+        .tool => |tool| try std.testing.expect(tool.enabled),
+        else => return error.ExpectedSkillCenterTool,
+    }
+}
+
+test "input: empty skill center library import shortcut opens picker" {
+    try skipUnlessInputRendererShard();
+    const allocator = std.testing.allocator;
+    const previous_allocator = AppWindow.g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_force_rebuild = AppWindow.g_force_rebuild;
+    const previous_cells_valid = AppWindow.g_cells_valid;
+    defer {
+        AppWindow.g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        AppWindow.g_force_rebuild = previous_force_rebuild;
+        AppWindow.g_cells_valid = previous_cells_valid;
+    }
+
+    AppWindow.g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = AppWindow.activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = 0x49, .ctrl = false, .shift = false, .alt = false, .super = false });
+
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    switch (session.model.overlay) {
+        .picker => |picker| {
+            try std.testing.expectEqual(AppWindow.skill_center.Purpose.import_, picker.purpose);
+            try std.testing.expectEqualStrings("", picker.skill_name);
+        },
+        else => return error.ExpectedSkillCenterPicker,
+    }
+}
+
+test "input: skill center deploy and import keys ignore selected tool rows" {
+    try skipUnlessInputRendererShard();
+    const allocator = std.testing.allocator;
+    const previous_allocator = AppWindow.g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_force_rebuild = AppWindow.g_force_rebuild;
+    const previous_cells_valid = AppWindow.g_cells_valid;
+    defer {
+        AppWindow.g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        AppWindow.g_force_rebuild = previous_force_rebuild;
+        AppWindow.g_cells_valid = previous_cells_valid;
+    }
+
+    AppWindow.g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = AppWindow.activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    const name = try allocator.dupe(u8, "fake_tool");
+    var name_owned = true;
+    errdefer if (name_owned) allocator.free(name);
+    const executable_path = try allocator.dupe(u8, "/tmp/tools/fake_tool/bin/fake_tool");
+    var executable_path_owned = true;
+    errdefer if (executable_path_owned) allocator.free(executable_path);
+    const skill_path = try allocator.dupe(u8, "/tmp/tools/fake_tool/SKILL.md");
+    var skill_path_owned = true;
+    errdefer if (skill_path_owned) allocator.free(skill_path);
+    const entries = try allocator.alloc(AppWindow.skill_center.LibraryEntry, 1);
+    var entries_owned = true;
+    errdefer if (entries_owned) allocator.free(entries);
+    entries[0] = .{ .tool = .{
+        .name = name,
+        .executable_path = executable_path,
+        .skill_path = skill_path,
+        .enabled = false,
+    } };
+
+    session.mutex.lock();
+    session.model.setEntries(entries);
+    entries_owned = false;
+    name_owned = false;
+    executable_path_owned = false;
+    skill_path_owned = false;
+    session.mutex.unlock();
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = 0x44, .ctrl = false, .shift = false, .alt = false, .super = false });
+    try std.testing.expect(!AppWindow.g_force_rebuild);
+    try std.testing.expect(AppWindow.g_cells_valid);
+    try std.testing.expect(!AppWindow.skillCenterOverlayActive());
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = 0x49, .ctrl = false, .shift = false, .alt = false, .super = false });
+    try std.testing.expect(!AppWindow.g_force_rebuild);
+    try std.testing.expect(AppWindow.g_cells_valid);
+    try std.testing.expect(!AppWindow.skillCenterOverlayActive());
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = platform_input.key_enter, .ctrl = false, .shift = false, .alt = false, .super = false });
+    try std.testing.expect(!AppWindow.g_force_rebuild);
+    try std.testing.expect(AppWindow.g_cells_valid);
+    try std.testing.expect(!AppWindow.skillCenterOverlayActive());
+}
+
+test "input: skill center tool import shortcut is a no-op when no file is selected" {
+    try skipUnlessInputRendererShard();
+    const allocator = std.testing.allocator;
+    const previous_allocator = AppWindow.g_allocator;
+    const previous_open_file = AppWindow.g_skill_center_open_file_override;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_force_rebuild = AppWindow.g_force_rebuild;
+    const previous_cells_valid = AppWindow.g_cells_valid;
+    defer {
+        AppWindow.g_allocator = previous_allocator;
+        AppWindow.g_skill_center_open_file_override = previous_open_file;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        AppWindow.g_force_rebuild = previous_force_rebuild;
+        AppWindow.g_cells_valid = previous_cells_valid;
+    }
+
+    AppWindow.g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = AppWindow.activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    AppWindow.g_skill_center_open_file_override = struct {
+        fn open(_: std.mem.Allocator, _: platform_file_dialog.OpenRequest) ?[]u8 {
+            return null;
+        }
+    }.open;
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = 0x54, .ctrl = false, .shift = false, .alt = false, .super = false });
+
+    try std.testing.expect(!AppWindow.g_force_rebuild);
+    try std.testing.expect(AppWindow.g_cells_valid);
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expectEqualStrings("", session.status);
+}
+
+test "input: skill center tool import preview keys import-scroll-cancel while text preview still closes on Enter" {
+    try skipUnlessInputRendererShard();
+    const allocator = std.testing.allocator;
+    const previous_allocator = AppWindow.g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_force_rebuild = AppWindow.g_force_rebuild;
+    const previous_cells_valid = AppWindow.g_cells_valid;
+    defer {
+        AppWindow.g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        AppWindow.g_force_rebuild = previous_force_rebuild;
+        AppWindow.g_cells_valid = previous_cells_valid;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("tools/docx");
+    try tmp.dir.makePath("tools/.import-stage-docx/bin");
+    try tmp.dir.makePath("source");
+    try tmp.dir.writeFile(.{ .sub_path = "tools/.import-stage-docx/bin/docx", .data = "staged bytes" });
+    try tmp.dir.writeFile(.{ .sub_path = "source/docx", .data = "original bytes" });
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+    const staged_path = try tmp.dir.realpathAlloc(allocator, "tools/.import-stage-docx/bin/docx");
+    defer allocator.free(staged_path);
+    const stage_root = try tmp.dir.realpathAlloc(allocator, "tools/.import-stage-docx");
+    defer allocator.free(stage_root);
+    const source_path = try tmp.dir.realpathAlloc(allocator, "source/docx");
+    defer allocator.free(source_path);
+
+    AppWindow.g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = AppWindow.activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    session.mutex.lock();
+    try session.model.openToolImportPreview(.{
+        .tool_id = "docx",
+        .function_name = "docx",
+        .source_path = source_path,
+        .staged_binary_path = staged_path,
+        .skill_md = "---\nname: docx\n---\nUse docs.\n",
+        .doc_source = .skill_flag,
+        .ai_review_required = false,
+    });
+    session.mutex.unlock();
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = platform_input.key_down, .ctrl = false, .shift = false, .alt = false, .super = false });
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+    session.mutex.lock();
+    try std.testing.expectEqual(@as(usize, 1), session.model.overlay.tool_import_preview.scroll);
+    session.mutex.unlock();
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = platform_input.key_enter, .ctrl = false, .shift = false, .alt = false, .super = false });
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+    session.mutex.lock();
+    try std.testing.expect(session.model.overlay == .tool_import_preview);
+    try std.testing.expect(std.mem.indexOf(u8, session.status, "Tool import failed:") != null);
+    session.mutex.unlock();
+    try std.fs.accessAbsolute(stage_root, .{});
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = platform_input.key_escape, .ctrl = false, .shift = false, .alt = false, .super = false });
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+    session.mutex.lock();
+    try std.testing.expect(session.model.overlay == .none);
+    session.mutex.unlock();
+    try std.testing.expectError(error.FileNotFound, std.fs.accessAbsolute(stage_root, .{}));
+
+    session.mutex.lock();
+    try session.model.openTextPreview("docx / SKILL.md", "preview");
+    session.mutex.unlock();
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = platform_input.key_enter, .ctrl = false, .shift = false, .alt = false, .super = false });
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expect(session.model.overlay == .none);
+}
+
+test "input: skill center deploy and import keys are blocked while picker overlay is active" {
+    try skipUnlessInputRendererShard();
+    const allocator = std.testing.allocator;
+    const previous_allocator = AppWindow.g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_force_rebuild = AppWindow.g_force_rebuild;
+    const previous_cells_valid = AppWindow.g_cells_valid;
+    defer {
+        AppWindow.g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        AppWindow.g_force_rebuild = previous_force_rebuild;
+        AppWindow.g_cells_valid = previous_cells_valid;
+    }
+
+    AppWindow.g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = AppWindow.activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    const name = try allocator.dupe(u8, "main_prompt");
+    var name_owned = true;
+    errdefer if (name_owned) allocator.free(name);
+    const rel_path = try allocator.dupe(u8, "main_prompt/SKILL.md");
+    var rel_path_owned = true;
+    errdefer if (rel_path_owned) allocator.free(rel_path);
+    const entries = try allocator.alloc(AppWindow.skill_center.LibraryEntry, 1);
+    var entries_owned = true;
+    errdefer if (entries_owned) allocator.free(entries);
+    entries[0] = .{ .prompt = .{
+        .name = name,
+        .rel_path = rel_path,
+        .agg_hash = null,
+    } };
+
+    const picker_labels = try allocator.alloc([]u8, 1);
+    var picker_labels_owned = true;
+    errdefer if (picker_labels_owned) allocator.free(picker_labels);
+    picker_labels[0] = try allocator.dupe(u8, "Local · Claude Code");
+    var picker_label_0_owned = true;
+    errdefer if (picker_label_0_owned) allocator.free(picker_labels[0]);
+    const picker_targets = try allocator.alloc(AppWindow.skill_center.Target, 1);
+    var picker_targets_owned = true;
+    errdefer if (picker_targets_owned) allocator.free(picker_targets);
+    picker_targets[0] = try AppWindow.skill_center.Target.dupe(allocator, "local", "Local", .claude, true);
+    var picker_target_0_owned = true;
+    errdefer if (picker_target_0_owned) picker_targets[0].deinit(allocator);
+    const overlay_skill_name = try allocator.dupe(u8, "overlay_prompt");
+    var overlay_skill_name_owned = true;
+    errdefer if (overlay_skill_name_owned) allocator.free(overlay_skill_name);
+
+    session.mutex.lock();
+    session.model.setEntries(entries);
+    entries_owned = false;
+    name_owned = false;
+    rel_path_owned = false;
+    session.model.setOverlay(.{ .picker = .{
+        .purpose = .deploy,
+        .skill_name = overlay_skill_name,
+        .labels = picker_labels,
+        .targets = picker_targets,
+        .sel = 0,
+    } });
+    overlay_skill_name_owned = false;
+    picker_labels_owned = false;
+    picker_label_0_owned = false;
+    picker_targets_owned = false;
+    picker_target_0_owned = false;
+    session.mutex.unlock();
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = 0x44, .ctrl = false, .shift = false, .alt = false, .super = false });
+    try std.testing.expect(!AppWindow.g_force_rebuild);
+    try std.testing.expect(AppWindow.g_cells_valid);
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        switch (session.model.overlay) {
+            .picker => |picker| try std.testing.expectEqualStrings("overlay_prompt", picker.skill_name),
+            else => return error.ExpectedSkillCenterPicker,
+        }
+    }
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = 0x49, .ctrl = false, .shift = false, .alt = false, .super = false });
+    try std.testing.expect(!AppWindow.g_force_rebuild);
+    try std.testing.expect(AppWindow.g_cells_valid);
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        switch (session.model.overlay) {
+            .picker => |picker| try std.testing.expectEqualStrings("overlay_prompt", picker.skill_name),
+            else => return error.ExpectedSkillCenterPicker,
+        }
+    }
+}
+
+test "input: skill center main actions are blocked while import list overlay is active" {
+    try skipUnlessInputRendererShard();
+    const allocator = std.testing.allocator;
+    const previous_allocator = AppWindow.g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_force_rebuild = AppWindow.g_force_rebuild;
+    const previous_cells_valid = AppWindow.g_cells_valid;
+    defer {
+        AppWindow.g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        AppWindow.g_force_rebuild = previous_force_rebuild;
+        AppWindow.g_cells_valid = previous_cells_valid;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("tools/fake_tool/bin");
+    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/SKILL.md", .data = "---\nname: fake_tool\n---\n" });
+    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/bin/fake_tool", .data = "" });
+    const manifest =
+        \\{
+        \\  "kind": "binary_tool",
+        \\  "id": "fake_tool",
+        \\  "function_name": "fake_tool",
+        \\  "enabled": true,
+        \\  "executable": "bin/fake_tool",
+        \\  "source_path": "/tmp/fake_tool",
+        \\  "sha256": "abc123",
+        \\  "imported_at_ms": 1,
+        \\  "description": "fake"
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/manifest.json", .data = manifest });
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+
+    AppWindow.g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = AppWindow.activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    const prompt_name = try allocator.dupe(u8, "main_prompt");
+    var prompt_name_owned = true;
+    errdefer if (prompt_name_owned) allocator.free(prompt_name);
+    const prompt_rel_path = try allocator.dupe(u8, "main_prompt/SKILL.md");
+    var prompt_rel_path_owned = true;
+    errdefer if (prompt_rel_path_owned) allocator.free(prompt_rel_path);
+    const executable_path = try std.fs.path.join(allocator, &.{ root, "tools", "fake_tool", "bin", "fake_tool" });
+    var executable_path_owned = true;
+    errdefer if (executable_path_owned) allocator.free(executable_path);
+    const skill_path = try std.fs.path.join(allocator, &.{ root, "tools", "fake_tool", "SKILL.md" });
+    var skill_path_owned = true;
+    errdefer if (skill_path_owned) allocator.free(skill_path);
+    const name = try allocator.dupe(u8, "fake_tool");
+    var name_owned = true;
+    errdefer if (name_owned) allocator.free(name);
+    const entries = try allocator.alloc(AppWindow.skill_center.LibraryEntry, 2);
+    var entries_owned = true;
+    errdefer if (entries_owned) allocator.free(entries);
+    entries[0] = .{ .prompt = .{
+        .name = prompt_name,
+        .rel_path = prompt_rel_path,
+        .agg_hash = null,
+    } };
+    entries[1] = .{ .tool = .{
+        .name = name,
+        .executable_path = executable_path,
+        .skill_path = skill_path,
+        .enabled = true,
+    } };
+
+    var import_target = try AppWindow.skill_center.Target.dupe(allocator, "local", "Local", .claude, true);
+    var import_target_owned = true;
+    errdefer if (import_target_owned) import_target.deinit(allocator);
+    const import_names = try allocator.alloc([]u8, 1);
+    var import_names_owned = true;
+    errdefer if (import_names_owned) allocator.free(import_names);
+    import_names[0] = try allocator.dupe(u8, "remote_prompt");
+    var import_name_0_owned = true;
+    errdefer if (import_name_0_owned) allocator.free(import_names[0]);
+    const import_markers = try allocator.alloc(AppWindow.skill_center.Marker, 1);
+    var import_markers_owned = true;
+    errdefer if (import_markers_owned) allocator.free(import_markers);
+    import_markers[0] = .new_;
+
+    session.mutex.lock();
+    session.model.setEntries(entries);
+    entries_owned = false;
+    prompt_name_owned = false;
+    prompt_rel_path_owned = false;
+    name_owned = false;
+    executable_path_owned = false;
+    skill_path_owned = false;
+    session.model.setOverlay(.{ .import_list = .{
+        .target = import_target,
+        .names = import_names,
+        .markers = import_markers,
+        .sel = 0,
+    } });
+    import_target_owned = false;
+    import_names_owned = false;
+    import_name_0_owned = false;
+    import_markers_owned = false;
+    session.mutex.unlock();
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = 0x44, .ctrl = false, .shift = false, .alt = false, .super = false });
+    try std.testing.expect(!AppWindow.g_force_rebuild);
+    try std.testing.expect(AppWindow.g_cells_valid);
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        switch (session.model.overlay) {
+            .import_list => |import_list| try std.testing.expectEqualStrings("remote_prompt", import_list.names[0]),
+            else => return error.ExpectedSkillCenterImportList,
+        }
+    }
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = 0x49, .ctrl = false, .shift = false, .alt = false, .super = false });
+    try std.testing.expect(!AppWindow.g_force_rebuild);
+    try std.testing.expect(AppWindow.g_cells_valid);
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        switch (session.model.overlay) {
+            .import_list => |import_list| try std.testing.expectEqualStrings("remote_prompt", import_list.names[0]),
+            else => return error.ExpectedSkillCenterImportList,
+        }
+        session.model.sel_row = 1;
+    }
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = 0x54, .ctrl = false, .shift = false, .alt = false, .super = false });
+    try std.testing.expect(!AppWindow.g_force_rebuild);
+    try std.testing.expect(AppWindow.g_cells_valid);
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        try std.testing.expectEqualStrings("", session.status);
+        switch (session.model.overlay) {
+            .import_list => |import_list| {
+                try std.testing.expectEqual(@as(usize, 1), import_list.names.len);
+                try std.testing.expectEqualStrings("remote_prompt", import_list.names[0]);
+            },
+            else => return error.ExpectedSkillCenterImportList,
+        }
+    }
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = 0x45, .ctrl = false, .shift = false, .alt = false, .super = false });
+    try std.testing.expect(!AppWindow.g_force_rebuild);
+    try std.testing.expect(AppWindow.g_cells_valid);
+    const persisted_manifest = try tmp.dir.readFileAlloc(allocator, "tools/fake_tool/manifest.json", 4096);
+    defer allocator.free(persisted_manifest);
+    try std.testing.expect(std.mem.indexOf(u8, persisted_manifest, "\"enabled\": true") != null);
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        switch (session.model.overlay) {
+            .import_list => |import_list| try std.testing.expectEqualStrings("remote_prompt", import_list.names[0]),
+            else => return error.ExpectedSkillCenterImportList,
+        }
+    }
+}
+
 test "input: terminal viewport mouse wheel scroll requests a repaint" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     const ghostty_vt = @import("ghostty-vt");
     const renderer = @import("renderer.zig");
@@ -466,7 +1628,114 @@ test "input: terminal viewport mouse wheel scroll requests a repaint" {
     try std.testing.expect(!AppWindow.g_cells_valid);
 }
 
+test "input: file explorer mouse wheel scroll requests a repaint" {
+    try skipUnlessInputRendererShard();
+    // Regression: scrolling the file explorer sidebar (Ctrl+Shift+Alt+E) only
+    // mutated the scroll offset without requesting a frame, so the panel did not
+    // redraw until the next cursor-blink tick (~600ms) — visibly stuttery scroll.
+    // The wheel handler must set g_force_rebuild so the new position is drawn now.
+    const previous_visible = file_explorer.g_visible;
+    const previous_owner = file_explorer.g_owner_tab;
+    const previous_mode = file_explorer.g_panel_mode;
+    const previous_entry_count = file_explorer.g_entry_count;
+    const previous_visible_height = file_explorer.g_visible_height;
+    const previous_scroll = file_explorer.g_scroll_offset;
+    const previous_row_height = file_explorer.g_row_height;
+    const previous_panel_width = file_explorer.g_width;
+    const previous_sidebar = tab.g_sidebar_visible;
+    const previous_browser_visible = browser_panel.g_visible;
+    const previous_whats_new_visible = overlays.whatsNewVisible();
+    defer {
+        file_explorer.g_visible = previous_visible;
+        file_explorer.g_owner_tab = previous_owner;
+        file_explorer.g_panel_mode = previous_mode;
+        file_explorer.g_entry_count = previous_entry_count;
+        file_explorer.g_visible_height = previous_visible_height;
+        file_explorer.g_scroll_offset = previous_scroll;
+        file_explorer.g_row_height = previous_row_height;
+        file_explorer.g_width = previous_panel_width;
+        tab.g_sidebar_visible = previous_sidebar;
+        browser_panel.g_visible = previous_browser_visible;
+        if (previous_whats_new_visible) overlays.showWhatsNew() else overlays.hideWhatsNew();
+    }
+
+    tab.g_sidebar_visible = false;
+    browser_panel.g_visible = false;
+    overlays.hideWhatsNew();
+
+    // Make the explorer visible for the active tab with a scrollable list.
+    file_explorer.g_visible = true;
+    file_explorer.g_owner_tab = active_tab_state.g_active_tab;
+    file_explorer.g_panel_mode = .files;
+    file_explorer.g_width = 240;
+    file_explorer.g_row_height = 20;
+    file_explorer.g_visible_height = 100;
+    file_explorer.g_entry_count = 100; // total 2000px >> visible 100px → scrollable
+    file_explorer.g_scroll_offset = 0;
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+
+    // Wheel "down" inside the panel (negative delta scrolls toward the bottom).
+    handleMouseWheel(.{ .delta = -120, .xpos = 20, .ypos = 200 });
+
+    // The fix: a frame is requested for the new scroll position.
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    // The offset actually advanced, proving we took the explorer branch (the
+    // terminal fallback would also set g_force_rebuild, so assert the side effect
+    // unique to this branch).
+    try std.testing.expect(file_explorer.g_scroll_offset > 0);
+    // The explorer draws above the terminal cell grid, so scrolling it must not
+    // invalidate the cells — that would force an unnecessary grid rebuild.
+    try std.testing.expect(AppWindow.g_cells_valid);
+}
+
+test "input: file explorer keyboard navigation requests a repaint" {
+    try skipUnlessInputRendererShard();
+    // Same regression as the wheel path: arrow-key navigation in the focused
+    // explorer moved the selection without requesting a frame, so the highlight
+    // did not update until the next cursor-blink tick (~600ms).
+    const previous_visible = file_explorer.g_visible;
+    const previous_owner = file_explorer.g_owner_tab;
+    const previous_focused = file_explorer.g_focused;
+    const previous_mode = file_explorer.g_panel_mode;
+    const previous_op_mode = file_explorer.g_op_mode;
+    const previous_entry_count = file_explorer.g_entry_count;
+    const previous_selected = file_explorer.g_selected;
+    const previous_whats_new_visible = overlays.whatsNewVisible();
+    defer {
+        file_explorer.g_visible = previous_visible;
+        file_explorer.g_owner_tab = previous_owner;
+        file_explorer.g_focused = previous_focused;
+        file_explorer.g_panel_mode = previous_mode;
+        file_explorer.g_op_mode = previous_op_mode;
+        file_explorer.g_entry_count = previous_entry_count;
+        file_explorer.g_selected = previous_selected;
+        if (previous_whats_new_visible) overlays.showWhatsNew() else overlays.hideWhatsNew();
+    }
+
+    overlays.hideWhatsNew();
+    file_explorer.g_visible = true;
+    file_explorer.g_owner_tab = active_tab_state.g_active_tab;
+    file_explorer.g_focused = true;
+    file_explorer.g_panel_mode = .files;
+    file_explorer.g_op_mode = .none;
+    file_explorer.g_entry_count = 10;
+    file_explorer.g_selected = 0;
+
+    AppWindow.g_force_rebuild = false;
+
+    // Bare Down arrow advances the selection (no modifier → not a keybind).
+    handleKey(.{ .key_code = platform_input.key_down, .ctrl = false, .shift = false, .alt = false, .super = false });
+
+    // The fix: a frame is requested so the moved highlight is drawn now.
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    // Selection advanced, proving the explorer key branch consumed the event.
+    try std.testing.expectEqual(@as(?usize, 1), file_explorer.g_selected);
+}
+
 test "input: port forwarding form left/right arrows toggle Direction and request a repaint" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     AppWindow.setSshHostsContentForTest("");
     defer AppWindow.setSshHostsContentForTest(null);
@@ -518,6 +1787,7 @@ test "input: port forwarding form left/right arrows toggle Direction and request
 }
 
 test "input: port forwarding form letter keys remain text input" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     AppWindow.setSshHostsContentForTest("");
     defer AppWindow.setSshHostsContentForTest(null);
@@ -550,6 +1820,7 @@ test "input: port forwarding form letter keys remain text input" {
 }
 
 test "input: port forwarding new command suppresses its follow-up char event" {
+    try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
     AppWindow.setSshHostsContentForTest("");
     defer AppWindow.setSshHostsContentForTest(null);
@@ -583,6 +1854,7 @@ test "input: port forwarding new command suppresses its follow-up char event" {
 // evaluation decide to render (the exact signal the main loop builds), instead of
 // blocking until an incidental wake — that decision IS the anti-lag invariant.
 test "input: overlay navigation drives the render gate to repaint" {
+    try skipUnlessInputRendererShard();
     const render_gate = @import("appwindow/render_gate.zig");
     defer overlays.commandPaletteClose();
     overlays.commandPaletteOpen();
@@ -602,7 +1874,43 @@ test "input: overlay navigation drives the render gate to repaint" {
     try std.testing.expect(render_gate.frameNeedsRender(signals));
 }
 
+test "input: right-clicking a sidebar tab starts tab rename" {
+    try skipUnlessInputRendererShard();
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_sidebar = tab.g_sidebar_visible;
+    const previous_sidebar_width = titlebar.g_sidebar_width;
+    defer {
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        tab.g_sidebar_visible = previous_sidebar;
+        titlebar.g_sidebar_width = previous_sidebar_width;
+        tab.g_tab_rename_active = false;
+        tab.g_tab_rename_idx = 0;
+    }
+
+    var first = tab.TabState{ .kind = .skill_center, .tree = .empty };
+    var second = tab.TabState{ .kind = .skill_center, .tree = .empty };
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tabs[0] = &first;
+    tab.g_tabs[1] = &second;
+    tab.g_tab_count = 2;
+    active_tab_state.g_active_tab = 0;
+    tab.g_sidebar_visible = true;
+    titlebar.g_sidebar_width = 220;
+    tab.g_tab_rename_active = false;
+
+    const y: i32 = @intFromFloat(titlebarHeight() + titlebar.sidebarHeaderHeight() + 6 + titlebar.sidebarRowHeight() / 2);
+    handleMouseButton(.{ .button = .right, .action = .release, .x = 24, .y = y });
+
+    try std.testing.expect(tab.g_tab_rename_active);
+    try std.testing.expectEqual(@as(usize, 0), tab.g_tab_rename_idx);
+}
+
 test "macOS UI smoke: Cmd+Shift+B toggles the tab sidebar" {
+    try skipUnlessInputRendererShard();
     if (builtin.os.tag != .macos) return error.SkipZigTest;
 
     const previous_keybinds = AppWindow.g_keybinds;
@@ -637,17 +1945,21 @@ fn weixinQrPanelConsumesChar() bool {
 pub threadlocal var g_selecting: bool = false; // True while mouse button is held
 pub threadlocal var g_click_x: f64 = 0; // X position of initial click (for threshold calculation)
 pub threadlocal var g_click_y: f64 = 0; // Y position of initial click
-var g_selection_changed_for_copy: bool = false;
+const RuntimeState = struct {
+    selection_changed_for_copy: bool = false,
+    left_click_tracker: click_tracker.ClickTracker = .{},
+};
+threadlocal var g_runtime_state: RuntimeState = .{};
 
 // Terminal mouse reporting drag state. When a press is delivered to the PTY
 // (the focused program enabled mouse tracking and Shift wasn't held), the
 // matching drag-motion and release are routed to the PTY too — until the
 // button lifts — instead of driving local text selection. See
 // input/mouse_report.zig for the protocol encoder.
-threadlocal var g_mouse_report_button: ?mouse_report.Button = null;
-threadlocal var g_mouse_report_surface: ?*Surface = null;
-threadlocal var g_mouse_report_last_cell: ?CellPos = null;
-threadlocal var g_left_click_tracker: click_tracker.ClickTracker = .{};
+// The reported-drag state machine (begin/finish/motion-dedupe) lives in
+// input/mouse_dispatch.zig as a pure, std-only helper; input.zig owns the one
+// instance and supplies the I/O (report target, PTY write, focus).
+threadlocal var g_mouse_report: mouse_dispatch.TerminalMouseReportState(*Surface) = .{};
 const MULTI_CLICK_INTERVAL_MS: i64 = 500;
 const MAX_SELECTION_COLS: usize = 4096;
 
@@ -684,9 +1996,6 @@ pub threadlocal var g_divider_hover: bool = false; // Mouse is over a divider
 // hovering, or null. The renderer brightens that pane's button; updated on
 // mouse-move. Just a hover hint — clicks are hit-tested independently.
 pub threadlocal var g_preview_close_hover: ?SplitTree.Node.Handle = null;
-/// Track which titlebar icon the mouse is over (0 = none, 1 = toggle, 2 = folder)
-/// so that handleMouseMove can trigger a re-render when the hovered icon changes.
-threadlocal var g_titlebar_button_hover: u8 = 0;
 pub threadlocal var g_divider_dragging: bool = false; // Currently dragging a divider
 pub threadlocal var g_divider_drag_handle: ?SplitTree.Node.Handle = null; // Handle of the split node being resized
 pub threadlocal var g_divider_drag_layout: ?SplitTree.Split.Layout = null; // horizontal or vertical
@@ -707,12 +2016,6 @@ threadlocal var g_panel_swap_start_y: f64 = 0;
 // old right-dock image drag). All state and the drag-lifetime pane ref live in
 // the tested state machine; input.zig only routes press/move/release into it.
 threadlocal var g_preview_image_drag: PreviewImageDrag = .{};
-
-// Mouse-drag text selection inside a text/markdown preview pane. Set on mouse
-// down, cleared on mouse up. The renderer draws selection highlights using the
-// pane's selection state; the mouse move handler extends it.
-threadlocal var g_preview_text_selecting: bool = false;
-
 threadlocal var g_scrollbar_drag_surface: ?*Surface = null;
 threadlocal var g_scrollbar_drag_view_y: f32 = 0;
 threadlocal var g_scrollbar_drag_view_h: f32 = 0;
@@ -720,21 +2023,33 @@ threadlocal var g_scrollbar_drag_top_pad: f32 = 0;
 threadlocal var g_ai_input_scroll_dragging: bool = false;
 threadlocal var g_ai_input_scroll_chat: ?*AppWindow.ai_chat.Session = null;
 threadlocal var g_ai_input_scroll_drag_offset: f32 = 0;
+const AiTranscriptPanel = enum {
+    active_chat,
+    copilot_sidebar,
+};
+const AiTranscriptPanelGeometry = ai_sidebar.PanelGeometry;
 threadlocal var g_ai_transcript_scroll_dragging: bool = false;
 threadlocal var g_ai_transcript_scroll_chat: ?*AppWindow.ai_chat.Session = null;
 threadlocal var g_ai_transcript_scroll_drag_offset: f32 = 0;
+threadlocal var g_ai_transcript_scroll_panel: AiTranscriptPanel = .active_chat;
 threadlocal var g_ai_transcript_selecting: bool = false;
 threadlocal var g_ai_transcript_select_chat: ?*AppWindow.ai_chat.Session = null;
 threadlocal var g_ai_transcript_select_auto_copy: bool = false;
-threadlocal var g_port_forwarding_suppress_command_char: ?u21 = null;
-threadlocal var g_skill_center_suppress_command_char: ?u21 = null;
+threadlocal var g_ai_transcript_select_panel: AiTranscriptPanel = .active_chat;
+const CommandCharSuppressors = struct {
+    port_forwarding: ?u21 = null,
+    skill_center: ?u21 = null,
+    ai_history: ?u21 = null,
+};
+threadlocal var command_char_suppressors: CommandCharSuppressors = .{};
+pub threadlocal var g_sidebar_resize_hover: bool = false; // Mouse is over the sidebar resize edge
+pub threadlocal var g_sidebar_resize_dragging: bool = false; // Currently dragging the sidebar edge
 pub threadlocal var g_explorer_resize_hover: bool = false; // Mouse is over the file explorer resize edge
 pub threadlocal var g_explorer_resize_dragging: bool = false; // Currently dragging the file explorer edge
 pub threadlocal var g_browser_resize_hover: bool = false; // Mouse is over the embedded browser edge
 pub threadlocal var g_browser_resize_dragging: bool = false; // Currently dragging the browser edge
 pub threadlocal var g_ai_copilot_resize_hover: bool = false; // Mouse is over the AI copilot left edge
 pub threadlocal var g_ai_copilot_resize_dragging: bool = false; // Currently dragging the AI copilot edge
-pub threadlocal var g_url_open_mode: link_open.Mode = .embedded;
 
 /// Whether the AI copilot sidebar currently owns keyboard/mouse focus. Set by
 /// AppWindow.toggleAiCopilot; full key/mouse routing lands in a later task.
@@ -762,10 +2077,23 @@ threadlocal var g_sidebar_tab_drag_active: bool = false;
 threadlocal var plus_btn_pressed: bool = false;
 threadlocal var fullscreen_restore_state: window_backend.FullscreenRestoreState = .{};
 const CLOSE_SHORTCUT_CONFIRM_MS: i64 = 5000;
-threadlocal var g_close_shortcut_confirm_until_ms: i64 = 0;
 
 fn titlebarHeight() f64 {
     return @floatCast(AppWindow.currentTitlebarHeight());
+}
+
+/// Snapshot the window geometry that hit-testing reads repeatedly
+/// (framebuffer size + titlebar height + sidebar width) in one place, so panel
+/// hit-tests consume a single computed struct instead of recomputing each value
+/// inline. Reads the exact same sources as the inline call sites it replaces.
+fn windowMetrics(win: *window_backend.Window) WindowMetrics {
+    const fb = window_backend.framebufferSize(win);
+    return WindowMetrics.init(
+        fb.width,
+        fb.height,
+        titlebarHeight(),
+        @floatCast(titlebar.sidebarWidth()),
+    );
 }
 
 fn syncGridFromWindowSize(width: i32, height: i32) void {
@@ -807,10 +2135,11 @@ fn syncGridFromWindowSize(width: i32, height: i32) void {
                 AppWindow.term_rows,
             },
         );
-        AppWindow.g_pending_resize = true;
-        AppWindow.g_pending_cols = new_cols;
-        AppWindow.g_pending_rows = new_rows;
-        AppWindow.g_last_resize_time = std.time.milliTimestamp();
+        AppWindow.requestGridResize(
+            new_cols,
+            new_rows,
+            std.time.milliTimestamp(),
+        );
     }
 }
 
@@ -836,9 +2165,28 @@ fn syncPanelGridFromWindowSize(width: i32, height: i32) void {
     syncGridFromWindowSizeWithUrgency(width, height, panelToggleResizeUrgency());
 }
 
+fn applyInputEffect(effect: ui_effect.UiEffect) void {
+    AppWindow.applyUiEffect(effect);
+}
+
+fn requestInputRepaint() void {
+    applyInputEffect(input_effects.repaint());
+}
+
+fn requestInputRebuild() void {
+    applyInputEffect(input_effects.rebuildOnly());
+}
+
+fn requestInputDirtyFlags(force_rebuild: bool, cells_valid: bool) void {
+    applyInputEffect(input_effects.fromDirtyFlags(force_rebuild, cells_valid));
+}
+
 fn markBrowserUrlBarDirty() void {
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
+}
+
+fn markSkillCenterInputDirty() void {
+    requestInputRepaint();
 }
 
 fn blurBrowserUrlBarIfFocused() void {
@@ -852,6 +2200,8 @@ pub fn cancelTransientMouseState(win: anytype) void {
     g_divider_dragging = false;
     g_divider_drag_handle = null;
     g_divider_drag_layout = null;
+    g_sidebar_resize_hover = false;
+    g_sidebar_resize_dragging = false;
     g_explorer_resize_hover = false;
     g_explorer_resize_dragging = false;
     g_browser_resize_hover = false;
@@ -870,12 +2220,13 @@ pub fn cancelTransientMouseState(win: anytype) void {
     g_ai_input_scroll_chat = null;
     g_ai_transcript_scroll_dragging = false;
     g_ai_transcript_scroll_chat = null;
-    AppWindow.ai_chat_renderer.g_transcript_scrollbar_dragging = false;
-    AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover = false;
+    AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_dragging = false;
+    AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_hover = false;
+    g_ai_transcript_scroll_panel = .active_chat;
     g_ai_transcript_selecting = false;
     g_ai_transcript_select_chat = null;
     g_ai_transcript_select_auto_copy = false;
-    g_titlebar_button_hover = 0;
+    g_ai_transcript_select_panel = .active_chat;
     window_backend.clearTransientInput(win);
 }
 
@@ -888,8 +2239,7 @@ pub fn toggleSidebar() void {
         syncPanelGridFromWindow(win);
         syncSidebarWidthToBackend(win);
     }
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 pub fn toggleFileExplorer() void {
@@ -903,8 +2253,7 @@ pub fn toggleFileExplorer() void {
     if (AppWindow.g_window) |win| {
         syncPanelGridFromWindow(win);
     }
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 fn closeFileExplorerPanel() void {
@@ -913,8 +2262,7 @@ fn closeFileExplorerPanel() void {
     if (AppWindow.g_window) |win| {
         syncPanelGridFromWindow(win);
     }
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 pub fn toggleBrowserPanel() void {
@@ -924,7 +2272,7 @@ pub fn toggleBrowserPanel() void {
     const allocator = AppWindow.g_allocator orelse return;
     const parent = AppWindow.currentNativeHandle();
     const surface = AppWindow.activeSurface();
-    if (g_url_open_mode == .system_browser and !browser_panel.isVisibleForActiveTab()) {
+    if (link_open.current_mode == .system_browser and !browser_panel.isVisibleForActiveTab()) {
         const target = browser_panel.externalUrlForSurface(allocator, browser_panel.DEFAULT_URL, surface) orelse return;
         defer allocator.free(target);
         _ = platform_open_url.open(allocator, .{ .url = target });
@@ -935,8 +2283,7 @@ pub fn toggleBrowserPanel() void {
     if (AppWindow.g_window) |win| {
         syncPanelGridFromWindow(win);
     }
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 pub fn openJupyterPanel() void {
@@ -962,8 +2309,7 @@ pub fn openJupyterPanel() void {
                 return;
             } else if (result.urls.len >= 2) {
                 jupyter_picker.show(@ptrCast(result.urls));
-                AppWindow.g_force_rebuild = true;
-                AppWindow.g_cells_valid = false;
+                requestInputRepaint();
                 return;
             }
         }
@@ -978,24 +2324,21 @@ fn finishOpenJupyter() void {
     if (AppWindow.g_window) |win| {
         syncPanelGridFromWindow(win);
     }
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 fn closeBrowserPanel() void {
-    g_close_shortcut_confirm_until_ms = 0;
+    close_confirm_state.clear();
     browser_panel.close();
     if (AppWindow.g_window) |win| {
         syncPanelGridFromWindow(win);
     }
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 pub fn refreshBrowserPanel() void {
     browser_panel.refresh();
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 fn closeAiCopilotPanel() void {
@@ -1003,8 +2346,7 @@ fn closeAiCopilotPanel() void {
     if (AppWindow.g_window) |win| {
         syncPanelGridFromWindow(win);
     }
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 pub fn closePanelOrTab() void {
@@ -1022,31 +2364,28 @@ pub fn closePanelOrTab() void {
     })) {
         .close_browser => closeBrowserPanel(),
         .confirm_running_program => {
-            g_close_shortcut_confirm_until_ms = 0;
+            close_confirm_state.clear();
             overlays.closeConfirmOpen(.focused_split, .running_program);
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
+            requestInputRepaint();
         },
         .window_press_again => {
             const now = std.time.milliTimestamp();
-            if (now < g_close_shortcut_confirm_until_ms) {
-                g_close_shortcut_confirm_until_ms = 0;
+            if (close_confirm_state.isActive(now)) {
+                close_confirm_state.clear();
                 AppWindow.closeFocusedSplit();
                 return;
             }
-            g_close_shortcut_confirm_until_ms = now + CLOSE_SHORTCUT_CONFIRM_MS;
+            close_confirm_state.show(now, CLOSE_SHORTCUT_CONFIRM_MS);
             overlays.showCloseShortcutConfirm(CLOSE_SHORTCUT_CONFIRM_MS);
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
+            requestInputRepaint();
         },
         .confirm_terminal => {
-            g_close_shortcut_confirm_until_ms = 0;
+            close_confirm_state.clear();
             overlays.closeConfirmOpen(.focused_split, .terminal_split);
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
+            requestInputRepaint();
         },
         .close_now => {
-            g_close_shortcut_confirm_until_ms = 0;
+            close_confirm_state.clear();
             AppWindow.closeFocusedSplit();
         },
     }
@@ -1072,48 +2411,7 @@ fn closePreviewPaneByHandle(handle: SplitTree.Node.Handle) void {
     g_preview_close_hover = null;
     tb.focused = handle;
     AppWindow.closeFocusedSplit();
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
-}
-
-/// Map a window y-coordinate to a source text line index inside a preview pane.
-/// Uses the renderer-cached line heights for pixel-accurate hit-testing, and
-/// falls back to a proportional estimate when the heights are stale or absent.
-fn previewLineAtY(p: *PreviewPane, rect: split_layout.SplitRect, window_y: f64) usize {
-    const panel_top: f32 = @floatFromInt(rect.y);
-    const panel_h: f32 = @floatFromInt(rect.height);
-    const y: f32 = @floatFromInt(@as(i32, @intFromFloat(@floor(window_y))));
-    const body_top = panel_top + preview_close_button.HEADER_HEIGHT + 18; // + PAD_Y
-    const body_h = panel_h - preview_close_button.HEADER_HEIGHT - 44 - 36; // - FOOTER_HEIGHT - 2*PAD_Y
-    if (body_h <= 0) return 0;
-    const body_origin = body_top - p.scroll_offset;
-    if (y < body_origin) return 0;
-    if (p.line_heights.len == 0 or p.line_heights.generation != p.content_generation) {
-        const count = previewLineCount(p);
-        if (count <= 1) return 0;
-        const total_h = p.max_scroll + body_h;
-        if (total_h <= 0) return 0;
-        const frac = (y - body_origin) / total_h;
-        return @min(count - 1, @max(0, @as(usize, @intFromFloat(frac * @as(f32, @floatFromInt(count))))));
-    }
-    var cumulative: f32 = 0;
-    for (p.line_heights.buf[0..p.line_heights.len], 0..) |h, i| {
-        const top = body_origin + cumulative;
-        const bottom = top + h;
-        if (y >= top and y < bottom) return i;
-        cumulative += h;
-    }
-    return p.line_heights.len - 1;
-}
-
-fn previewLineCount(p: *const PreviewPane) usize {
-    const source = p.sourceText();
-    if (source.len == 0) return 0;
-    var count: usize = 1;
-    for (source) |ch| {
-        if (ch == '\n') count += 1;
-    }
-    return count;
+    requestInputRepaint();
 }
 
 /// Close a tab via a pointer gesture (middle-click or the × button), honoring
@@ -1123,8 +2421,7 @@ fn requestCloseTabGesture(tab_idx: usize) void {
     if (close_confirm.shouldConfirm(AppWindow.g_confirm_close_running_program, AppWindow.tabHasRunningProgram(tab_idx))) {
         const action: close_confirm.PendingClose = if (closes_window) .window else .{ .tab = tab_idx };
         overlays.closeConfirmOpen(action, .running_program);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
         return;
     }
     if (closes_window) {
@@ -1157,8 +2454,7 @@ pub fn copyRemoteSessionKeyToClipboard() bool {
     if (!copyTextToClipboard(key)) return false;
     overlays.remoteKeyCopiedFlash();
     overlays.remoteKeyOverlayDismiss(key);
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
     std.debug.print("Remote session key copied to clipboard\n", .{});
     return true;
 }
@@ -1166,13 +2462,6 @@ pub fn copyRemoteSessionKeyToClipboard() bool {
 // ============================================================================
 // Shared helpers (used by input + cell_renderer)
 // ============================================================================
-
-/// Get the viewport's absolute row offset into the scrollback.
-/// Row 0 on screen corresponds to absolute row `viewportOffset()`.
-pub fn viewportOffset() usize {
-    const surface = AppWindow.activeSurface() orelse return 0;
-    return viewportOffsetForSurface(surface);
-}
 
 pub const ScrollbarState = struct {
     total: usize,
@@ -1397,8 +2686,7 @@ fn updatePanelSwapDrag(x: i32, y: i32) bool {
     const target: ?SplitTree.Node.Handle = if (hovered) |h| (if (h == source) null else h) else null;
     if (target != g_panel_swap_target) {
         g_panel_swap_target = target;
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
     }
     platform_cursor.set(.size_all);
     return true;
@@ -1503,101 +2791,111 @@ fn processSizeChange(win: anytype) void {
         "input-size-change client={}x{} dpi={} font_dpi={} cell={d:.2}x{d:.2} term={}x{}",
         .{ size.width, size.height, window_backend.effectiveDpi(win), font.g_dpi, font.cell_width, font.cell_height, AppWindow.term_cols, AppWindow.term_rows },
     );
-    syncSidebarWidthToBackend(win);
+    if (titlebar.setSidebarWidth(titlebar.g_sidebar_width, @floatFromInt(size.width))) {
+        syncSidebarWidthToBackend(win);
+        requestInputRepaint();
+    }
+
     syncGridFromWindowSize(size.width, size.height);
 }
 
 fn handleChar(ev: platform_input.CharEvent) void {
+    applyInputEffect(dispatchChar(ev));
+}
+
+fn dispatchChar(ev: platform_input.CharEvent) ui_effect.UiEffect {
     overlays.startupShortcutsDismiss();
+    if (overlays.btwConversationVisible()) {
+        if (!ev.ctrl and !ev.alt) {
+            AppWindow.resetCursorBlink();
+            return overlays.btwConversationHandleChar(ev.codepoint);
+        }
+        return .consumed_only;
+    }
     if (overlays.sessionLauncherVisible()) {
         if (!ev.ctrl and !ev.alt) {
             overlays.sessionLauncherInsertChar(ev.codepoint);
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
+            return input_effects.repaint();
         }
-        return;
+        return .none;
+    }
+    if (overlays.mcpServersVisible()) {
+        if (!ev.ctrl and !ev.alt) {
+            overlays.mcpServersInsertChar(ev.codepoint);
+            return input_effects.repaint();
+        }
+        return .none;
     }
     if (overlays.commandPaletteVisible()) {
-        if (!ev.ctrl and !ev.alt) {
-            overlays.commandPaletteInsertChar(ev.codepoint);
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
-        }
-        return;
+        const effect = command_palette_input.charEffect(ev);
+        if (effect.needs_rebuild) overlays.commandPaletteInsertChar(ev.codepoint);
+        return effect;
     }
-    if (weixinQrPanelConsumesChar()) return;
+    if (weixinQrPanelConsumesChar()) return .none;
+    if (overlays.feishuRegPanelVisible()) return .none;
     if (browser_panel.urlBarFocused()) {
         if (!ev.ctrl and !ev.alt) {
             browser_panel.insertUrlBarChar(ev.codepoint);
             markBrowserUrlBarDirty();
         }
-        return;
+        return .none;
     }
     // File explorer inline editing
-    if (file_explorer.g_focused and file_explorer.isVisibleForActiveTab() and file_explorer.g_op_mode != .none and file_explorer.g_op_mode != .confirm_delete) {
+    if (file_explorer.isFocused() and file_explorer.isVisibleForActiveTab() and file_explorer.hasActiveOp() and file_explorer.opMode() != .confirm_delete) {
         if (!ev.ctrl and !ev.alt) file_explorer.inputChar(ev.codepoint);
-        return;
+        return .none;
     }
     // When tab rename is active, route chars to the rename buffer
     if (tab.g_tab_rename_active) {
         AppWindow.g_cursor_blink_visible = true;
         AppWindow.g_last_blink_time = std.time.milliTimestamp();
         tab.handleRenameChar(ev.codepoint);
-        return;
+        return .none;
     }
-    if (AppWindow.activeAiChat()) |chat| {
+    if (command_char_suppressors.ai_history) |codepoint| {
+        const suppress = !ev.ctrl and !ev.alt and !ev.super and ev.codepoint == codepoint;
+        command_char_suppressors.ai_history = null;
+        if (suppress) return .none;
+    }
+    if (assistant_conversation.current(aiCopilotFocused())) |target| {
         if (!ev.ctrl and !ev.alt) {
             AppWindow.resetCursorBlink();
-            chat.handleChar(ev.codepoint);
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
+            target.session.handleChar(ev.codepoint);
+            return input_effects.repaint();
         }
-        return;
+        return .none;
     }
     if (AppWindow.activeAiHistory() != null) {
         // aiHistoryInsertCodepoint only consumes the codepoint while the Search box
         // owns focus, so 'r'/Space type into the query there yet stay free to act as
-        // Scan/Preview shortcuts when another panel is focused.
+        // Scan/Preview shortcuts when another panel is focused. A Space on an empty
+        // query is declined (see typeIntoSearch) so it previews the transcript too.
         if (!ev.ctrl and !ev.alt and !ev.super) {
             _ = AppWindow.aiHistoryInsertCodepoint(ev.codepoint);
         }
-        return;
+        return .none;
     }
     if (AppWindow.activeSkillCenter() != null) {
-        if (g_skill_center_suppress_command_char) |codepoint| {
+        if (command_char_suppressors.skill_center) |codepoint| {
             const suppress = !ev.ctrl and !ev.alt and !ev.super and ev.codepoint == codepoint;
-            g_skill_center_suppress_command_char = null;
-            if (suppress) return;
+            command_char_suppressors.skill_center = null;
+            if (suppress) return .none;
         }
         if (!ev.ctrl and !ev.alt and !ev.super) {
-            _ = AppWindow.skillCenterUrlInsertChar(ev.codepoint); // no-op unless url_input active
+            if (AppWindow.skillCenterUrlInsertChar(ev.codepoint)) markSkillCenterInputDirty(); // no-op unless url_input active
         }
-        return;
+        return .none;
     }
     if (AppWindow.activePortForwarding() != null) {
-        if (g_port_forwarding_suppress_command_char) |codepoint| {
+        if (command_char_suppressors.port_forwarding) |codepoint| {
             const suppress = !ev.ctrl and !ev.alt and !ev.super and ev.codepoint == codepoint;
-            g_port_forwarding_suppress_command_char = null;
-            if (suppress) return;
+            command_char_suppressors.port_forwarding = null;
+            if (suppress) return .none;
         }
         if (!ev.ctrl and !ev.alt and !ev.super) {
             _ = AppWindow.portForwardingInsertChar(ev.codepoint);
         }
-        return;
-    }
-    // AI copilot sidebar (terminal tabs): when the copilot owns focus, route
-    // text input to its composer. `activeCopilotSessionForInput` is non-null
-    // only when the panel is visible on the active terminal tab.
-    if (aiCopilotFocused()) {
-        if (AppWindow.activeCopilotSessionForInput()) |chat| {
-            if (!ev.ctrl and !ev.alt) {
-                AppWindow.resetCursorBlink();
-                chat.handleChar(ev.codepoint);
-                AppWindow.g_force_rebuild = true;
-                AppWindow.g_cells_valid = false;
-            }
-            return;
-        }
+        return .none;
     }
     // A focused raster (image/PDF) preview consumes +/=/- as zoom in/out. Only
     // raster previews claim these chars (markdown previews ignore them so they
@@ -1610,27 +2908,24 @@ fn handleChar(ev: platform_input.CharEvent) void {
                 '-', '_' => p.zoomImageBySteps(1, false),
                 else => false,
             };
-            if (zoomed) {
-                AppWindow.g_force_rebuild = true;
-                AppWindow.g_cells_valid = false;
-            }
+            if (zoomed) return input_effects.repaint();
             switch (ev.codepoint) {
-                '+', '=', '-', '_' => return,
+                '+', '=', '-', '_' => return .none,
                 else => {},
             }
         }
     }
-    if (!AppWindow.isActiveTabTerminal()) return;
+    if (!AppWindow.isActiveTabTerminal()) return .none;
     // Skip chars when Alt is held without Ctrl — those are part of Alt+key
     // combos (e.g. Shift+Alt+4) and shouldn't produce text input.
     // However, AltGr on international keyboards reports as Ctrl+Alt, so
     // we must allow chars when both Ctrl and Alt are held (AltGr chars).
     // This matches Ghostty's consumed_mods / effectiveMods approach.
-    if (ev.alt and !ev.ctrl) return;
+    if (ev.alt and !ev.ctrl) return .none;
     // Cmd / Super shortcuts (macOS Cmd+C, Win key on other platforms) are
     // commands, not text input — never inject them into the PTY.
-    if (ev.super) return;
-    const surface = AppWindow.activeSurface() orelse return;
+    if (ev.super) return .none;
+    const surface = AppWindow.activeSurface() orelse return .none;
     AppWindow.resetCursorBlink();
     {
         surface.render_state.mutex.lock();
@@ -1638,8 +2933,9 @@ fn handleChar(ev: platform_input.CharEvent) void {
         surface.terminal.scrollViewport(.bottom);
     }
     var buf: [4]u8 = undefined;
-    const len = std.unicode.utf8Encode(ev.codepoint, &buf) catch return;
+    const len = std.unicode.utf8Encode(ev.codepoint, &buf) catch return .none;
     writeToPty(surface, buf[0..len]);
+    return .none;
 }
 
 const KeybindPhase = command_dispatch.Phase;
@@ -1670,6 +2966,7 @@ fn logicalKeyFromCode(key_code: platform_input.KeyCode) input_key.Key {
         platform_input.key_tab => .tab,
         platform_input.key_enter => .enter,
         platform_input.key_escape => .escape,
+        platform_input.key_space => .space,
         platform_input.key_delete => .delete,
         platform_input.key_home => .home,
         platform_input.key_end => .end,
@@ -1682,13 +2979,17 @@ fn logicalKeyFromCode(key_code: platform_input.KeyCode) input_key.Key {
         platform_input.key_right => .arrow_right,
         0x41 => .key_a,
         0x43 => .key_c,
+        0x44 => .key_d,
         0x45 => .key_e,
         0x48 => .key_h,
         0x4B => .key_k,
         0x4C => .key_l,
         0x4E => .key_n,
+        0x4F => .key_o,
         0x50 => .key_p,
+        0x52 => .key_r,
         0x53 => .key_s,
+        0x54 => .key_t,
         0x55 => .key_u,
         0x56 => .key_v,
         0x57 => .key_w,
@@ -1697,8 +2998,53 @@ fn logicalKeyFromCode(key_code: platform_input.KeyCode) input_key.Key {
     };
 }
 
+fn aiTranscriptPanelGeometryForBounds(window_width: i32, window_height: i32, bounds: ai_sidebar.Bounds) AiTranscriptPanelGeometry {
+    return ai_sidebar.panelGeometryForBounds(window_width, window_height, bounds);
+}
+
+fn aiTranscriptPanelGeometry(panel: AiTranscriptPanel) ?AiTranscriptPanelGeometry {
+    const win = AppWindow.g_window orelse return null;
+    const metrics = windowMetrics(win);
+    return switch (panel) {
+        .active_chat => .{
+            .window_width = @floatFromInt(metrics.framebuffer_width),
+            .window_height = @floatFromInt(metrics.framebuffer_height),
+            .chat_x = AppWindow.leftPanelsWidth(),
+            .chat_w = @as(f32, @floatFromInt(metrics.framebuffer_width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(metrics.framebuffer_width),
+        },
+        .copilot_sidebar => blk: {
+            if (!AppWindow.aiCopilotVisible()) return null;
+            const bounds = ai_sidebar.boundsForWindow(
+                @intCast(metrics.framebuffer_width),
+                @intCast(metrics.framebuffer_height),
+                @floatCast(metrics.titlebar_h),
+                AppWindow.leftPanelsWidth(),
+                0,
+            );
+            break :blk aiTranscriptPanelGeometryForBounds(@intCast(metrics.framebuffer_width), @intCast(metrics.framebuffer_height), bounds);
+        },
+    };
+}
+
 test "input: logical key mapping includes session launcher H mnemonic" {
+    try skipUnlessInputRendererShard();
     try std.testing.expectEqual(input_key.Key.key_h, logicalKeyFromCode(0x48));
+}
+
+test "input: copilot transcript panel geometry uses sidebar bounds" {
+    try skipUnlessInputRendererShard();
+    const bounds = ai_sidebar.Bounds{
+        .left = 1120,
+        .top = 30,
+        .right = 1600,
+        .bottom = 900,
+    };
+    const geometry = aiTranscriptPanelGeometryForBounds(1600, 900, bounds);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 1600), geometry.window_width, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 900), geometry.window_height, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1120), geometry.chat_x, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 480), geometry.chat_w, 0.001);
 }
 
 fn actionIs(action: ?keybind.Action, expected: keybind.Action) bool {
@@ -1767,48 +3113,25 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
         .toggle_file_explorer => toggleFileExplorer(),
         .toggle_sidebar => toggleSidebar(),
         .toggle_ai_copilot => AppWindow.toggleAiCopilot(),
+        .copilot_conversation_picker => AppWindow.openCopilotConversationPicker(),
         .close_panel_or_tab => closePanelOrTab(),
         .toggle_maximize => toggleMaximize(),
         .font_size => |delta| adjustFontSize(delta),
+        .open_settings => overlays.settingsPageOpen(),
         // Late
-        .copy => {
-            if (AppWindow.focusedPreviewPane()) |p| {
-                if (p.hasSelection()) {
-                    const text = p.selectedText();
-                    if (text.len > 0 and copyTextToClipboard(text)) {
-                        overlays.showCopyToast(text.len);
-                        AppWindow.g_force_rebuild = true;
-                        AppWindow.g_cells_valid = false;
-                        return true;
-                    }
-                }
-            }
-            copySelectionToClipboard();
-        },
+        .copy => copySelectionToClipboard(),
         .paste => {
-            if (AppWindow.activeAiChat()) |chat| {
-                pasteFromClipboardIntoAiChat(chat);
-            } else if (aiCopilotFocused()) {
-                if (AppWindow.activeCopilotSessionForInput()) |chat| {
-                    pasteFromClipboardIntoAiChat(chat);
-                } else {
-                    pasteFromClipboard();
-                }
+            if (assistant_conversation.current(aiCopilotFocused())) |target| {
+                pasteFromClipboardIntoAiChat(target.session);
             } else {
                 pasteFromClipboard();
             }
         },
         .paste_image => {
-            if (AppWindow.activeAiChat()) |chat| {
-                pasteImageIntoAiChat(chat);
-            } else if (aiCopilotFocused()) {
-                if (AppWindow.activeCopilotSessionForInput()) |chat| {
-                    pasteImageIntoAiChat(chat);
-                } else {
-                    pasteImageFromClipboard();
-                }
+            if (assistant_conversation.current(aiCopilotFocused())) |target| {
+                if (!pasteImageIntoAiChat(target.session)) pasteFromClipboardIntoAiChat(target.session);
             } else {
-                pasteImageFromClipboard();
+                if (!pasteImageFromClipboard()) pasteFromClipboard();
             }
         },
         // Panel-focus shortcuts are "performable": if there is no pane in
@@ -1843,73 +3166,144 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
     return true;
 }
 
+fn applyCommandPaletteAction(action: command_palette_input.Action, history_visible: bool) void {
+    switch (action) {
+        .noop => {},
+        .close => overlays.commandPaletteClose(),
+        .leave_history => overlays.commandPaletteLeaveAgentHistory(),
+        .move_up => if (history_visible) overlays.commandPaletteMoveAgentHistory(-1) else overlays.commandPaletteMove(-1),
+        .move_down => if (history_visible) overlays.commandPaletteMoveAgentHistory(1) else overlays.commandPaletteMove(1),
+        .execute => overlays.commandPaletteExecuteSelected(),
+        .backspace => overlays.commandPaletteBackspace(),
+        .clear_filter => overlays.commandPaletteClearFilter(),
+        .delete_history => _ = overlays.commandPaletteDeleteSelectedAgentHistory(),
+        .cycle_history_source => overlays.commandPaletteCycleHistorySource(),
+    }
+}
+
+/// Encode a special terminal key (Enter/Backspace/Tab) honoring the Kitty
+/// keyboard protocol when the foreground app enabled it, otherwise returning
+/// the supplied legacy bytes. This is what lets Shift+Enter reach Claude
+/// Code/Codex as a distinct "insert newline" sequence (issue #302).
+fn terminalSpecialKeySeq(
+    surface: *Surface,
+    ev: platform_input.KeyEvent,
+    key: anytype,
+    buf: []u8,
+    legacy: []const u8,
+) []const u8 {
+    const ghostty_vt = @import("ghostty-vt");
+    const opts = ghostty_vt.input.KeyEncodeOptions.fromTerminal(&surface.terminal);
+    const mods: ghostty_vt.input.KeyMods = .{
+        .shift = ev.shift,
+        .ctrl = ev.ctrl,
+        .alt = ev.alt,
+        .super = ev.super,
+    };
+    return input_shortcuts.kittyKeyEncode(opts, key, mods, buf) orelse legacy;
+}
+
 fn handleKey(ev: platform_input.KeyEvent) void {
+    applyInputEffect(dispatchKey(ev));
+}
+
+fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
     overlays.startupShortcutsDismiss();
     const key_event = logicalKeyEvent(ev);
     if (overlays.whatsNewVisible()) {
         overlays.whatsNewHandleKey(key_event);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
-        return;
+        return input_effects.repaint();
+    }
+    if (overlays.integrationPromptVisible()) {
+        overlays.integrationPromptHandleKey(key_event);
+        return input_effects.repaint();
     }
     if (overlays.windowCloseConfirmVisible()) {
-        overlays.windowCloseConfirmHandleKey(key_event);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
-        return;
+        return overlays.windowCloseConfirmHandleKey(key_event);
     }
     if (overlays.transferCancelConfirmVisible()) {
-        switch (overlays.transferCancelConfirmHandleKey(key_event)) {
+        const result = overlays.transferCancelConfirmHandleKeyEffect(key_event);
+        switch (result.action) {
             .interrupt => _ = file_explorer.cancelActiveTransfer(),
             .keep, .none => {},
         }
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
-        return;
+        return result.effect;
     }
     const action = configuredAction(ev);
     const is_close_shortcut = actionIs(action, .close_panel_or_tab);
-    if (!is_close_shortcut and !isModifierKey(ev.key_code)) g_close_shortcut_confirm_until_ms = 0;
+    if (!is_close_shortcut and !isModifierKey(ev.key_code)) close_confirm_state.clear();
+    if (overlays.btwConversationVisible()) {
+        const session = overlays.btwConversationSession() orelse return .consumed_only;
+        if (actionIs(action, .paste)) {
+            pasteFromClipboardIntoAiChat(session);
+            return input_effects.repaint();
+        }
+        if (actionIs(action, .paste_image)) {
+            if (!pasteImageIntoAiChat(session)) pasteFromClipboardIntoAiChat(session);
+            return input_effects.repaint();
+        }
+        const mod = ev.ctrl or ev.super;
+        if (mod and !ev.alt and ev.key_code == 0x41) {
+            session.selectAll();
+            return input_effects.repaint();
+        }
+        if (mod and !ev.alt and ev.key_code == 0x43) {
+            copyAiChatToClipboard(session);
+            return .consumed_only;
+        }
+        if (mod and !ev.alt and ev.key_code == 0x58) {
+            copyAiChatCutToClipboard(session);
+            return input_effects.repaint();
+        }
+        if (isAiChatKey(ev)) {
+            AppWindow.resetCursorBlink();
+            return overlays.btwConversationHandleKey(key_event, btwInputWrapCols());
+        }
+        return .consumed_only;
+    }
     if (overlays.sessionLauncherVisible()) {
         if (actionIs(action, .paste)) {
-            if (pasteClipboardIntoSessionLauncher()) {
-                AppWindow.g_force_rebuild = true;
-                AppWindow.g_cells_valid = false;
-            }
-            return;
+            return if (pasteClipboardIntoSessionLauncher()) .repaint else .none;
         }
-        overlays.sessionLauncherHandleKey(key_event);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
-        return;
+        return overlays.sessionLauncherHandleKey(key_event);
+    }
+    if (overlays.mcpServersVisible()) {
+        if (actionIs(action, .paste)) {
+            return if (pasteClipboardIntoMcpForm()) .repaint else .none;
+        }
+        return overlays.mcpServersHandleKey(key_event);
     }
     if (action) |app_action| {
-        if (handleConfiguredKeybindAction(app_action, .early)) return;
+        if (handleConfiguredKeybindAction(app_action, .early)) return .none;
     }
     if (overlays.commandPaletteVisible()) {
-        if (overlays.commandPaletteAgentHistoryVisible()) {
-            switch (ev.key_code) {
-                platform_input.key_escape => overlays.commandPaletteLeaveAgentHistory(),
-                platform_input.key_up => overlays.commandPaletteMoveAgentHistory(-1),
-                platform_input.key_down => overlays.commandPaletteMoveAgentHistory(1),
-                platform_input.key_enter => overlays.commandPaletteExecuteSelected(),
-                platform_input.key_delete => _ = overlays.commandPaletteDeleteSelectedAgentHistory(),
-                else => {},
-            }
-        } else {
-            switch (ev.key_code) {
-                platform_input.key_escape => overlays.commandPaletteClose(),
-                platform_input.key_up => overlays.commandPaletteMove(-1),
-                platform_input.key_down => overlays.commandPaletteMove(1),
-                platform_input.key_enter => overlays.commandPaletteExecuteSelected(),
-                platform_input.key_backspace => overlays.commandPaletteBackspace(),
-                platform_input.key_delete => overlays.commandPaletteClearFilter(),
-                else => {},
-            }
+        const history_visible = overlays.commandPaletteAgentHistoryVisible();
+        const palette_action = command_palette_input.keyAction(ev, history_visible);
+        applyCommandPaletteAction(palette_action, history_visible);
+        return command_palette_input.effectForAction(palette_action);
+    }
+    if (copilot_picker.isVisible()) {
+        switch (ev.key_code) {
+            platform_input.key_escape => copilot_picker.hide(),
+            platform_input.key_up => copilot_picker.move(-1),
+            platform_input.key_down => copilot_picker.move(1),
+            platform_input.key_delete => {
+                if (!copilot_picker.isNewRowSelected()) {
+                    AppWindow.deleteCopilotConversationById(copilot_picker.selectedId());
+                    AppWindow.refreshCopilotPickerRows();
+                }
+            },
+            platform_input.key_enter => {
+                if (copilot_picker.isNewRowSelected()) {
+                    AppWindow.newCopilotConversation();
+                } else {
+                    AppWindow.loadCopilotConversationById(copilot_picker.selectedId());
+                }
+                copilot_picker.hide();
+            },
+            else => {},
         }
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
-        return;
+        return input_effects.repaint();
     }
     if (jupyter_picker.isVisible()) {
         switch (ev.key_code) {
@@ -1929,21 +3323,13 @@ fn handleKey(ev: platform_input.KeyEvent) void {
             },
             else => {},
         }
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
-        return;
+        return input_effects.repaint();
     }
     if (overlays.restoreDefaultsConfirmVisible()) {
-        overlays.restoreDefaultsConfirmHandleKey(key_event);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
-        return;
+        return overlays.restoreDefaultsConfirmHandleKey(key_event);
     }
     if (overlays.settingsPageVisible()) {
-        overlays.settingsPageHandleKey(key_event);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
-        return;
+        return overlays.settingsPageHandleKey(key_event);
     }
     if (AppWindow.weixin_qr_panel.visible()) {
         switch (ev.key_code) {
@@ -1951,81 +3337,80 @@ fn handleKey(ev: platform_input.KeyEvent) void {
             platform_input.key_enter => if (AppWindow.weixin_qr_panel.status() == .expired) overlays.weixinQrPanelHandleAction(.retry),
             else => {},
         }
-        return;
+        return .none;
+    }
+    if (overlays.feishuRegPanelVisible()) {
+        switch (ev.key_code) {
+            platform_input.key_escape => overlays.feishuRegPanelHandleAction(.close),
+            platform_input.key_enter => {
+                const s = feishu_reg_panel.status();
+                if (s == .expired or s == .denied or s == .err) overlays.feishuRegPanelHandleAction(.retry);
+            },
+            else => {},
+        }
+        return .none;
     }
     // File explorer key handling (when focused and in operation mode)
-    if (file_explorer.g_focused and file_explorer.isVisibleForActiveTab()) {
-        if (handleFileExplorerKey(ev)) return;
+    if (file_explorer.isFocused() and file_explorer.isVisibleForActiveTab()) {
+        if (handleFileExplorerKey(ev)) {
+            // Navigation/edits change what the panel draws; request a frame so it
+            // updates immediately (same rationale as the wheel-scroll path).
+            return input_effects.rebuildOnly();
+        }
     }
     // When tab rename is active, handle special keys
     if (tab.g_tab_rename_active) {
         AppWindow.g_cursor_blink_visible = true;
         AppWindow.g_last_blink_time = std.time.milliTimestamp();
         tab.handleRenameKey(key_event);
-        return;
+        return .none;
     }
     if (browser_panel.urlBarFocused()) {
         handleBrowserUrlBarKey(ev);
-        return;
+        return .none;
     }
-    if (browser_panel.isVisibleForActiveTab() and !browser_panel.urlBarFocused() and !jupyter_picker.isVisible()) {
+    if (browser_panel.isVisibleForActiveTab() and !browser_panel.urlBarFocused() and !jupyter_picker.isVisible() and !copilot_picker.isVisible()) {
         if (ev.key_code == platform_input.key_escape) {
             closeBrowserPanel();
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
-            return;
+            return input_effects.repaint();
         }
     }
-    if (AppWindow.activeAiChat()) |chat| {
+    if (assistant_conversation.current(aiCopilotFocused())) |target| {
         // Accept Cmd (super, macOS) or Ctrl (Windows) for chat editing keys.
         const mod = ev.ctrl or ev.super;
         if (mod and !ev.alt and ev.key_code == 0x41) { // select all
-            chat.selectAll();
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
-            return;
+            target.session.selectAll();
+            return input_effects.repaint();
         }
         if (mod and !ev.alt and ev.key_code == 0x43) { // copy
-            copyAiChatToClipboard(chat);
-            return;
+            copyAiChatToClipboard(target.session);
+            return .none;
         }
         if (mod and !ev.alt and ev.key_code == 0x58) { // cut input
-            copyAiChatCutToClipboard(chat);
-            return;
-        }
-    }
-    // AI copilot sidebar editing-mod keys (select-all / copy / cut), mirroring
-    // the ai_chat tab block above but for the copilot session.
-    if (aiCopilotFocused()) {
-        if (AppWindow.activeCopilotSessionForInput()) |chat| {
-            const mod = ev.ctrl or ev.super;
-            if (mod and !ev.alt and ev.key_code == 0x41) { // select all
-                chat.selectAll();
-                AppWindow.g_force_rebuild = true;
-                AppWindow.g_cells_valid = false;
-                return;
-            }
-            if (mod and !ev.alt and ev.key_code == 0x43) { // copy
-                copyAiChatToClipboard(chat);
-                return;
-            }
-            if (mod and !ev.alt and ev.key_code == 0x58) { // cut input
-                copyAiChatCutToClipboard(chat);
-                return;
-            }
+            copyAiChatCutToClipboard(target.session);
+            return .none;
         }
     }
     if (action) |app_action| {
-        if (handleConfiguredKeybindAction(app_action, .late)) return;
+        if (handleConfiguredKeybindAction(app_action, .late)) return .none;
     }
 
-    if (AppWindow.activeAiChat()) |chat| {
+    if (assistant_conversation.current(aiCopilotFocused())) |target| {
+        if (target.isSidebar() and ev.key_code == platform_input.key_escape) {
+            if (target.session.requestState().inflight) {
+                target.session.stopRequest();
+            } else if (target.session.hasSelection()) {
+                target.session.clearSelection();
+            } else {
+                AppWindow.hideAiCopilot();
+            }
+            return input_effects.repaint();
+        }
         if (isAiChatKey(ev)) {
             AppWindow.resetCursorBlink();
-            chat.handleKeyWithWrapCols(key_event, aiChatInputWrapCols());
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
-            return;
+            const wrap_cols = if (target.isSidebar()) aiCopilotInputWrapCols() else aiChatInputWrapCols();
+            target.session.handleKeyWithWrapCols(key_event, wrap_cols);
+            return input_effects.repaint();
         }
     }
 
@@ -2038,55 +3423,118 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         switch (ev.key_code) {
             platform_input.key_backspace => {
                 if (search_focused) _ = AppWindow.aiHistoryBackspaceFilter();
-                return;
+                return .none;
             },
             platform_input.key_up => {
                 _ = AppWindow.aiHistoryNav(-1);
-                return;
+                return .none;
             },
             platform_input.key_down => {
                 _ = AppWindow.aiHistoryNav(1);
-                return;
+                return .none;
             },
             platform_input.key_left => {
                 _ = AppWindow.aiHistoryFocusMove(-1);
-                return;
+                return .none;
             },
             platform_input.key_right => {
                 _ = AppWindow.aiHistoryFocusMove(1);
-                return;
+                return .none;
             },
             platform_input.key_enter => {
                 _ = AppWindow.aiHistoryLoadSelectedTranscript();
-                return;
+                return .none;
             },
             platform_input.key_page_up => {
                 _ = AppWindow.aiHistoryScrollTranscript(-8);
-                return;
+                return .none;
             },
             platform_input.key_page_down => {
                 _ = AppWindow.aiHistoryScrollTranscript(8);
-                return;
+                return .none;
             },
             platform_input.key_home => {
                 _ = AppWindow.aiHistoryScrollTranscript(-(1 << 30));
-                return;
+                return .none;
             },
             platform_input.key_end => {
                 _ = AppWindow.aiHistoryScrollTranscript(1 << 30);
-                return;
+                return .none;
             },
-            0x20 => if (plain and !search_focused) {
+            0x20 => if (plain and AppWindow.aiHistorySpacePreviews()) {
                 _ = AppWindow.aiHistoryPreviewSelectedTranscript();
-                return;
+                return .none;
             },
             0x52 => if (plain and !ev.shift and !search_focused) {
                 _ = AppWindow.aiHistoryScanLocalNow();
-                return;
+                return .none;
+            },
+            0x44 => if (plain and !ev.shift and !search_focused) {
+                _ = AppWindow.aiHistoryDownloadSelectedRaw();
+                command_char_suppressors.ai_history = 'd';
+                return .none;
+            },
+            0x4D => if (plain and !ev.shift and !search_focused) {
+                _ = AppWindow.aiHistoryExportSelectedMarkdown();
+                command_char_suppressors.ai_history = 'm';
+                return .none;
+            },
+            0x41 => if (plain and !ev.shift and !search_focused) {
+                _ = AppWindow.aiHistoryAttachSelectedToCopilot();
+                command_char_suppressors.ai_history = 'a';
+                return .none;
             },
             else => {},
         }
-        return;
+        return .none;
+    }
+
+    if (AppWindow.activeMemoryCenter() != null) {
+        const plain = !ev.ctrl and !ev.alt and !ev.super;
+        switch (ev.key_code) {
+            platform_input.key_up => {
+                _ = AppWindow.memoryCenterMoveSelection(-1);
+                return .none;
+            },
+            platform_input.key_down => {
+                _ = AppWindow.memoryCenterMoveSelection(1);
+                return .none;
+            },
+            platform_input.key_left => {
+                _ = AppWindow.memoryCenterCycleSource(-1);
+                return .none;
+            },
+            platform_input.key_right, platform_input.key_tab => {
+                _ = AppWindow.memoryCenterCycleSource(1);
+                return .none;
+            },
+            platform_input.key_page_up => {
+                _ = AppWindow.memoryCenterScrollDetail(-8);
+                return .none;
+            },
+            platform_input.key_page_down => {
+                _ = AppWindow.memoryCenterScrollDetail(8);
+                return .none;
+            },
+            platform_input.key_home => {
+                _ = AppWindow.memoryCenterScrollDetail(-(1 << 30));
+                return .none;
+            },
+            platform_input.key_end => {
+                _ = AppWindow.memoryCenterScrollDetail(1 << 30);
+                return .none;
+            },
+            0x52 => if (plain and !ev.shift) {
+                _ = AppWindow.memoryCenterReload();
+                return .none;
+            },
+            0x44 => if (plain and !ev.shift) {
+                _ = AppWindow.runMemoryDigestFromCenter();
+                return .none;
+            },
+            else => {},
+        }
+        return .none;
     }
 
     if (AppWindow.activePortForwarding() != null) {
@@ -2101,7 +3549,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 } else if (!overlay_active) {
                     _ = AppWindow.portForwardingMove(-1);
                 }
-                return;
+                return .none;
             },
             platform_input.key_down => {
                 if (form_active) {
@@ -2109,31 +3557,31 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 } else if (!overlay_active) {
                     _ = AppWindow.portForwardingMove(1);
                 }
-                return;
+                return .none;
             },
             platform_input.key_left => {
                 if (form_active) _ = AppWindow.portForwardingFormAdjust(-1);
-                return;
+                return .none;
             },
             platform_input.key_right => {
                 if (form_active) _ = AppWindow.portForwardingFormAdjust(1);
-                return;
+                return .none;
             },
             platform_input.key_tab => {
                 if (form_active) _ = AppWindow.portForwardingFormMove(1);
-                return;
+                return .none;
             },
             platform_input.key_enter => {
                 if (overlay_active) _ = AppWindow.portForwardingConfirmOrApply();
-                return;
+                return .none;
             },
             platform_input.key_escape => {
                 _ = AppWindow.portForwardingCancelOrClose();
-                return;
+                return .none;
             },
             platform_input.key_backspace => {
                 if (form_active) _ = AppWindow.portForwardingBackspace();
-                return;
+                return .none;
             },
             platform_input.key_space => if (plain and !ev.shift) {
                 if (form_active) {
@@ -2141,154 +3589,169 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 } else if (!overlay_active) {
                     _ = AppWindow.portForwardingToggleSelected();
                 }
-                return;
+                return .none;
             },
             0x4E => if (plain and !ev.shift) {
                 if (!overlay_active and AppWindow.portForwardingOpenNew()) {
-                    g_port_forwarding_suppress_command_char = 'n';
+                    command_char_suppressors.port_forwarding = 'n';
                 }
-                return;
+                return .none;
             },
             0x45 => if (plain and !ev.shift) {
                 if (!overlay_active and AppWindow.portForwardingOpenEdit()) {
-                    g_port_forwarding_suppress_command_char = 'e';
+                    command_char_suppressors.port_forwarding = 'e';
                 }
-                return;
+                return .none;
             },
             0x44 => if (plain and !ev.shift) {
                 if (!overlay_active) _ = AppWindow.portForwardingOpenDeleteConfirm();
-                return;
+                return .none;
             },
             0x52 => if (plain and !ev.shift) {
                 if (!overlay_active) _ = AppWindow.portForwardingRestartSelected();
-                return;
+                return .none;
             },
             0x41 => if (plain and !ev.shift) {
                 if (!overlay_active) _ = AppWindow.portForwardingToggleAutoStart();
-                return;
+                return .none;
             },
             else => {},
         }
-        return;
+        return .none;
     }
 
     // Skill Center: ↑/↓ move, space preview/toggle, ⏎ confirm, esc cancel,
-    // d deploy, i import, g get-from-GitHub, r rescan. The URL-input overlay
-    // captures text; the checklist captures space + 'a'.
+    // d deploy, i import, t import tool, e toggle, g get-from-GitHub, r rescan.
+    // The URL-input overlay captures text; the checklist captures space + 'a'.
     if (AppWindow.activeSkillCenter() != null) {
-        // SKILL.md preview overlay captures all keys: esc/space/⏎ close,
-        // arrows/PgUp/PgDn/Home/End scroll.
-        if (AppWindow.skillCenterTextPreviewActive()) {
-            switch (ev.key_code) {
-                platform_input.key_escape, platform_input.key_space, platform_input.key_enter => _ = AppWindow.skillCenterPreviewClose(),
-                platform_input.key_up => _ = AppWindow.skillCenterPreviewScroll(-1),
-                platform_input.key_down => _ = AppWindow.skillCenterPreviewScroll(1),
-                platform_input.key_page_up => _ = AppWindow.skillCenterPreviewScroll(-12),
-                platform_input.key_page_down => _ = AppWindow.skillCenterPreviewScroll(12),
-                platform_input.key_home => _ = AppWindow.skillCenterPreviewScroll(-1_000_000),
-                platform_input.key_end => _ = AppWindow.skillCenterPreviewScroll(1_000_000),
-                else => {},
-            }
-            return;
+        switch (AppWindow.skillCenterPreviewKind()) {
+            .text => {
+                switch (ev.key_code) {
+                    platform_input.key_escape, platform_input.key_space, platform_input.key_enter => if (AppWindow.skillCenterPreviewClose()) markSkillCenterInputDirty(),
+                    platform_input.key_up => if (AppWindow.skillCenterPreviewScroll(-1)) markSkillCenterInputDirty(),
+                    platform_input.key_down => if (AppWindow.skillCenterPreviewScroll(1)) markSkillCenterInputDirty(),
+                    platform_input.key_page_up => if (AppWindow.skillCenterPreviewScroll(-12)) markSkillCenterInputDirty(),
+                    platform_input.key_page_down => if (AppWindow.skillCenterPreviewScroll(12)) markSkillCenterInputDirty(),
+                    platform_input.key_home => if (AppWindow.skillCenterPreviewScroll(-1_000_000)) markSkillCenterInputDirty(),
+                    platform_input.key_end => if (AppWindow.skillCenterPreviewScroll(1_000_000)) markSkillCenterInputDirty(),
+                    else => {},
+                }
+                return .none;
+            },
+            .tool_import_confirm => {
+                switch (ev.key_code) {
+                    platform_input.key_enter => if (AppWindow.skillCenterOverlaySelect()) markSkillCenterInputDirty(),
+                    platform_input.key_escape => if (AppWindow.skillCenterOverlayCancel()) markSkillCenterInputDirty(),
+                    platform_input.key_up => if (AppWindow.skillCenterPreviewScroll(-1)) markSkillCenterInputDirty(),
+                    platform_input.key_down => if (AppWindow.skillCenterPreviewScroll(1)) markSkillCenterInputDirty(),
+                    platform_input.key_page_up => if (AppWindow.skillCenterPreviewScroll(-12)) markSkillCenterInputDirty(),
+                    platform_input.key_page_down => if (AppWindow.skillCenterPreviewScroll(12)) markSkillCenterInputDirty(),
+                    platform_input.key_home => if (AppWindow.skillCenterPreviewScroll(-1_000_000)) markSkillCenterInputDirty(),
+                    platform_input.key_end => if (AppWindow.skillCenterPreviewScroll(1_000_000)) markSkillCenterInputDirty(),
+                    else => {},
+                }
+                return .none;
+            },
+            .tool_import => {
+                switch (ev.key_code) {
+                    platform_input.key_enter => if (AppWindow.skillCenterOverlaySelect()) markSkillCenterInputDirty(),
+                    platform_input.key_escape => if (AppWindow.skillCenterOverlayCancel()) markSkillCenterInputDirty(),
+                    platform_input.key_up => if (AppWindow.skillCenterPreviewScroll(-1)) markSkillCenterInputDirty(),
+                    platform_input.key_down => if (AppWindow.skillCenterPreviewScroll(1)) markSkillCenterInputDirty(),
+                    platform_input.key_page_up => if (AppWindow.skillCenterPreviewScroll(-12)) markSkillCenterInputDirty(),
+                    platform_input.key_page_down => if (AppWindow.skillCenterPreviewScroll(12)) markSkillCenterInputDirty(),
+                    platform_input.key_home => if (AppWindow.skillCenterPreviewScroll(-1_000_000)) markSkillCenterInputDirty(),
+                    platform_input.key_end => if (AppWindow.skillCenterPreviewScroll(1_000_000)) markSkillCenterInputDirty(),
+                    else => {},
+                }
+                return .none;
+            },
+            .none => {},
         }
         const plain = !ev.ctrl and !ev.alt and !ev.super;
         const text_capture = AppWindow.skillCenterUrlInputActive();
         const picking = AppWindow.skillCenterPickActive();
+        const overlay_active = AppWindow.skillCenterOverlayActive();
         // Ctrl/Cmd+V paste into the URL field.
         if (text_capture and (ev.ctrl or ev.super) and ev.key_code == 0x56) { // 'V'
-            _ = AppWindow.skillCenterUrlPaste();
-            return;
+            if (AppWindow.skillCenterUrlPaste()) markSkillCenterInputDirty();
+            return .none;
         }
         switch (ev.key_code) {
             platform_input.key_up => {
-                _ = AppWindow.skillCenterMove(-1);
-                return;
+                if (AppWindow.skillCenterMove(-1)) markSkillCenterInputDirty();
+                return .none;
             },
             platform_input.key_down => {
-                _ = AppWindow.skillCenterMove(1);
-                return;
+                if (AppWindow.skillCenterMove(1)) markSkillCenterInputDirty();
+                return .none;
+            },
+            // ponytail: fixed page of 10 rows; wire real visible-capacity if it matters.
+            platform_input.key_page_up => {
+                if (AppWindow.skillCenterMove(-10)) markSkillCenterInputDirty();
+                return .none;
+            },
+            platform_input.key_page_down => {
+                if (AppWindow.skillCenterMove(10)) markSkillCenterInputDirty();
+                return .none;
             },
             platform_input.key_enter => {
-                if (AppWindow.skillCenterOverlayActive()) {
-                    _ = AppWindow.skillCenterOverlaySelect();
+                if (overlay_active) {
+                    if (AppWindow.skillCenterOverlaySelect()) markSkillCenterInputDirty();
                 } else {
-                    _ = AppWindow.skillCenterDeploy();
+                    if (AppWindow.skillCenterDeploy()) markSkillCenterInputDirty();
                 }
-                return;
+                return .none;
             },
             platform_input.key_escape => {
-                _ = AppWindow.skillCenterOverlayCancel();
-                return;
+                if (AppWindow.skillCenterOverlayCancel()) markSkillCenterInputDirty();
+                return .none;
             },
             platform_input.key_backspace => {
                 if (text_capture) {
-                    _ = AppWindow.skillCenterUrlBackspace();
-                    return;
+                    if (AppWindow.skillCenterUrlBackspace()) markSkillCenterInputDirty();
+                    return .none;
                 }
             },
             0x52 => if (plain and !ev.shift and !text_capture) { // 'R'
-                _ = AppWindow.skillCenterRescan();
-                return;
+                if (AppWindow.skillCenterRescan()) markSkillCenterInputDirty();
+                return .none;
             },
-            0x44 => if (plain and !ev.shift and !text_capture and !picking) { // 'D'
-                _ = AppWindow.skillCenterDeploy();
-                return;
+            0x44 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'D'
+                if (AppWindow.skillCenterDeploy()) markSkillCenterInputDirty();
+                return .none;
             },
-            0x49 => if (plain and !ev.shift and !text_capture and !picking) { // 'I'
-                _ = AppWindow.skillCenterImport();
-                return;
+            0x49 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'I'
+                if (AppWindow.skillCenterImport()) markSkillCenterInputDirty();
+                return .none;
+            },
+            0x54 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'T'
+                if (AppWindow.skillCenterImportTool()) markSkillCenterInputDirty();
+                return .none;
+            },
+            0x45 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'E'
+                if (AppWindow.skillCenterToggleToolEnabled()) markSkillCenterInputDirty();
+                return .none;
             },
             0x47 => if (plain and !ev.shift and !text_capture and !picking) { // 'G'
-                _ = AppWindow.skillCenterOpenUrlInput();
+                if (AppWindow.skillCenterOpenUrlInput()) markSkillCenterInputDirty();
                 // SDL text-input mode also fires a 'g' CHAR event after this
                 // key-down; suppress it so it doesn't land in the now-active
                 // URL field. (Only 'G' opens a text field, so only it suppresses.)
-                g_skill_center_suppress_command_char = 'g';
-                return;
+                command_char_suppressors.skill_center = 'g';
+                return .none;
             },
             0x41 => if (plain and !ev.shift and picking) { // 'A' select-all
-                _ = AppWindow.skillCenterPickSelectAll();
-                return;
+                if (AppWindow.skillCenterPickSelectAll()) markSkillCenterInputDirty();
+                return .none;
             },
             platform_input.key_space => if (plain and !ev.shift and !text_capture) {
-                _ = AppWindow.skillCenterSpacePreview(); // toggles when picking
-                return;
+                if (AppWindow.skillCenterSpacePreview()) markSkillCenterInputDirty(); // toggles when picking
+                return .none;
             },
             else => {},
         }
-        return;
-    }
-
-    // AI copilot sidebar (terminal tabs): route editing/navigation keys to the
-    // copilot composer. Esc is intercepted specially so it never reaches the
-    // terminal — it stops an in-flight request, or hides the panel when idle.
-    if (aiCopilotFocused()) {
-        if (AppWindow.activeCopilotSessionForInput()) |chat| {
-            if (ev.key_code == platform_input.key_escape) {
-                // Progressive Esc: stop an in-flight request, else clear an
-                // active selection, else hide the panel. Matches the AI-chat
-                // tab's stop/clear behavior; closing is only the final step,
-                // so Esc never abruptly dismisses a panel that still has a
-                // selection to clear.
-                if (chat.requestState().inflight) {
-                    chat.stopRequest();
-                } else if (chat.hasSelection()) {
-                    chat.clearSelection();
-                } else {
-                    AppWindow.hideAiCopilot();
-                }
-                AppWindow.g_force_rebuild = true;
-                AppWindow.g_cells_valid = false;
-                return;
-            }
-            if (isAiChatKey(ev)) {
-                AppWindow.resetCursorBlink();
-                chat.handleKeyWithWrapCols(key_event, aiCopilotInputWrapCols());
-                AppWindow.g_force_rebuild = true;
-                AppWindow.g_cells_valid = false;
-                return;
-            }
-        }
+        return .none;
     }
 
     // A focused preview leaf consumes plain navigation keys for scroll/pan.
@@ -2323,46 +3786,54 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 },
                 platform_input.key_home => p.scrollBy(-1_000_000),
                 platform_input.key_end => p.scrollBy(1_000_000),
-                platform_input.key_escape => {
-                    AppWindow.closeFocusedSplit();
-                    return;
-                },
                 else => consumed = false,
             }
             if (consumed) {
-                AppWindow.g_force_rebuild = true;
-                AppWindow.g_cells_valid = false;
-                return;
-            }
-        }
-    }
-
-    // Ctrl+A with a focused text preview selects all text.
-    if (AppWindow.focusedPreviewPane()) |p| {
-        if (ev.ctrl and !ev.shift and !ev.alt and !ev.super and ev.key_code == 0x41) {
-            if (!p.kind.isRaster()) {
-                p.selectAll();
-                AppWindow.g_force_rebuild = true;
-                AppWindow.g_cells_valid = false;
-                return;
+                return input_effects.repaint();
             }
         }
     }
 
     // Don't send input to PTY if active tab isn't the terminal
-    if (!AppWindow.isActiveTabTerminal()) return;
+    if (!AppWindow.isActiveTabTerminal()) return .none;
 
-    const surface = AppWindow.activeSurface() orelse return;
+    const surface = AppWindow.activeSurface() orelse return .none;
+
+    // A cleanly-exited panel (SSH closed, shell `exit`) stays open showing
+    // "Press Enter to reconnect". Plain Enter re-runs the panel's original
+    // command in place. Other keys fall through, so e.g. Shift+PageUp still
+    // scrolls the scrollback before reconnecting.
+    if (surface.isExited() and
+        ev.key_code == platform_input.key_enter and
+        !ev.ctrl and !ev.alt and !ev.super and !ev.shift)
+    {
+        surface.respawn();
+        // Initial connect arms SSH password auto-injection; respawn only re-runs
+        // the command, so re-arm it here or the reconnect stalls at the password
+        // prompt. The surface keeps its ssh_connection (with the saved password)
+        // across respawn. Key-auth profiles report usesPasswordAuth()=false and
+        // are skipped.
+        if (surface.ssh_connection) |*conn| {
+            if (conn.usesPasswordAuth()) {
+                overlays.scheduleSshPasswordForSurface(surface);
+            }
+        }
+        return input_effects.repaint();
+    }
 
     // Track whether this keypress actually sends data to the PTY.
     // Like Ghostty, we only scroll-to-bottom when input is actually generated,
     // not for modifier-only keys or key combos that don't produce PTY output.
     var wrote_to_pty = false;
 
+    // Scratch buffer for Kitty keyboard protocol key encoding. Only used by the
+    // Enter/Backspace/Tab arms below; harmless otherwise.
+    var kitty_buf: [128]u8 = undefined;
+
     const seq: ?[]const u8 = switch (ev.key_code) {
-        platform_input.key_enter => "\r",
-        platform_input.key_backspace => "\x7f",
-        platform_input.key_tab => if (ev.shift) "\x1b[Z" else "\t",
+        platform_input.key_enter => terminalSpecialKeySeq(surface, ev, .enter, &kitty_buf, "\r"),
+        platform_input.key_backspace => terminalSpecialKeySeq(surface, ev, .backspace, &kitty_buf, "\x7f"),
+        platform_input.key_tab => terminalSpecialKeySeq(surface, ev, .tab, &kitty_buf, if (ev.shift) "\x1b[Z" else "\t"),
         platform_input.key_escape => "\x1b",
         platform_input.key_up, platform_input.key_down, platform_input.key_right, platform_input.key_left => input_shortcuts.terminalArrowSequence(key_event, surface.terminal.modes.get(.cursor_keys)),
         platform_input.key_home => "\x1b[H",
@@ -2418,6 +3889,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         surface.terminal.scrollViewport(.bottom);
         surface.render_state.mutex.unlock();
     }
+    return .none;
 }
 
 fn isModifierKey(key_code: platform_input.KeyCode) bool {
@@ -2453,7 +3925,17 @@ fn aiChatInputWrapCols() usize {
     const size = clientSize(win);
     const ww: f32 = @floatFromInt(size.width);
     const panel_w = @max(1.0, ww - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidth());
-    return AppWindow.ai_chat_renderer.inputWrapColumns(panel_w);
+    return AppWindow.assistant_conversation_renderer.inputWrapColumns(panel_w);
+}
+
+fn btwInputWrapCols() usize {
+    const win = AppWindow.g_window orelse return std.math.maxInt(usize);
+    const size = clientSize(win);
+    const layout = overlays.btwConversationLayout(
+        @floatFromInt(size.width),
+        @floatCast(titlebarHeight()),
+    );
+    return AppWindow.assistant_conversation_renderer.inputWrapColumns(layout.chat_w);
 }
 
 /// Wrap columns for the AI copilot sidebar's composer. Mirrors
@@ -2463,7 +3945,7 @@ fn aiCopilotInputWrapCols() usize {
     const win = AppWindow.g_window orelse return std.math.maxInt(usize);
     const size = clientSize(win);
     const panel_w = AppWindow.aiCopilotWidth(size.width);
-    return AppWindow.ai_chat_renderer.inputWrapColumns(panel_w);
+    return AppWindow.assistant_conversation_renderer.inputWrapColumns(panel_w);
 }
 
 fn handleBrowserUrlBarKey(ev: platform_input.KeyEvent) void {
@@ -2507,8 +3989,11 @@ fn sidebarLayout() hit_test.SidebarLayout {
         .visible = tab.g_sidebar_visible,
         .titlebar_h = titlebarHeight(),
         .width = @floatCast(titlebar.sidebarWidth()),
+        .header_h = @floatCast(titlebar.sidebarHeaderHeight()),
         .row_h = @floatCast(titlebar.sidebarRowHeight()),
         .tab_count = tab.g_tab_count,
+        .resize_hit_width = @floatCast(titlebar.SIDEBAR_RESIZE_HIT_WIDTH),
+        .close_btn_w = @floatCast(tab.TAB_CLOSE_BTN_W),
     };
 }
 
@@ -2571,11 +4056,30 @@ fn hitTestSidebarPlusButton(xpos: f64, ypos: f64) bool {
     return hit_test.sidebarPlusButton(sidebarLayout(), xpos, ypos);
 }
 
-fn shouldStartSidebarTabRename(xpos: f64, ypos: f64, tab_idx: usize) bool {
-    if (tab_idx >= tab.g_tab_count) return false;
-    const layout = sidebarLayout();
-    if (hit_test.sidebarPlusButton(layout, xpos, ypos)) return false;
+fn hitTestSidebarTabCloseButton(xpos: f64, ypos: f64, tab_idx: usize) bool {
+    return hit_test.sidebarTabCloseButton(sidebarLayout(), xpos, ypos, tab_idx);
+}
+
+fn handleSidebarTabRenameGesture(xpos: f64, ypos: f64) bool {
+    if (hitTestSidebarTab(xpos, ypos) == null) return false;
+    if (hit_test.sidebarTabRenameTarget(sidebarLayout(), xpos, ypos)) |tab_idx| {
+        tab.startTabRename(tab_idx);
+        requestInputRepaint();
+    }
     return true;
+}
+
+fn hitTestSidebarResizeHandle(xpos: f64, ypos: f64) bool {
+    return hit_test.sidebarResizeHandle(sidebarLayout(), xpos, ypos);
+}
+
+fn applySidebarWidthFromMouse(xpos: f64) void {
+    const win = AppWindow.g_window orelse return;
+    const size = clientSize(win);
+    if (!titlebar.setSidebarWidth(@floatCast(xpos), @floatFromInt(size.width))) return;
+    syncGridFromWindow(win);
+    syncSidebarWidthToBackend(win);
+    requestInputRepaint();
 }
 
 fn hitTestFileExplorer(xpos: f64, ypos: f64) bool {
@@ -2666,18 +4170,17 @@ fn toggleBrowserDisplayMode() void {
     if (AppWindow.g_window) |win| {
         syncPanelGridFromWindow(win);
     }
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 fn aiCopilotHeaderLayout() ?hit_test.PanelHeaderLayout {
     if (!AppWindow.aiCopilotVisible()) return null;
     const win = AppWindow.g_window orelse return null;
-    const fb = window_backend.framebufferSize(win);
+    const metrics = windowMetrics(win);
     const bounds = ai_sidebar.boundsForWindow(
-        @intCast(fb.width),
-        @intCast(fb.height),
-        @floatCast(titlebarHeight()),
+        @intCast(metrics.framebuffer_width),
+        @intCast(metrics.framebuffer_height),
+        @floatCast(metrics.titlebar_h),
         AppWindow.leftPanelsWidth(),
         0,
     );
@@ -2686,7 +4189,7 @@ fn aiCopilotHeaderLayout() ?hit_test.PanelHeaderLayout {
         .left = @floatFromInt(bounds.left),
         .right = @floatFromInt(bounds.right),
         .top = @floatFromInt(bounds.top),
-        .height = @floatCast(AppWindow.ai_chat_renderer.HEADER_H),
+        .height = @floatCast(AppWindow.assistant_conversation_renderer.HEADER_H),
     };
 }
 
@@ -2711,8 +4214,7 @@ fn applyBrowserWidthFromMouse(xpos: f64) void {
     const available_width: f32 = @as(f32, @floatFromInt(size.width)) - AppWindow.leftPanelsWidth() - AppWindow.browserPanelRightOffset();
     if (!browser_panel.setWidth(@floatCast(new_width), available_width)) return;
     syncGridFromWindow(win);
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 // AI copilot panel resize grip. The copilot is right-docked (right_offset 0)
@@ -2723,11 +4225,11 @@ fn hitTestAiCopilotResizeHandle(xpos: f64, ypos: f64) bool {
     if (!AppWindow.aiCopilotVisible()) return false;
     if (ypos < titlebarHeight()) return false;
     const win = AppWindow.g_window orelse return false;
-    const fb = window_backend.framebufferSize(win);
+    const metrics = windowMetrics(win);
     const bounds = ai_sidebar.boundsForWindow(
-        @intCast(fb.width),
-        @intCast(fb.height),
-        @floatCast(titlebarHeight()),
+        @intCast(metrics.framebuffer_width),
+        @intCast(metrics.framebuffer_height),
+        @floatCast(metrics.titlebar_h),
         AppWindow.leftPanelsWidth(),
         0,
     );
@@ -2750,16 +4252,16 @@ fn hitTestCopilotEdgeHandle(xpos: f64, ypos: f64) bool {
     )) return false;
     if (ypos < titlebarHeight()) return false;
     const win = AppWindow.g_window orelse return false;
-    const fb = window_backend.framebufferSize(win);
+    const metrics = windowMetrics(win);
     const rect = ai_sidebar.closedHandleRect(
-        @floatFromInt(fb.width),
-        @floatFromInt(fb.height),
-        @floatCast(titlebarHeight()),
+        @floatFromInt(metrics.framebuffer_width),
+        @floatFromInt(metrics.framebuffer_height),
+        @floatCast(metrics.titlebar_h),
         AppWindow.leftPanelsWidth(),
     );
     if (!rect.eligible) return false;
     const hit_w: f64 = @max(@as(f64, @floatCast(rect.w)), 12);
-    const right: f64 = @floatFromInt(fb.width);
+    const right: f64 = @floatFromInt(metrics.framebuffer_width);
     const top: f64 = @floatCast(rect.y);
     const bottom: f64 = @floatCast(rect.y + rect.h);
     return xpos >= right - hit_w and ypos >= top and ypos <= bottom;
@@ -2767,16 +4269,15 @@ fn hitTestCopilotEdgeHandle(xpos: f64, ypos: f64) bool {
 
 fn applyAiCopilotWidthFromMouse(xpos: f64) void {
     const win = AppWindow.g_window orelse return;
-    const fb = window_backend.framebufferSize(win);
+    const metrics = windowMetrics(win);
     // Right-docked at the far right edge (right_offset 0): width grows as the
     // mouse moves left, same as the browser's right-edge math.
-    const right_edge = @as(f64, @floatFromInt(fb.width));
+    const right_edge = @as(f64, @floatFromInt(metrics.framebuffer_width));
     const new_width = right_edge - xpos;
-    const available_width: f32 = @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth();
+    const available_width: f32 = @as(f32, @floatFromInt(metrics.framebuffer_width)) - AppWindow.leftPanelsWidth();
     if (!ai_sidebar.setWidth(@floatCast(new_width), available_width)) return;
     syncGridFromWindow(win);
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 fn hitTestFileExplorerResizeHandle(xpos: f64, ypos: f64) bool {
@@ -2795,12 +4296,11 @@ fn applyExplorerWidthFromMouse(xpos: f64) void {
     const new_width = xpos - panel_x;
     if (!file_explorer.setWidth(@floatCast(new_width), @floatFromInt(size.width))) return;
     syncGridFromWindow(win);
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
-    if (file_explorer.g_panel_mode == .agent_history) {
+    if (file_explorer.isAgentHistoryPanel()) {
         return handleAgentHistoryKey(ev);
     }
 
@@ -2811,7 +4311,7 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
     const key_down = platform_input.key_down;
 
     // In input mode (rename/new file/new dir)
-    if (file_explorer.g_op_mode != .none) {
+    if (file_explorer.hasActiveOp()) {
         switch (ev.key_code) {
             key_escape => {
                 file_explorer.cancelOp();
@@ -2832,58 +4332,21 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
     // Normal navigation mode
     switch (ev.key_code) {
         key_escape => {
-            file_explorer.g_focused = false;
+            file_explorer.blur();
             return true;
         },
-        key_up => {
-            file_explorer.moveSelection(-1);
-            return true;
-        },
-        key_down => {
-            file_explorer.moveSelection(1);
-            return true;
-        },
-        key_enter => {
-            // Enter on directory = toggle expand
-            if (file_explorer.g_selected) |sel| {
-                if (sel < file_explorer.g_entry_count and file_explorer.g_entries[sel].is_dir) {
-                    file_explorer.toggleExpand(sel);
-                }
+        key_up, key_down, key_enter => {
+            // Navigation keys route through a domain-owned action so this branch
+            // asks file_explorer to perform the intent instead of calling its
+            // internals directly. fromNavigationKey owns exactly these keys.
+            if (file_explorer_keymap.fromNavigationKey(ev.key_code)) |action| {
+                file_explorer.handleAction(action);
             }
             return true;
-        },
-        0x52 => { // 'R': bare = rename, Ctrl/Cmd+R = refresh
-            if (!ev.ctrl and !ev.alt and !ev.super) {
-                file_explorer.startRename();
-                return true;
-            }
-            if ((ev.ctrl or ev.super) and !ev.alt and !ev.shift) {
-                file_explorer.refresh();
-                return true;
-            }
-            return false;
-        },
-        0x4E => { // 'N' key = new file, Shift+N = new dir
-            if (!ev.ctrl and !ev.alt and !ev.super) {
-                if (ev.shift) {
-                    file_explorer.startNewDir();
-                } else {
-                    file_explorer.startNewFile();
-                }
-                return true;
-            }
-            return false;
-        },
-        0x44 => { // 'D' key = delete
-            if (!ev.ctrl and !ev.alt and !ev.shift and !ev.super) {
-                file_explorer.startDelete();
-                return true;
-            }
-            return false;
         },
         0x53 => { // 'S' key: Ctrl/Cmd+S = download selected file
             if ((ev.ctrl or ev.super) and !ev.alt and !ev.shift) {
-                if (file_explorer.g_mode == .remote) {
+                if (file_explorer.isRemoteMode()) {
                     // Download to user's Downloads folder
                     var dl_buf: [260]u8 = undefined;
                     const dl_path = getDownloadsFolder(&dl_buf);
@@ -2896,7 +4359,7 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
             return false;
         },
         0x55 => { // 'U' = upload file; Shift+U = upload folder
-            if (file_explorer.g_mode == .remote and !ev.ctrl and !ev.alt and !ev.super) {
+            if (file_explorer.isRemoteMode() and !ev.ctrl and !ev.alt and !ev.super) {
                 if (ev.shift) {
                     openFolderDialogAndUpload();
                 } else {
@@ -2906,18 +4369,20 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
             }
             return false;
         },
-        platform_input.key_f5 => {
-            file_explorer.refresh();
-            return true;
+        else => {
+            if (file_explorer_keymap.fromOperationKey(ev)) |action| {
+                file_explorer.handleAction(action);
+                return true;
+            }
+            return false;
         },
-        else => return false,
     }
 }
 
 fn handleAgentHistoryKey(ev: platform_input.KeyEvent) bool {
     switch (ev.key_code) {
         platform_input.key_escape => {
-            file_explorer.g_focused = false;
+            file_explorer.blur();
             return true;
         },
         platform_input.key_up => {
@@ -2990,7 +4455,7 @@ fn openFolderDialogAndUpload() void {
 }
 
 fn handleFileExplorerPress(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: bool, super: bool) void {
-    file_explorer.g_focused = true;
+    file_explorer.focus();
 
     // Check resize handle first
     if (hitTestFileExplorerResizeHandle(xpos, ypos)) {
@@ -3000,13 +4465,13 @@ fn handleFileExplorerPress(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: b
         return;
     }
 
-    if (file_explorer.g_panel_mode == .agent_history) {
+    if (file_explorer.isAgentHistoryPanel()) {
         handleAgentHistoryPress(xpos, ypos);
         return;
     }
 
     // Cancel any active op on click elsewhere in the panel
-    if (file_explorer.g_op_mode != .none) {
+    if (file_explorer.hasActiveOp()) {
         file_explorer.cancelOp();
     }
 
@@ -3020,23 +4485,17 @@ fn handleFileExplorerPress(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: b
     const list_top = titlebar_h + header_h;
     if (ypos < list_top) return;
 
-    const row_h: f64 = @floatCast(file_explorer.rowHeight());
-    const scroll: f64 = @floatCast(file_explorer.g_scroll_offset);
-    const row_idx: usize = @intFromFloat((ypos - list_top + scroll) / row_h);
-
-    if (row_idx < file_explorer.g_entry_count) {
+    if (file_explorer.rowIndexAtListY(ypos - list_top)) |row_idx| {
         const click_count = nextLeftClickCount(xpos, ypos);
-        file_explorer.g_selected = row_idx;
-        if (!file_explorer.g_entries[row_idx].is_dir and ((primaryOpenMod(ctrl, super) and !shift and !alt) or click_count == 2)) {
-            if (openFileExplorerPreview(row_idx)) {
-                AppWindow.g_force_rebuild = true;
+        const entry = file_explorer.selectEntry(row_idx) orelse return;
+        if (!entry.is_dir and ((primaryOpenMod(ctrl, super) and !shift and !alt) or click_count == 2)) {
+            if (openFileExplorerPreview(entry)) {
+                requestInputRebuild();
                 return;
             }
         }
-        if (file_explorer.g_entries[row_idx].is_dir) {
-            file_explorer.toggleExpand(row_idx);
-        }
-        AppWindow.g_force_rebuild = true;
+        _ = file_explorer.toggleDirectoryAt(row_idx);
+        requestInputRebuild();
     }
 }
 
@@ -3061,22 +4520,21 @@ fn handleAgentHistoryPress(xpos: f64, ypos: f64) void {
         activateSelectedAgentHistoryRow();
         return;
     }
-    AppWindow.g_force_rebuild = true;
+    requestInputRebuild();
 }
 
 fn activateSelectedAgentHistoryRow() void {
     const session_id = file_explorer.selectedHistorySessionId() orelse return;
-    file_explorer.g_focused = false;
+    file_explorer.blur();
     if (!AppWindow.reopenAiChatTabFromHistorySessionId(session_id)) return;
-    file_explorer.g_focused = false;
+    file_explorer.blur();
 }
 
 fn deleteSelectedAgentHistoryRow() void {
     const session_id = file_explorer.selectedHistorySessionId() orelse return;
     if (!AppWindow.deleteAiChatHistorySessionId(session_id)) return;
     AppWindow.syncFileExplorerAgentHistoryRows();
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 fn hitTestConfigButton(xpos: f64, ypos: f64) bool {
@@ -3129,13 +4587,6 @@ fn handleTopbarPress(xpos: f64) void {
         return;
     }
 
-    const folder_x = toggle_end;
-    const folder_end: f64 = folder_x + @as(f64, titlebar.TITLEBAR_FOLDER_W);
-    if (xpos >= folder_x and xpos < folder_end) {
-        toggleFileExplorer();
-        return;
-    }
-
     if (hitTestCopilotButton(xpos, titlebarHeight() / 2)) {
         AppWindow.toggleAiCopilot();
         return;
@@ -3155,11 +4606,16 @@ fn handleSidebarPress(xpos: f64, ypos: f64) void {
     if (tab.g_tab_rename_active) tab.commitTabRename();
 
     if (hitTestSidebarPlusButton(xpos, ypos)) {
-        _ = AppWindow.spawnConfiguredLocalShellTab();
+        overlays.sessionLauncherOpen();
         return;
     }
 
     if (hitTestSidebarTab(xpos, ypos)) |tab_idx| {
+        if (tab.g_tab_count > 1 and tab.g_tab_close_opacity[tab_idx] > 0.1 and hitTestSidebarTabCloseButton(xpos, ypos, tab_idx)) {
+            resetSidebarTabDragState();
+            tab.g_tab_close_pressed = tab_idx;
+            return;
+        }
         beginSidebarTabPotentialDrag(tab_idx, xpos, ypos);
         AppWindow.switchTab(tab_idx);
     }
@@ -3213,19 +4669,18 @@ const TerminalTokenGrid = struct {
 };
 
 fn markSelectionChanged() void {
-    g_selection_changed_for_copy = true;
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    g_runtime_state.selection_changed_for_copy = true;
+    requestInputRepaint();
 }
 
 fn nextLeftClickCount(xpos: f64, ypos: f64) u8 {
     const now = std.time.milliTimestamp();
     const max_distance: f64 = @floatCast(@max(font.cell_width, font.cell_height));
-    return g_left_click_tracker.register(xpos, ypos, now, max_distance, MULTI_CLICK_INTERVAL_MS);
+    return g_runtime_state.left_click_tracker.register(xpos, ypos, now, max_distance, MULTI_CLICK_INTERVAL_MS);
 }
 
 fn resetLeftClickCount() void {
-    g_left_click_tracker.reset();
+    g_runtime_state.left_click_tracker.reset();
 }
 
 fn readViewportRowLocked(surface: *Surface, row: usize, buf: *[MAX_SELECTION_COLS]u21) []const u21 {
@@ -3369,7 +4824,20 @@ fn handleTerminalSelectionPress(ev: platform_input.MouseButtonEvent, xpos: f64, 
     }
 
     const cell_pos = mouseToSurfaceCell(clicked_surface, xpos, ypos);
-    switch (terminalPathClickAction(clicked_surface.launch_kind, clicked_surface.ssh_connection != null, primaryOpenMod(ev.ctrl, ev.super), ev.shift, ev.alt)) {
+    const open_mod = primaryOpenMod(ev.ctrl, ev.super);
+    const click_action = terminalPathClickAction(clicked_surface.launch_kind, open_mod, ev.shift, ev.alt);
+    // Only instrument the SSH download gesture (Ctrl/Cmd+Shift) so the log is not
+    // flooded by every terminal click. This shows whether a download gesture
+    // routed to `download_ssh_file` and whether the surface had SSH metadata.
+    if (open_mod and ev.shift and !ev.alt) {
+        preview_diagnostics.debug("download", &.{
+            .{ .key = "stage", .value = "click" },
+            .{ .key = "launch", .value = @tagName(clicked_surface.launch_kind) },
+            .{ .key = "has_conn", .value = if (clicked_surface.ssh_connection != null) "true" else "false" },
+            .{ .key = "action", .value = @tagName(click_action) },
+        });
+    }
+    switch (click_action) {
         .download_ssh_file => {
             if (downloadTerminalFileAtCell(clicked_surface, cell_pos)) return;
         },
@@ -3463,7 +4931,7 @@ fn extractUrlAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: C
 fn markUrlUnderlineDirty(surface: ?*Surface) void {
     const s = surface orelse return;
     s.surface_renderer.markDirty();
-    AppWindow.g_force_rebuild = true;
+    requestInputRebuild();
 }
 
 fn setUrlUnderline(surface: *Surface, start_row_abs: usize, end_row_abs: usize, start_col: usize, end_col: usize) void {
@@ -3560,19 +5028,33 @@ fn openUrl(surface: *Surface, url: []const u8) bool {
     defer allocator.free(target);
 
     const handle = AppWindow.currentNativeHandle();
-    switch (link_open.destinationForUrlClick(browser_panel.embeddedBrowserAvailable(), g_url_open_mode)) {
+    const embedded_available = browser_panel.embeddedBrowserAvailable();
+    const destination = link_open.destinationForUrlClick(embedded_available, link_open.current_mode);
+    preview_diagnostics.debug("url", &.{
+        .{ .key = "stage", .value = "open" },
+        .{ .key = "launch", .value = @tagName(surface.launch_kind) },
+        .{ .key = "mode", .value = @tagName(link_open.current_mode) },
+        .{ .key = "embedded_available", .value = if (embedded_available) "true" else "false" },
+        .{ .key = "destination", .value = @tagName(destination) },
+        .{ .key = "target", .value = target },
+    });
+    switch (destination) {
         .embedded_browser => {
             if (!browser_panel.openForSurface(allocator, handle, target, surface)) return false;
             if (AppWindow.g_window) |win| {
                 syncPanelGridFromWindow(win);
             }
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
+            requestInputRepaint();
             return true;
         },
         .system_browser => {
             const external_target = browser_panel.externalUrlForSurface(allocator, target, surface) orelse return false;
             defer allocator.free(external_target);
+            preview_diagnostics.debug("url", &.{
+                .{ .key = "stage", .value = "system-browser" },
+                .{ .key = "target", .value = target },
+                .{ .key = "external", .value = external_target },
+            });
             return platform_open_url.open(allocator, .{ .url = external_target });
         },
     }
@@ -3597,18 +5079,33 @@ fn openHtmlPanelForCell(surface: *Surface, cell_pos: CellPos) bool {
 
     var ls_prefix_buf: [256]u8 = undefined;
     const ls_prefix = lsPrefixForCell(surface, cell_pos, &ls_prefix_buf);
+    preview_diagnostics.debug("html", &.{
+        .{ .key = "stage", .value = "click" },
+        .{ .key = "launch", .value = @tagName(surface.launch_kind) },
+        .{ .key = "path", .value = path },
+        .{ .key = "ls_prefix", .value = ls_prefix orelse "" },
+    });
 
     switch (html_server.openForSurface(allocator, surface, path, ls_prefix)) {
         .url => |url| {
             defer allocator.free(url);
+            preview_diagnostics.debug("html", &.{
+                .{ .key = "stage", .value = "open-browser" },
+                .{ .key = "path", .value = path },
+                .{ .key = "url", .value = url },
+            });
             const parent = AppWindow.currentNativeHandle();
             browser_panel.open(parent, url);
             if (AppWindow.g_window) |win| syncPanelGridFromWindow(win);
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
+            requestInputRepaint();
             return true;
         },
         .err => |err| {
+            preview_diagnostics.debug("html", &.{
+                .{ .key = "stage", .value = "failed" },
+                .{ .key = "path", .value = path },
+                .{ .key = "err", .value = @errorName(err) },
+            });
             file_explorer.setTransferStatus(.failed, switch (err) {
                 error.CwdUnavailable => "HTML cwd unknown",
                 error.ServerUnavailable => "Install Python 3 in this environment",
@@ -3642,7 +5139,7 @@ fn updateInteractiveUnderlineAtMouse(xpos: f64, ypos: f64, ctrl: bool, shift: bo
     const allocator = AppWindow.g_allocator orelse return;
     const cell_pos = mouseToSurfaceCell(surface, xpos, ypos);
 
-    const action = terminalPathClickAction(surface.launch_kind, surface.ssh_connection != null, primaryOpenMod(ctrl, super), shift, alt);
+    const action = terminalPathClickAction(surface.launch_kind, primaryOpenMod(ctrl, super), shift, alt);
     const token = extractInteractiveUnderlineRangeAtCell(allocator, surface, cell_pos, action) orelse {
         clearUrlUnderline();
         return;
@@ -3653,7 +5150,7 @@ fn updateInteractiveUnderlineAtMouse(xpos: f64, ypos: f64, ctrl: bool, shift: bo
     setUrlUnderline(surface, vp_off + token.start_row, vp_off + token.end_row, token.start_col, token.end_col);
 }
 
-fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: markdown_preview_panel.PreviewSourceKind, move_focus: bool) bool {
+fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: PreviewPane.PreviewSourceKind, move_focus: bool) bool {
     const perf = ui_perf.begin("input.open_preview_async");
     defer perf.end();
 
@@ -3677,8 +5174,7 @@ fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []cons
         file_explorer.setTransferStatus(.failed, "Preview failed");
         return true;
     }
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
     return true;
 }
 
@@ -3692,8 +5188,7 @@ fn openPreviewGalleryNeighbor(p: *PreviewPane, forward: bool) bool {
         return false;
     }
 
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
     return true;
 }
 
@@ -3705,7 +5200,7 @@ fn findPreviewGalleryNeighbor(allocator: std.mem.Allocator, p: *const PreviewPan
     };
 }
 
-fn openPreviewNew(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: markdown_preview_panel.PreviewSourceKind, move_focus: bool) bool {
+fn openPreviewNew(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: PreviewPane.PreviewSourceKind, move_focus: bool) bool {
     const perf = ui_perf.begin("input.open_preview_new");
     defer perf.end();
 
@@ -3717,20 +5212,19 @@ fn openPreviewNew(kind: markdown_preview.Kind, title: []const u8, path: []const 
         file_explorer.setTransferStatus(.failed, "Preview failed");
         return true;
     }
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
     return true;
 }
 
-fn fileExplorerPreviewSourceKind() ?markdown_preview_panel.PreviewSourceKind {
-    return switch (file_explorer.g_mode) {
+fn fileExplorerPreviewSourceKind() ?PreviewPane.PreviewSourceKind {
+    return switch (file_explorer.sourceSnapshot() orelse return null) {
         .local => .local,
         .wsl => .wsl,
-        .remote => if (file_explorer.g_has_ssh_conn) .{ .remote = file_explorer.g_ssh_conn } else null,
+        .remote => |conn| .{ .remote = conn },
     };
 }
 
-fn terminalPreviewSourceKind(surface: *Surface) ?markdown_preview_panel.PreviewSourceKind {
+fn terminalPreviewSourceKind(surface: *Surface) ?PreviewPane.PreviewSourceKind {
     return switch (surface.launch_kind) {
         .local => .local,
         .wsl => .wsl,
@@ -3738,17 +5232,13 @@ fn terminalPreviewSourceKind(surface: *Surface) ?markdown_preview_panel.PreviewS
     };
 }
 
-fn openFileExplorerPreview(row_idx: usize) bool {
+fn openFileExplorerPreview(entry: file_explorer.EntryView) bool {
     const perf = ui_perf.begin("input.open_file_explorer_preview");
     defer perf.end();
 
-    if (row_idx >= file_explorer.g_entry_count) return false;
-    const entry = &file_explorer.g_entries[row_idx];
     if (entry.is_dir) return false;
 
-    const path = entry.path_buf[0..entry.path_len];
-    const kind = markdown_preview.detectKind(path) orelse return false;
-    const title = entry.name_buf[0..entry.name_len];
+    const kind = markdown_preview.detectKind(entry.path) orelse return false;
     const source_kind = fileExplorerPreviewSourceKind() orelse {
         file_explorer.setTransferStatus(.failed, "Preview failed");
         return true;
@@ -3756,7 +5246,7 @@ fn openFileExplorerPreview(row_idx: usize) bool {
 
     // File-explorer preview keeps moving focus onto the preview so its scroll /
     // gallery keys work straight away (the user is browsing files, not typing).
-    return openPreviewAsync(kind, title, path, source_kind, true);
+    return openPreviewAsync(kind, entry.name, entry.path, source_kind, true);
 }
 
 /// Infer the `ls <dir>/` directory prefix for the clicked cell, copied into
@@ -3784,16 +5274,43 @@ fn openPreviewPanelForCell(surface: *Surface, cell_pos: CellPos, shift: bool) bo
     const ls_prefix = lsPrefixForCell(surface, cell_pos, &ls_prefix_buf);
 
     if (markdown_preview.detectKind(path)) |kind| {
-        const resolved_path = resolveTerminalPreviewPath(allocator, surface, path, ls_prefix) catch {
+        preview_diagnostics.debug("preview", &.{
+            .{ .key = "stage", .value = "click" },
+            .{ .key = "launch", .value = @tagName(surface.launch_kind) },
+            .{ .key = "kind", .value = @tagName(kind) },
+            .{ .key = "path", .value = path },
+            .{ .key = "ls_prefix", .value = ls_prefix orelse "" },
+        });
+        const resolved_path = resolveTerminalPreviewPath(allocator, surface, path, ls_prefix) catch |err| {
+            preview_diagnostics.debug("preview", &.{
+                .{ .key = "stage", .value = "resolve-failed" },
+                .{ .key = "kind", .value = @tagName(kind) },
+                .{ .key = "path", .value = path },
+                .{ .key = "err", .value = @errorName(err) },
+            });
             file_explorer.setTransferStatus(.failed, "Preview failed");
             return true;
         };
         defer allocator.free(resolved_path);
 
         const source_kind = terminalPreviewSourceKind(surface) orelse {
+            preview_diagnostics.debug("preview", &.{
+                .{ .key = "stage", .value = "source-kind-failed" },
+                .{ .key = "kind", .value = @tagName(kind) },
+                .{ .key = "path", .value = path },
+                .{ .key = "resolved", .value = resolved_path },
+            });
             file_explorer.setTransferStatus(.failed, "Preview failed");
             return true;
         };
+        preview_diagnostics.debug("preview", &.{
+            .{ .key = "stage", .value = "open-pane" },
+            .{ .key = "kind", .value = @tagName(kind) },
+            .{ .key = "path", .value = path },
+            .{ .key = "resolved", .value = resolved_path },
+            .{ .key = "source", .value = previewSourceKindName(source_kind) },
+            .{ .key = "new_pane", .value = if (shift) "true" else "false" },
+        });
 
         if (shift) {
             return openPreviewNew(kind, basenameForPreview(path), resolved_path, source_kind, false);
@@ -3810,6 +5327,14 @@ fn openPreviewPanelForCell(surface: *Surface, cell_pos: CellPos, shift: bool) bo
     return true;
 }
 
+fn previewSourceKindName(kind: PreviewPane.PreviewSourceKind) []const u8 {
+    return switch (kind) {
+        .local => "local",
+        .wsl => "wsl",
+        .remote => "ssh",
+    };
+}
+
 fn buildRemotePathKindCommand(buf: []u8, remote_path: []const u8) ?[]const u8 {
     var path_expr_buf: [1024]u8 = undefined;
     const path_expr = platform_remote_file.shellPathExpr(&path_expr_buf, remote_path) orelse return null;
@@ -3820,7 +5345,7 @@ fn buildRemotePathKindCommand(buf: []u8, remote_path: []const u8) ?[]const u8 {
     ) catch null;
 }
 
-fn remotePathIsDirectoryForDownload(allocator: std.mem.Allocator, conn: *const @import("ssh_connection.zig").SshConnection, remote_path: []const u8) ?bool {
+fn remotePathIsDirectoryForDownload(allocator: std.mem.Allocator, conn: *const @import("ssh/connection.zig").SshConnection, remote_path: []const u8) ?bool {
     var cmd_buf: [2300]u8 = undefined;
     const cmd = buildRemotePathKindCommand(cmd_buf[0..], remote_path) orelse return null;
     // Runs on the UI thread, so bound it: a hung remote `test -d` becomes a
@@ -3838,6 +5363,7 @@ fn remotePathIsDirectoryForDownload(allocator: std.mem.Allocator, conn: *const @
 }
 
 test "input: remote download path kind command shell-quotes paths" {
+    try skipUnlessInputRendererShard();
     var buf: [2300]u8 = undefined;
     const cmd = buildRemotePathKindCommand(buf[0..], "/tmp/it's here") orelse return error.CommandTooLong;
     try std.testing.expectEqualStrings(
@@ -3847,17 +5373,48 @@ test "input: remote download path kind command shell-quotes paths" {
 }
 
 fn downloadTerminalFileAtCell(surface: *Surface, cell_pos: CellPos) bool {
-    if (surface.launch_kind != .ssh) return false;
-    const conn = surface.ssh_connection orelse return false;
+    if (surface.launch_kind != .ssh) {
+        preview_diagnostics.debug("download", &.{
+            .{ .key = "stage", .value = "abort" },
+            .{ .key = "reason", .value = "not-ssh" },
+            .{ .key = "launch", .value = @tagName(surface.launch_kind) },
+        });
+        return false;
+    }
+    const conn = surface.ssh_connection orelse {
+        preview_diagnostics.debug("download", &.{
+            .{ .key = "stage", .value = "abort" },
+            .{ .key = "reason", .value = "no-conn" },
+        });
+        file_explorer.setTransferStatusForKind(.download, .failed, "SSH connection unavailable");
+        return true;
+    };
     const allocator = AppWindow.g_allocator orelse return false;
 
-    const path = extractDownloadPathAtCell(allocator, surface, cell_pos) orelse return false;
+    const path = extractDownloadPathAtCell(allocator, surface, cell_pos) orelse {
+        preview_diagnostics.debug("download", &.{
+            .{ .key = "stage", .value = "abort" },
+            .{ .key = "reason", .value = "no-path" },
+        });
+        return false;
+    };
     defer allocator.free(path);
 
     var ls_prefix_buf: [256]u8 = undefined;
     const ls_prefix = lsPrefixForCell(surface, cell_pos, &ls_prefix_buf);
+    preview_diagnostics.debug("download", &.{
+        .{ .key = "stage", .value = "extract" },
+        .{ .key = "host", .value = conn.host() },
+        .{ .key = "path", .value = path },
+        .{ .key = "ls_prefix", .value = ls_prefix orelse "" },
+    });
 
     const resolved_path = resolveTerminalPreviewPath(allocator, surface, path, ls_prefix) catch |err| {
+        preview_diagnostics.debug("download", &.{
+            .{ .key = "stage", .value = "resolve-failed" },
+            .{ .key = "path", .value = path },
+            .{ .key = "err", .value = @errorName(err) },
+        });
         if (err == error.CwdUnavailable) {
             file_explorer.setTransferStatusForKind(.download, .failed, "SSH cwd unknown");
             overlays.showSshCwdFallbackPrompt();
@@ -3869,23 +5426,59 @@ fn downloadTerminalFileAtCell(surface: *Surface, cell_pos: CellPos) bool {
     defer allocator.free(resolved_path);
 
     const name = basenameForPreview(resolved_path);
-    if (name.len == 0) return false;
-    const is_dir = remotePathIsDirectoryForDownload(allocator, &conn, resolved_path) orelse false;
+    if (name.len == 0) {
+        preview_diagnostics.debug("download", &.{
+            .{ .key = "stage", .value = "abort" },
+            .{ .key = "reason", .value = "no-name" },
+            .{ .key = "resolved", .value = resolved_path },
+        });
+        return false;
+    }
+    const dir_probe = remotePathIsDirectoryForDownload(allocator, &conn, resolved_path);
+    const is_dir = dir_probe orelse {
+        preview_diagnostics.debug("download", &.{
+            .{ .key = "stage", .value = "probe-failed" },
+            .{ .key = "resolved", .value = resolved_path },
+        });
+        file_explorer.setTransferStatusForKind(.download, .failed, "SSH helper unavailable");
+        return true;
+    };
+    preview_diagnostics.debug("download", &.{
+        .{ .key = "stage", .value = "probe" },
+        .{ .key = "resolved", .value = resolved_path },
+        // Distinguishes "probe ran and said file/dir" from "probe ssh helper
+        // failed" (null) — the latter points at the SSH metadata channel (#268).
+        .{ .key = "probe", .value = if (is_dir) "dir" else "file" },
+    });
 
     var dl_buf: [260]u8 = undefined;
     const dl_path = getDownloadsFolder(&dl_buf);
     if (dl_path.len == 0) {
+        preview_diagnostics.debug("download", &.{
+            .{ .key = "stage", .value = "abort" },
+            .{ .key = "reason", .value = "no-downloads-folder" },
+        });
         file_explorer.setTransferStatusForKind(.download, .failed, "Download folder missing");
         return true;
     }
 
     var dst_buf: [512]u8 = undefined;
     const dst = platform_local_path.joinInto(dst_buf[0..], dl_path, name) orelse {
+        preview_diagnostics.debug("download", &.{
+            .{ .key = "stage", .value = "abort" },
+            .{ .key = "reason", .value = "dst-too-long" },
+        });
         file_explorer.setTransferStatusForKind(.download, .failed, "Path too long");
         return true;
     };
 
-    _ = file_explorer.downloadRemotePathToPath(resolved_path, dst, name, &conn, is_dir);
+    const dispatched = file_explorer.downloadRemotePathToPath(resolved_path, dst, name, &conn, is_dir);
+    preview_diagnostics.debug("download", &.{
+        .{ .key = "stage", .value = "dispatch" },
+        .{ .key = "resolved", .value = resolved_path },
+        .{ .key = "dst", .value = dst },
+        .{ .key = "dispatched", .value = if (dispatched) "true" else "false" },
+    });
     return true;
 }
 
@@ -3919,7 +5512,8 @@ fn openInEditorAtRightClick(ev: platform_input.MouseButtonEvent) bool {
 }
 
 fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
-    if (ev.action == .press) g_close_shortcut_confirm_until_ms = 0;
+    if (ev.action == .press) close_confirm_state.clear();
+    if (overlays.btwConversationVisible()) return;
     if (overlays.whatsNewVisible()) {
         if (ev.button == .left and ev.action == .press) {
             const win = AppWindow.g_window orelse return;
@@ -3927,8 +5521,18 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             const xpos: f64 = @floatFromInt(ev.x);
             const ypos: f64 = @floatFromInt(ev.y);
             _ = overlays.whatsNewExecuteAt(xpos, ypos, @floatFromInt(fb.width), @floatFromInt(fb.height));
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
+            requestInputRepaint();
+        }
+        return;
+    }
+    if (overlays.integrationPromptVisible()) {
+        if (ev.button == .left and ev.action == .press) {
+            const win = AppWindow.g_window orelse return;
+            const fb = window_backend.framebufferSize(win);
+            const xpos: f64 = @floatFromInt(ev.x);
+            const ypos: f64 = @floatFromInt(ev.y);
+            _ = overlays.integrationPromptExecuteAt(xpos, ypos, @floatFromInt(fb.width), @floatFromInt(fb.height));
+            requestInputRepaint();
         }
         return;
     }
@@ -3939,8 +5543,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             const xpos: f64 = @floatFromInt(ev.x);
             const ypos: f64 = @floatFromInt(ev.y);
             _ = overlays.windowCloseConfirmExecuteAt(xpos, ypos, @floatFromInt(fb.width), @floatFromInt(fb.height));
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
+            requestInputRepaint();
         }
         return;
     }
@@ -3954,8 +5557,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 .interrupt => _ = file_explorer.cancelActiveTransfer(),
                 .keep, .none => {},
             }
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
+            requestInputRepaint();
         }
         return;
     }
@@ -3984,24 +5586,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             const xpos: f64 = @floatFromInt(ev.x);
             const ypos: f64 = @floatFromInt(ev.y);
             _ = overlays.restoreDefaultsConfirmExecuteAt(xpos, ypos, @floatFromInt(fb.width), @floatFromInt(fb.height));
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
-        }
-        return;
-    }
-    if (overlays.settingsPageVisible()) {
-        if (ev.button == .left and ev.action == .press) {
-            const win = AppWindow.g_window orelse return;
-            const fb = window_backend.framebufferSize(win);
-            const w_f: f32 = @floatFromInt(fb.width);
-            const h_f: f32 = @floatFromInt(fb.height);
-            const top_offset: f32 = @floatCast(titlebarHeight());
-            const xpos: f64 = @floatFromInt(ev.x);
-            const ypos: f64 = @floatFromInt(ev.y);
-            if (overlays.settingsPageExecuteAt(xpos, ypos, w_f, h_f, top_offset)) return;
-            if (!overlays.settingsPageContainsPoint(xpos, ypos, w_f, h_f, top_offset)) {
-                overlays.settingsPageClose();
-            }
+            requestInputRepaint();
         }
         return;
     }
@@ -4014,9 +5599,13 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             const top_offset: f32 = @floatCast(titlebarHeight());
             const xpos: f64 = @floatFromInt(ev.x);
             const ypos: f64 = @floatFromInt(ev.y);
-            if (overlays.commandPaletteExecuteAt(xpos, ypos, w_f, h_f, top_offset)) return;
+            if (overlays.commandPaletteExecuteAt(xpos, ypos, w_f, h_f, top_offset)) {
+                requestInputRepaint();
+                return;
+            }
             if (!overlays.commandPaletteContainsPoint(xpos, ypos, w_f, h_f, top_offset)) {
                 overlays.commandPaletteClose();
+                requestInputRepaint();
             }
         }
         return;
@@ -4034,6 +5623,19 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
         }
         return;
     }
+    if (overlays.feishuRegPanelVisible()) {
+        if (ev.button == .left and ev.action == .press) {
+            const win = AppWindow.g_window orelse return;
+            const fb = window_backend.framebufferSize(win);
+            const w_f: f32 = @floatFromInt(fb.width);
+            const h_f: f32 = @floatFromInt(fb.height);
+            const top_offset: f32 = @floatCast(titlebarHeight());
+            const xpos: f64 = @floatFromInt(ev.x);
+            const ypos: f64 = @floatFromInt(ev.y);
+            overlays.feishuRegPanelHandleAction(overlays.feishuRegPanelExecuteAt(xpos, ypos, w_f, h_f, top_offset));
+        }
+        return;
+    }
     if (ev.button == .left and ev.action == .press) {
         const win = AppWindow.g_window orelse return;
         const fb = window_backend.framebufferSize(win);
@@ -4041,8 +5643,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
         const ypos: f64 = @floatFromInt(ev.y);
         if (overlays.transferToastHitTest(xpos, ypos, @floatFromInt(fb.width), @floatFromInt(fb.height))) {
             overlays.transferCancelConfirmOpen();
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
+            requestInputRepaint();
             return;
         }
         if (overlays.updatePromptHitTest(xpos, ypos, @floatFromInt(fb.height))) {
@@ -4077,7 +5678,11 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
     // through the existing path below).
     if (ev.action == .release) {
         if (finishTerminalMouseReport(ev)) return;
-    } else if (!ev.shift and !(primaryOpenMod(ev.ctrl, ev.super) and !ev.alt)) {
+    } else if (mouse_dispatch.pressShouldReport(.{
+        .shift = ev.shift,
+        .alt = ev.alt,
+        .primary_open = primaryOpenMod(ev.ctrl, ev.super),
+    })) {
         if (beginTerminalMouseReport(ev)) return;
     }
 
@@ -4096,19 +5701,14 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
         if (ypos < titlebar_h) {
             if (hitTestConfigButton(xpos, ypos)) {
                 overlays.settingsPageOpen();
-            } else if (xpos >= @as(f64, titlebar.titlebarLeftReserved() + titlebar.TITLEBAR_TOGGLE_W + titlebar.TITLEBAR_FOLDER_W)) {
+            } else if (xpos >= @as(f64, titlebar.titlebarLeftReserved() + titlebar.TITLEBAR_TOGGLE_W)) {
                 // Double-clicking on bare titlebar (not on the toggle, and not
                 // on the macOS traffic-light strip) zooms / unzooms.
                 toggleMaximize();
             }
             return;
         }
-        if (hitTestSidebarTab(xpos, ypos)) |tab_idx| {
-            if (shouldStartSidebarTabRename(xpos, ypos, tab_idx)) {
-                tab.startTabRename(tab_idx);
-            }
-            return;
-        }
+        if (handleSidebarTabRenameGesture(xpos, ypos)) return;
         // No chrome hit — this is a double-click in terminal content. The macOS
         // backend reports the 2nd/3rd/4th click of a multi-click as
         // double_click (clickCount > 1) rather than press, so they never reach
@@ -4133,7 +5733,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
         if (AppWindow.activeAiChat()) |chat| {
             const win = AppWindow.g_window orelse return;
             const fb = window_backend.framebufferSize(win);
-            if (AppWindow.ai_chat_renderer.inputFieldMetricsAt(
+            if (AppWindow.assistant_conversation_renderer.inputFieldMetricsAt(
                 chat,
                 xpos,
                 ypos,
@@ -4152,26 +5752,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
     // Ctrl+right-click (Cmd on macOS) over a local terminal opens the file under
     // the cursor in the OS default app; otherwise follow the configured action.
     if (ev.button == .right and ev.action == .release) {
-        // Right-click on sidebar tab shows a confirmation dialog before closing.
-        if (hitTestSidebarTab(@floatFromInt(ev.x), @floatFromInt(ev.y))) |tab_idx| {
-            const closes_window = tab.g_tab_count <= 1;
-            if (close_confirm.shouldConfirm(AppWindow.g_confirm_close_running_program, AppWindow.tabHasRunningProgram(tab_idx))) {
-                const action: close_confirm.PendingClose = if (closes_window) .window else .{ .tab = tab_idx };
-                overlays.closeConfirmOpen(action, .running_program);
-            } else if (closes_window) {
-                overlays.closeConfirmOpen(.window, .window_generic);
-            } else {
-                overlays.closeConfirmOpen(.{ .tab = tab_idx }, .tab_right_click);
-            }
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
-            return;
-        }
-        // Right-click on sidebar + opens session launcher
-        if (hitTestSidebarPlusButton(@floatFromInt(ev.x), @floatFromInt(ev.y))) {
-            overlays.sessionLauncherOpen();
-            return;
-        }
+        if (handleSidebarTabRenameGesture(@floatFromInt(ev.x), @floatFromInt(ev.y))) return;
         if (openInEditorAtRightClick(ev)) return;
         handleConfiguredRightClick();
         return;
@@ -4183,7 +5764,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
         const titlebar_h: f64 = titlebarHeight();
 
         if (ev.action == .press) {
-            g_selection_changed_for_copy = false;
+            g_runtime_state.selection_changed_for_copy = false;
 
             // Commit rename on any click
             if (tab.g_tab_rename_active) tab.commitTabRename();
@@ -4198,10 +5779,9 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 closeFileExplorerPanel();
                 return;
             }
-            if (file_explorer.g_panel_mode == .files and hitTestFileExplorerRefreshButton(xpos, ypos)) {
+            if (file_explorer.isFilesPanel() and hitTestFileExplorerRefreshButton(xpos, ypos)) {
                 file_explorer.refresh();
-                AppWindow.g_force_rebuild = true;
-                AppWindow.g_cells_valid = false;
+                requestInputRepaint();
                 return;
             }
             if (hitTestBrowserRefreshButton(xpos, ypos)) {
@@ -4222,6 +5802,12 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             }
             const over_browser_url_bar = hitTestBrowserUrlBar(xpos, ypos);
             if (!over_browser_url_bar) blurBrowserUrlBarIfFocused();
+            if (hitTestSidebarResizeHandle(xpos, ypos)) {
+                g_sidebar_resize_dragging = true;
+                g_sidebar_resize_hover = true;
+                platform_cursor.set(.size_we);
+                return;
+            }
             if (hitTestFileExplorerResizeHandle(xpos, ypos)) {
                 g_explorer_resize_dragging = true;
                 g_explorer_resize_hover = true;
@@ -4246,8 +5832,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             }
 
             if (over_browser_url_bar) {
-                file_explorer.g_focused = false;
-                if (file_explorer.g_op_mode != .none) file_explorer.cancelOp();
+                file_explorer.blurAndCancelOp();
                 browser_panel.focusUrlBar();
                 markBrowserUrlBarDirty();
                 return;
@@ -4258,9 +5843,25 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 return;
             }
 
+            if (overlays.settingsPageVisible()) {
+                const win = AppWindow.g_window orelse return;
+                const fb = window_backend.framebufferSize(win);
+                const content_x = AppWindow.leftPanelsWidth();
+                const content_width = @max(1, @as(f32, @floatFromInt(fb.width)) - content_x - AppWindow.rightPanelsWidthForWindow(fb.width));
+                _ = overlays.settingsPageExecuteAt(
+                    xpos,
+                    ypos,
+                    @floatFromInt(fb.height),
+                    @floatCast(titlebarHeight()),
+                    content_x,
+                    content_width,
+                );
+                requestInputRepaint();
+                return;
+            }
+
             if (hitTestBrowserPanel(xpos, ypos)) {
-                file_explorer.g_focused = false;
-                if (file_explorer.g_op_mode != .none) file_explorer.cancelOp();
+                file_explorer.blurAndCancelOp();
                 browser_panel.blurUrlBar();
                 markBrowserUrlBarDirty();
                 browser_panel.focus();
@@ -4274,21 +5875,23 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             }
 
             // Clicking outside file explorer unfocuses it
-            file_explorer.g_focused = false;
-            if (file_explorer.g_op_mode != .none) file_explorer.cancelOp();
+            file_explorer.blurAndCancelOp();
 
             if (AppWindow.activeAiHistory() != null) {
                 if (AppWindow.aiHistoryHandleMousePress(xpos, ypos)) return;
+            }
+
+            if (AppWindow.activeMemoryCenter() != null) {
+                if (AppWindow.memoryCenterHandleMousePress(xpos, ypos)) return;
             }
 
             // AI copilot sidebar (terminal tabs). When the panel is visible,
             // a click inside its rect focuses the copilot and routes one-shot
             // interactions (stop / missing-api-key / message toggle / copy /
             // permission chip). A click outside the panel blurs the copilot and
-            // falls through to normal terminal handling. Drag-based interactions
-            // (transcript text selection, scrollbar drags) are intentionally not
-            // wired here: their continue-handlers recompute the full-tab rect and
-            // would mis-track against the narrower sidebar rect.
+            // falls through to normal terminal handling. Transcript selection
+            // and scrollbar drags record that they started in the sidebar, so
+            // their continue-handlers keep using the narrower panel geometry.
             if (AppWindow.aiCopilotVisible()) {
                 if (AppWindow.activeCopilotSessionForInput()) |chat| {
                     const win = AppWindow.g_window orelse return;
@@ -4308,7 +5911,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                         focusAiCopilot();
                         const chat_x: f32 = @floatFromInt(bounds.left);
                         const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
-                        if (AppWindow.ai_chat_renderer.stopButtonHitTest(
+                        if (AppWindow.assistant_conversation_renderer.stopButtonHitTest(
                             chat,
                             xpos,
                             ypos,
@@ -4316,13 +5919,13 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             @floatCast(titlebarHeight()),
                             chat_x,
                             chat_w,
+                            true, // copilot sidebar: dot hit-box
                         )) {
                             chat.stopRequest();
-                            AppWindow.g_force_rebuild = true;
-                            AppWindow.g_cells_valid = false;
+                            requestInputRepaint();
                             return;
                         }
-                        if (AppWindow.ai_chat_renderer.missingApiKeyStatusHitTest(
+                        if (AppWindow.assistant_conversation_renderer.missingApiKeyStatusHitTest(
                             chat,
                             xpos,
                             ypos,
@@ -4330,13 +5933,13 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             @floatCast(titlebarHeight()),
                             chat_x,
                             chat_w,
+                            true, // copilot sidebar: error text left of dot
                         )) {
                             overlays.openAiConfigForSession(chat);
-                            AppWindow.g_force_rebuild = true;
-                            AppWindow.g_cells_valid = false;
+                            requestInputRepaint();
                             return;
                         }
-                        if (AppWindow.ai_chat_renderer.interactionHitTest(
+                        if (AppWindow.assistant_conversation_renderer.interactionHitTest(
                             chat,
                             xpos,
                             ypos,
@@ -4348,20 +5951,27 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                         )) |target| {
                             switch (target) {
                                 .copy_message => |message_index| copyAiChatMessageToClipboard(chat, message_index),
+                                .copy_span => |s| copyAiChatSpanToClipboard(chat, s.message_index, s.start, s.end),
                                 .toggle_tool => |message_index| {
                                     chat.toggleToolMessageCollapsed(message_index);
-                                    AppWindow.g_force_rebuild = true;
-                                    AppWindow.g_cells_valid = false;
+                                    requestInputRepaint();
+                                },
+                                .toggle_tool_group => |message_index| {
+                                    chat.toggleToolGroupCollapsed(message_index);
+                                    requestInputRepaint();
                                 },
                                 .toggle_reasoning => |message_index| {
                                     chat.toggleReasoningCollapsed(message_index);
-                                    AppWindow.g_force_rebuild = true;
-                                    AppWindow.g_cells_valid = false;
+                                    requestInputRepaint();
+                                },
+                                .question_option => |idx| {
+                                    _ = chat.resolveQuestionOption(idx);
+                                    requestInputRepaint();
                                 },
                             }
                             return;
                         }
-                        if (AppWindow.ai_chat_renderer.modelLabelHitTest(
+                        if (AppWindow.assistant_conversation_renderer.modelLabelHitTest(
                             chat,
                             xpos,
                             ypos,
@@ -4371,11 +5981,10 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             chat_w,
                         )) {
                             overlays.openSwitchModelPicker(chat);
-                            AppWindow.g_force_rebuild = true;
-                            AppWindow.g_cells_valid = false;
+                            requestInputRepaint();
                             return;
                         }
-                        if (AppWindow.ai_chat_renderer.permissionChipHitTest(
+                        if (AppWindow.assistant_conversation_renderer.permissionChipHitTest(
                             xpos,
                             ypos,
                             @floatFromInt(fb.width),
@@ -4386,11 +5995,50 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             toggleAiAgentPermission();
                             return;
                         }
+                        if (AppWindow.assistant_conversation_renderer.transcriptScrollbarHitTest(
+                            chat,
+                            xpos,
+                            ypos,
+                            @floatFromInt(fb.width),
+                            @floatFromInt(fb.height),
+                            @floatCast(titlebarHeight()),
+                            chat_x,
+                            chat_w,
+                        )) |drag_offset| {
+                            g_ai_transcript_scroll_dragging = true;
+                            g_ai_transcript_scroll_chat = chat;
+                            g_ai_transcript_scroll_drag_offset = drag_offset;
+                            g_ai_transcript_scroll_panel = .copilot_sidebar;
+                            AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_dragging = true;
+                            applyAiTranscriptScrollbarDrag(chat, ypos);
+                            requestInputRepaint();
+                            return;
+                        }
+                        if (!ev.ctrl and !ev.alt) {
+                            if (AppWindow.assistant_conversation_renderer.transcriptTextHitTest(
+                                chat,
+                                xpos,
+                                ypos,
+                                @floatFromInt(fb.width),
+                                @floatFromInt(fb.height),
+                                @floatCast(titlebarHeight()),
+                                chat_x,
+                                chat_w,
+                            )) |hit| {
+                                chat.beginTranscriptSelection(hit.message_index, hit.byte_offset);
+                                g_ai_transcript_selecting = true;
+                                g_ai_transcript_select_chat = chat;
+                                g_ai_transcript_select_auto_copy = ev.shift;
+                                g_ai_transcript_select_panel = .copilot_sidebar;
+                                platform_cursor.set(.ibeam);
+                                requestInputRepaint();
+                                return;
+                            }
+                        }
                         // Click landed in the panel but not on an interactive
                         // element: keep focus, clear any selection, consume it.
                         chat.clearSelection();
-                        AppWindow.g_force_rebuild = true;
-                        AppWindow.g_cells_valid = false;
+                        requestInputRepaint();
                         return;
                     }
                     // Click outside the sidebar: hand focus back to the terminal.
@@ -4401,7 +6049,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             if (AppWindow.activeAiChat()) |chat| {
                 const win = AppWindow.g_window orelse return;
                 const fb = window_backend.framebufferSize(win);
-                if (AppWindow.ai_chat_renderer.stopButtonHitTest(
+                if (AppWindow.assistant_conversation_renderer.stopButtonHitTest(
                     chat,
                     xpos,
                     ypos,
@@ -4409,13 +6057,13 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     @floatCast(titlebarHeight()),
                     AppWindow.leftPanelsWidth(),
                     @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
+                    false, // full tab: Esc Stop button hit-box
                 )) {
                     chat.stopRequest();
-                    AppWindow.g_force_rebuild = true;
-                    AppWindow.g_cells_valid = false;
+                    requestInputRepaint();
                     return;
                 }
-                if (AppWindow.ai_chat_renderer.missingApiKeyStatusHitTest(
+                if (AppWindow.assistant_conversation_renderer.missingApiKeyStatusHitTest(
                     chat,
                     xpos,
                     ypos,
@@ -4423,13 +6071,13 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     @floatCast(titlebarHeight()),
                     AppWindow.leftPanelsWidth(),
                     @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
+                    false, // full tab: status text hit-box
                 )) {
                     overlays.openAiConfigForSession(chat);
-                    AppWindow.g_force_rebuild = true;
-                    AppWindow.g_cells_valid = false;
+                    requestInputRepaint();
                     return;
                 }
-                if (AppWindow.ai_chat_renderer.interactionHitTest(
+                if (AppWindow.assistant_conversation_renderer.interactionHitTest(
                     chat,
                     xpos,
                     ypos,
@@ -4441,20 +6089,27 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 )) |target| {
                     switch (target) {
                         .copy_message => |message_index| copyAiChatMessageToClipboard(chat, message_index),
+                        .copy_span => |s| copyAiChatSpanToClipboard(chat, s.message_index, s.start, s.end),
                         .toggle_tool => |message_index| {
                             chat.toggleToolMessageCollapsed(message_index);
-                            AppWindow.g_force_rebuild = true;
-                            AppWindow.g_cells_valid = false;
+                            requestInputRepaint();
+                        },
+                        .toggle_tool_group => |message_index| {
+                            chat.toggleToolGroupCollapsed(message_index);
+                            requestInputRepaint();
                         },
                         .toggle_reasoning => |message_index| {
                             chat.toggleReasoningCollapsed(message_index);
-                            AppWindow.g_force_rebuild = true;
-                            AppWindow.g_cells_valid = false;
+                            requestInputRepaint();
+                        },
+                        .question_option => |idx| {
+                            _ = chat.resolveQuestionOption(idx);
+                            requestInputRepaint();
                         },
                     }
                     return;
                 }
-                if (AppWindow.ai_chat_renderer.modelLabelHitTest(
+                if (AppWindow.assistant_conversation_renderer.modelLabelHitTest(
                     chat,
                     xpos,
                     ypos,
@@ -4464,11 +6119,10 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                 )) {
                     overlays.openSwitchModelPicker(chat);
-                    AppWindow.g_force_rebuild = true;
-                    AppWindow.g_cells_valid = false;
+                    requestInputRepaint();
                     return;
                 }
-                if (AppWindow.ai_chat_renderer.permissionChipHitTest(
+                if (AppWindow.assistant_conversation_renderer.permissionChipHitTest(
                     xpos,
                     ypos,
                     @floatFromInt(fb.width),
@@ -4479,7 +6133,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     toggleAiAgentPermission();
                     return;
                 }
-                if (AppWindow.ai_chat_renderer.transcriptScrollbarHitTest(
+                if (AppWindow.assistant_conversation_renderer.transcriptScrollbarHitTest(
                     chat,
                     xpos,
                     ypos,
@@ -4492,14 +6146,14 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     g_ai_transcript_scroll_dragging = true;
                     g_ai_transcript_scroll_chat = chat;
                     g_ai_transcript_scroll_drag_offset = drag_offset;
-                    AppWindow.ai_chat_renderer.g_transcript_scrollbar_dragging = true;
+                    g_ai_transcript_scroll_panel = .active_chat;
+                    AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_dragging = true;
                     applyAiTranscriptScrollbarDrag(chat, ypos);
-                    AppWindow.g_force_rebuild = true;
-                    AppWindow.g_cells_valid = false;
+                    requestInputRepaint();
                     return;
                 }
                 if (!ev.ctrl and !ev.alt) {
-                    if (AppWindow.ai_chat_renderer.transcriptTextHitTest(
+                    if (AppWindow.assistant_conversation_renderer.transcriptTextHitTest(
                         chat,
                         xpos,
                         ypos,
@@ -4513,13 +6167,13 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                         g_ai_transcript_selecting = true;
                         g_ai_transcript_select_chat = chat;
                         g_ai_transcript_select_auto_copy = ev.shift;
+                        g_ai_transcript_select_panel = .active_chat;
                         platform_cursor.set(.ibeam);
-                        AppWindow.g_force_rebuild = true;
-                        AppWindow.g_cells_valid = false;
+                        requestInputRepaint();
                         return;
                     }
                 }
-                if (AppWindow.ai_chat_renderer.inputScrollbarHitTest(
+                if (AppWindow.assistant_conversation_renderer.inputScrollbarHitTest(
                     chat,
                     xpos,
                     ypos,
@@ -4532,13 +6186,11 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     g_ai_input_scroll_chat = chat;
                     g_ai_input_scroll_drag_offset = hit.drag_offset_px;
                     applyAiInputScrollbarDrag(chat, ypos);
-                    AppWindow.g_force_rebuild = true;
-                    AppWindow.g_cells_valid = false;
+                    requestInputRepaint();
                     return;
                 }
                 chat.clearSelection();
-                AppWindow.g_force_rebuild = true;
-                AppWindow.g_cells_valid = false;
+                requestInputRepaint();
                 return;
             }
 
@@ -4607,33 +6259,18 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             // route there) and consumes the event — previews have no terminal
             // grid to select into. Terminal leaves fall through to the surface
             // focus + selection path below, so non-preview clicks are unchanged.
-            // A ready image preview additionally starts a drag-to-pan.
+            // A ready image/PDF preview additionally starts a drag-to-pan.
             if (split_layout.paneAtPoint(ev.x, ev.y)) |hit| {
                 switch (hit.pane) {
                     .preview => |p| {
                         const tb = AppWindow.activeTab() orelse return;
                         if (tb.focused != hit.handle) {
                             tb.focused = hit.handle;
-                            AppWindow.g_force_rebuild = true;
-                            AppWindow.g_cells_valid = false;
+                            requestInputRepaint();
                         }
                         if (AppWindow.g_allocator) |gpa| {
-                            if (g_preview_image_drag.begin(gpa, p, xpos, ypos)) {
+                            if (g_preview_image_drag.begin(gpa, p, xpos, ypos))
                                 platform_cursor.set(.size_all);
-                            } else if (!p.kind.isRaster() and p.load_status == .ready) {
-                                // Start text line selection in non-raster previews.
-                                // Clear any previous selection first, then begin.
-                                p.clearSelection();
-                                if (split_layout.rectForPreview(p)) |rect| {
-                                    const line = previewLineAtY(p, rect, xpos);
-                                    if (line < previewLineCount(p)) {
-                                        p.beginSelection(line);
-                                        g_preview_text_selecting = true;
-                                        AppWindow.g_force_rebuild = true;
-                                        AppWindow.g_cells_valid = false;
-                                    }
-                                }
-                            }
                         }
                         return;
                     },
@@ -4644,7 +6281,6 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             handleTerminalSelectionPress(ev, xpos, ypos);
         } else {
             // Mouse up
-            g_preview_text_selecting = false;
             if (g_preview_image_drag.active()) {
                 releasePreviewImageDrag();
                 platform_cursor.set(.arrow);
@@ -4656,7 +6292,8 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             g_ai_input_scroll_chat = null;
             g_ai_transcript_scroll_dragging = false;
             g_ai_transcript_scroll_chat = null;
-            AppWindow.ai_chat_renderer.g_transcript_scrollbar_dragging = false;
+            g_ai_transcript_scroll_panel = .active_chat;
+            AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_dragging = false;
             if (g_ai_transcript_selecting) {
                 if (g_ai_transcript_select_chat) |chat| {
                     if (chat.finishTranscriptSelection() and g_ai_transcript_select_auto_copy) copyAiChatToClipboard(chat);
@@ -4664,9 +6301,15 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 g_ai_transcript_selecting = false;
                 g_ai_transcript_select_chat = null;
                 g_ai_transcript_select_auto_copy = false;
-                AppWindow.g_force_rebuild = true;
-                AppWindow.g_cells_valid = false;
+                g_ai_transcript_select_panel = .active_chat;
+                requestInputRepaint();
                 platform_cursor.set(.arrow);
+                return;
+            }
+            if (g_sidebar_resize_dragging) {
+                g_sidebar_resize_dragging = false;
+                g_sidebar_resize_hover = hitTestSidebarResizeHandle(xpos, ypos);
+                platform_cursor.set(if (g_sidebar_resize_hover) .size_we else .arrow);
                 return;
             }
             if (g_explorer_resize_dragging) {
@@ -4711,6 +6354,15 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 return;
             }
 
+            // Handle close button release — close tab if still on the close button
+            if (tab.g_tab_close_pressed) |pressed_idx| {
+                tab.g_tab_close_pressed = null;
+                if (pressed_idx < tab.g_tab_count and hitTestSidebarTabCloseButton(xpos, ypos, pressed_idx)) {
+                    requestCloseTabGesture(pressed_idx);
+                }
+                return;
+            }
+
             if (plus_btn_pressed) {
                 plus_btn_pressed = false;
                 // Only fire if still in the + button area
@@ -4719,10 +6371,10 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 }
                 return;
             }
-            if (AppWindow.g_copy_on_select and g_selection_changed_for_copy and activeTerminalSelectionExists()) {
+            if (AppWindow.g_copy_on_select and g_runtime_state.selection_changed_for_copy and activeTerminalSelectionExists()) {
                 copySelectionToClipboard();
             }
-            g_selection_changed_for_copy = false;
+            g_runtime_state.selection_changed_for_copy = false;
             g_selecting = false;
         }
     }
@@ -4836,7 +6488,7 @@ fn hitTestPlusButton(xpos: f64) bool {
 fn applyAiInputScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
     const win = AppWindow.g_window orelse return;
     const size = clientSize(win);
-    if (AppWindow.ai_chat_renderer.inputScrollbarDragRowAt(
+    if (AppWindow.assistant_conversation_renderer.inputScrollbarDragRowAt(
         chat,
         ypos,
         @floatFromInt(size.width),
@@ -4846,52 +6498,56 @@ fn applyAiInputScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
         g_ai_input_scroll_drag_offset,
     )) |drag| {
         _ = chat.setInputScrollRow(drag.row, drag.max_cols, drag.visible_rows);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
     }
 }
 
 fn applyAiTranscriptScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
-    const win = AppWindow.g_window orelse return;
-    const size = clientSize(win);
-    if (AppWindow.ai_chat_renderer.transcriptScrollbarScrollPxAt(
+    const geometry = aiTranscriptPanelGeometry(g_ai_transcript_scroll_panel) orelse return;
+    if (AppWindow.assistant_conversation_renderer.transcriptScrollbarScrollPxAt(
         chat,
         ypos,
-        @floatFromInt(size.width),
-        @floatFromInt(size.height),
+        geometry.window_width,
+        geometry.window_height,
         @floatCast(titlebarHeight()),
-        AppWindow.leftPanelsWidth(),
-        @as(f32, @floatFromInt(size.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(size.width),
+        geometry.chat_x,
+        geometry.chat_w,
         g_ai_transcript_scroll_drag_offset,
     )) |px| {
         chat.scrollToPx(px);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
     }
 }
 
 fn updateAiTranscriptSelectionDrag(chat: *AppWindow.ai_chat.Session, xpos: f64, ypos: f64) void {
-    const win = AppWindow.g_window orelse return;
-    const fb = window_backend.framebufferSize(win);
-    if (AppWindow.ai_chat_renderer.transcriptTextHitTest(
+    const geometry = aiTranscriptPanelGeometry(g_ai_transcript_select_panel) orelse return;
+    if (AppWindow.assistant_conversation_renderer.transcriptTextHitTest(
         chat,
         xpos,
         ypos,
-        @floatFromInt(fb.width),
-        @floatFromInt(fb.height),
+        geometry.window_width,
+        geometry.window_height,
         @floatCast(titlebarHeight()),
-        AppWindow.leftPanelsWidth(),
-        @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
+        geometry.chat_x,
+        geometry.chat_w,
     )) |hit| {
         chat.updateTranscriptSelection(hit.message_index, hit.byte_offset);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
     }
 }
 
 fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
     const xpos: f64 = @floatFromInt(ev.x);
     const ypos: f64 = @floatFromInt(ev.y);
+    if (overlays.btwConversationVisible()) {
+        platform_cursor.set(.arrow);
+        return;
+    }
+    if (g_sidebar_resize_dragging) {
+        applySidebarWidthFromMouse(xpos);
+        platform_cursor.set(.size_we);
+        return;
+    }
     if (g_explorer_resize_dragging) {
         applyExplorerWidthFromMouse(xpos);
         platform_cursor.set(.size_we);
@@ -4920,26 +6576,11 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         platform_cursor.set(.ibeam);
         return;
     }
-    // Left-drag pans a ready image preview (the renderer clamps the pan to the
-    // image's overflow each frame).
+    // Left-drag pans a ready image/PDF preview (the renderer clamps the pan to
+    // the raster content's overflow each frame).
     if (g_preview_image_drag.active()) {
-        if (g_preview_image_drag.move(xpos, ypos)) AppWindow.g_force_rebuild = true;
+        if (g_preview_image_drag.move(xpos, ypos)) requestInputRebuild();
         platform_cursor.set(.size_all);
-        return;
-    }
-    // Mouse-drag text selection inside a text/markdown preview pane. Extended
-    // while the button is held and the cursor moves over the same preview.
-    if (g_preview_text_selecting) {
-        if (AppWindow.focusedPreviewPane()) |p| {
-            if (split_layout.rectForPreview(p)) |rect| {
-                const line = previewLineAtY(p, rect, xpos);
-                if (line < previewLineCount(p)) {
-                    p.extendSelection(line);
-                    AppWindow.g_force_rebuild = true;
-                    AppWindow.g_cells_valid = false;
-                }
-            }
-        }
         return;
     }
     // Alt-drag panel swap: track the drop target / dim the source. Owns the move
@@ -4949,15 +6590,15 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
 
     // Reported mouse drag: stream motion to the PTY (button/any tracking
     // modes) and suppress local hover/selection while the button is held.
-    if (g_mouse_report_button) |button| {
-        if (g_mouse_report_surface) |surface| reportMouseMotion(surface, button, ev);
+    if (g_mouse_report.active()) |button| {
+        if (g_mouse_report.activeSurface()) |surface| reportMouseMotion(surface, button, ev);
         return;
     }
 
     if (AppWindow.g_window) |hover_win| {
         if (AppWindow.activeAiChat()) |chat| {
             const hover_fb = window_backend.framebufferSize(hover_win);
-            const over = AppWindow.ai_chat_renderer.transcriptScrollbarHitTest(
+            const over = AppWindow.assistant_conversation_renderer.transcriptScrollbarHitTest(
                 chat,
                 xpos,
                 ypos,
@@ -4967,13 +6608,13 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
                 AppWindow.leftPanelsWidth(),
                 @as(f32, @floatFromInt(hover_fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(hover_fb.width),
             ) != null;
-            if (over != AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover) {
-                AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover = over;
-                AppWindow.g_force_rebuild = true;
+            if (over != AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_hover) {
+                AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_hover = over;
+                requestInputRebuild();
             }
-        } else if (AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover) {
-            AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover = false;
-            AppWindow.g_force_rebuild = true;
+        } else if (AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_hover) {
+            AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_hover = false;
+            requestInputRebuild();
         }
     }
     if (updateSidebarTabDrag(xpos, ypos)) return;
@@ -5022,8 +6663,7 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
             active_tab.tree.resizeInPlace(handle, new_ratio);
 
             // Force layout recalculation and redraw
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
+            requestInputRepaint();
         }
         return;
     }
@@ -5031,6 +6671,15 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         if (hitTestAiCopilotCloseButton(xpos, ypos)) {
             platform_cursor.set(.arrow);
             return;
+        }
+        const over_sidebar_resize = hitTestSidebarResizeHandle(xpos, ypos);
+        if (over_sidebar_resize) {
+            platform_cursor.set(.size_we);
+            g_sidebar_resize_hover = true;
+            return;
+        } else if (g_sidebar_resize_hover) {
+            platform_cursor.set(.arrow);
+            g_sidebar_resize_hover = false;
         }
         const over_explorer_resize = hitTestFileExplorerResizeHandle(xpos, ypos);
         if (over_explorer_resize) {
@@ -5083,7 +6732,7 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
                     overlays.copilotEdgeHandleSetHovered(handle_hovered);
                     // Only repaint while the handle is actually near/visible — avoids a
                     // full rebuild on every mouse move across the terminal when it is hidden.
-                    if (tgt > 0 or handle_hovered) AppWindow.g_force_rebuild = true;
+                    if (tgt > 0 or handle_hovered) requestInputRebuild();
                     if (handle_hovered) {
                         platform_cursor.set(.arrow);
                         return;
@@ -5154,31 +6803,7 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
     const new_close_hover = if (!g_selecting) split_layout.previewCloseButtonAtPoint(ev.x, ev.y) else null;
     if (new_close_hover != g_preview_close_hover) {
         g_preview_close_hover = new_close_hover;
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
-    }
-
-    // Titlebar icon hover: trigger a render when hovered button changes so the
-    // highlight updates without waiting for idle or cursor blink.
-    if (ypos < @as(f64, @floatCast(titlebar.titlebarHeight()))) {
-        const tbx: f64 = @floatCast(titlebar.titlebarLeftReserved());
-        const toggle_end = tbx + titlebar.TITLEBAR_TOGGLE_W;
-        const folder_end = toggle_end + titlebar.TITLEBAR_FOLDER_W;
-        const new_thover: u8 = if (xpos >= tbx and xpos < toggle_end)
-            1 // sidebar toggle
-        else if (xpos >= toggle_end and xpos < folder_end)
-            2 // folder icon
-        else
-            0;
-        if (new_thover != g_titlebar_button_hover) {
-            g_titlebar_button_hover = new_thover;
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
-        }
-    } else if (g_titlebar_button_hover != 0) {
-        g_titlebar_button_hover = 0;
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
     }
 
     // Normal selection handling
@@ -5374,9 +6999,7 @@ fn beginTerminalMouseReport(ev: platform_input.MouseButtonEvent) bool {
         .alt = ev.alt,
         .ctrl = ev.ctrl,
     });
-    g_mouse_report_button = button;
-    g_mouse_report_surface = surface;
-    g_mouse_report_last_cell = null;
+    g_mouse_report.begin(surface, button);
     return true;
 }
 
@@ -5384,14 +7007,10 @@ fn beginTerminalMouseReport(ev: platform_input.MouseButtonEvent) bool {
 /// regardless of modifiers) so the app always sees button-up and state never
 /// leaks. Returns true if a matching reported press was in progress.
 fn finishTerminalMouseReport(ev: platform_input.MouseButtonEvent) bool {
-    const active = g_mouse_report_button orelse return false;
-    if (active != platformMouseButton(ev.button)) return false;
-    const surface = g_mouse_report_surface;
-    g_mouse_report_button = null;
-    g_mouse_report_surface = null;
-    g_mouse_report_last_cell = null;
-    if (surface) |s| {
-        _ = sendTerminalMouseReport(s, .release, active, ev.x, ev.y, .{
+    const result = g_mouse_report.finishRelease(platformMouseButton(ev.button));
+    if (!result.matched) return false;
+    if (result.surface) |s| {
+        _ = sendTerminalMouseReport(s, .release, result.button, ev.x, ev.y, .{
             .shift = ev.shift,
             .alt = ev.alt,
             .ctrl = ev.ctrl,
@@ -5408,10 +7027,7 @@ fn reportMouseMotion(surface: *Surface, button: mouse_report.Button, ev: platfor
         defer surface.render_state.mutex.unlock();
         break :blk mouseToSurfaceCell(surface, @floatFromInt(ev.x), @floatFromInt(ev.y));
     };
-    if (g_mouse_report_last_cell) |last| {
-        if (last.col == cell.col and last.row == cell.row) return;
-    }
-    g_mouse_report_last_cell = cell;
+    if (!g_mouse_report.motionShouldReport(.{ .col = cell.col, .row = cell.row })) return;
     _ = sendTerminalMouseReport(surface, .motion, button, ev.x, ev.y, .{
         .shift = ev.shift,
         .alt = ev.alt,
@@ -5421,32 +7037,43 @@ fn reportMouseMotion(surface: *Surface, button: mouse_report.Button, ev: platfor
 
 fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
     overlays.startupShortcutsDismiss();
+    if (overlays.btwConversationVisible()) {
+        applyInputEffect(overlays.btwConversationHandleScroll(@floatFromInt(ev.delta)));
+        return;
+    }
     if (overlays.whatsNewVisible()) {
         overlays.whatsNewHandleScroll(@floatFromInt(ev.delta));
-        AppWindow.g_force_rebuild = true;
+        requestInputRebuild();
+        return;
+    }
+    if (overlays.integrationPromptVisible()) {
+        overlays.integrationPromptHandleScroll(@floatFromInt(ev.delta));
+        requestInputRepaint();
         return;
     }
     if (overlays.settingsPageVisible()) {
         overlays.settingsPageHandleScroll(@floatFromInt(ev.delta));
-        AppWindow.g_force_rebuild = true;
+        requestInputRebuild();
         return;
     }
     if (overlays.commandPaletteVisible()) {
         overlays.commandPaletteHandleScroll(@floatFromInt(ev.delta));
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
         return;
     }
     if (overlays.sessionLauncherVisible()) {
         overlays.sessionLauncherHandleScroll(@floatFromInt(ev.delta));
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
+        return;
+    }
+    if (copilot_picker.isVisible()) {
+        copilot_picker.move(if (ev.delta > 0) -1 else 1);
+        requestInputRepaint();
         return;
     }
     if (jupyter_picker.isVisible()) {
         jupyter_picker.move(if (ev.delta > 0) -1 else 1);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
         return;
     }
     if (tab.g_sidebar_visible and ev.xpos >= 0 and ev.xpos < @as(i32, @intFromFloat(titlebar.sidebarWidth()))) return;
@@ -5458,6 +7085,11 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
         if (ev.xpos >= panel_x and ev.xpos < panel_right) {
             const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * file_explorer.rowHeight() * 3 / 120.0;
             file_explorer.scrollBy(delta);
+            // Request a frame so the new offset is drawn now; otherwise the panel
+            // only redraws on the next cursor-blink tick (~600ms) → stuttery scroll.
+            // The explorer draws above the terminal cell grid, so leave
+            // g_cells_valid untouched — no need to rebuild the cells underneath.
+            requestInputRebuild();
             return;
         }
     }
@@ -5469,7 +7101,7 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
         const left_f = AppWindow.leftPanelsWidth();
         const right_f = @as(f32, @floatFromInt(size.width)) - AppWindow.rightPanelsWidthForWindow(size.width);
         const content_w = @max(0, right_f - left_f);
-        const layout = AppWindow.ai_history_renderer.computeLayout(left_f, content_w);
+        const layout = AppWindow.terminal_agent_sessions_renderer.computeLayout(left_f, content_w);
         const x: f32 = @floatFromInt(ev.xpos);
         if (x >= layout.detail_x and x < layout.detail_x + layout.detail_w) {
             const units: i32 = @intCast(mouseWheelUnits(ev.delta));
@@ -5484,13 +7116,24 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
         }
         return;
     }
+    if (AppWindow.activeMemoryCenter() != null) {
+        _ = AppWindow.memoryCenterHandleMouseWheel(ev.xpos, ev.ypos, @intCast(ev.delta));
+        return;
+    }
+    // Skill Center list follows the selection, so the wheel moves the selection
+    // (same as the copilot/jupyter pickers) to scroll the overflowing list.
+    if (AppWindow.activeSkillCenter() != null) {
+        const units: isize = @intCast(mouseWheelUnits(ev.delta));
+        if (AppWindow.skillCenterMove(if (ev.delta > 0) -units else units)) requestInputRepaint();
+        return;
+    }
     if (AppWindow.activeAiChat()) |chat| {
         const win = AppWindow.g_window orelse return;
         const size = clientSize(win);
         const left = @as(i32, @intFromFloat(AppWindow.leftPanelsWidth()));
         const right = size.width - @as(i32, @intFromFloat(AppWindow.rightPanelsWidthForWindow(size.width)));
         if (ev.xpos >= left and ev.xpos < right) {
-            if (AppWindow.ai_chat_renderer.inputFieldMetricsAt(
+            if (AppWindow.assistant_conversation_renderer.inputFieldMetricsAt(
                 chat,
                 @floatFromInt(ev.xpos),
                 @floatFromInt(ev.ypos),
@@ -5502,13 +7145,12 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
                 const units: i32 = @intCast(mouseWheelUnits(ev.delta));
                 const rows = if (ev.delta > 0) -units else units;
                 _ = chat.scrollInputRows(rows, metrics.max_cols, metrics.visible_rows);
-                AppWindow.g_force_rebuild = true;
-                AppWindow.g_cells_valid = false;
+                requestInputRepaint();
                 return;
             }
             const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
             chat.scrollBy(delta);
-            AppWindow.g_force_rebuild = true;
+            requestInputRebuild();
             return;
         }
     }
@@ -5530,7 +7172,7 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
             if (ev.xpos >= bounds.left and ev.xpos < bounds.right and ev.ypos >= bounds.top and ev.ypos < bounds.bottom) {
                 const chat_x: f32 = @floatFromInt(bounds.left);
                 const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
-                if (AppWindow.ai_chat_renderer.inputFieldMetricsAt(
+                if (AppWindow.assistant_conversation_renderer.inputFieldMetricsAt(
                     chat,
                     @floatFromInt(ev.xpos),
                     @floatFromInt(ev.ypos),
@@ -5542,13 +7184,12 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
                     const units: i32 = @intCast(mouseWheelUnits(ev.delta));
                     const rows = if (ev.delta > 0) -units else units;
                     _ = chat.scrollInputRows(rows, metrics.max_cols, metrics.visible_rows);
-                    AppWindow.g_force_rebuild = true;
-                    AppWindow.g_cells_valid = false;
+                    requestInputRepaint();
                     return;
                 }
                 const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
                 chat.scrollBy(delta);
-                AppWindow.g_force_rebuild = true;
+                requestInputRebuild();
                 return;
             }
         }
@@ -5569,7 +7210,7 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
                 const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
                 p.scrollBy(delta);
             }
-            AppWindow.g_force_rebuild = true;
+            requestInputRebuild();
             return;
         }
     }
@@ -5595,8 +7236,7 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
         const delta: isize = @intFromFloat(-notches * 3);
         surface.terminal.scrollViewport(.{ .delta = delta });
         if (mouse_wheel_scroll.repaintFlagsForViewportScroll(delta)) |flags| {
-            AppWindow.g_force_rebuild = flags.force_rebuild;
-            AppWindow.g_cells_valid = flags.cells_valid;
+            requestInputDirtyFlags(flags.force_rebuild, flags.cells_valid);
         }
 
         // Show scrollbar for the scrolled surface
@@ -5657,8 +7297,7 @@ fn toggleAiAgentPermission() void {
     };
     Config.setConfigValue(allocator, "ai-agent-permission", next) catch return;
     AppWindow.reloadConfigImmediate(allocator);
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 // --- Maximize toggle (native window) ---

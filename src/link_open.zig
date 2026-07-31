@@ -27,6 +27,10 @@ pub const Mode = enum {
     }
 };
 
+/// Live URL-opening preference shared by AppWindow config reload and input
+/// dispatch. Keeping it with the decision model avoids another input.zig global.
+pub threadlocal var current_mode: Mode = .embedded;
+
 pub fn destinationForUrlClick(embedded_browser_available: bool, mode: Mode) Destination {
     if (mode == .system_browser) return .system_browser;
     return if (embedded_browser_available) .embedded_browser else .system_browser;

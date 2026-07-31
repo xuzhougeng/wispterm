@@ -338,7 +338,7 @@ fn hitTest(
     data: ?*anyopaque,
 ) callconv(.c) c.SDL_HitTestResult {
     _ = win;
-    const self: *Window = @alignCast(@ptrCast(data orelse return c.SDL_HITTEST_NORMAL));
+    const self: *Window = @ptrCast(@alignCast(data orelse return c.SDL_HITTEST_NORMAL));
     // Exclude the caption-button cluster from the draggable titlebar so clicks
     // reach the host (which performs minimize/maximize/close) instead of being
     // swallowed as a window-move.
@@ -419,14 +419,14 @@ fn processEvent(event: c.SDL_Event) void {
         c.SDL_EVENT_WINDOW_CLOSE_REQUESTED => {
             const win_id = event.window.windowID;
             if (g_registry.find(win_id)) |ptr| {
-                const w: *Window = @alignCast(@ptrCast(ptr));
+                const w: *Window = @ptrCast(@alignCast(ptr));
                 w.close_requested = true;
             }
         },
         c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED => {
             const win_id = event.window.windowID;
             if (g_registry.find(win_id)) |ptr| {
-                const w: *Window = @alignCast(@ptrCast(ptr));
+                const w: *Window = @ptrCast(@alignCast(ptr));
                 w.width = event.window.data1;
                 w.height = event.window.data2;
                 w.size_changed = true;
@@ -442,28 +442,28 @@ fn processEvent(event: c.SDL_Event) void {
         c.SDL_EVENT_WINDOW_FOCUS_GAINED => {
             const win_id = event.window.windowID;
             if (g_registry.find(win_id)) |ptr| {
-                const w: *Window = @alignCast(@ptrCast(ptr));
+                const w: *Window = @ptrCast(@alignCast(ptr));
                 w.focused = true;
             }
         },
         c.SDL_EVENT_WINDOW_FOCUS_LOST => {
             const win_id = event.window.windowID;
             if (g_registry.find(win_id)) |ptr| {
-                const w: *Window = @alignCast(@ptrCast(ptr));
+                const w: *Window = @ptrCast(@alignCast(ptr));
                 w.focused = false;
             }
         },
         c.SDL_EVENT_WINDOW_MINIMIZED => {
             const win_id = event.window.windowID;
             if (g_registry.find(win_id)) |ptr| {
-                const w: *Window = @alignCast(@ptrCast(ptr));
+                const w: *Window = @ptrCast(@alignCast(ptr));
                 w.is_minimized = true;
             }
         },
         c.SDL_EVENT_WINDOW_RESTORED => {
             const win_id = event.window.windowID;
             if (g_registry.find(win_id)) |ptr| {
-                const w: *Window = @alignCast(@ptrCast(ptr));
+                const w: *Window = @ptrCast(@alignCast(ptr));
                 w.is_minimized = false;
                 w.size_changed = true;
             }
@@ -476,7 +476,7 @@ fn processEvent(event: c.SDL_Event) void {
         c.SDL_EVENT_KEY_DOWN => {
             const win_id = event.key.windowID;
             if (g_registry.find(win_id)) |ptr| {
-                const w: *Window = @alignCast(@ptrCast(ptr));
+                const w: *Window = @ptrCast(@alignCast(ptr));
                 const sc: u32 = @intCast(event.key.scancode);
                 if (keymap.keyCodeFromScancode(sc)) |code| {
                     const m = keymap.modifiers(@intCast(event.key.mod));
@@ -495,7 +495,7 @@ fn processEvent(event: c.SDL_Event) void {
         c.SDL_EVENT_TEXT_EDITING => {
             const win_id = event.edit.windowID;
             if (g_registry.find(win_id)) |ptr| {
-                const w: *Window = @alignCast(@ptrCast(ptr));
+                const w: *Window = @ptrCast(@alignCast(ptr));
                 // event.edit.text is [*c]const u8 — a C pointer that may be null.
                 const txt: []const u8 = if (event.edit.text != null)
                     std.mem.span(@as([*:0]const u8, @ptrCast(event.edit.text)))
@@ -511,7 +511,7 @@ fn processEvent(event: c.SDL_Event) void {
         c.SDL_EVENT_TEXT_INPUT => {
             const win_id = event.text.windowID;
             if (g_registry.find(win_id)) |ptr| {
-                const w: *Window = @alignCast(@ptrCast(ptr));
+                const w: *Window = @ptrCast(@alignCast(ptr));
                 // event.text.text is a null-terminated UTF-8 C string (*const u8).
                 const raw: [*:0]const u8 = event.text.text;
                 const slice = std.mem.span(raw);
@@ -539,7 +539,7 @@ fn processEvent(event: c.SDL_Event) void {
         c.SDL_EVENT_MOUSE_BUTTON_DOWN, c.SDL_EVENT_MOUSE_BUTTON_UP => {
             const win_id = event.button.windowID;
             if (g_registry.find(win_id)) |ptr| {
-                const w: *Window = @alignCast(@ptrCast(ptr));
+                const w: *Window = @ptrCast(@alignCast(ptr));
                 const btn: platform_input.MouseButton = switch (event.button.button) {
                     c.SDL_BUTTON_LEFT => .left,
                     c.SDL_BUTTON_MIDDLE => .middle,
@@ -597,7 +597,7 @@ fn processEvent(event: c.SDL_Event) void {
         c.SDL_EVENT_MOUSE_MOTION => {
             const win_id = event.motion.windowID;
             if (g_registry.find(win_id)) |ptr| {
-                const w: *Window = @alignCast(@ptrCast(ptr));
+                const w: *Window = @ptrCast(@alignCast(ptr));
                 const mx: i32 = @intFromFloat(event.motion.x);
                 const my: i32 = @intFromFloat(event.motion.y);
                 const m = keymap.modifiers(@intCast(c.SDL_GetModState()));
@@ -623,7 +623,7 @@ fn processEvent(event: c.SDL_Event) void {
         c.SDL_EVENT_MOUSE_WHEEL => {
             const win_id = event.wheel.windowID;
             if (g_registry.find(win_id)) |ptr| {
-                const w: *Window = @alignCast(@ptrCast(ptr));
+                const w: *Window = @ptrCast(@alignCast(ptr));
                 const dy: f32 = event.wheel.y;
                 // Clamp to i16 range before converting.
                 const raw_delta: f32 = dy * 120.0;
@@ -651,7 +651,7 @@ fn processEvent(event: c.SDL_Event) void {
         c.SDL_EVENT_DROP_FILE => {
             const win_id = event.drop.windowID;
             if (g_registry.find(win_id)) |ptr| {
-                const w: *Window = @alignCast(@ptrCast(ptr));
+                const w: *Window = @ptrCast(@alignCast(ptr));
                 if (w.on_file_drop) |cb| {
                     if (event.drop.data) |data_ptr| {
                         const path: [*:0]const u8 = data_ptr;

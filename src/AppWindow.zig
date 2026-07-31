@@ -1,4 +1,4 @@
-//! AppWindow — per-window state and rendering.
+﻿//! AppWindow — per-window state and rendering.
 //!
 //! This module contains all the terminal rendering, input handling, and
 //! per-window state. Currently uses module-level globals for state, which
@@ -11,32 +11,29 @@ const Config = @import("config.zig");
 const build_options = @import("build_options");
 const Surface = @import("Surface.zig");
 const SplitTree = @import("split_tree.zig");
-const PreviewPane = @import("preview_pane.zig");
+const PreviewPane = @import("preview/pane.zig");
 const renderer = @import("renderer.zig");
 const window_backend = @import("platform/window_backend.zig");
 const App = @import("App.zig");
 const Renderer = @import("renderer/Renderer.zig");
-const remote = @import("remote_client.zig");
-const remote_snapshot = @import("remote_snapshot.zig");
-const weixin_control = @import("weixin/control.zig");
-const weixin_types = @import("weixin/types.zig");
+const weixin_control = @import("chatops/control.zig");
 const ctl_control = @import("ctl/control.zig");
 const memory_debug = @import("memory_debug.zig");
-const surface_registry = @import("surface_registry.zig");
-const agent_detector = @import("agent_detector.zig");
-const agent_history = @import("agent_history.zig");
+const agent_history = @import("agent/history.zig");
+const agent_history_store = @import("agent/history_store.zig");
 const close_confirm = @import("close_confirm.zig");
 const font_backend = @import("platform/font_backend.zig");
 const platform_display = @import("platform/display.zig");
 const platform_dirs = @import("platform/dirs.zig");
+const platform_atomic_file = @import("platform/atomic_file.zig");
 const platform_file_dialog = @import("platform/file_dialog.zig");
 const platform_global_hotkey = @import("platform/global_hotkey.zig");
 const platform_menu = @import("platform/menu.zig");
 const platform_notifications = @import("platform/notifications.zig");
 const notif_mod = @import("notification.zig");
+const agent_detector = @import("terminal_agents/detector.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
-const single_instance = @import("platform/single_instance.zig");
-const copilot_hint_gate = @import("copilot_hint_gate.zig");
+const copilot_hint_gate = @import("assistant/sidebar/hint_gate.zig");
 const platform_window_state = @import("platform/window_state.zig");
 const platform_wsl = @import("platform/wsl.zig");
 const startup_tabs = @import("startup_tabs.zig");
@@ -44,69 +41,100 @@ const session_persist = @import("session_persist.zig");
 const quick_terminal = @import("quick_terminal.zig");
 const keybind = @import("keybind.zig");
 const thread_message = @import("appwindow/thread_message.zig");
+const skill_center_actions = @import("appwindow/skill_center_actions.zig");
+const copilot_sidebar = @import("appwindow/copilot_sidebar.zig");
+const appwindow_state = @import("appwindow/state.zig");
 const render_diagnostics = @import("render_diagnostics.zig");
 const ime_caret = @import("ime_caret.zig");
 const hit_test = @import("input/hit_test.zig");
-pub const ai_chat = @import("ai_chat.zig");
-const ai_history_cache = @import("ai_history_cache.zig");
-const ai_history_resume = @import("ai_history_resume.zig");
-const ai_loop_store = @import("ai_loop_store.zig");
-const ai_history_types = @import("ai_history_types.zig");
-pub const ai_history_session = @import("ai_history_session.zig");
-pub const ai_history_source = @import("ai_history_source.zig");
-pub const skill_center = @import("skill_center.zig");
-const skill_install = @import("skill_install.zig");
+pub const ai_chat = @import("assistant/conversation/session.zig");
+const ai_chat_types = @import("assistant/conversation/types.zig");
+const ai_history_cache = @import("terminal_agents/sessions/cache.zig");
+const ai_history_resume = @import("terminal_agents/sessions/resume.zig");
+const ai_history_markdown = @import("terminal_agents/sessions/markdown.zig");
+const ai_loop_store = @import("assistant/loop/store.zig");
+const ai_history_types = @import("terminal_agents/sessions/types.zig");
+const ai_history_session = @import("terminal_agents/sessions/session.zig");
+const ai_history_source = @import("terminal_agents/sessions/source.zig");
+pub const skill_center = @import("skill/center.zig");
+const skill_install = @import("skill/install.zig");
 const update_install = @import("update_install.zig");
 const clipboard = @import("input/clipboard.zig");
-pub const port_forwarding = @import("port_forwarding.zig");
-const port_forward_manager = @import("port_forward_manager.zig");
-const port_forward_rule = @import("port_forward_rule.zig");
-const ssh_profile_store = @import("ssh_profile_store.zig");
-const skill_scan = @import("skill_scan.zig");
-const skill_local_fs = @import("skill_local_fs.zig");
-const skill_transfer_cmd = @import("skill_transfer_cmd.zig");
+const port_forwarding = @import("port_forward/forwarding.zig");
+const port_forward_manager = @import("port_forward/manager.zig");
+const port_forward_rule = @import("port_forward/rule.zig");
+const ssh_profile_store = @import("ssh/profile_store.zig");
+const skill_scan = @import("skill/scan.zig");
+const skill_local_fs = @import("skill/local_fs.zig");
+const skill_transfer_cmd = @import("skill/transfer_cmd.zig");
+const tool_import = @import("tools/import.zig");
+const tool_registry = @import("tools/registry.zig");
+const tool_skill_draft = @import("tools/skill_draft.zig");
+const first_party_tools = @import("tools/first_party.zig");
+const ai_chat_request = @import("assistant/conversation/request.zig");
 const remote_file = @import("platform/remote_file.zig");
-const ssh_connection = @import("ssh_connection.zig");
-const skill_transfer = @import("skill_transfer.zig");
-const skill_diff = @import("skill_diff.zig");
-const scp = @import("scp.zig");
-const ssh_error = @import("ssh_error.zig");
+const ssh_connection = @import("ssh/connection.zig");
+const skill_transfer = @import("skill/transfer.zig");
+const skill_diff = @import("skill/diff.zig");
+const scp = @import("ssh/scp.zig");
+const ssh_error = @import("ssh/error.zig");
 const i18n = @import("i18n.zig");
 pub const tab = @import("appwindow/tab.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
+const link_open = @import("link_open.zig");
 const tmux_controller = @import("appwindow/tmux_controller.zig");
+const memory_digest_scheduler = @import("memory_digest/scheduler.zig");
+const memory_center_session = @import("memory_center/session.zig");
 pub const font = @import("font/manager.zig");
 pub const cell_renderer = @import("renderer/cell_renderer.zig");
-pub const cell_pipeline = @import("renderer/cell_pipeline.zig");
+const cell_pipeline = @import("renderer/cell_pipeline.zig");
 pub const ui_pipeline = @import("renderer/ui_pipeline.zig");
 pub const titlebar = @import("renderer/titlebar.zig");
 pub const input = @import("input.zig");
 pub const overlays = @import("renderer/overlays.zig");
-pub const post_process = @import("renderer/post_process.zig");
+const post_process = @import("renderer/post_process.zig");
+const d3d11_offscreen_smoke = @import("renderer/d3d11_offscreen_smoke.zig");
+const d3d11_ui_smoke = @import("renderer/d3d11_ui_smoke.zig");
+const d3d11_recreate_smoke = @import("renderer/d3d11_recreate_smoke.zig");
+const d3d11_fallback_marker = @import("renderer/gpu/d3d11/fallback_marker.zig");
 pub const gpu = @import("renderer/gpu/gpu.zig");
 pub const split_layout = @import("appwindow/split_layout.zig");
 const render_gate = @import("appwindow/render_gate.zig");
+const frame_scheduler = @import("appwindow/frame_scheduler.zig");
 const frame_latency = @import("appwindow/frame_latency.zig");
 const flush_scheduler = @import("appwindow/flush_scheduler.zig");
 const resize_throttle = @import("appwindow/resize_throttle.zig");
-pub const fbo = @import("renderer/fbo.zig");
+const surface_snapshots = @import("appwindow/surface_snapshots.zig");
+const control_api = @import("appwindow/control_api.zig");
+const remote_sync = @import("appwindow/remote_sync.zig");
+const weixin_bridge = @import("appwindow/chatops_bridge.zig");
+const agent_requests = @import("appwindow/agent_requests.zig");
+const appwindow_ui_screenshot = @import("appwindow/ui_screenshot.zig");
+const png_writer = @import("appwindow/png_writer.zig");
+const ui_effect = @import("appwindow/ui_effect.zig");
+pub const UiEffect = ui_effect.UiEffect;
+const bench_driver = @import("benchmark/driver.zig");
+const bench_report = @import("benchmark/report.zig");
 pub const background_image = @import("renderer/background_image.zig");
 pub const file_explorer = @import("file_explorer.zig");
-pub const file_explorer_renderer = @import("renderer/file_explorer_renderer.zig");
-pub const markdown_preview_panel = @import("markdown_preview_panel.zig");
-pub const markdown_preview_renderer = @import("renderer/markdown_preview_renderer.zig");
+const file_explorer_renderer = @import("renderer/file_explorer_renderer.zig");
+const markdown_preview_renderer = @import("renderer/markdown_preview_renderer.zig");
 pub const weixin_qr_panel = @import("weixin/qr_panel.zig");
-pub const weixin_qr_renderer = @import("renderer/weixin_qr_renderer.zig");
-const html_server = @import("html_server.zig");
+const weixin_qr_renderer = @import("renderer/weixin_qr_renderer.zig");
+const feishu_registration = @import("feishu/registration.zig");
+const feishu_reg_panel = @import("feishu/registration_panel.zig");
+const feishu_reg_renderer = @import("renderer/feishu_qr_renderer.zig");
+const html_server = @import("html/server.zig");
 pub const browser_panel = if (build_options.webview)
-    @import("browser_panel.zig")
+    @import("browser/panel.zig")
 else
-    @import("browser_panel_stub.zig");
-pub const ai_chat_renderer = @import("renderer/ai_chat_renderer.zig");
-pub const ai_history_renderer = @import("renderer/ai_history_renderer.zig");
-pub const skill_center_renderer = @import("renderer/skill_center_renderer.zig");
-pub const port_forwarding_renderer = @import("renderer/port_forwarding_renderer.zig");
-const ai_sidebar = @import("ai_sidebar.zig");
+    @import("browser/panel_stub.zig");
+pub const assistant_conversation_renderer = @import("renderer/assistant/conversation.zig");
+pub const terminal_agent_sessions_renderer = @import("renderer/terminal_agents/sessions.zig");
+const memory_center_renderer = @import("renderer/memory_center_renderer.zig");
+const skill_center_renderer = @import("renderer/skill_center_renderer.zig");
+const port_forwarding_renderer = @import("renderer/port_forwarding_renderer.zig");
+const ai_sidebar = @import("assistant/sidebar/panel.zig");
 pub const ui_perf = @import("ui_perf.zig");
 const log = std.log.scoped(.app_window);
 
@@ -141,10 +169,22 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
             overlays.commandPaletteOpenAgentHistory();
         }
     }.cb);
+    // `/resume` in the Copilot sidebar opens the Copilot conversation picker.
+    ai_chat.setCopilotPickerTrigger(struct {
+        fn cb() void {
+            openCopilotConversationPicker();
+        }
+    }.cb);
     // `/export [full|clean]` writes the active AI Chat transcript as Markdown.
     ai_chat.setMarkdownExportTrigger(struct {
-        fn cb(mode: ai_chat.MarkdownExportMode) void {
-            exportActiveAiChatMarkdown(mode);
+        fn cb(session: *ai_chat.Session, mode: ai_chat.MarkdownExportMode) void {
+            exportAiChatMarkdown(session, mode);
+        }
+    }.cb);
+    // `/copy [full|clean]` puts the same Markdown on the clipboard instead.
+    ai_chat.setTranscriptCopyTrigger(struct {
+        fn cb(session: *ai_chat.Session, mode: ai_chat.MarkdownExportMode) void {
+            copyAiChatMarkdown(session, mode);
         }
     }.cb);
     // `/model [name]` switches the active session's profile (and summarizes the
@@ -157,6 +197,25 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
             } else {
                 overlays.openSwitchModelPicker(chat);
             }
+        }
+    }.cb);
+    // `/btw [question]` opens a transient side conversation cloned from the
+    // submitting session. The overlay owns that clone; the source stays intact.
+    ai_chat.setBtwOverlayTrigger(struct {
+        fn cb(source: *ai_chat.Session) void {
+            const app_allocator = g_allocator orelse return;
+            const prompt = source.takePendingBtwPrompt(app_allocator) catch {
+                overlays.showStatusToast("Could not open BTW conversation");
+                return;
+            };
+            defer app_allocator.free(prompt);
+            if (overlays.btwConversationSession() == source) {
+                source.appendLocalToolMessage("Already in the BTW conversation.");
+                applyUiEffect(.repaint);
+                return;
+            }
+            overlays.openBtwConversation(source, prompt);
+            applyUiEffect(.repaint);
         }
     }.cb);
     app.maybeStartStartupUpdateCheck();
@@ -191,7 +250,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     g_copy_on_select = app.copy_on_select;
     g_copilot_hint = app.copilot_hint;
     g_right_click_action = app.right_click_action;
-    input.g_url_open_mode = app.url_open_mode;
+    link_open.current_mode = app.url_open_mode;
     g_ssh_legacy_algorithms = app.ssh_legacy_algorithms;
     tab.g_ssh_legacy_algorithms = app.ssh_legacy_algorithms;
     g_weixin_notify_forward = app.weixin_notify_forward;
@@ -211,10 +270,11 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
         .memory_enabled = app.ai_memory_enabled,
         .distill_suggest_enabled = app.ai_distill_suggest,
     });
+    ai_chat.reloadFirstPartyToolState(allocator);
     ai_chat.setDefaultWorkingDir(app.ai_agent_working_dir);
     overlays.setSubagentProfileName(app.ai_subagent_profile);
     ai_chat.setSubagentProfileResolver(overlays.resolveSubagentProfileOverride);
-    @import("web_search.zig").setJinaApiKey(app.jina_api_key);
+    @import("research/web_search.zig").setJinaApiKey(app.jina_api_key);
     @import("pty.zig").setConsoleHostPreference(app.console_host_preference);
     // Copy shell command from App
     @memcpy(tab.g_shell_cmd_buf[0..app.shell_cmd_len], app.shell_cmd_buf[0..app.shell_cmd_len]);
@@ -236,7 +296,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     g_quake_mode = app.quake_mode;
     g_keybinds = app.keybinds;
     background_image.g_mode = app.background_image_mode;
-    gpu.gl_init.g_bg_opacity = app.background_opacity;
+    gpu.background_opacity = app.background_opacity;
     tab.g_forced_title = app.title;
 
     // Get initial CWD for this window (if any) - copy into thread-local buffer
@@ -272,6 +332,8 @@ pub fn currentNativeHandleBits() ?usize {
     const window = g_window orelse return null;
     return window_backend.nativeHandleBits(window);
 }
+
+pub var g_skill_center_open_file_override: ?*const fn (std.mem.Allocator, platform_file_dialog.OpenRequest) ?[]u8 = null;
 
 /// Request this window to exit without showing the interactive close prompt.
 pub fn requestForceClose(self: *AppWindow) void {
@@ -315,6 +377,10 @@ pub fn deinit(self: *AppWindow) void {
     // cleanup below: destroy closes every pane's virtual controller (EOF'ing the
     // Surfaces) without freeing the Surfaces, which the tab teardown then owns.
     tmux_controller.shutdownAll(self.allocator);
+
+    // In-app GPU benchmark: free the driver's run state (samples, payloads, and
+    // the benchmark surface's virtual PTY controller). No-op when not running.
+    bench_driver.deinit();
 
     // Clean up all tabs
     for (0..tab.g_tab_count) |ti| {
@@ -433,6 +499,740 @@ test "AppWindow: AI history restore snapshot rebuilds an SSH source" {
     }
 }
 
+test "AppWindow: skill center tool enabled update matches manifest path" {
+    var entries = [_]skill_center.LibraryEntry{
+        .{ .tool = .{
+            .name = @constCast("tool_a"),
+            .executable_path = @constCast("/tmp/tools/tool_a/bin/tool_a"),
+            .skill_path = @constCast("/tmp/tools/tool_a/SKILL.md"),
+            .enabled = false,
+        } },
+        .{ .tool = .{
+            .name = @constCast("tool_b"),
+            .executable_path = @constCast("/tmp/tools/tool_b/bin/tool_b"),
+            .skill_path = @constCast("/tmp/tools/tool_b/SKILL.md"),
+            .enabled = false,
+        } },
+    };
+
+    const manifest_b = switch (entries[1]) {
+        .tool => |tool| skill_center_actions.toolManifestPath(std.testing.allocator, tool) orelse return error.ExpectedManifestPath,
+        else => return error.ExpectedSkillCenterTool,
+    };
+    defer std.testing.allocator.free(manifest_b);
+
+    try std.testing.expect(skill_center_actions.applyToolEnabledByManifestPath(std.testing.allocator, entries[0..], manifest_b, true));
+    switch (entries[0]) {
+        .tool => |tool| try std.testing.expect(!tool.enabled),
+        else => return error.ExpectedSkillCenterTool,
+    }
+    switch (entries[1]) {
+        .tool => |tool| try std.testing.expect(tool.enabled),
+        else => return error.ExpectedSkillCenterTool,
+    }
+
+    try std.testing.expect(!skill_center_actions.applyToolEnabledByManifestPath(std.testing.allocator, entries[0..], "/tmp/tools/missing/manifest.json", false));
+    switch (entries[1]) {
+        .tool => |tool| try std.testing.expect(tool.enabled),
+        else => return error.ExpectedSkillCenterTool,
+    }
+}
+
+test "AppWindow: skill center first-party enabled update matches name only" {
+    var entries = [_]skill_center.LibraryEntry{
+        .{ .first_party_tool = .{
+            .name = @constCast("webread"),
+            .description = @constCast("Read web pages."),
+            .enabled = false,
+            .disableable = true,
+        } },
+        .{ .first_party_tool = .{
+            .name = @constCast("pubmed"),
+            .description = @constCast("Search PubMed."),
+            .enabled = false,
+            .disableable = true,
+        } },
+        .{ .tool = .{
+            .name = @constCast("webread"),
+            .executable_path = @constCast("/tmp/tools/webread/bin/webread"),
+            .skill_path = @constCast("/tmp/tools/webread/SKILL.md"),
+            .enabled = false,
+        } },
+    };
+
+    try std.testing.expect(skill_center_actions.applyFirstPartyEnabledByName(entries[0..], "pubmed", true));
+    switch (entries[0]) {
+        .first_party_tool => |tool| try std.testing.expect(!tool.enabled),
+        else => return error.ExpectedFirstPartyTool,
+    }
+    switch (entries[1]) {
+        .first_party_tool => |tool| try std.testing.expect(tool.enabled),
+        else => return error.ExpectedFirstPartyTool,
+    }
+    switch (entries[2]) {
+        .tool => |tool| try std.testing.expect(!tool.enabled),
+        else => return error.ExpectedSkillCenterTool,
+    }
+
+    try std.testing.expect(!skill_center_actions.applyFirstPartyEnabledByName(entries[0..], "missing", false));
+    switch (entries[1]) {
+        .first_party_tool => |tool| try std.testing.expect(tool.enabled),
+        else => return error.ExpectedFirstPartyTool,
+    }
+}
+
+test "AppWindow: skill center tool manifest toggle preserves extra fields" {
+    const manifest_json =
+        \\{
+        \\  "kind": "binary_tool",
+        \\  "id": "sample_tool",
+        \\  "function_name": "sample_tool",
+        \\  "enabled": false,
+        \\  "executable": "bin/sample_tool",
+        \\  "source_path": "/tmp/sample_tool",
+        \\  "sha256": "abc123",
+        \\  "imported_at_ms": 1234,
+        \\  "description": "Sample tool",
+        \\  "custom_meta": {
+        \\    "owner": "qa"
+        \\  }
+        \\}
+    ;
+
+    const updated = try skill_center_actions.manifestJsonWithEnabled(std.testing.allocator, manifest_json, true);
+    defer std.testing.allocator.free(updated);
+
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"custom_meta\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"owner\"") != null);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, updated, .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value == .object);
+    const enabled_value = parsed.value.object.get("enabled") orelse return error.ExpectedEnabledField;
+    try std.testing.expect(enabled_value == .bool);
+    try std.testing.expect(enabled_value.bool);
+}
+
+test "AppWindow: applyUiEffect maps repaint to dirty globals" {
+    const previous_force_rebuild = g_force_rebuild;
+    const previous_cells_valid = g_cells_valid;
+    defer {
+        g_force_rebuild = previous_force_rebuild;
+        g_cells_valid = previous_cells_valid;
+    }
+
+    g_force_rebuild = false;
+    g_cells_valid = true;
+
+    applyUiEffect(UiEffect.repaint);
+
+    try std.testing.expect(g_force_rebuild);
+    try std.testing.expect(!g_cells_valid);
+}
+
+test "AppWindow: applyUiEffect none leaves dirty globals unchanged" {
+    const previous_force_rebuild = g_force_rebuild;
+    const previous_cells_valid = g_cells_valid;
+    defer {
+        g_force_rebuild = previous_force_rebuild;
+        g_cells_valid = previous_cells_valid;
+    }
+
+    g_force_rebuild = false;
+    g_cells_valid = true;
+
+    applyUiEffect(UiEffect.none);
+
+    try std.testing.expect(!g_force_rebuild);
+    try std.testing.expect(g_cells_valid);
+}
+
+test "AppWindow: applyUiEffect documents UI-thread-only dirty flags" {
+    const source = @embedFile("AppWindow.zig");
+    const fn_needle = "pub fn applyUi" ++ "Effect(effect: UiEffect) void";
+    const fn_pos = std.mem.indexOf(u8, source, fn_needle) orelse return error.MissingApplyUiEffect;
+    const prefix_start = if (fn_pos > 400) fn_pos - 400 else 0;
+    const prefix = source[prefix_start..fn_pos];
+
+    try std.testing.expect(std.mem.indexOf(u8, prefix, "UI thread") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prefix, "threadlocal") != null);
+}
+
+test "AppWindow: skill center import picker allows empty library and blocks tool rows" {
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_force_rebuild = g_force_rebuild;
+    const previous_cells_valid = g_cells_valid;
+    defer {
+        g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        g_force_rebuild = previous_force_rebuild;
+        g_cells_valid = previous_cells_valid;
+    }
+
+    g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    g_force_rebuild = false;
+    g_cells_valid = true;
+    try std.testing.expect(skillCenterImport());
+    try std.testing.expect(g_force_rebuild);
+    try std.testing.expect(!g_cells_valid);
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        switch (session.model.overlay) {
+            .picker => |picker| {
+                try std.testing.expectEqual(skill_center.Purpose.import_, picker.purpose);
+                try std.testing.expectEqualStrings("", picker.skill_name);
+            },
+            else => return error.ExpectedSkillCenterPicker,
+        }
+        session.model.clearOverlay();
+    }
+
+    const name = try allocator.dupe(u8, "fake_tool");
+    var name_owned = true;
+    errdefer if (name_owned) allocator.free(name);
+    const executable_path = try allocator.dupe(u8, "/tmp/tools/fake_tool/bin/fake_tool");
+    var executable_path_owned = true;
+    errdefer if (executable_path_owned) allocator.free(executable_path);
+    const skill_path = try allocator.dupe(u8, "/tmp/tools/fake_tool/SKILL.md");
+    var skill_path_owned = true;
+    errdefer if (skill_path_owned) allocator.free(skill_path);
+    const entries = try allocator.alloc(skill_center.LibraryEntry, 1);
+    var entries_owned = true;
+    errdefer if (entries_owned) allocator.free(entries);
+    entries[0] = .{ .tool = .{
+        .name = name,
+        .executable_path = executable_path,
+        .skill_path = skill_path,
+        .enabled = false,
+    } };
+
+    session.mutex.lock();
+    session.model.setEntries(entries);
+    entries_owned = false;
+    name_owned = false;
+    executable_path_owned = false;
+    skill_path_owned = false;
+    session.mutex.unlock();
+
+    g_force_rebuild = false;
+    g_cells_valid = true;
+    try std.testing.expect(!skillCenterOpenPicker(.import_));
+    try std.testing.expect(!g_force_rebuild);
+    try std.testing.expect(g_cells_valid);
+    try std.testing.expect(!skillCenterOverlayActive());
+}
+
+test "AppWindow: skill center tool toggle failure uses toggle status" {
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_force_rebuild = g_force_rebuild;
+    const previous_cells_valid = g_cells_valid;
+    defer {
+        g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        g_force_rebuild = previous_force_rebuild;
+        g_cells_valid = previous_cells_valid;
+    }
+
+    g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    const name = try allocator.dupe(u8, "bad_tool");
+    var name_owned = true;
+    errdefer if (name_owned) allocator.free(name);
+    const executable_path = try allocator.dupe(u8, "/tmp/tools/bad_tool/bad_tool");
+    var executable_path_owned = true;
+    errdefer if (executable_path_owned) allocator.free(executable_path);
+    const entries = try allocator.alloc(skill_center.LibraryEntry, 1);
+    var entries_owned = true;
+    errdefer if (entries_owned) allocator.free(entries);
+    entries[0] = .{ .tool = .{
+        .name = name,
+        .executable_path = executable_path,
+        .skill_path = null,
+        .enabled = false,
+    } };
+
+    session.mutex.lock();
+    session.model.setEntries(entries);
+    entries_owned = false;
+    name_owned = false;
+    executable_path_owned = false;
+    session.mutex.unlock();
+
+    try std.testing.expect(skillCenterToggleToolEnabled());
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expectEqualStrings(i18n.s().sc_tool_toggle_failed, session.status);
+}
+
+test "AppWindow: failed tool import preserves preview overlay and sets status" {
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("tools/docx");
+    try tmp.dir.makePath("tools/.import-stage-docx/bin");
+    try tmp.dir.makePath("source");
+    try tmp.dir.writeFile(.{ .sub_path = "tools/.import-stage-docx/bin/docx", .data = "staged bytes" });
+    try tmp.dir.writeFile(.{ .sub_path = "source/docx", .data = "original bytes" });
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+
+    const staged_path = try tmp.dir.realpathAlloc(allocator, "tools/.import-stage-docx/bin/docx");
+    defer allocator.free(staged_path);
+    const stage_root = try tmp.dir.realpathAlloc(allocator, "tools/.import-stage-docx");
+    defer allocator.free(stage_root);
+    const source_path = try tmp.dir.realpathAlloc(allocator, "source/docx");
+    defer allocator.free(source_path);
+
+    g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    session.mutex.lock();
+    try session.model.openToolImportPreview(.{
+        .tool_id = "docx",
+        .function_name = "docx",
+        .source_path = source_path,
+        .staged_binary_path = staged_path,
+        .skill_md = "---\nname: docx\n---\nUse docs.\n",
+        .doc_source = .skill_flag,
+        .ai_review_required = false,
+    });
+    session.mutex.unlock();
+
+    try std.testing.expect(skillCenterOverlaySelect());
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expect(session.model.overlay == .tool_import_preview);
+    try std.testing.expect(std.mem.indexOf(u8, session.status, "Tool import failed:") != null);
+    try std.testing.expectEqualStrings(staged_path, session.model.overlay.tool_import_preview.staged_binary_path);
+    try std.fs.accessAbsolute(stage_root, .{});
+}
+
+fn countMatchingToolDirs(tools_root: []const u8, prefix: []const u8) !usize {
+    var dir = std.fs.openDirAbsolute(tools_root, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return 0,
+        else => return err,
+    };
+    defer dir.close();
+    var it = dir.iterate();
+    var count: usize = 0;
+    while (try it.next()) |entry| {
+        if (entry.kind != .directory) continue;
+        if (std.mem.startsWith(u8, entry.name, prefix)) count += 1;
+    }
+    return count;
+}
+
+test "AppWindow: skill center tool import stages file behind explicit confirmation" {
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_open_file = g_skill_center_open_file_override;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        g_allocator = previous_allocator;
+        g_skill_center_open_file_override = previous_open_file;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("source");
+    try tmp.dir.writeFile(.{ .sub_path = "source/docx", .data = "plain bytes" });
+    const source_path = try tmp.dir.realpathAlloc(allocator, "source/docx");
+    defer allocator.free(source_path);
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+    const tools_root = try platform_dirs.toolsDir(allocator);
+    defer allocator.free(tools_root);
+
+    g_allocator = allocator;
+    const open_file = struct {
+        var path: []const u8 = "";
+        fn open(a: std.mem.Allocator, _: platform_file_dialog.OpenRequest) ?[]u8 {
+            return a.dupe(u8, path) catch null;
+        }
+    };
+    open_file.path = source_path;
+    g_skill_center_open_file_override = open_file.open;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    try std.testing.expect(skillCenterImportTool());
+    try std.testing.expect(skillCenterOverlayActive());
+    try std.testing.expectEqual(@as(usize, 1), try countMatchingToolDirs(tools_root, ".import-staging-"));
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expectEqualStrings("", session.status);
+}
+
+test "AppWindow: skill center tool import confirmation opens preview for launchable binary" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_open_file = g_skill_center_open_file_override;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        g_allocator = previous_allocator;
+        g_skill_center_open_file_override = previous_open_file;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("source");
+    const script =
+        "#!/bin/sh\n" ++
+        "if [ \"$1\" = \"--skill\" ]; then\n" ++
+        "  printf '%s\\n' '---' 'name: docx_tool' 'description: Import docx files' '---' 'Use docx files.'\n" ++
+        "  exit 0\n" ++
+        "fi\n" ++
+        "if [ \"$1\" = \"--help\" ]; then\n" ++
+        "  printf 'docx tool help\\n'\n" ++
+        "  exit 0\n" ++
+        "fi\n" ++
+        "exit 0\n";
+    try tmp.dir.writeFile(.{ .sub_path = "source/docx-tool", .data = script });
+    var file = try tmp.dir.openFile("source/docx-tool", .{});
+    defer file.close();
+    try file.chmod(0o755);
+    const source_path = try tmp.dir.realpathAlloc(allocator, "source/docx-tool");
+    defer allocator.free(source_path);
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+    const tools_root = try platform_dirs.toolsDir(allocator);
+    defer allocator.free(tools_root);
+
+    g_allocator = allocator;
+    const open_file = struct {
+        var path: []const u8 = "";
+        fn open(a: std.mem.Allocator, _: platform_file_dialog.OpenRequest) ?[]u8 {
+            return a.dupe(u8, path) catch null;
+        }
+    };
+    open_file.path = source_path;
+    g_skill_center_open_file_override = open_file.open;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    try std.testing.expect(skillCenterImportTool());
+    try std.testing.expect(skillCenterOverlayActive());
+    try std.testing.expectEqual(@as(usize, 1), try countMatchingToolDirs(tools_root, ".import-staging-"));
+
+    try std.testing.expect(skillCenterOverlaySelect());
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expect(session.model.overlay == .tool_import_preview);
+    try std.testing.expectEqualStrings("", session.status);
+    const preview = session.model.overlay.tool_import_preview;
+    try std.testing.expectEqualStrings("docx_tool", preview.function_name);
+    try std.testing.expect(std.mem.indexOf(u8, preview.skill_md, "Use docx files.") != null);
+    try std.fs.accessAbsolute(preview.staged_binary_path, .{});
+}
+
+test "AppWindow: skill center tool import probe spawn failure aborts without fallback docs" {
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_open_file = g_skill_center_open_file_override;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        g_allocator = previous_allocator;
+        g_skill_center_open_file_override = previous_open_file;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("source");
+    try tmp.dir.writeFile(.{ .sub_path = "source/docx", .data = "plain bytes" });
+    try tmp.dir.writeFile(.{ .sub_path = "source/SKILL.md", .data = "---\nname: docx\n---\nSibling docs.\n" });
+    const source_path = try tmp.dir.realpathAlloc(allocator, "source/docx");
+    defer allocator.free(source_path);
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+    const tools_root = try platform_dirs.toolsDir(allocator);
+    defer allocator.free(tools_root);
+
+    g_allocator = allocator;
+    const open_file = struct {
+        var path: []const u8 = "";
+        fn open(a: std.mem.Allocator, _: platform_file_dialog.OpenRequest) ?[]u8 {
+            return a.dupe(u8, path) catch null;
+        }
+    };
+    open_file.path = source_path;
+    g_skill_center_open_file_override = open_file.open;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    try std.testing.expect(skillCenterImportTool());
+    try std.testing.expect(skillCenterOverlayActive());
+    try std.testing.expect(skillCenterOverlaySelect());
+    try std.testing.expect(!skillCenterOverlayActive());
+    try std.testing.expectEqual(@as(usize, 0), try countMatchingToolDirs(tools_root, ".import-staging-"));
+    try std.testing.expectEqual(@as(usize, 0), try countMatchingToolDirs(tools_root, "docx"));
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expect(std.mem.indexOf(u8, session.status, "could not inspect the executable") != null);
+}
+
+test "AppWindow: skill center tool import rejects reserved built-in function names" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_open_file = g_skill_center_open_file_override;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        g_allocator = previous_allocator;
+        g_skill_center_open_file_override = previous_open_file;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("source");
+    const script =
+        "#!/bin/sh\n" ++
+        "if [ \"$1\" = \"--skill\" ]; then\n" ++
+        "  printf '%s\\n' '---' 'name: read_file' 'description: Reserved' '---' 'Reserved tool.'\n" ++
+        "  exit 0\n" ++
+        "fi\n" ++
+        "if [ \"$1\" = \"--help\" ]; then\n" ++
+        "  printf 'reserved help\\n'\n" ++
+        "  exit 0\n" ++
+        "fi\n" ++
+        "exit 0\n";
+    try tmp.dir.writeFile(.{ .sub_path = "source/read-file", .data = script });
+    var file = try tmp.dir.openFile("source/read-file", .{});
+    defer file.close();
+    try file.chmod(0o755);
+    const source_path = try tmp.dir.realpathAlloc(allocator, "source/read-file");
+    defer allocator.free(source_path);
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+    const tools_root = try platform_dirs.toolsDir(allocator);
+    defer allocator.free(tools_root);
+
+    g_allocator = allocator;
+    const open_file = struct {
+        var path: []const u8 = "";
+        fn open(a: std.mem.Allocator, _: platform_file_dialog.OpenRequest) ?[]u8 {
+            return a.dupe(u8, path) catch null;
+        }
+    };
+    open_file.path = source_path;
+    g_skill_center_open_file_override = open_file.open;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    try std.testing.expect(skillCenterImportTool());
+    try std.testing.expect(!skillCenterOverlayActive());
+    try std.testing.expectEqual(@as(usize, 0), try countMatchingToolDirs(tools_root, ".import-staging-"));
+    try std.testing.expectEqual(@as(usize, 0), try countMatchingToolDirs(tools_root, "read_file"));
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expect(std.mem.indexOf(u8, session.status, "reserved") != null);
+}
+
+test "AppWindow: tool import draft failure result keeps view and sets status" {
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+    }
+
+    g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    session.mutex.lock();
+    try session.model.openTextPreview("docx / SKILL.md", "preview");
+    session.op_pending = .{ .tool_import_failed = try allocator.dupe(u8, "Draft generation failed.") };
+    session.mutex.unlock();
+
+    pollSkillCenterOp(session);
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expect(session.model.overlay == .text_preview);
+    try std.testing.expectEqualStrings("Draft generation failed.", session.status);
+}
+
 test "AppWindow: open AI chat tabs are persisted to agent history before session dump" {
     const allocator = std.testing.allocator;
 
@@ -451,7 +1251,11 @@ test "AppWindow: open AI chat tabs are persisted to agent history before session
     tab.g_tab_count = 0;
     active_tab_state.g_active_tab = 0;
 
-    var store = agent_history.Store.init(allocator);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const hist_root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(hist_root);
+    var store = try agent_history_store.MetaStore.open(allocator, hist_root);
     defer store.deinit();
     g_agent_history = &store;
 
@@ -496,6 +1300,169 @@ test "AppWindow: open AI chat tabs are persisted to agent history before session
     try std.testing.expect(restored.agent_enabled);
 }
 
+test "AppWindow: terminal tab copilot sessions are persisted to agent history before session dump" {
+    const allocator = std.testing.allocator;
+
+    const previous_store = g_agent_history;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        g_agent_history = previous_store;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+    }
+
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const hist_root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(hist_root);
+    var store = try agent_history_store.MetaStore.open(allocator, hist_root);
+    defer store.deinit();
+    g_agent_history = &store;
+
+    const session = try ai_chat.Session.init(
+        allocator,
+        "Copilot",
+        "https://api.example.test",
+        "key",
+        "model",
+        "system",
+        "enabled",
+        "",
+        "false",
+        "true",
+    );
+    session.copilot = true;
+
+    // Append one message so shouldPersistCopilot() returns true (persist_to_history defaults to true)
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        try session.messages.append(allocator, .{
+            .role = .user,
+            .content = try allocator.dupe(u8, "hello from copilot"),
+        });
+    }
+
+    const tab_state = try allocator.create(tab.TabState);
+    tab_state.* = .{
+        .kind = .terminal,
+        .tree = .empty,
+        .focused = .root,
+        .ai_chat_session = null,
+        .ai_history_session = null,
+        .copilot_session = session,
+    };
+    defer {
+        tab_state.deinit(allocator);
+        allocator.destroy(tab_state);
+        tab.g_tabs[0] = null;
+        tab.g_tab_count = 0;
+    }
+
+    tab.g_tabs[0] = tab_state;
+    tab.g_tab_count = 1;
+
+    persistOpenAiChatTabsToHistoryStore(allocator);
+
+    var restored = try store.cloneRecordBySessionId(allocator, session.sessionId()) orelse return error.ExpectedHistoryRecord;
+    defer agent_history.freeOwnedRecord(allocator, &restored);
+
+    try std.testing.expect(restored.copilot);
+}
+
+test "AppWindow: markdown export target includes visible copilot sidebar" {
+    const allocator = std.testing.allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+    }
+
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+
+    var copilot = ai_chat.Session{ .allocator = allocator, .copilot = true };
+    var terminal_tab = tab.TabState{
+        .kind = .terminal,
+        .tree = .empty,
+        .focused = .root,
+        .ai_chat_session = null,
+        .ai_history_session = null,
+        .copilot_session = &copilot,
+        .copilot_visible = true,
+    };
+    tab.g_tabs[0] = &terminal_tab;
+    tab.g_tab_count = 1;
+    try std.testing.expectEqual(&copilot, activeMarkdownExportSession().?);
+
+    var chat = ai_chat.Session{ .allocator = allocator };
+    var chat_tab = tab.TabState{
+        .kind = .ai_chat,
+        .tree = .empty,
+        .focused = .root,
+        .ai_chat_session = &chat,
+        .ai_history_session = null,
+        .copilot_session = null,
+    };
+    tab.g_tabs[0] = &chat_tab;
+    try std.testing.expectEqual(&chat, activeMarkdownExportSession().?);
+}
+
+test "AppWindow: copilot restore hook rehydrates a copilot session by id" {
+    const allocator = std.testing.allocator;
+    const previous_store = g_agent_history;
+    const previous_hook = tab.g_copilot_restore_hook;
+    const previous_alloc = g_allocator;
+    defer {
+        g_agent_history = previous_store;
+        tab.g_copilot_restore_hook = previous_hook;
+        g_allocator = previous_alloc;
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const hist_root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(hist_root);
+    var store = try agent_history_store.MetaStore.open(allocator, hist_root);
+    defer store.deinit();
+    g_agent_history = &store;
+    g_allocator = allocator;
+
+    try store.upsertRecord(.{
+        .session_id = "cp-restore",
+        .title = "T",
+        .base_url = "https://x",
+        .api_key = "k",
+        .model = "m",
+        .system_prompt = "s",
+        .thinking_enabled = false,
+        .reasoning_effort = "low",
+        .stream = true,
+        .agent_enabled = true,
+        .created_at = 1,
+        .updated_at = 2,
+        .copilot = true,
+        .messages = &[_]agent_history.MessageRecord{},
+    });
+
+    tab.g_copilot_restore_hook = reopenCopilotSessionFromHistorySessionId;
+    const session = tab.g_copilot_restore_hook.?("cp-restore") orelse return error.RestoreFailed;
+    defer session.deinit();
+    try std.testing.expect(session.copilot);
+    try std.testing.expectEqualStrings("cp-restore", session.sessionId());
+}
+
 // ============================================================================
 // Module-level state (will be moved into AppWindow struct in future)
 // ============================================================================
@@ -503,7 +1470,7 @@ test "AppWindow: open AI chat tabs are persisted to agent history before session
 // App pointer for requestNewWindow
 pub threadlocal var g_app: ?*App = null;
 var g_agent_history_mutex: std.Thread.Mutex = .{};
-pub var g_agent_history: ?*agent_history.Store = null;
+pub var g_agent_history: ?*agent_history_store.MetaStore = null;
 var g_flush_scheduler: flush_scheduler.FlushScheduler = .{};
 var g_agent_history_revision: u64 = 0;
 
@@ -540,7 +1507,12 @@ fn tryTakeSingleInstanceCwd(allocator: std.mem.Allocator, cwd_buf: *platform_pty
     const srv = single_instance.getActiveServer() orelse return null;
     const utf8_cwd = srv.tryTakeCwd() orelse return null;
     defer allocator.free(utf8_cwd);
-    return platform_pty_command.cwdFromUtf8(cwd_buf, utf8_cwd);
+    std.debug.print("[single-instance] tryTakeSingleInstanceCwd: utf8='{s}'\n", .{utf8_cwd});
+    const result = platform_pty_command.cwdFromUtf8(cwd_buf, utf8_cwd);
+    if (result == null) {
+        std.debug.print("[single-instance] tryTakeSingleInstanceCwd: cwdFromUtf8 returned null!\n", .{});
+    }
+    return result;
 }
 
 // Tracks whether session restore has been attempted this process. We only
@@ -566,9 +1538,15 @@ threadlocal var g_quake_hotkey_registered: bool = false;
 pub threadlocal var g_keybinds: keybind.Set = keybind.Set.defaults();
 threadlocal var g_debug_memory: bool = false;
 threadlocal var g_debug_memory_last_ms: i64 = 0;
-threadlocal var g_remote_layout_last_ms: i64 = 0;
-threadlocal var g_remote_ai_sinks: [tab.MAX_TABS]RemoteAiInputSink = undefined;
-threadlocal var g_last_transfer_notification_seq: u64 = 0;
+threadlocal var g_appwindow_state: appwindow_state.State = .{};
+
+fn windowState() *appwindow_state.WindowState {
+    return &g_appwindow_state.window;
+}
+
+fn remoteState() *appwindow_state.RemoteState {
+    return &g_appwindow_state.remote;
+}
 
 // Global theme (set at startup via config)
 pub threadlocal var g_theme: Theme = Theme.default();
@@ -624,51 +1602,9 @@ fn synchronizedOutputPendingForVisibleSplits(split_count: usize) bool {
 }
 
 pub const MAX_TABS = tab.MAX_TABS;
-
-const AgentSshConnectRequest = struct {
-    allocator: std.mem.Allocator,
-    profile_name: []const u8,
-    result: ?ai_chat.ToolSurface = null,
-    err: ?anyerror = null,
-};
-
-const AgentSshSaveRequest = struct {
-    allocator: std.mem.Allocator,
-    args: ai_chat.SshProfileSaveArgs,
-    result: ?ai_chat.SavedSshProfile = null,
-    err: ?anyerror = null,
-};
-
-const AgentTabNewRequest = struct {
-    allocator: std.mem.Allocator,
-    kind: []const u8,
-    command: ?[]const u8,
-    result: ?ai_chat.ToolSurface = null,
-    err: ?anyerror = null,
-};
-
-const AgentTabCloseRequest = struct {
-    allocator: std.mem.Allocator,
-    tab_index: ?usize,
-    surface_id: ?[]const u8,
-    title: ?[]const u8,
-    result: ?ai_chat.ToolClosedTab = null,
-    err: ?anyerror = null,
-};
-
-const RemoteAiInputSink = struct {
-    native_handle: window_backend.NativeHandle,
-    tab_index: usize,
-};
-
-const RemoteAiInputRequest = struct {
-    tab_index: usize,
-    data: []u8,
-};
-
-const RemoteAiAgentOpenRequest = struct {
-    request_id: []const u8,
-};
+comptime {
+    std.debug.assert(@import("appwindow/remote_state.zig").MAX_REMOTE_AI_SINKS == tab.MAX_TABS);
+}
 
 // ============================================================================
 // Tab/split operation wrappers — delegate to tab module, handle UI side effects
@@ -701,6 +1637,144 @@ fn forceOpaqueBackbufferForPresent() void {
         gpu.state.setColorMask(false, false, false, true);
         gpu.state.clear(0, 0, 0, 1.0);
         gpu.state.setColorMask(true, true, true, true);
+    }
+}
+
+fn syncBackendSurfaceSize(fb_width: c_int, fb_height: c_int) void {
+    if (comptime gpu.active == .d3d11) {
+        if (!gpu.Context.resize(fb_width, fb_height)) {
+            render_diagnostics.log("gpu-backend=d3d11 resize sync failed for {}x{}", .{ fb_width, fb_height });
+        }
+    }
+}
+
+fn presentBackendFrame(win: *window_backend.Window) void {
+    if (comptime gpu.active == .d3d11) {
+        gpu.Context.present() catch |err| {
+            render_diagnostics.log("gpu-backend=d3d11 present failed: {s}", .{@errorName(err)});
+            std.debug.print("D3D11 present failed: {s}\n", .{@errorName(err)});
+        };
+    } else {
+        window_backend.swapBuffers(win);
+    }
+}
+
+fn prepareD3D11DeviceRecreateResources() void {
+    if (comptime gpu.active == .d3d11) {
+        cell_pipeline.deinit();
+        ui_pipeline.deinit();
+        d3d11_offscreen_smoke.deinit();
+        d3d11_ui_smoke.deinit();
+        background_image.deinit();
+        post_process.deinit();
+        const atlas_release = font.releaseAtlasGpuTexturesForDeviceRecreate();
+        const context_release = gpu.Context.prepareForDeviceRecreate();
+        render_diagnostics.log(
+            "gpu-backend=d3d11 resource recreate prepared context_initialized={} context_released_any={} released_atlas_any={} released_atlas_glyph={} released_atlas_color={} released_atlas_icon={} released_atlas_titlebar={} released_feature_pipelines=true released_auxiliary_targets=true automatic_fallback=false default_unchanged=true",
+            .{
+                context_release.initialized,
+                context_release.anyReleased(),
+                atlas_release.anyReleased(),
+                atlas_release.glyph,
+                atlas_release.color,
+                atlas_release.icon,
+                atlas_release.titlebar,
+            },
+        );
+    }
+}
+
+fn restoreD3D11DeviceRecreateResources(allocator: std.mem.Allocator) void {
+    if (comptime gpu.active == .d3d11) {
+        ui_pipeline.init();
+        cell_pipeline.init();
+        post_process.init(allocator, g_shader_path);
+        if (g_app) |app| {
+            app.mutex.lock();
+            const image_path: ?[]u8 = if (app.background_image) |p| (allocator.dupe(u8, p) catch null) else null;
+            app.mutex.unlock();
+            if (image_path) |p| {
+                defer allocator.free(p);
+                background_image.load(allocator, p);
+            }
+        }
+        render_diagnostics.log(
+            "gpu-backend=d3d11 resource recreate restored feature_pipelines=true background_reloaded={} post_process_rechecked=true automatic_fallback=false default_unchanged=true",
+            .{background_image.g_enabled},
+        );
+    }
+}
+
+fn recordD3D11FallbackCandidate(
+    allocator: std.mem.Allocator,
+    adapter_id: []const u8,
+    reason: d3d11_fallback_marker.Reason,
+) bool {
+    if (comptime gpu.active != .d3d11) return false;
+    var marker_buf: [d3d11_fallback_marker.marker_max_len]u8 = undefined;
+    const marker = d3d11_fallback_marker.format(
+        &marker_buf,
+        .fallback_candidate,
+        build_options.app_version,
+        adapter_id,
+        reason,
+    ) catch |err| {
+        render_diagnostics.log(
+            "gpu-backend=d3d11 fallback marker record failed error={s} adapter={s} reason={s} automatic_fallback=false default_unchanged=true",
+            .{ @errorName(err), adapter_id, reason.name() },
+        );
+        return false;
+    };
+
+    platform_window_state.recordD3d11Fallback(allocator, marker);
+    render_diagnostics.log(
+        "gpu-backend=d3d11 fallback marker recorded marker={s} adapter={s} reason={s} automatic_fallback=false default_unchanged=true",
+        .{ marker, adapter_id, reason.name() },
+    );
+    return true;
+}
+
+fn handleD3D11RecoveryRequest(allocator: std.mem.Allocator, fb_width: c_int, fb_height: c_int) void {
+    if (comptime gpu.active == .d3d11) {
+        const request = gpu.Context.takeRecoveryRequest() orelse return;
+        const status = request.status;
+        var adapter_buf: [64]u8 = undefined;
+        const adapter_id = gpu.Context.adapterFallbackIdentity(&adapter_buf) orelse "unknown-adapter";
+        render_diagnostics.log(
+            "gpu-backend=d3d11 recovery requested action={s} policy_state={s} operation={s} fallback_candidate_reason={s} dxgi_kind={s} requires_device_recreate={} automatic_fallback=false default_unchanged=true",
+            .{
+                request.actionName(),
+                status.stateName(),
+                status.operationName(),
+                status.reasonName(),
+                status.dxgiKindName(),
+                status.requires_device_recreate,
+            },
+        );
+
+        if (status.requires_device_recreate) {
+            prepareD3D11DeviceRecreateResources();
+            const recreate = gpu.Context.recreateDevice(fb_width, fb_height);
+            render_diagnostics.log(
+                "gpu-backend=d3d11 recovery recreate attempt attempted={} succeeded={} error={s} swapchain={}x{} automatic_fallback=false default_unchanged=true",
+                .{ recreate.attempted, recreate.succeeded, recreate.error_name, recreate.width, recreate.height },
+            );
+            if (recreate.succeeded) {
+                restoreD3D11DeviceRecreateResources(allocator);
+            } else if (recreate.fallback_candidate) {
+                const marker_written = recordD3D11FallbackCandidate(
+                    allocator,
+                    adapter_id,
+                    recreate.fallbackMarkerReason(),
+                );
+                render_diagnostics.log(
+                    "gpu-backend=d3d11 recovery recreate failed escalated policy_state=fallback_candidate fallback_candidate={} fallback_candidate_reason={s} marker_written={} automatic_fallback=false default_unchanged=true",
+                    .{ recreate.fallback_candidate, recreate.fallbackReasonName(), marker_written },
+                );
+            }
+        }
+        applyUiEffect(UiEffect.repaint);
+        markAllRenderersDirty();
     }
 }
 
@@ -759,94 +1833,79 @@ fn logFrameGeometryIfChanged(win: *window_backend.Window, fb_width: c_int, fb_he
     );
 }
 
-fn glDiagString(name: gpu.c.GLenum) []const u8 {
-    // The Metal backend hands back a stub GlTable whose fn pointers are null
-    // (see renderer/gpu/metal/GlTable.zig). Guard the fn pointer itself, not
-    // just its return value, so render diagnostics don't panic on macOS.
-    const get_string = gpu.glTable().GetString orelse return "(unavailable)";
-    const ptr = get_string(name);
-    if (ptr == null) return "(null)";
-    return std.mem.span(@as([*:0]const u8, @ptrCast(ptr)));
-}
-
 /// Log GPU vendor/renderer/version and the backbuffer clear-alpha fact once,
-/// after the GL context + glad table are ready. Lets the analyst correlate
+/// after the GPU backend is ready. Lets the analyst correlate
 /// glitches with a specific driver (AMD/Intel/NVIDIA) and confirm the alpha=1
 /// clear that feeds DWM composition.
 fn logGpuDiagnosticsOnce() void {
     if (!render_diagnostics.enabled()) return;
     if (g_gpu_diag_logged) return;
     g_gpu_diag_logged = true;
+    const info = gpu.state.driverInfo();
     render_diagnostics.log(
-        "gpu vendor=\"{s}\" renderer=\"{s}\" version=\"{s}\" glsl=\"{s}\" clear_alpha=1.0 dwm_frame_extend_top=-1",
+        "gpu vendor=\"{s}\" renderer=\"{s}\" version=\"{s}\" shading_language=\"{s}\" clear_alpha=1.0 dwm_frame_extend_top=-1",
         .{
-            glDiagString(gpu.c.GL_VENDOR),
-            glDiagString(gpu.c.GL_RENDERER),
-            glDiagString(gpu.c.GL_VERSION),
-            glDiagString(gpu.c.GL_SHADING_LANGUAGE_VERSION),
+            info.vendor,
+            info.renderer,
+            info.version,
+            info.shading_language,
         },
     );
 }
 
 threadlocal var g_gpu_diag_logged: bool = false;
-threadlocal var g_diag_last_vp: [4]gpu.c.GLint = .{ -1, -1, -1, -1 };
-threadlocal var g_diag_last_blend: [5]gpu.c.GLint = .{ -1, -1, -1, -1, -1 };
+threadlocal var g_diag_last_swap_diag: ?gpu.SwapDiagnostics = null;
 threadlocal var g_diag_last_swap_client_w: i32 = -1;
 threadlocal var g_diag_last_swap_client_h: i32 = -1;
 
-/// Just before SwapBuffers, snapshot the *actual* GL viewport, re-read the
-/// client rect, and read the active blend state. Logged only when one of these
-/// changes (or when viewport diverges from the client size) so it stays
-/// analyzable. Targets the viewport/client-size desync (hypothesis ②) and the
-/// backbuffer-alpha blend mode (hypothesis ①).
+/// Just before swap/present, snapshot the backend viewport, re-read the client
+/// rect, and read the active blend state. Logged only when one of these changes
+/// (or when viewport diverges from the client size) so it stays analyzable.
 fn logSwapDiagnosticsIfChanged(win: *window_backend.Window, fb_width: c_int, fb_height: c_int) void {
     if (!render_diagnostics.enabled()) return;
-    const gl = gpu.glTable();
-    // Metal backend's GlTable is a stub with null fn pointers (see GlTable.zig);
-    // skip the GL-specific swap diagnostics there instead of panicking on `.?`.
-    // Geometry/DPI diagnostics are emitted by logFrameGeometryIfChanged, which
-    // doesn't touch GL, so the DPI log we care about for #90 still works.
-    const get_integerv = gl.GetIntegerv orelse return;
-    const is_enabled = gl.IsEnabled orelse return;
-
-    var vp: [4]gpu.c.GLint = undefined;
-    get_integerv(gpu.c.GL_VIEWPORT, &vp);
-
-    var blend: [5]gpu.c.GLint = undefined;
-    blend[0] = @intFromBool(is_enabled(gpu.c.GL_BLEND) != 0);
-    get_integerv(gpu.c.GL_BLEND_SRC_RGB, &blend[1]);
-    get_integerv(gpu.c.GL_BLEND_DST_RGB, &blend[2]);
-    get_integerv(gpu.c.GL_BLEND_SRC_ALPHA, &blend[3]);
-    get_integerv(gpu.c.GL_BLEND_DST_ALPHA, &blend[4]);
+    const diag = gpu.state.swapDiagnostics() orelse return;
+    const vp = diag.viewport;
+    const blend = diag.blend;
 
     const client = window_backend.clientSize(win);
-    const vp_matches_client = (vp[2] == client.width and vp[3] == client.height);
+    const vp_matches_client = (vp.w == client.width and vp.h == client.height);
 
-    const unchanged = std.mem.eql(gpu.c.GLint, &vp, &g_diag_last_vp) and
-        std.mem.eql(gpu.c.GLint, &blend, &g_diag_last_blend) and
-        client.width == g_diag_last_swap_client_w and
-        client.height == g_diag_last_swap_client_h;
+    const unchanged = if (g_diag_last_swap_diag) |last|
+        std.meta.eql(last, diag) and
+            client.width == g_diag_last_swap_client_w and
+            client.height == g_diag_last_swap_client_h
+    else
+        false;
     if (unchanged) return;
 
-    g_diag_last_vp = vp;
-    g_diag_last_blend = blend;
+    g_diag_last_swap_diag = diag;
     g_diag_last_swap_client_w = client.width;
     g_diag_last_swap_client_h = client.height;
 
     render_diagnostics.log(
-        "swap viewport=({},{} {}x{}) client={}x{} fb={}x{} vp_matches_client={} blend_enabled={} blend_rgb=({},{}) blend_alpha=({},{})",
+        "swap viewport=({},{} {}x{}) client={}x{} fb={}x{} vp_matches_client={} blend_enabled={} blend_rgb=({s},{s}) blend_alpha=({s},{s})",
         .{
-            vp[0],             vp[1],         vp[2],    vp[3],
-            client.width,      client.height, fb_width, fb_height,
-            vp_matches_client, blend[0] != 0, blend[1], blend[2],
-            blend[3],          blend[4],
+            vp.x,
+            vp.y,
+            vp.w,
+            vp.h,
+            client.width,
+            client.height,
+            fb_width,
+            fb_height,
+            vp_matches_client,
+            blend.enabled,
+            @tagName(blend.src_rgb),
+            @tagName(blend.dst_rgb),
+            @tagName(blend.src_alpha),
+            @tagName(blend.dst_alpha),
         },
     );
 }
 
 fn renderAiChatFrame(fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
     gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-    gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
     clearWithBackground(fb_width, fb_height);
     titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -854,13 +1913,14 @@ fn renderAiChatFrame(fb_width: c_int, fb_height: c_int, titlebar_offset: f32, le
     if (activeAiChat()) |session| {
         const chat_x = left_panels_w;
         const chat_w = @as(f32, @floatFromInt(fb_width)) - left_panels_w - right_panels_w;
-        ai_chat_renderer.render(
+        assistant_conversation_renderer.render(
             session,
             @floatFromInt(fb_width),
             @floatFromInt(fb_height),
             titlebar_offset,
             chat_x,
             chat_w,
+            false, // full tab: status shown as text + Esc Stop button
         );
     }
 }
@@ -871,13 +1931,13 @@ fn aiHistoryContentWidth(fb_width: c_int, left_panels_w: f32, right_panels_w: f3
 
 fn renderAiHistoryFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
     gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-    gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
     clearWithBackground(fb_width, fb_height);
     titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     if (active_tab.ai_history_session) |session| {
-        const draw: ai_history_renderer.DrawContext = .{
+        const draw: terminal_agent_sessions_renderer.DrawContext = .{
             .bg = g_theme.background,
             .fg = g_theme.foreground,
             .accent = g_theme.cursor_color,
@@ -889,7 +1949,37 @@ fn renderAiHistoryFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int
         };
         session.mutex.lock();
         defer session.mutex.unlock();
-        ai_history_renderer.render(
+        terminal_agent_sessions_renderer.render(
+            draw,
+            session,
+            @floatFromInt(fb_width),
+            @floatFromInt(fb_height),
+            titlebar_offset,
+            left_panels_w,
+            aiHistoryContentWidth(fb_width, left_panels_w, right_panels_w),
+        );
+    }
+}
+
+fn renderMemoryCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
+    gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
+    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    clearWithBackground(fb_width, fb_height);
+    titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    if (active_tab.memory_center_session) |session| {
+        const draw: memory_center_renderer.DrawContext = .{
+            .bg = g_theme.background,
+            .fg = g_theme.foreground,
+            .accent = g_theme.cursor_color,
+            .cell_h = font.g_titlebar_cell_height,
+            .fillQuad = ui_pipeline.fillQuad,
+            .fillQuadAlpha = ui_pipeline.fillQuadAlpha,
+            .renderTextLimited = titlebar.renderTextLimited,
+            .glyphAdvance = titlebar.titlebarGlyphAdvance,
+        };
+        memory_center_renderer.render(
             draw,
             session,
             @floatFromInt(fb_width),
@@ -903,7 +1993,7 @@ fn renderAiHistoryFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int
 
 fn renderSkillCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
     gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-    gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
     clearWithBackground(fb_width, fb_height);
     titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -923,7 +2013,7 @@ fn renderSkillCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_i
         session.mutex.lock();
         defer session.mutex.unlock();
         const m = &session.model;
-        const lib_len = if (m.library) |l| l.len else 0;
+        const lib_len = m.entryCount();
         const overlay: skill_center_renderer.Overlay = switch (m.overlay) {
             .none, .busy => .none,
             .picker => |*p| .{ .list = .{
@@ -958,13 +2048,26 @@ fn renderSkillCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_i
                 .scroll = tp.scroll,
                 .scroll_out = &tp.scroll,
             } },
+            .tool_import_confirm => |*tp| .{ .text = .{
+                .title = tp.function_name,
+                .content = tp.warning_text,
+                .hint = "Enter inspect/import preview · Esc cancel · ↑/↓ scroll",
+                .scroll = tp.scroll,
+                .scroll_out = &tp.scroll,
+            } },
+            .tool_import_preview => |*tp| .{ .text = .{
+                .title = tp.function_name,
+                .content = tp.skill_md,
+                .hint = "Enter import · Esc cancel · ↑/↓ scroll",
+                .scroll = tp.scroll,
+                .scroll_out = &tp.scroll,
+            } },
         };
         const view: skill_center_renderer.View = .{
             .skills_len = lib_len,
             .ctx = @ptrCast(m),
-            .nameAt = scNameAt,
+            .itemAt = scEntryItemAt,
             .sel_row = m.sel_row,
-            .scroll = m.scroll,
             .title = i18n.s().sl_skill_center,
             .legend = switch (m.overlay) {
                 .import_list => i18n.s().sc_legend_import,
@@ -1022,7 +2125,7 @@ fn copyPortForwardingReason(dest: []u8, reason: []const u8) usize {
 
 fn renderPortForwardingFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
     gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-    gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
     clearWithBackground(fb_width, fb_height);
     titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -1079,11 +2182,42 @@ fn renderPortForwardingFrame(active_tab: *TabState, fb_width: c_int, fb_height: 
     );
 }
 
-/// Renderer accessor: library skill name at index i (read under the session lock).
-fn scNameAt(ctx: *anyopaque, i: usize) []const u8 {
+fn renderSettingsFrame(fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
+    gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
+    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    clearWithBackground(fb_width, fb_height);
+    titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    overlays.renderSettingsPage(
+        @floatFromInt(fb_height),
+        titlebar_offset,
+        left_panels_w,
+        @max(1, @as(f32, @floatFromInt(fb_width)) - left_panels_w - right_panels_w),
+    );
+}
+
+/// Renderer accessor: library entry metadata at index i (read under the session lock).
+fn scEntryItemAt(ctx: *anyopaque, i: usize) skill_center_renderer.ListItem {
     const m: *const skill_center.PanelModel = @ptrCast(@alignCast(ctx));
-    const lib = m.library orelse return "";
-    return if (i < lib.len) lib[i].name else "";
+    const entries = m.entries orelse return .{ .label = "", .marker = "" };
+    if (i >= entries.len) return .{ .label = "", .marker = "" };
+    return switch (entries[i]) {
+        .prompt => |s| .{ .label = s.name, .marker = "", .kind = "skill" },
+        .tool => |t| .{
+            .label = t.name,
+            .marker = "",
+            .kind = "tool",
+            .enabled = if (t.enabled) "on" else "off",
+            .marker_color = if (t.enabled) .{ 0.3, 0.85, 0.45 } else .{ 0.85, 0.45, 0.35 },
+        },
+        .first_party_tool => |t| .{
+            .label = t.name,
+            .marker = "",
+            .kind = "built-in",
+            .enabled = if (t.enabled) "on" else "off",
+            .marker_color = if (t.enabled) .{ 0.3, 0.85, 0.45 } else .{ 0.85, 0.45, 0.35 },
+        },
+    };
 }
 fn scPickerItemAt(ctx: *anyopaque, i: usize) skill_center_renderer.ListItem {
     const p: *const skill_center.PickerState = @ptrCast(@alignCast(ctx));
@@ -1118,7 +2252,7 @@ fn renderAiCopilotPanel(fb_width: c_int, fb_height: c_int, titlebar_offset: f32)
     const bounds = ai_sidebar.boundsForWindow(@intCast(fb_width), @intCast(fb_height), titlebar_offset, left, 0);
     const chat_x: f32 = @floatFromInt(bounds.left);
     const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
-    ai_chat_renderer.render(session, @floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, chat_x, chat_w);
+    assistant_conversation_renderer.render(session, @floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, chat_x, chat_w, true); // copilot sidebar: status shown as a colored dot
     renderAiCopilotCloseButton(bounds, @floatFromInt(fb_height));
 }
 
@@ -1128,7 +2262,7 @@ fn renderAiCopilotCloseButton(bounds: ai_sidebar.Bounds, window_height: f32) voi
         .left = @floatFromInt(bounds.left),
         .right = @floatFromInt(bounds.right),
         .top = @floatFromInt(bounds.top),
-        .height = ai_chat_renderer.HEADER_H,
+        .height = assistant_conversation_renderer.HEADER_H,
     };
     const close = hit_test.panelCloseButtonRect(layout) orelse return;
     const close_x: f32 = @floatCast(close.left);
@@ -1165,6 +2299,34 @@ pub fn activeTab() ?*TabState {
 
 pub fn activeSurface() ?*Surface {
     return tab.activeSurface();
+}
+
+/// Gather GPU adapter + window/grid info and write the in-app benchmark report.
+/// Called once from the main loop when `bench_driver.finished()` turns true.
+fn finishBenchReport(win: *window_backend.Window) void {
+    var adapter_buf: [256]u8 = undefined;
+    const gpu_info: ?bench_report.GpuInfo = if (gpu.adapterReport(&adapter_buf)) |a|
+        .{
+            .backend = @tagName(gpu.active),
+            .adapter = a.name,
+            .vendor_id = a.vendor_id,
+            .device_id = a.device_id,
+        }
+    else
+        null;
+
+    const fb = window_backend.framebufferSize(win);
+    const window_info: ?bench_report.WindowInfo = .{
+        .width_px = @intCast(fb.width),
+        .height_px = @intCast(fb.height),
+        .grid_cols = @intCast(term_cols),
+        .grid_rows = @intCast(term_rows),
+        .dpi = window_backend.effectiveDpi(win),
+    };
+
+    bench_driver.finishAndWriteReport(@tagName(gpu.active), gpu_info, window_info) catch |err| {
+        std.debug.print("wispterm-benchmark: failed to write report: {}\n", .{err});
+    };
 }
 
 fn surfaceOnAltScreen(s: *const Surface) bool {
@@ -1217,6 +2379,10 @@ pub fn activeAiHistory() ?*ai_history_session.Session {
     const active = activeTab() orelse return null;
     if (active.kind != .ai_history) return null;
     return active.ai_history_session;
+}
+
+pub fn activeMemoryCenter() ?*memory_center_session.Session {
+    return tab.activeMemoryCenter();
 }
 
 pub fn activeSkillCenter() ?*skill_center.Session {
@@ -1508,1053 +2674,127 @@ pub fn portForwardingBackspace() bool {
     return true;
 }
 
-fn scMoveSel(sel: *usize, len: usize, delta: isize) void {
-    if (len == 0) {
-        sel.* = 0;
-        return;
-    }
-    const cur: isize = @intCast(sel.*);
-    sel.* = @intCast(std.math.clamp(cur + delta, 0, @as(isize, @intCast(len - 1))));
+fn skillCenterHost() skill_center_actions.Host {
+    return .{
+        .allocator = g_allocator,
+        .open_file_override = g_skill_center_open_file_override,
+        .current_native_handle_bits = currentNativeHandleBits(),
+        .mark_ui_dirty = markUiDirty,
+    };
 }
 
-/// Move selection in the active overlay list, else in the library list.
 pub fn skillCenterMove(delta: isize) bool {
-    const session = activeSkillCenter() orelse return false;
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    switch (session.model.overlay) {
-        .picker => |*p| scMoveSel(&p.sel, p.labels.len, delta),
-        .import_list => |*il| scMoveSel(&il.sel, il.names.len, delta),
-        .install_pick => |*p| scMoveSel(&p.sel, p.entries.len, delta),
-        .url_input => {},
-        else => {
-            const n = if (session.model.library) |l| l.len else 0;
-            scMoveSel(&session.model.sel_row, n, delta);
-        },
-    }
-    markUiDirty();
-    return true;
+    return skill_center_actions.skillCenterMove(skillCenterHost(), delta);
 }
 
-/// True if an overlay (picker/import/confirm) is open (captures Enter/Esc).
 pub fn skillCenterOverlayActive() bool {
-    const session = activeSkillCenter() orelse return false;
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    return session.model.overlay != .none;
+    return skill_center_actions.skillCenterOverlayActive();
 }
 
 pub fn skillCenterOverlayCancel() bool {
-    const session = activeSkillCenter() orelse return false;
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    if (session.model.overlay == .none) return false;
-    session.model.clearOverlay();
-    markUiDirty();
-    return true;
+    return skill_center_actions.skillCenterOverlayCancel();
 }
 
-/// True when the URL-input overlay is capturing text. UI thread.
 pub fn skillCenterUrlInputActive() bool {
-    const session = activeSkillCenter() orelse return false;
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    return session.model.overlay == .url_input;
+    return skill_center_actions.skillCenterUrlInputActive();
 }
 
-/// 'g': open the URL-input overlay, prefilled from the clipboard if it looks
-/// like a GitHub URL. UI thread.
 pub fn skillCenterOpenUrlInput() bool {
-    const session = activeSkillCenter() orelse return false;
-    const allocator = g_allocator orelse return false;
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    if (session.model.overlay != .none) return false;
-    var st: skill_center.UrlInputState = .{};
-    if (clipboard.readClipboardTextOwned(allocator)) |clip| {
-        defer allocator.free(clip);
-        const trimmed = std.mem.trim(u8, clip, " \t\r\n");
-        if (std.mem.indexOf(u8, trimmed, "github.com/") != null and trimmed.len < 512)
-            st.insertSlice(allocator, trimmed);
-    }
-    session.model.setOverlay(.{ .url_input = st });
-    markUiDirty();
-    return true;
+    return skill_center_actions.skillCenterOpenUrlInput(skillCenterHost());
 }
 
-/// Append a typed codepoint to the URL buffer (no-op unless url_input active).
 pub fn skillCenterUrlInsertChar(codepoint: u21) bool {
-    if (codepoint < 0x20 or codepoint == 0x7f) return false;
-    const session = activeSkillCenter() orelse return false;
-    const allocator = g_allocator orelse return false;
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    switch (session.model.overlay) {
-        .url_input => |*u| {
-            var buf: [4]u8 = undefined;
-            const len = std.unicode.utf8Encode(codepoint, &buf) catch return false;
-            u.insertSlice(allocator, buf[0..len]);
-            markUiDirty();
-            return true;
-        },
-        else => return false,
-    }
+    return skill_center_actions.skillCenterUrlInsertChar(skillCenterHost(), codepoint);
 }
 
-/// Backspace in the URL buffer. UI thread.
 pub fn skillCenterUrlBackspace() bool {
-    const session = activeSkillCenter() orelse return false;
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    switch (session.model.overlay) {
-        .url_input => |*u| {
-            u.backspace();
-            markUiDirty();
-            return true;
-        },
-        else => return false,
-    }
+    return skill_center_actions.skillCenterUrlBackspace(skillCenterHost());
 }
 
-/// Ctrl/Cmd+V: append clipboard text to the URL buffer. UI thread.
 pub fn skillCenterUrlPaste() bool {
-    const session = activeSkillCenter() orelse return false;
-    const allocator = g_allocator orelse return false;
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    switch (session.model.overlay) {
-        .url_input => |*u| {
-            if (clipboard.readClipboardTextOwned(allocator)) |clip| {
-                defer allocator.free(clip);
-                const trimmed = std.mem.trim(u8, clip, " \t\r\n");
-                u.insertSlice(allocator, trimmed);
-            }
-            markUiDirty();
-            return true;
-        },
-        else => return false,
-    }
+    return skill_center_actions.skillCenterUrlPaste(skillCenterHost());
 }
 
-/// Enter in the URL-input overlay: snapshot the URL, clear the overlay, start
-/// the enumerate op. UI thread.
-fn skillCenterStartEnumerate(session: *skill_center.Session, allocator: std.mem.Allocator) void {
-    var url_owned: ?[]u8 = null;
-    {
-        session.mutex.lock();
-        defer session.mutex.unlock();
-        switch (session.model.overlay) {
-            .url_input => |*u| {
-                const t = std.mem.trim(u8, u.text(), " \t\r\n");
-                if (t.len > 0) url_owned = allocator.dupe(u8, t) catch null;
-                session.model.clearOverlay();
-            },
-            else => return,
-        }
-    }
-    const url = url_owned orelse {
-        markUiDirty();
-        return;
-    };
-    // Validate the URL on the UI thread so a parse error gets a precise toast
-    // (a worker-thread .failed can't distinguish bad-URL from network error).
-    if (skill_install.parseGithubUrl(allocator, url)) |rr| {
-        var probe = rr;
-        probe.deinit(allocator);
-    } else |_| {
-        allocator.free(url);
-        overlays.showStatusToast(i18n.s().sc_toast_bad_url);
-        markUiDirty();
-        return;
-    }
-    const job = allocator.create(SkillInstallEnumerateJob) catch {
-        allocator.free(url);
-        return;
-    };
-    job.* = .{ .url = url };
-    if (!session.startOp(.{ .ctx = job, .run = SkillInstallEnumerateJob.run, .destroy = SkillInstallEnumerateJob.destroy }, window_backend.postWakeup, i18n.s().sc_busy_fetching)) {
-        SkillInstallEnumerateJob.destroy(@ptrCast(job), allocator);
-        overlays.showStatusToast(i18n.s().sc_toast_op_busy);
-    }
-    markUiDirty();
-}
-
-/// True when the install checklist is active. UI thread.
 pub fn skillCenterPickActive() bool {
-    const session = activeSkillCenter() orelse return false;
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    return session.model.overlay == .install_pick;
+    return skill_center_actions.skillCenterPickActive();
 }
 
-/// Space: toggle the highlighted checklist row. UI thread.
 pub fn skillCenterPickToggle() bool {
-    const session = activeSkillCenter() orelse return false;
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    switch (session.model.overlay) {
-        .install_pick => |*p| {
-            p.toggle();
-            markUiDirty();
-            return true;
-        },
-        else => return false,
-    }
+    return skill_center_actions.skillCenterPickToggle(skillCenterHost());
 }
 
-/// 'a': toggle select-all in the checklist. UI thread.
 pub fn skillCenterPickSelectAll() bool {
-    const session = activeSkillCenter() orelse return false;
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    switch (session.model.overlay) {
-        .install_pick => |*p| {
-            p.setAll(!p.anyChecked());
-            markUiDirty();
-            return true;
-        },
-        else => return false,
-    }
-}
-
-/// Enter in the checklist: snapshot the selection + repo, clear the overlay,
-/// start the download op. UI thread.
-fn skillCenterStartInstall(session: *skill_center.Session, allocator: std.mem.Allocator) void {
-    var repo_owned: ?skill_install.RepoRef = null;
-    var entries_owned: ?[]skill_install.SkillEntry = null;
-    var empty = false;
-    {
-        session.mutex.lock();
-        defer session.mutex.unlock();
-        switch (session.model.overlay) {
-            .install_pick => |*p| {
-                if (!p.anyChecked()) {
-                    empty = true;
-                } else {
-                    repo_owned = p.repo.clone(allocator) catch null;
-                    entries_owned = p.selectedEntries(allocator) catch null;
-                    session.model.clearOverlay();
-                }
-            },
-            else => return,
-        }
-    }
-    if (empty) {
-        overlays.showStatusToast(i18n.s().sc_toast_no_skills);
-        markUiDirty();
-        return;
-    }
-    const repo = repo_owned orelse {
-        if (entries_owned) |e| skill_install.freeEntries(allocator, e);
-        markUiDirty();
-        return;
-    };
-    const entries = entries_owned orelse {
-        var rr = repo;
-        rr.deinit(allocator);
-        markUiDirty();
-        return;
-    };
-    const job = allocator.create(SkillInstallDownloadJob) catch {
-        var rr = repo;
-        rr.deinit(allocator);
-        skill_install.freeEntries(allocator, entries);
-        return;
-    };
-    job.* = .{ .repo = repo, .entries = entries };
-    if (!session.startOp(.{ .ctx = job, .run = SkillInstallDownloadJob.run, .destroy = SkillInstallDownloadJob.destroy }, window_backend.postWakeup, i18n.s().sc_busy_installing)) {
-        SkillInstallDownloadJob.destroy(@ptrCast(job), allocator);
-        overlays.showStatusToast(i18n.s().sc_toast_op_busy);
-    }
-    markUiDirty();
-}
-
-/// Library root `<config>/skills`. Caller frees.
-fn skillCenterLibraryDir(allocator: std.mem.Allocator) ?[]const u8 {
-    return platform_dirs.pathInConfigDir(allocator, "skills") catch null;
-}
-
-/// Download every selected skill's files into a temp staging dir under the
-/// library, then per-skill atomically replace `<config>/skills/<name>`. Returns
-/// {installed, overwritten, failed}. A skill whose download fails is skipped
-/// (counted in `failed`); others still install. Staging dir is always removed.
-fn downloadSelectedSkillsToLibrary(
-    allocator: std.mem.Allocator,
-    repo: skill_install.RepoRef,
-    entries: []const skill_install.SkillEntry,
-) struct { installed: usize, overwritten: usize, failed: usize } {
-    var installed: usize = 0;
-    var overwritten: usize = 0;
-    var failed: usize = 0;
-
-    const lib_dir = skillCenterLibraryDir(allocator) orelse return .{ .installed = 0, .overwritten = 0, .failed = entries.len };
-    defer allocator.free(lib_dir);
-    const ref = repo.ref orelse "main";
-
-    const tmp_dir = std.fs.path.join(allocator, &.{ lib_dir, ".install-tmp" }) catch
-        return .{ .installed = 0, .overwritten = 0, .failed = entries.len };
-    defer allocator.free(tmp_dir);
-    std.fs.deleteTreeAbsolute(tmp_dir) catch {};
-    defer std.fs.deleteTreeAbsolute(tmp_dir) catch {};
-
-    for (entries) |entry| {
-        // Defense-in-depth: never let a downloaded skill name escape the library dir.
-        if (entry.name.len == 0 or
-            std.mem.eql(u8, entry.name, ".") or
-            std.mem.eql(u8, entry.name, "..") or
-            std.mem.indexOfScalar(u8, entry.name, '/') != null or
-            std.mem.indexOfScalar(u8, entry.name, '\\') != null)
-        {
-            failed += 1;
-            continue;
-        }
-        var ok = true;
-        for (entry.files) |file_path| {
-            const rel = skill_install.relInstallPath(entry.root_path, file_path) orelse continue;
-            // Fetch via the GitHub Contents API (api.github.com) rather than
-            // raw.githubusercontent.com: the same host that enumeration used and
-            // proved reachable. `Accept: application/vnd.github.raw` returns the
-            // file's raw bytes.
-            const url = skill_install.contentsApiUrl(allocator, repo.owner, repo.repo, file_path, ref) catch {
-                ok = false;
-                break;
-            };
-            defer allocator.free(url);
-            const dest = std.fs.path.join(allocator, &.{ tmp_dir, rel }) catch {
-                ok = false;
-                break;
-            };
-            defer allocator.free(dest);
-            update_install.downloadAssetAccept(allocator, url, dest, "application/vnd.github.raw") catch {
-                ok = false;
-                break;
-            };
-        }
-        if (!ok) {
-            failed += 1;
-            continue;
-        }
-
-        const final = std.fs.path.join(allocator, &.{ lib_dir, entry.name }) catch {
-            failed += 1;
-            continue;
-        };
-        defer allocator.free(final);
-        const staged = std.fs.path.join(allocator, &.{ tmp_dir, entry.name }) catch {
-            failed += 1;
-            continue;
-        };
-        defer allocator.free(staged);
-
-        const existed = blk: {
-            std.fs.accessAbsolute(final, .{}) catch break :blk false;
-            break :blk true;
-        };
-        std.fs.deleteTreeAbsolute(final) catch {
-            failed += 1;
-            continue;
-        };
-        std.fs.renameAbsolute(staged, final) catch {
-            failed += 1;
-            continue;
-        };
-        installed += 1;
-        if (existed) overwritten += 1;
-    }
-
-    return .{ .installed = installed, .overwritten = overwritten, .failed = failed };
-}
-
-/// ExecHost over a location: local POSIX, SSH when a conn is present, or the
-/// default WSL distro (`wsl.exe --exec sh -lc`) when `is_wsl` is set.
-const SkillLocExec = struct {
-    conn: ?ssh_connection.SshConnection,
-    is_wsl: bool = false,
-    fn exec(ctx: *anyopaque, allocator: std.mem.Allocator, command: []const u8) anyerror![]u8 {
-        const self: *SkillLocExec = @ptrCast(@alignCast(ctx));
-        if (self.conn) |c| return remote_file.sshExecCapture(allocator, c, command);
-        if (self.is_wsl) return remote_file.wslExec(allocator, command) orelse error.RemoteExecFailed;
-        return remote_file.localPosixExec(allocator, command, 4 * 1024 * 1024);
-    }
-    fn host(self: *SkillLocExec) skill_scan.ExecHost {
-        return .{ .ctx = self, .exec = exec };
-    }
-};
-
-/// Resolve a target's SshConnection (null for a local target / unresolved).
-fn skillCenterTargetConn(target: skill_center.Target) ?ssh_connection.SshConnection {
-    if (target.is_local) return null;
-    if (std.mem.startsWith(u8, target.machine_id, "ssh:")) {
-        return overlays.aiHistorySshConnection(target.machine_id["ssh:".len..]);
-    }
-    return null;
-}
-
-/// Absolute path of a local target software's skills root (`~/.claude/skills`).
-/// Used by the native (non-POSIX) scan/transfer path where `$HOME` can't be
-/// expanded by a shell. Null if the home dir can't be resolved. Caller frees.
-fn skillCenterLocalRootPath(allocator: std.mem.Allocator, software: skill_center.Software) ?[]u8 {
-    const home = platform_dirs.homeDir(allocator) catch return null;
-    defer allocator.free(home);
-    return std.fs.path.join(allocator, &.{ home, software.rootRel() }) catch null;
-}
-
-/// Scan a skills endpoint, picking the right backend:
-///   - remote (conn set): the POSIX `find`/`sha256sum` command over SSH.
-///   - WSL (`is_wsl`): the same command via `wsl.exe --exec sh -lc`.
-///   - local on a POSIX host: the same command via `sh -c` (preserves the
-///     existing Linux/macOS hashes).
-///   - local on a non-POSIX host (Windows, no WSL): a native `std.fs` scan whose
-///     aggregate hash matches the POSIX recipe byte-for-byte.
-/// `root_expr` is the shell root expression (for the SSH/POSIX/WSL paths);
-/// `local_path` is the raw absolute root (for the native path; null when remote).
-fn skillCenterScanOutcome(
-    allocator: std.mem.Allocator,
-    root_expr: []const u8,
-    local_path: ?[]const u8,
-    conn: ?ssh_connection.SshConnection,
-    is_wsl: bool,
-) skill_scan.ScanOutcome {
-    if (conn) |c| {
-        var le = SkillLocExec{ .conn = c };
-        return skill_scan.scanLocation(allocator, root_expr, le.host()) catch
-            return .{ .reachable = false, .rows = &.{} };
-    }
-    if (is_wsl) {
-        var le = SkillLocExec{ .conn = null, .is_wsl = true };
-        return skill_scan.scanLocation(allocator, root_expr, le.host()) catch
-            return .{ .reachable = false, .rows = &.{} };
-    }
-    if (remote_file.localPosixExecSupported()) {
-        var le = SkillLocExec{ .conn = null };
-        return skill_scan.scanLocation(allocator, root_expr, le.host()) catch
-            return .{ .reachable = false, .rows = &.{} };
-    }
-    const lp = local_path orelse return .{ .reachable = false, .rows = &.{} };
-    return skill_local_fs.scanOutcome(allocator, lp);
-}
-
-/// Adapts skill_transfer.Ops onto local/ssh/scp/WSL. conn null + !is_wsl → a
-/// local-only target; is_wsl → both endpoints reached via `wsl.exe` (see
-/// `wslSkillTransfer`, where the library lives under /mnt/<drive> and the target
-/// under $HOME, so the copy primitive is never invoked).
-/// `err_buf`/`err_len` capture the last ssh error summary for the UI toast.
-const SkillTransferCtx = struct {
-    conn: ?ssh_connection.SshConnection,
-    is_wsl: bool = false,
-    // Sized off ssh_error.MAX (+ margin) so a summary never gets re-truncated here.
-    err_buf: [ssh_error.MAX + 40]u8 = undefined,
-    err_len: usize = 0,
-
-    fn noteErr(self: *SkillTransferCtx, msg: []const u8) void {
-        const n = @min(msg.len, self.err_buf.len);
-        @memcpy(self.err_buf[0..n], msg[0..n]);
-        self.err_len = n;
-    }
-    fn lastErr(self: *const SkillTransferCtx) ?[]const u8 {
-        return if (self.err_len > 0) self.err_buf[0..self.err_len] else null;
-    }
-
-    fn localExec(ctx: *anyopaque, allocator: std.mem.Allocator, command: []const u8) bool {
-        const self: *SkillTransferCtx = @ptrCast(@alignCast(ctx));
-        // A WSL transfer runs every step (tar/extract/cleanup) over `wslExec`;
-        // skill_transfer only calls localExec for the LOCAL_TMP cleanup, whose
-        // path lives in the WSL /tmp and is already removed by the remoteExec
-        // `rm`. A no-op keeps that ignored cleanup from spuriously failing.
-        if (self.is_wsl) return true;
-        return remote_file.localPosixExecOk(allocator, command);
-    }
-    fn remoteExec(ctx: *anyopaque, allocator: std.mem.Allocator, command: []const u8) bool {
-        const self: *SkillTransferCtx = @ptrCast(@alignCast(ctx));
-        if (self.is_wsl) {
-            // Default WSL distro; stdout discarded (only exit status matters).
-            const out = remote_file.wslExec(allocator, command) orelse return false;
-            allocator.free(out);
-            return true;
-        }
-        const c = self.conn orelse return false;
-        // stdout is discarded; remoteExec only cares about exit status + stderr.
-        var cap = remote_file.sshExecCaptureFull(allocator, c, command) catch return false;
-        defer cap.deinit(allocator);
-        if (!cap.exited_ok) {
-            if (ssh_error.summarize(cap.stderr)) |s| self.noteErr(s);
-            return false;
-        }
-        return true;
-    }
-    fn copy(ctx: *anyopaque, allocator: std.mem.Allocator, dir: skill_transfer.CopyDir, local_tmp: []const u8, remote_tmp: []const u8) bool {
-        const self: *SkillTransferCtx = @ptrCast(@alignCast(ctx));
-        const c = self.conn orelse return false;
-        var buf: [512]u8 = undefined;
-        const spec = scp.remoteSpec(&buf, &c, remote_tmp);
-        const r = switch (dir) {
-            .to_remote => scp.transfer(allocator, &c, local_tmp, spec),
-            .to_local => scp.transfer(allocator, &c, spec, local_tmp),
-        };
-        return r == .ok; // scp summary is best-effort; leave err_buf empty → generic toast
-    }
-    fn ops(self: *SkillTransferCtx) skill_transfer.Ops {
-        return .{ .ctx = self, .localExec = localExec, .remoteExec = remoteExec, .copy = copy };
-    }
-};
-
-/// Marker for a target skill vs the library (by name + hash).
-fn skillCenterMarkerFor(library: ?[]skill_center.LibrarySkill, name: []const u8, target_hash: ?[]const u8) skill_center.Marker {
-    const lib = library orelse return .new_;
-    for (lib) |s| {
-        if (std.mem.eql(u8, s.name, name)) {
-            const lh = s.agg_hash orelse return .differ;
-            const th = target_hash orelse return .differ;
-            return if (std.mem.eql(u8, lh, th)) .same else .differ;
-        }
-    }
-    return .new_;
-}
-
-/// Build an ImportState from a target's scanned rows. Caller holds the lock.
-fn skillCenterMakeImportState(allocator: std.mem.Allocator, model: *const skill_center.PanelModel, rows: []const skill_scan.SkillRow, target: skill_center.Target) !skill_center.ImportState {
-    var names: std.ArrayListUnmanaged([]u8) = .empty;
-    errdefer {
-        for (names.items) |n| allocator.free(n);
-        names.deinit(allocator);
-    }
-    var markers: std.ArrayListUnmanaged(skill_center.Marker) = .empty;
-    errdefer markers.deinit(allocator);
-    for (rows) |r| {
-        const marker = skillCenterMarkerFor(model.library, r.name, r.agg_hash);
-        const n = try allocator.dupe(u8, r.name);
-        // Explicit cleanup: once `n` is in `names`, the function-level errdefer
-        // owns it — a per-item errdefer here would double-free on a later error.
-        names.append(allocator, n) catch |e| {
-            allocator.free(n);
-            return e;
-        };
-        try markers.append(allocator, marker);
-    }
-    var tgt = try target.clone(allocator);
-    errdefer tgt.deinit(allocator);
-    return .{
-        .target = tgt,
-        .names = try names.toOwnedSlice(allocator),
-        .markers = try markers.toOwnedSlice(allocator),
-        .sel = 0,
-    };
-}
-
-fn skillCenterAddMachine(allocator: std.mem.Allocator, labels: *std.ArrayListUnmanaged([]u8), targets: *std.ArrayListUnmanaged(skill_center.Target), machine_id: []const u8, machine_label: []const u8, is_local: bool, is_wsl: bool) !void {
-    const sws = [_]skill_center.Software{ .claude, .codex };
-    for (sws) |sw| {
-        const sw_label = switch (sw) {
-            .claude => i18n.s().sc_sw_claude,
-            .codex => i18n.s().sc_sw_codex,
-        };
-        // Explicit per-append cleanup: once an item is in its list, the outer
-        // (buildPicker) errdefer owns it — a per-item errdefer would double-free.
-        const label = try std.fmt.allocPrint(allocator, "{s} · {s}", .{ machine_label, sw_label });
-        labels.append(allocator, label) catch |e| {
-            allocator.free(label);
-            return e;
-        };
-        var tgt = try skill_center.Target.dupe(allocator, machine_id, machine_label, sw, is_local);
-        tgt.is_wsl = is_wsl;
-        targets.append(allocator, tgt) catch |e| {
-            tgt.deinit(allocator);
-            return e;
-        };
-    }
-}
-
-/// Build a target picker over {local, WSL (Windows), ssh profiles} × {claude, codex}.
-fn skillCenterBuildPicker(allocator: std.mem.Allocator, purpose: skill_center.Purpose, skill_name: []const u8) !skill_center.PickerState {
-    var labels: std.ArrayListUnmanaged([]u8) = .empty;
-    var targets: std.ArrayListUnmanaged(skill_center.Target) = .empty;
-    errdefer {
-        for (labels.items) |l| allocator.free(l);
-        labels.deinit(allocator);
-        for (targets.items) |*t| t.deinit(allocator);
-        targets.deinit(allocator);
-    }
-    try skillCenterAddMachine(allocator, &labels, &targets, "local", i18n.s().sc_local, true, false);
-    // The default WSL distro, only when one is actually installed (registry
-    // probe — never spawns wsl.exe, so a WSL-less machine never pops the
-    // "install WSL" window). Hidden on non-Windows hosts (wslAvailable false).
-    if (platform_pty_command.wslAvailable()) {
-        try skillCenterAddMachine(allocator, &labels, &targets, "wsl", i18n.s().sc_wsl, false, true);
-    }
-    const names = overlays.sshProfileNames(allocator) catch &[_][]u8{};
-    defer {
-        for (names) |n| allocator.free(n);
-        allocator.free(names);
-    }
-    for (names) |nm| {
-        const id = try std.fmt.allocPrint(allocator, "ssh:{s}", .{nm});
-        defer allocator.free(id);
-        try skillCenterAddMachine(allocator, &labels, &targets, id, nm, false, false);
-    }
-    const name_copy = try allocator.dupe(u8, skill_name);
-    errdefer allocator.free(name_copy);
-    return .{
-        .purpose = purpose,
-        .skill_name = name_copy,
-        .labels = try labels.toOwnedSlice(allocator),
-        .targets = try targets.toOwnedSlice(allocator),
-        .sel = 0,
-    };
+    return skill_center_actions.skillCenterPickSelectAll(skillCenterHost());
 }
 
 fn skillCenterOpenPicker(purpose: skill_center.Purpose) bool {
-    const session = activeSkillCenter() orelse return false;
-    const allocator = g_allocator orelse return false;
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    var name: []const u8 = "";
-    if (purpose == .deploy) {
-        const sk = session.model.selected() orelse return true;
-        name = sk.name;
-    }
-    const picker = skillCenterBuildPicker(allocator, purpose, name) catch return true;
-    session.model.setOverlay(.{ .picker = picker });
-    markUiDirty();
-    return true;
+    return skill_center_actions.openPicker(skillCenterHost(), purpose);
 }
 
 pub fn skillCenterDeploy() bool {
-    return skillCenterOpenPicker(.deploy);
+    return skill_center_actions.skillCenterDeploy(skillCenterHost());
 }
+
 pub fn skillCenterImport() bool {
-    return skillCenterOpenPicker(.import_);
+    return skill_center_actions.skillCenterImport(skillCenterHost());
 }
 
-/// Scan a chosen target and open the import list — off the UI thread.
-fn skillCenterOpenImportList(allocator: std.mem.Allocator, target: skill_center.Target) void {
-    const session = activeSkillCenter() orelse return;
-    const conn = skillCenterTargetConn(target);
-    if (target.requiresSshConn() and conn == null) {
-        overlays.showStatusToast(i18n.s().sc_toast_no_conn);
-        return;
-    }
-    const root_expr = skill_transfer_cmd.homeRootExpr(allocator, target.software.rootRel()) catch return;
-    // Raw root for the native (non-POSIX) path; null when remote or unresolvable.
-    const local_path: ?[]u8 = if (target.is_local) skillCenterLocalRootPath(allocator, target.software) else null;
-    // ownership of root_expr + local_path moves into the job on success
-    const tgt = target.clone(allocator) catch {
-        allocator.free(root_expr);
-        if (local_path) |p| allocator.free(p);
-        return;
-    };
-    const job = allocator.create(SkillImportScanJob) catch {
-        allocator.free(root_expr);
-        if (local_path) |p| allocator.free(p);
-        var t = tgt;
-        t.deinit(allocator);
-        return;
-    };
-    job.* = .{ .target = tgt, .conn = conn, .root_expr = root_expr, .local_path = local_path };
-    if (!session.startOp(.{ .ctx = job, .run = SkillImportScanJob.run, .destroy = SkillImportScanJob.destroy }, window_backend.postWakeup, i18n.s().sc_busy_syncing)) {
-        SkillImportScanJob.destroy(@ptrCast(job), allocator);
-        overlays.showStatusToast(i18n.s().sc_toast_op_busy);
-    }
+fn skillCenterSetStatusLocked(session: *skill_center.Session, text: []const u8) void {
+    skill_center_actions.setStatusLocked(session, text);
 }
 
-/// Run a transfer (library ⇆ target) off the UI thread; result handled in
-/// pollSkillCenterOp.
-fn skillCenterRunTransfer(allocator: std.mem.Allocator, is_import: bool, target: skill_center.Target, name: []const u8) void {
-    const session = activeSkillCenter() orelse return;
-    const conn = skillCenterTargetConn(target);
-    if (target.requiresSshConn() and conn == null) {
-        overlays.showStatusToast(i18n.s().sc_toast_no_conn);
-        return;
-    }
-    const lib_dir = skillCenterLibraryDir(allocator) orelse return;
-    defer allocator.free(lib_dir);
-    const lib_root = skill_transfer_cmd.absRootExpr(allocator, lib_dir) catch return;
-    const tgt_root = skill_transfer_cmd.homeRootExpr(allocator, target.software.rootRel()) catch {
-        allocator.free(lib_root);
-        return;
-    };
-    const lib_path = allocator.dupe(u8, lib_dir) catch {
-        allocator.free(lib_root);
-        allocator.free(tgt_root);
-        return;
-    };
-    // Raw target root for the native (non-POSIX) path; null when remote.
-    const tgt_path: ?[]u8 = if (target.is_local) skillCenterLocalRootPath(allocator, target.software) else null;
-    const name_dup = allocator.dupe(u8, name) catch {
-        allocator.free(lib_root);
-        allocator.free(tgt_root);
-        allocator.free(lib_path);
-        if (tgt_path) |p| allocator.free(p);
-        return;
-    };
-    const job = allocator.create(SkillTransferJob) catch {
-        allocator.free(lib_root);
-        allocator.free(tgt_root);
-        allocator.free(lib_path);
-        if (tgt_path) |p| allocator.free(p);
-        allocator.free(name_dup);
-        return;
-    };
-    job.* = .{
-        .is_import = is_import,
-        .conn = conn,
-        .is_wsl = target.is_wsl,
-        .lib_root = lib_root,
-        .tgt_root = tgt_root,
-        .tgt_is_local = target.is_local,
-        .name = name_dup,
-        .lib_path = lib_path,
-        .tgt_path = tgt_path,
-        .tgt_software = target.software,
-    };
-    if (!session.startOp(.{ .ctx = job, .run = SkillTransferJob.run, .destroy = SkillTransferJob.destroy }, window_backend.postWakeup, i18n.s().sc_busy_syncing)) {
-        SkillTransferJob.destroy(@ptrCast(job), allocator);
-        overlays.showStatusToast(i18n.s().sc_toast_op_busy);
-    }
+pub fn skillCenterImportTool() bool {
+    return skill_center_actions.skillCenterImportTool(skillCenterHost());
 }
 
-/// Preview the selected server skill's SKILL.md — off the UI thread.
-/// Only meaningful inside an import_list overlay.
-fn skillCenterPreviewServerSkill(allocator: std.mem.Allocator) void {
-    const session = activeSkillCenter() orelse return;
-    var name_owned: ?[]u8 = null;
-    var target_owned: ?skill_center.Target = null;
-    {
-        session.mutex.lock();
-        defer session.mutex.unlock();
-        switch (session.model.overlay) {
-            .import_list => |*il| {
-                if (il.sel < il.names.len) {
-                    name_owned = allocator.dupe(u8, il.names[il.sel]) catch null;
-                    target_owned = il.target.clone(allocator) catch null;
-                }
-            },
-            else => {},
-        }
-    }
-    const name = name_owned orelse {
-        if (target_owned) |*t| t.deinit(allocator);
-        return;
-    };
-    var target = target_owned orelse {
-        allocator.free(name);
-        return;
-    };
-    defer target.deinit(allocator); // only need conn + software here
-
-    const conn = skillCenterTargetConn(target);
-    if (target.requiresSshConn() and conn == null) {
-        overlays.showStatusToast(i18n.s().sc_toast_no_conn);
-        allocator.free(name);
-        return;
-    }
-    const root_expr = skill_transfer_cmd.homeRootExpr(allocator, target.software.rootRel()) catch {
-        allocator.free(name);
-        return;
-    };
-    defer allocator.free(root_expr);
-    const cmd = skill_transfer_cmd.catSkillMdCmd(allocator, root_expr, name) catch {
-        allocator.free(name);
-        return;
-    };
-    // Absolute SKILL.md path for a LOCAL target so the worker can read it
-    // natively on a non-POSIX host; null for remote (uses the ssh cat cmd).
-    const local_md_path: ?[]u8 = if (target.is_local) blk: {
-        const root = skillCenterLocalRootPath(allocator, target.software) orelse break :blk null;
-        defer allocator.free(root);
-        break :blk std.fs.path.join(allocator, &.{ root, name, "SKILL.md" }) catch null;
-    } else null;
-    const job = allocator.create(SkillPreviewJob) catch {
-        allocator.free(name);
-        allocator.free(cmd);
-        if (local_md_path) |p| allocator.free(p);
-        return;
-    };
-    job.* = .{ .conn = conn, .is_wsl = target.is_wsl, .name = name, .cmd = cmd, .local_md_path = local_md_path };
-    if (!session.startOp(.{ .ctx = job, .run = SkillPreviewJob.run, .destroy = SkillPreviewJob.destroy }, window_backend.postWakeup, i18n.s().sc_busy_loading)) {
-        SkillPreviewJob.destroy(@ptrCast(job), allocator);
-        overlays.showStatusToast(i18n.s().sc_toast_op_busy);
-    }
+pub fn skillCenterToggleToolEnabled() bool {
+    return skill_center_actions.skillCenterToggleToolEnabled(skillCenterHost());
 }
 
-/// Arm an overwrite confirm overlay for a pending deploy/import.
 fn skillCenterArmConfirm(allocator: std.mem.Allocator, is_import: bool, target: skill_center.Target, name: []const u8) void {
-    const session = activeSkillCenter() orelse return;
-    var msg_buf: [256]u8 = undefined;
-    const t = i18n.s();
-    const msg = std.fmt.bufPrint(&msg_buf, "{s} → {s} {s}", .{ name, target.machine_label, t.sc_confirm_suffix }) catch t.sc_confirm_suffix;
-    // Explicit cleanup (not errdefer): this is a void fn, so errdefer would
-    // never fire on the `catch return` paths.
-    var tgt = target.clone(allocator) catch return;
-    const name_dup = allocator.dupe(u8, name) catch {
-        tgt.deinit(allocator);
-        return;
-    };
-    const text = allocator.dupe(u8, msg) catch {
-        tgt.deinit(allocator);
-        allocator.free(name_dup);
-        return;
-    };
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    session.model.setOverlay(.{ .confirm = .{ .text = text, .is_import = is_import, .target = tgt, .name = name_dup } });
-    markUiDirty();
+    skill_center_actions.armConfirm(skillCenterHost(), allocator, is_import, target, name);
 }
 
-/// Deploy: scan the target off the UI thread; the decision happens in
-/// pollSkillCenterOp once rows arrive.
-fn skillCenterDeployDecide(allocator: std.mem.Allocator, target: skill_center.Target, name: []const u8, src_hash: ?[]const u8) void {
-    const session = activeSkillCenter() orelse return;
-    const conn = skillCenterTargetConn(target);
-    if (target.requiresSshConn() and conn == null) {
-        overlays.showStatusToast(i18n.s().sc_toast_no_conn);
-        return;
-    }
-    const root_expr = skill_transfer_cmd.homeRootExpr(allocator, target.software.rootRel()) catch return;
-    // Raw root for the native (non-POSIX) path; null when remote or unresolvable.
-    const local_path: ?[]u8 = if (target.is_local) skillCenterLocalRootPath(allocator, target.software) else null;
-    const tgt = target.clone(allocator) catch {
-        allocator.free(root_expr);
-        if (local_path) |p| allocator.free(p);
-        return;
-    };
-    const name_dup = allocator.dupe(u8, name) catch {
-        allocator.free(root_expr);
-        if (local_path) |p| allocator.free(p);
-        var t = tgt;
-        t.deinit(allocator);
-        return;
-    };
-    var hash_dup: ?[]u8 = null;
-    if (src_hash) |h| {
-        hash_dup = allocator.dupe(u8, h) catch {
-            allocator.free(root_expr);
-            if (local_path) |p| allocator.free(p);
-            var t = tgt;
-            t.deinit(allocator);
-            allocator.free(name_dup);
-            return;
-        };
-    }
-    const job = allocator.create(SkillDeployScanJob) catch {
-        allocator.free(root_expr);
-        if (local_path) |p| allocator.free(p);
-        var t = tgt;
-        t.deinit(allocator);
-        allocator.free(name_dup);
-        if (hash_dup) |h| allocator.free(h);
-        return;
-    };
-    job.* = .{ .target = tgt, .conn = conn, .root_expr = root_expr, .local_path = local_path, .name = name_dup, .src_hash = hash_dup };
-    if (!session.startOp(.{ .ctx = job, .run = SkillDeployScanJob.run, .destroy = SkillDeployScanJob.destroy }, window_backend.postWakeup, i18n.s().sc_busy_syncing)) {
-        SkillDeployScanJob.destroy(@ptrCast(job), allocator);
-        overlays.showStatusToast(i18n.s().sc_toast_op_busy);
-    }
-}
-
-/// Import: the marker already encodes new/same/differ.
-fn skillCenterImportAct(allocator: std.mem.Allocator, target: skill_center.Target, name: []const u8, marker: skill_center.Marker) void {
-    switch (marker) {
-        .same => overlays.showStatusToast(i18n.s().sc_toast_in_sync),
-        .new_ => skillCenterRunTransfer(allocator, true, target, name),
-        .differ => skillCenterArmConfirm(allocator, true, target, name),
-    }
-}
-
-/// Enter inside an overlay: act on the selection. Snapshots under the lock,
-/// then runs the (blocking) work after releasing it.
 pub fn skillCenterOverlaySelect() bool {
-    const session = activeSkillCenter() orelse return false;
-    const allocator = g_allocator orelse return false;
-    // URL input submits to the enumerate op (manages its own lock).
-    if (skillCenterUrlInputActive()) {
-        skillCenterStartEnumerate(session, allocator);
-        return true;
-    }
-    // The install checklist submits to the download op (manages its own lock).
-    if (skillCenterPickActive()) {
-        skillCenterStartInstall(session, allocator);
-        return true;
-    }
-    const Act = enum { none, deploy_picked, import_picked, import_item, confirm };
-    var act: Act = .none;
-    var target: ?skill_center.Target = null;
-    var name_owned: ?[]u8 = null;
-    var src_hash_owned: ?[]u8 = null;
-    var marker: skill_center.Marker = .new_;
-    var is_import_confirm = false;
-    {
-        session.mutex.lock();
-        defer session.mutex.unlock();
-        switch (session.model.overlay) {
-            .picker => |*p| {
-                if (p.sel < p.targets.len) {
-                    target = p.targets[p.sel].clone(allocator) catch null;
-                    if (p.purpose == .deploy) {
-                        name_owned = allocator.dupe(u8, p.skill_name) catch null;
-                        if (session.model.library) |lib| {
-                            for (lib) |s| {
-                                if (std.mem.eql(u8, s.name, p.skill_name)) {
-                                    if (s.agg_hash) |h| src_hash_owned = allocator.dupe(u8, h) catch null;
-                                }
-                            }
-                        }
-                        act = .deploy_picked;
-                    } else {
-                        act = .import_picked;
-                    }
-                }
-                session.model.clearOverlay();
-            },
-            .import_list => |*il| {
-                if (il.sel < il.names.len) {
-                    name_owned = allocator.dupe(u8, il.names[il.sel]) catch null;
-                    target = il.target.clone(allocator) catch null;
-                    marker = il.markers[il.sel];
-                    act = .import_item;
-                }
-                session.model.clearOverlay();
-            },
-            .confirm => |*c| {
-                target = c.target.clone(allocator) catch null;
-                name_owned = allocator.dupe(u8, c.name) catch null;
-                is_import_confirm = c.is_import;
-                act = .confirm;
-                session.model.clearOverlay();
-            },
-            // Handled by the early guards above; safety no-ops here.
-            .url_input => {},
-            .install_pick => {},
-            .text_preview => {},
-            .none, .busy => {},
-        }
-    }
-    defer {
-        if (target) |*t| t.deinit(allocator);
-        if (name_owned) |n| allocator.free(n);
-        if (src_hash_owned) |h| allocator.free(h);
-    }
-    markUiDirty();
-    switch (act) {
-        .none => {},
-        .deploy_picked => {
-            if (target) |tgt| if (name_owned) |nm| skillCenterDeployDecide(allocator, tgt, nm, src_hash_owned);
-        },
-        .import_picked => {
-            if (target) |tgt| skillCenterOpenImportList(allocator, tgt);
-        },
-        .import_item => {
-            if (target) |tgt| if (name_owned) |nm| skillCenterImportAct(allocator, tgt, nm, marker);
-        },
-        .confirm => {
-            if (target) |tgt| if (name_owned) |nm| skillCenterRunTransfer(allocator, is_import_confirm, tgt, nm);
-        },
-    }
-    return true;
+    return skill_center_actions.skillCenterOverlaySelect(skillCenterHost());
 }
 
-/// Rescan all sources for the active Skill Center tab. UI thread.
 pub fn skillCenterRescan() bool {
-    const session = activeSkillCenter() orelse return false;
-    const allocator = g_allocator orelse return false;
-    startSkillCenterScan(allocator, session);
-    markUiDirty();
-    return true;
+    return skill_center_actions.skillCenterRescan(skillCenterHost());
 }
 
-/// Preview the selected library skill's SKILL.md in the markdown panel.
 pub fn skillCenterPreviewSelected() bool {
-    const session = activeSkillCenter() orelse return false;
-    const allocator = g_allocator orelse return false;
-    var rel_owned: ?[]u8 = null;
-    var name_buf: [128]u8 = undefined;
-    var name_len: usize = 0;
-    {
-        session.mutex.lock();
-        defer session.mutex.unlock();
-        const sk = session.model.selected() orelse return true;
-        name_len = @min(sk.name.len, name_buf.len);
-        @memcpy(name_buf[0..name_len], sk.name[0..name_len]);
-        rel_owned = allocator.dupe(u8, sk.rel_path) catch null;
-    }
-    const rp = rel_owned orelse return true;
-    defer allocator.free(rp);
-    const lib_dir = skillCenterLibraryDir(allocator) orelse return true;
-    defer allocator.free(lib_dir);
-    const abs = std.fs.path.join(allocator, &.{ lib_dir, rp }) catch return true;
-    defer allocator.free(abs);
-    // Read the library file directly (no shell): the library is always a local
-    // absolute path, and `cat` via localPosixExec is unavailable on Windows.
-    const text = skill_local_fs.readFileAllocAbsolute(allocator, abs, 1024 * 1024) catch null;
-    if (text) |t| {
-        defer allocator.free(t);
-        var title_buf: [160]u8 = undefined;
-        const title = std.fmt.bufPrint(&title_buf, "{s} / SKILL.md", .{name_buf[0..name_len]}) catch name_buf[0..name_len];
-        session.mutex.lock();
-        session.model.openTextPreview(title, t) catch {};
-        session.mutex.unlock();
-        markUiDirty();
-    } else {
-        overlays.showStatusToast(i18n.s().sc_toast_read_failed);
-    }
-    return true;
+    return skill_center_actions.skillCenterPreviewSelected(skillCenterHost());
 }
 
-/// True when the scrollable SKILL.md preview overlay is showing.
 pub fn skillCenterTextPreviewActive() bool {
-    const session = activeSkillCenter() orelse return false;
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    return session.model.isTextPreview();
+    return skill_center_actions.skillCenterTextPreviewActive();
 }
 
-/// Scroll the open SKILL.md preview by `delta` wrapped lines (renderer clamps).
+pub const SkillCenterPreviewKind = skill_center_actions.SkillCenterPreviewKind;
+
+pub fn skillCenterPreviewKind() SkillCenterPreviewKind {
+    return skill_center_actions.skillCenterPreviewKind();
+}
+
 pub fn skillCenterPreviewScroll(delta: isize) bool {
-    const session = activeSkillCenter() orelse return false;
-    session.mutex.lock();
-    session.model.scrollTextPreview(delta);
-    session.mutex.unlock();
-    markUiDirty();
-    return true;
+    return skill_center_actions.skillCenterPreviewScroll(skillCenterHost(), delta);
 }
 
-/// Close the SKILL.md preview overlay.
 pub fn skillCenterPreviewClose() bool {
-    const session = activeSkillCenter() orelse return false;
-    session.mutex.lock();
-    session.model.clearOverlay();
-    session.mutex.unlock();
-    markUiDirty();
-    return true;
+    return skill_center_actions.skillCenterPreviewClose(skillCenterHost());
 }
 
-/// Space key in the Skill Center: preview the selected item by overlay kind.
-/// import_list → server skill (async); main library / deploy picker → local
-/// library skill; import picker / confirm → no-op. UI thread.
 pub fn skillCenterSpacePreview() bool {
-    if (skillCenterPickActive()) return skillCenterPickToggle();
-    const session = activeSkillCenter() orelse return false;
-    const allocator = g_allocator orelse return false;
-    const Kind = enum { lib, server, none };
-    var kind: Kind = .lib;
-    {
-        session.mutex.lock();
-        defer session.mutex.unlock();
-        switch (session.model.overlay) {
-            .none, .busy => kind = .lib,
-            .import_list => kind = .server,
-            .picker => |*p| kind = if (p.purpose == .deploy) .lib else .none,
-            .confirm => kind = .none,
-            .url_input => kind = .none,
-            .install_pick => kind = .none,
-            .text_preview => kind = .none, // input intercepts Space while previewing
-        }
-    }
-    switch (kind) {
-        .lib => _ = skillCenterPreviewSelected(),
-        .server => skillCenterPreviewServerSkill(allocator),
-        .none => {},
-    }
-    return true;
+    return skill_center_actions.skillCenterSpacePreview(skillCenterHost());
+}
+
+fn skillCenterMakeImportState(allocator: std.mem.Allocator, model: *const skill_center.PanelModel, rows: []const skill_scan.SkillRow, target: skill_center.Target) !skill_center.ImportState {
+    return skill_center_actions.makeImportState(allocator, model, rows, target);
+}
+
+fn startSkillCenterScan(allocator: std.mem.Allocator, session: *skill_center.Session) void {
+    skill_center_actions.startScan(allocator, session);
 }
 
 pub fn aiHistoryInsertCodepoint(codepoint: u21) bool {
@@ -2572,6 +2812,15 @@ pub fn aiHistoryInsertCodepoint(codepoint: u21) bool {
 pub fn aiHistorySearchFocused() bool {
     const session = activeAiHistory() orelse return false;
     return session.focus == .search;
+}
+
+/// True when a plain Space should preview the selected transcript instead of
+/// typing into the Search box (search unfocused, or focused with an empty
+/// query). Keeps "Press Space to load transcript" working from the default
+/// focus while still allowing spaces inside a non-empty query.
+pub fn aiHistorySpacePreviews() bool {
+    const session = activeAiHistory() orelse return false;
+    return session.spacePreviewsTranscript();
 }
 
 pub fn aiHistoryBackspaceFilter() bool {
@@ -2660,6 +2909,87 @@ pub fn aiHistoryScrollDateList(delta: isize) bool {
 
 pub fn aiHistoryLoadSelectedTranscript() bool {
     return resumeAiHistorySelection();
+}
+
+pub fn memoryCenterCycleSource(delta: isize) bool {
+    const session = activeMemoryCenter() orelse return false;
+    session.cycleSource(delta);
+    markUiDirty();
+    return true;
+}
+
+pub fn memoryCenterMoveSelection(delta: isize) bool {
+    const session = activeMemoryCenter() orelse return false;
+    session.moveSelection(delta);
+    markUiDirty();
+    return true;
+}
+
+pub fn memoryCenterScrollDetail(delta: isize) bool {
+    const session = activeMemoryCenter() orelse return false;
+    session.scrollDetailBy(delta);
+    markUiDirty();
+    return true;
+}
+
+pub fn memoryCenterReload() bool {
+    const allocator = g_allocator orelse return false;
+    const session = activeMemoryCenter() orelse return false;
+    session.reload(allocator);
+    markUiDirty();
+    return true;
+}
+
+pub fn memoryCenterHandleMousePress(xpos: f64, ypos: f64) bool {
+    const session = activeMemoryCenter() orelse return false;
+    const win = g_window orelse return false;
+    const fb = window_backend.framebufferSize(win);
+    const left = leftPanelsWidth();
+    const width = aiHistoryContentWidth(fb.width, left, rightPanelsWidthForWindow(fb.width));
+    const hit = memory_center_renderer.hitTest(
+        session,
+        @floatFromInt(fb.height),
+        currentTitlebarHeight(),
+        left,
+        width,
+        font.g_titlebar_cell_height,
+        xpos,
+        ypos,
+    );
+    switch (hit) {
+        .source => |source| session.setSource(source),
+        .row => |idx| session.selectIndex(idx),
+        .run_digest => _ = runMemoryDigestFromCenter(),
+        .detail => {},
+        .none => return false,
+    }
+    markUiDirty();
+    return true;
+}
+
+pub fn memoryCenterHandleMouseWheel(xpos: i32, ypos: i32, delta: i32) bool {
+    const session = activeMemoryCenter() orelse return false;
+    const win = g_window orelse return false;
+    const fb = window_backend.framebufferSize(win);
+    const left = leftPanelsWidth();
+    const width = aiHistoryContentWidth(fb.width, left, rightPanelsWidthForWindow(fb.width));
+    const hit = memory_center_renderer.hitTest(
+        session,
+        @floatFromInt(fb.height),
+        currentTitlebarHeight(),
+        left,
+        width,
+        font.g_titlebar_cell_height,
+        @floatFromInt(xpos),
+        @floatFromInt(ypos),
+    );
+    const direction: isize = if (delta > 0) -1 else 1;
+    switch (hit) {
+        .detail => session.scrollDetailBy(direction * 3),
+        .source, .row, .run_digest, .none => session.moveSelection(direction),
+    }
+    markUiDirty();
+    return true;
 }
 
 pub fn resumeAiHistorySelection() bool {
@@ -2880,444 +3210,6 @@ fn startAiHistoryScan(allocator: std.mem.Allocator, session: *ai_history_session
     session.scanAsync(.{ .ctx = job, .run = AiHistoryScanJob.run, .destroy = AiHistoryScanJob.destroy });
 }
 
-// ===========================================================================
-// Skill Center — scan worker, host factory, source enumeration
-// ===========================================================================
-
-/// Everything a Skill Center scan host needs for one source, snapshotted on the
-/// UI thread. `ssh` carries a copied `SshConnection` value (inline buffers, no
-/// threadlocal pointers); `local`/`wsl` resolve inside the worker. `unreachable_`
-/// marks a source we want to show as an unreachable column (e.g. an SSH profile
-/// that could not be resolved, or local on a non-POSIX host).
-/// Background job: scan the local library (`<config>/skills`) off the UI thread.
-const SkillLibraryScanJob = struct {
-    root_expr: []u8, // owned shell expression for the library root (POSIX path)
-    local_path: []u8, // owned raw absolute library root (native path)
-
-    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) anyerror![]skill_center.LibrarySkill {
-        const job: *SkillLibraryScanJob = @ptrCast(@alignCast(ctx));
-        const outcome = skillCenterScanOutcome(allocator, job.root_expr, job.local_path, null, false);
-        // Move the scanned rows into the library list (frees the rows slice).
-        return skill_center.libraryFromRows(allocator, outcome.rows);
-    }
-
-    fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
-        const job: *SkillLibraryScanJob = @ptrCast(@alignCast(ctx));
-        allocator.free(job.root_expr);
-        allocator.free(job.local_path);
-        allocator.destroy(job);
-    }
-};
-
-/// Background op: scan a target, return rows for the UI to build an import list.
-const SkillImportScanJob = struct {
-    target: skill_center.Target, // owned
-    conn: ?ssh_connection.SshConnection,
-    root_expr: []u8, // owned
-    local_path: ?[]u8, // owned raw root when local; null when remote (native path)
-
-    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
-        const job: *SkillImportScanJob = @ptrCast(@alignCast(ctx));
-        var outcome = skillCenterScanOutcome(allocator, job.root_expr, job.local_path, job.conn, job.target.is_wsl);
-        const tgt = job.target.clone(allocator) catch {
-            outcome.deinit(allocator);
-            return .failed;
-        };
-        // An unreachable source yields `{ reachable = false, rows = &.{} }`;
-        // importScanResult turns it into `.failed` rather than an empty list.
-        return skill_center.importScanResult(allocator, &outcome, tgt);
-    }
-    fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
-        const job: *SkillImportScanJob = @ptrCast(@alignCast(ctx));
-        job.target.deinit(allocator);
-        allocator.free(job.root_expr);
-        if (job.local_path) |p| allocator.free(p);
-        allocator.destroy(job);
-    }
-};
-
-/// Background op: scan a target for deploy, return rows + the skill identity so
-/// the UI can decide noop/direct/confirm.
-const SkillDeployScanJob = struct {
-    target: skill_center.Target, // owned
-    conn: ?ssh_connection.SshConnection,
-    root_expr: []u8, // owned
-    local_path: ?[]u8, // owned raw root when local; null when remote (native path)
-    name: []u8, // owned
-    src_hash: ?[]u8, // owned
-
-    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
-        const job: *SkillDeployScanJob = @ptrCast(@alignCast(ctx));
-        var outcome = skillCenterScanOutcome(allocator, job.root_expr, job.local_path, job.conn, job.target.is_wsl);
-        // A genuinely unreachable target (SSH failure) → fail fast, as the old
-        // scan-error path did; a reachable-but-empty target deploys via `.direct`.
-        if (!outcome.reachable) {
-            outcome.deinit(allocator);
-            return .failed;
-        }
-        const tgt = job.target.clone(allocator) catch {
-            outcome.deinit(allocator);
-            return .failed;
-        };
-        const name = allocator.dupe(u8, job.name) catch {
-            outcome.deinit(allocator);
-            var t = tgt;
-            t.deinit(allocator);
-            return .failed;
-        };
-        var src_hash: ?[]u8 = null;
-        if (job.src_hash) |h| {
-            src_hash = allocator.dupe(u8, h) catch {
-                outcome.deinit(allocator);
-                var t = tgt;
-                t.deinit(allocator);
-                allocator.free(name);
-                return .failed;
-            };
-        }
-        const rows = outcome.rows;
-        outcome.rows = &.{};
-        return .{ .deploy_scan = .{ .target = tgt, .name = name, .src_hash = src_hash, .rows = rows } };
-    }
-    fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
-        const job: *SkillDeployScanJob = @ptrCast(@alignCast(ctx));
-        job.target.deinit(allocator);
-        allocator.free(job.root_expr);
-        if (job.local_path) |p| allocator.free(p);
-        allocator.free(job.name);
-        if (job.src_hash) |h| allocator.free(h);
-        allocator.destroy(job);
-    }
-};
-
-/// Background op: run a transfer (library ⇆ target), capturing a stderr summary.
-const SkillTransferJob = struct {
-    is_import: bool,
-    conn: ?ssh_connection.SshConnection,
-    is_wsl: bool,
-    lib_root: []u8, // owned shell expr (POSIX path)
-    tgt_root: []u8, // owned shell expr (POSIX path)
-    tgt_is_local: bool,
-    name: []u8, // owned
-    lib_path: []u8, // owned raw absolute library root (native path)
-    tgt_path: ?[]u8, // owned raw absolute target root when local; null when remote
-    tgt_software: skill_center.Software, // for resolving the remote root natively
-
-    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
-        const job: *SkillTransferJob = @ptrCast(@alignCast(ctx));
-        var tctx = SkillTransferCtx{ .conn = job.conn, .is_wsl = job.is_wsl };
-        const ok = if (job.is_wsl)
-            wslSkillTransfer(allocator, job, &tctx)
-        else if (remote_file.localPosixExecSupported()) blk: {
-            // POSIX local host: the proven tar-over-scp dance (Linux/macOS).
-            const lib_ep = skill_transfer.Endpoint{ .root_expr = job.lib_root, .is_local = true };
-            const tgt_ep = skill_transfer.Endpoint{ .root_expr = job.tgt_root, .is_local = job.tgt_is_local };
-            const from = if (job.is_import) tgt_ep else lib_ep;
-            const to = if (job.is_import) lib_ep else tgt_ep;
-            break :blk skill_transfer.transfer(allocator, tctx.ops(), from, to, job.name) == .ok;
-        } else nativeSkillTransfer(allocator, job, &tctx);
-        var summary: ?[]u8 = null;
-        if (!ok) {
-            if (tctx.lastErr()) |s| summary = allocator.dupe(u8, s) catch null;
-        }
-        return .{ .transfer = .{ .is_import = job.is_import, .ok = ok, .err_summary = summary } };
-    }
-    fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
-        const job: *SkillTransferJob = @ptrCast(@alignCast(ctx));
-        allocator.free(job.lib_root);
-        allocator.free(job.tgt_root);
-        allocator.free(job.name);
-        allocator.free(job.lib_path);
-        if (job.tgt_path) |p| allocator.free(p);
-        allocator.destroy(job);
-    }
-};
-
-/// Transfer a skill to/from the default WSL distro. Both endpoints are visible
-/// to a single `wsl.exe` shell — the library on the Windows filesystem reached
-/// at `/mnt/<drive>/…`, the target under `$HOME` — so the whole transfer runs
-/// inside WSL with no host↔guest file copy: tar-create + extract over `wslExec`
-/// (see `SkillTransferCtx` and the both-remote case of `skill_transfer`).
-/// `job.lib_path` is a native Windows path that must be converted to its guest
-/// `/mnt` form before `tar -C` can read it. Returns true on full success.
-fn wslSkillTransfer(allocator: std.mem.Allocator, job: *SkillTransferJob, tctx: *SkillTransferCtx) bool {
-    const guest_lib = (platform_wsl.hostPathToGuestPathAlloc(allocator, job.lib_path) catch null) orelse {
-        tctx.noteErr("library is not on a mounted drive");
-        return false;
-    };
-    defer allocator.free(guest_lib);
-    const lib_root = skill_transfer_cmd.absRootExpr(allocator, guest_lib) catch return false;
-    defer allocator.free(lib_root);
-
-    // Both endpoints remote (is_local = false) → skill_transfer skips its copy
-    // primitive and runs tar-create + extract entirely over wslExec.
-    const lib_ep = skill_transfer.Endpoint{ .root_expr = lib_root, .is_local = false };
-    const tgt_ep = skill_transfer.Endpoint{ .root_expr = job.tgt_root, .is_local = false };
-    const from = if (job.is_import) tgt_ep else lib_ep;
-    const to = if (job.is_import) lib_ep else tgt_ep;
-    return skill_transfer.transfer(allocator, tctx.ops(), from, to, job.name) == .ok;
-}
-
-/// Transfer a skill without a POSIX shell (native Windows, no WSL):
-///   - local↔local: a native `std.fs` directory copy with atomic swap.
-///   - local↔remote: `scp -r` to/from a staging dir + an SSH stage/swap, so the
-///     local side never needs `tar` or a `/tmp` path. The remote side stays
-///     POSIX (its `mkdir`/`mv` run over SSH). Returns true on full success.
-fn nativeSkillTransfer(allocator: std.mem.Allocator, job: *SkillTransferJob, tctx: *SkillTransferCtx) bool {
-    if (job.conn == null) {
-        const tgt_path = job.tgt_path orelse {
-            tctx.noteErr("could not resolve target path");
-            return false;
-        };
-        const src = if (job.is_import) tgt_path else job.lib_path;
-        const dst = if (job.is_import) job.lib_path else tgt_path;
-        skill_local_fs.transferLocalToLocal(allocator, src, dst, job.name) catch {
-            tctx.noteErr("local copy failed");
-            return false;
-        };
-        return true;
-    }
-    var conn = job.conn.?;
-    if (job.is_import) return nativeImportFromRemote(allocator, job, &conn, tctx);
-    return nativeDeployToRemote(allocator, job, &conn, tctx);
-}
-
-/// Resolve the target's ABSOLUTE skills root on the remote (e.g.
-/// `/home/user/.claude/skills`) by asking the remote shell to expand `$HOME`.
-/// scp must be handed a literal path: its default (SFTP) protocol does NOT
-/// shell-expand a `"$HOME"`/quoted remote spec — passing the shell expression
-/// would only work via the legacy `-O` fallback on a POSIX login shell, which
-/// breaks on modern Windows OpenSSH (SFTP default) and non-POSIX login shells.
-/// Caller frees. Null if the home can't be resolved.
-fn resolveRemoteSkillRoot(
-    allocator: std.mem.Allocator,
-    conn: *const ssh_connection.SshConnection,
-    software: skill_center.Software,
-) ?[]u8 {
-    const home = remote_file.sshExecCapture(allocator, conn.*, "printf %s \"$HOME\"") catch return null;
-    defer allocator.free(home);
-    const trimmed = std.mem.trim(u8, home, " \t\r\n");
-    if (trimmed.len == 0) return null;
-    // POSIX remote path → always '/' separators, never std.fs.path.join.
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ trimmed, software.rootRel() }) catch null;
-}
-
-/// Deploy the library skill to a remote target via `scp -r` (no local tar).
-fn nativeDeployToRemote(
-    allocator: std.mem.Allocator,
-    job: *SkillTransferJob,
-    conn: *const ssh_connection.SshConnection,
-    tctx: *SkillTransferCtx,
-) bool {
-    const abs_root = resolveRemoteSkillRoot(allocator, conn, job.tgt_software) orelse {
-        tctx.noteErr("could not resolve remote home");
-        return false;
-    };
-    defer allocator.free(abs_root);
-    const root_expr = skill_transfer_cmd.absRootExpr(allocator, abs_root) catch return false;
-    defer allocator.free(root_expr);
-
-    const prep = skill_transfer_cmd.remoteStagePrepCmd(allocator, root_expr) catch return false;
-    defer allocator.free(prep);
-    if (!SkillTransferCtx.remoteExec(tctx, allocator, prep)) return false;
-
-    const local_src = std.fs.path.join(allocator, &.{ job.lib_path, job.name }) catch return false;
-    defer allocator.free(local_src);
-    // Clean absolute remote path for scp (works under both the SFTP-default and
-    // legacy protocols); the ssh prep above created exactly this dir.
-    const remote_stage = std.fmt.allocPrint(allocator, "{s}/{s}", .{ abs_root, skill_transfer_cmd.XFER_STAGING }) catch return false;
-    defer allocator.free(remote_stage);
-    var spec_buf: [512]u8 = undefined;
-    const dst_spec = scp.remoteSpec(&spec_buf, conn, remote_stage);
-    var control: scp.TransferControl = .{};
-    if (scp.transferDirWithControl(allocator, conn, local_src, dst_spec, &control) != .ok) {
-        tctx.noteErr("scp upload failed");
-        return false;
-    }
-
-    const swap = skill_transfer_cmd.remoteStageSwapCmd(allocator, root_expr, job.name) catch return false;
-    defer allocator.free(swap);
-    return SkillTransferCtx.remoteExec(tctx, allocator, swap);
-}
-
-/// Import a remote skill into the library via `scp -r` into a local staging dir,
-/// then a native atomic swap.
-fn nativeImportFromRemote(
-    allocator: std.mem.Allocator,
-    job: *SkillTransferJob,
-    conn: *const ssh_connection.SshConnection,
-    tctx: *SkillTransferCtx,
-) bool {
-    const abs_root = resolveRemoteSkillRoot(allocator, conn, job.tgt_software) orelse {
-        tctx.noteErr("could not resolve remote home");
-        return false;
-    };
-    defer allocator.free(abs_root);
-
-    skill_local_fs.ensureDirAbsolute(job.lib_path) catch {
-        tctx.noteErr("library dir unavailable");
-        return false;
-    };
-    const staging = std.fs.path.join(allocator, &.{ job.lib_path, skill_transfer_cmd.XFER_STAGING }) catch return false;
-    defer allocator.free(staging);
-    std.fs.deleteTreeAbsolute(staging) catch {};
-    skill_local_fs.ensureDirAbsolute(staging) catch {
-        tctx.noteErr("local staging failed");
-        return false;
-    };
-    defer std.fs.deleteTreeAbsolute(staging) catch {};
-
-    // Clean absolute remote source path for scp (SFTP-default safe).
-    const remote_src = std.fmt.allocPrint(allocator, "{s}/{s}", .{ abs_root, job.name }) catch return false;
-    defer allocator.free(remote_src);
-    var spec_buf: [512]u8 = undefined;
-    const src_spec = scp.remoteSpec(&spec_buf, conn, remote_src);
-    var control: scp.TransferControl = .{};
-    if (scp.transferDirWithControl(allocator, conn, src_spec, staging, &control) != .ok) {
-        tctx.noteErr("scp download failed");
-        return false;
-    }
-
-    const staged_skill = std.fs.path.join(allocator, &.{ staging, job.name }) catch return false;
-    defer allocator.free(staged_skill);
-    const final = std.fs.path.join(allocator, &.{ job.lib_path, job.name }) catch return false;
-    defer allocator.free(final);
-    std.fs.deleteTreeAbsolute(final) catch {};
-    std.fs.renameAbsolute(staged_skill, final) catch {
-        tctx.noteErr("local install failed");
-        return false;
-    };
-    return true;
-}
-
-/// Background op: read one skill's SKILL.md (local or via ssh) for preview.
-const SkillPreviewJob = struct {
-    conn: ?ssh_connection.SshConnection,
-    is_wsl: bool,
-    name: []u8, // owned — becomes the preview title
-    cmd: []u8, // owned — `cat <root>/'<name>'/'SKILL.md'`
-    local_md_path: ?[]u8, // owned absolute SKILL.md path for a LOCAL target (native read)
-
-    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
-        const job: *SkillPreviewJob = @ptrCast(@alignCast(ctx));
-        // Local target on a non-POSIX host (Windows): read SKILL.md natively;
-        // `cat` via localPosixExec is unavailable. Remote/posix/WSL use the shell
-        // cmd (WSL via `wsl.exe`, see SkillLocExec).
-        const content = if (job.conn == null and !job.is_wsl and !remote_file.localPosixExecSupported()) blk: {
-            const p = job.local_md_path orelse return .failed;
-            break :blk skill_local_fs.readFileAllocAbsolute(allocator, p, 1024 * 1024) catch return .failed;
-        } else blk: {
-            var le = SkillLocExec{ .conn = job.conn, .is_wsl = job.is_wsl };
-            const host = le.host();
-            break :blk host.exec(host.ctx, allocator, job.cmd) catch return .failed;
-        };
-        const title = allocator.dupe(u8, job.name) catch {
-            allocator.free(content);
-            return .failed;
-        };
-        return .{ .preview = .{ .title = title, .content = content } };
-    }
-    fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
-        const job: *SkillPreviewJob = @ptrCast(@alignCast(ctx));
-        allocator.free(job.name);
-        allocator.free(job.cmd);
-        if (job.local_md_path) |p| allocator.free(p);
-        allocator.destroy(job);
-    }
-};
-
-/// Background op: parse the URL, resolve the default branch if absent, fetch the
-/// Git Trees response, and enumerate skills for the checklist.
-const SkillInstallEnumerateJob = struct {
-    url: []u8, // owned
-
-    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
-        const job: *SkillInstallEnumerateJob = @ptrCast(@alignCast(ctx));
-        var repo = skill_install.parseGithubUrl(allocator, job.url) catch return .failed;
-        // NB: `enumerate` is error-returning so `errdefer` fires on every failure
-        // path below (the bare `return .failed` of the plan's code would leak
-        // `repo` because a value-return does not trigger errdefer).
-        return enumerate(allocator, &repo) catch {
-            repo.deinit(allocator);
-            return .failed;
-        };
-    }
-    fn enumerate(allocator: std.mem.Allocator, repo: *skill_install.RepoRef) !skill_center.OpResult {
-        // Resolve the ref if the URL had none.
-        if (repo.ref == null) {
-            repo.ref = resolveDefaultBranch(allocator, repo.owner, repo.repo) catch
-                try allocator.dupe(u8, "main");
-        }
-
-        const api = try skill_install.treeApiUrl(allocator, repo.owner, repo.repo, repo.ref.?);
-        defer allocator.free(api);
-        const json = try update_install.httpGetAlloc(allocator, api, 8 * 1024 * 1024);
-        defer allocator.free(json);
-
-        const res = try skill_install.findSkills(allocator, json, repo.subpath);
-        return .{ .install_enumerate = .{ .repo = repo.*, .entries = res.entries, .truncated = res.truncated } };
-    }
-    fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
-        const job: *SkillInstallEnumerateJob = @ptrCast(@alignCast(ctx));
-        allocator.free(job.url);
-        allocator.destroy(job);
-    }
-};
-
-/// Background op: download + install the selected skills into the library.
-const SkillInstallDownloadJob = struct {
-    repo: skill_install.RepoRef, // owned
-    entries: []skill_install.SkillEntry, // owned
-
-    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
-        const job: *SkillInstallDownloadJob = @ptrCast(@alignCast(ctx));
-        const r = downloadSelectedSkillsToLibrary(allocator, job.repo, job.entries);
-        return .{ .install_done = .{ .installed = r.installed, .overwritten = r.overwritten, .failed = r.failed } };
-    }
-    fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
-        const job: *SkillInstallDownloadJob = @ptrCast(@alignCast(ctx));
-        job.repo.deinit(allocator);
-        skill_install.freeEntries(allocator, job.entries);
-        allocator.destroy(job);
-    }
-};
-
-/// Best-effort default-branch resolution. Tries the repo API's `default_branch`,
-/// then falls back to "master" (the caller defaults to "main" on total failure).
-fn resolveDefaultBranch(allocator: std.mem.Allocator, owner: []const u8, repo: []const u8) ![]u8 {
-    const api = try skill_install.repoApiUrl(allocator, owner, repo);
-    defer allocator.free(api);
-    const json = update_install.httpGetAlloc(allocator, api, 1024 * 1024) catch return allocator.dupe(u8, "master");
-    defer allocator.free(json);
-    return skill_install.parseDefaultBranch(allocator, json) catch allocator.dupe(u8, "master");
-}
-
-/// Kick off an async library scan for `session`. UI thread.
-fn startSkillCenterScan(allocator: std.mem.Allocator, session: *skill_center.Session) void {
-    const lib_dir = skillCenterLibraryDir(allocator) orelse {
-        session.publishScanFailure(session.scan_generation);
-        return;
-    };
-    defer allocator.free(lib_dir);
-    const root_expr = skill_transfer_cmd.absRootExpr(allocator, lib_dir) catch {
-        session.publishScanFailure(session.scan_generation);
-        return;
-    };
-    const local_path = allocator.dupe(u8, lib_dir) catch {
-        allocator.free(root_expr);
-        session.publishScanFailure(session.scan_generation);
-        return;
-    };
-    const job = allocator.create(SkillLibraryScanJob) catch {
-        allocator.free(root_expr);
-        allocator.free(local_path);
-        session.publishScanFailure(session.scan_generation);
-        return;
-    };
-    job.* = .{ .root_expr = root_expr, .local_path = local_path };
-    session.scanAsync(.{ .ctx = job, .run = SkillLibraryScanJob.run, .destroy = SkillLibraryScanJob.destroy });
-}
-
 /// Kick off an async transcript load for the selected row. UI thread.
 fn startAiHistoryTranscript(allocator: std.mem.Allocator, session: *ai_history_session.Session) void {
     session.mutex.lock();
@@ -3358,6 +3250,68 @@ fn startAiHistoryTranscript(allocator: std.mem.Allocator, session: *ai_history_s
     });
 }
 
+fn selectedAiHistoryMetaForAction(allocator: std.mem.Allocator, session: *ai_history_session.Session) ?ai_history_types.SessionMeta {
+    return session.selectedMetadataClone(allocator);
+}
+
+fn loadAiHistoryTranscriptForAction(
+    allocator: std.mem.Allocator,
+    session: *ai_history_session.Session,
+    meta: ai_history_types.SessionMeta,
+) ?[]ai_history_types.TranscriptMessage {
+    session.mutex.lock();
+    if (session.transcript_state == .ready and
+        session.transcript_provider != null and
+        session.transcript_provider.? == meta.provider)
+    {
+        const preview_copy = cloneAiHistoryTranscriptMessages(allocator, session.transcript) catch null;
+        session.mutex.unlock();
+        if (preview_copy) |copy| return copy;
+    } else {
+        session.mutex.unlock();
+    }
+
+    const target = aiHistoryTargetSnapshot(session.source.target) orelse return null;
+    const messages: []ai_history_types.TranscriptMessage = switch (target) {
+        .local => ai_history_session.loadLocalTranscript(allocator, meta) catch return null,
+        .wsl => blk: {
+            var host_state = ai_history_session.WslScannerHost{};
+            const host = host_state.scannerHost();
+            break :blk host.loadTranscript(host.ctx, allocator, meta) catch return null;
+        },
+        .ssh => |conn| blk: {
+            var host_state = ai_history_session.SshScannerHost{ .conn = conn };
+            const host = host_state.scannerHost();
+            break :blk host.loadTranscript(host.ctx, allocator, meta) catch return null;
+        },
+    };
+
+    const preview_copy = cloneAiHistoryTranscriptMessages(allocator, messages) catch null;
+    if (preview_copy) |copy| session.replaceTranscriptFromMessages(meta.provider, copy);
+    return messages;
+}
+
+fn cloneAiHistoryTranscriptMessages(
+    allocator: std.mem.Allocator,
+    messages: []const ai_history_types.TranscriptMessage,
+) ![]ai_history_types.TranscriptMessage {
+    const cloned = try allocator.alloc(ai_history_types.TranscriptMessage, messages.len);
+    var initialized: usize = 0;
+    errdefer {
+        while (initialized > 0) {
+            initialized -= 1;
+            allocator.free(cloned[initialized].content);
+        }
+        allocator.free(cloned);
+    }
+    for (messages) |msg| {
+        cloned[initialized] = msg;
+        cloned[initialized].content = try allocator.dupe(u8, msg.content);
+        initialized += 1;
+    }
+    return cloned;
+}
+
 pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
     const session = activeAiHistory() orelse return false;
     const win = g_window orelse return true;
@@ -3365,10 +3319,10 @@ pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
     const left = leftPanelsWidth();
     const right = rightPanelsWidthForWindow(fb.width);
     const width = @as(f32, @floatFromInt(fb.width)) - left - right;
-    const visible_rows = ai_history_renderer.listVisibleCapacity(@floatFromInt(fb.height), currentTitlebarHeight(), font.g_titlebar_cell_height);
+    const visible_rows = terminal_agent_sessions_renderer.listVisibleCapacity(@floatFromInt(fb.height), currentTitlebarHeight(), font.g_titlebar_cell_height);
 
     session.mutex.lock();
-    const hit = ai_history_renderer.interactionHitTest(
+    const hit = terminal_agent_sessions_renderer.interactionHitTest(
         session,
         @floatFromInt(fb.width),
         @floatFromInt(fb.height),
@@ -3376,6 +3330,7 @@ pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
         left,
         width,
         font.g_titlebar_cell_height,
+        font.g_titlebar_cell_width,
         xpos,
         ypos,
     );
@@ -3397,6 +3352,18 @@ pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
         .@"resume" => {
             _ = resumeAiHistorySelection();
             markUiDirty();
+            return true;
+        },
+        .download_raw => {
+            _ = aiHistoryDownloadSelectedRaw();
+            return true;
+        },
+        .export_markdown => {
+            _ = aiHistoryExportSelectedMarkdown();
+            return true;
+        },
+        .attach_copilot => {
+            _ = aiHistoryAttachSelectedToCopilot();
             return true;
         },
         .category => |cat| {
@@ -3430,8 +3397,24 @@ pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
 }
 
 fn markUiDirty() void {
-    g_force_rebuild = true;
-    g_cells_valid = false;
+    applyUiEffect(.repaint);
+}
+
+/// Apply a UI-thread effect to AppWindow's legacy dirty flags.
+///
+/// This must run on the UI thread: the dirty flags are threadlocal, so worker
+/// threads must queue work back to the UI thread and use `window_backend.postWakeup()`
+/// rather than calling this helper directly.
+pub fn applyUiEffect(effect: UiEffect) void {
+    if (effect.needs_rebuild) g_force_rebuild = true;
+    if (effect.cells_invalid) g_cells_valid = false;
+    if (effect.wake_backend) window_backend.postWakeup();
+}
+
+/// Worker 线程用:直接唤醒后端事件循环,无需经 UiEffect 结构。
+/// 供 feishu registration worker 等后台线程在状态变更后调用。
+pub fn postWakeup() void {
+    window_backend.postWakeup();
 }
 
 /// Tick all preview panes across every tab. Returns true if any pane
@@ -3454,7 +3437,7 @@ fn tickAllPreviewPanes() bool {
 fn aiHistoryListVisibleRowsForWindow() usize {
     const win = g_window orelse return 1;
     const fb = window_backend.framebufferSize(win);
-    return ai_history_renderer.listVisibleCapacity(@floatFromInt(fb.height), currentTitlebarHeight(), font.g_titlebar_cell_height);
+    return terminal_agent_sessions_renderer.listVisibleCapacity(@floatFromInt(fb.height), currentTitlebarHeight(), font.g_titlebar_cell_height);
 }
 
 /// Number of day rows (excluding the pinned "All dates") visible in the DATE
@@ -3463,8 +3446,8 @@ fn aiHistoryDateDaySlotsForWindow() usize {
     const win = g_window orelse return 0;
     const fb = window_backend.framebufferSize(win);
     const cell_h = font.g_titlebar_cell_height;
-    const lc = ai_history_renderer.leftColumnLayout(currentTitlebarHeight(), cell_h);
-    const cap = ai_history_renderer.dateVisibleCapacity(@floatFromInt(fb.height), lc.date_rows_top, cell_h);
+    const lc = terminal_agent_sessions_renderer.leftColumnLayout(currentTitlebarHeight(), cell_h);
+    const cap = terminal_agent_sessions_renderer.dateVisibleCapacity(@floatFromInt(fb.height), lc.date_rows_top, cell_h);
     return if (cap > 1) cap - 1 else 0;
 }
 
@@ -3480,12 +3463,171 @@ fn localHomeForAiHistory(allocator: std.mem.Allocator) ![]u8 {
     return error.NoHomeDirectory;
 }
 
+fn showAiHistoryActionToast(message: []const u8) bool {
+    overlays.showStatusToast(message);
+    markUiDirty();
+    return true;
+}
+
+fn showNoAiHistorySelectionForAction() bool {
+    return showAiHistoryActionToast("No AI History session selected");
+}
+
+pub fn aiHistoryDownloadSelectedRaw() bool {
+    const allocator = g_allocator orelse return false;
+    const session = activeAiHistory() orelse return showNoAiHistorySelectionForAction();
+    const meta = selectedAiHistoryMetaForAction(allocator, session) orelse return showNoAiHistorySelectionForAction();
+    defer ai_history_session.freeMetadata(allocator, meta);
+
+    const path = chooseAiHistoryRawDownloadPath(allocator, meta) catch |err| {
+        log.warn("failed to choose AI history raw download path for {s}: {}", .{ meta.session_id, err });
+        return showAiHistoryActionToast("Raw download failed");
+    } orelse {
+        markUiDirty();
+        return true;
+    };
+    defer allocator.free(path);
+
+    var filename_buf: [180]u8 = undefined;
+    const filename = ai_history_markdown.rawDownloadFilename(meta, &filename_buf);
+
+    switch (session.source.target) {
+        .local => {
+            const bytes = readLocalAiHistoryRaw(allocator, meta.source_path) catch |err| {
+                log.warn("failed to read local AI history raw file {s}: {}", .{ meta.source_path, err });
+                return showAiHistoryActionToast("Raw download failed");
+            };
+            defer allocator.free(bytes);
+            return writeAiHistoryRawDownload(path, bytes);
+        },
+        .wsl => {
+            const bytes = readWslAiHistoryRaw(allocator, meta.source_path) catch |err| {
+                log.warn("failed to read WSL AI history raw file {s}: {}", .{ meta.source_path, err });
+                return showAiHistoryActionToast("WSL raw download failed");
+            };
+            defer allocator.free(bytes);
+            return writeAiHistoryRawDownload(path, bytes);
+        },
+        .ssh => |ssh| {
+            const conn = overlays.aiHistorySshConnection(ssh.profile_name) orelse {
+                return showAiHistoryActionToast("SSH profile unavailable");
+            };
+            if (!file_explorer.downloadRemotePathToPath(meta.source_path, path, filename, &conn, false)) {
+                return showAiHistoryActionToast("Raw download failed");
+            }
+            markUiDirty();
+            return true;
+        },
+    }
+}
+
+fn writeAiHistoryRawDownload(path: []const u8, bytes: []const u8) bool {
+    writeFilePath(path, bytes) catch |err| {
+        log.warn("failed to write AI history raw download {s}: {}", .{ path, err });
+        return showAiHistoryActionToast("Raw download failed");
+    };
+    if (input.copyTextToClipboard(path)) {
+        return showAiHistoryActionToast("Downloaded raw file; path copied");
+    }
+    return showAiHistoryActionToast("Downloaded raw file");
+}
+
+pub fn aiHistoryExportSelectedMarkdown() bool {
+    const allocator = g_allocator orelse return false;
+    const session = activeAiHistory() orelse return showNoAiHistorySelectionForAction();
+    const meta = selectedAiHistoryMetaForAction(allocator, session) orelse return showNoAiHistorySelectionForAction();
+    defer ai_history_session.freeMetadata(allocator, meta);
+
+    const messages = loadAiHistoryTranscriptForAction(allocator, session, meta) orelse {
+        return showAiHistoryActionToast("Markdown export failed");
+    };
+    defer ai_history_session.freeTranscript(allocator, meta.provider, messages);
+
+    const markdown = ai_history_markdown.allocMarkdownExport(allocator, meta, messages, .{}) catch |err| {
+        log.warn("failed to render AI history Markdown export for {s}: {}", .{ meta.session_id, err });
+        return showAiHistoryActionToast("Markdown export failed");
+    };
+    defer allocator.free(markdown);
+
+    const path = chooseAiHistoryMarkdownExportPath(allocator, meta) catch |err| {
+        log.warn("failed to choose AI history Markdown export path for {s}: {}", .{ meta.session_id, err });
+        return showAiHistoryActionToast("Markdown export failed");
+    } orelse {
+        markUiDirty();
+        return true;
+    };
+    defer allocator.free(path);
+
+    writeFilePath(path, markdown) catch |err| {
+        log.warn("failed to write AI history Markdown export {s}: {}", .{ path, err });
+        return showAiHistoryActionToast("Markdown export failed");
+    };
+
+    if (input.copyTextToClipboard(path)) {
+        return showAiHistoryActionToast("Exported AI History Markdown; path copied");
+    }
+    return showAiHistoryActionToast("Exported AI History Markdown");
+}
+
+pub fn aiHistoryAttachSelectedToCopilot() bool {
+    const allocator = g_allocator orelse return false;
+    const session = activeAiHistory() orelse return showNoAiHistorySelectionForAction();
+    const meta = selectedAiHistoryMetaForAction(allocator, session) orelse return showNoAiHistorySelectionForAction();
+    defer ai_history_session.freeMetadata(allocator, meta);
+
+    const messages = loadAiHistoryTranscriptForAction(allocator, session, meta) orelse {
+        return showAiHistoryActionToast("Attach failed");
+    };
+    defer ai_history_session.freeTranscript(allocator, meta.provider, messages);
+
+    var context = ai_history_markdown.allocCopilotContext(allocator, meta, messages, 48 * 1024) catch |err| {
+        log.warn("failed to render AI history Copilot context for {s}: {}", .{ meta.session_id, err });
+        return showAiHistoryActionToast("Attach failed");
+    };
+    defer context.deinit(allocator);
+
+    const target = ensureAiHistoryCopilotTarget() orelse return true;
+    const title_text = std.fmt.allocPrint(
+        allocator,
+        "AI History: {s} {s}",
+        .{ meta.provider.label(), meta.session_id },
+    ) catch |err| {
+        log.warn("failed to build AI history Copilot context title for {s}: {}", .{ meta.session_id, err });
+        return showAiHistoryActionToast("Attach failed");
+    };
+    defer allocator.free(title_text);
+
+    target.appendContextCard(title_text, context.markdown, true) catch |err| {
+        log.warn("failed to attach AI history context to Copilot for {s}: {}", .{ meta.session_id, err });
+        const message = switch (err) {
+            error.SessionBusy => "Copilot is busy",
+            error.SessionClosing => "Copilot session is closing",
+            else => "Attach failed",
+        };
+        return showAiHistoryActionToast(message);
+    };
+
+    if (context.truncated) {
+        return showAiHistoryActionToast("Attached AI History to Copilot; truncated");
+    }
+    return showAiHistoryActionToast("Attached AI History to Copilot");
+}
+
+fn activeMarkdownExportSession() ?*ai_chat.Session {
+    if (activeAiChat()) |session| return session;
+    return activeCopilotSessionForInput();
+}
+
 pub fn exportActiveAiChatMarkdown(mode: ai_chat.MarkdownExportMode) void {
-    const allocator = g_allocator orelse return;
-    const session = activeAiChat() orelse {
-        overlays.showStatusToast("Open a Copilot tab first");
+    const session = activeMarkdownExportSession() orelse {
+        overlays.showStatusToast("Open a Copilot tab or sidebar first");
         return;
     };
+    exportAiChatMarkdown(session, mode);
+}
+
+fn exportAiChatMarkdown(session: *ai_chat.Session, mode: ai_chat.MarkdownExportMode) void {
+    const allocator = g_allocator orelse return;
 
     const markdown = session.allocMarkdownExport(allocator, mode) catch |err| {
         log.warn("failed to render AI chat Markdown export: {}", .{err});
@@ -3515,6 +3657,24 @@ pub fn exportActiveAiChatMarkdown(mode: ai_chat.MarkdownExportMode) void {
     std.debug.print("Exported AI chat Markdown to {s}\n", .{path});
 }
 
+fn copyAiChatMarkdown(session: *ai_chat.Session, mode: ai_chat.MarkdownExportMode) void {
+    const allocator = g_allocator orelse return;
+
+    const markdown = session.allocMarkdownExport(allocator, mode) catch |err| {
+        log.warn("failed to render AI chat Markdown for copy: {}", .{err});
+        overlays.showStatusToast("Copy failed");
+        return;
+    };
+    defer allocator.free(markdown);
+
+    if (input.copyTextToClipboard(markdown)) {
+        overlays.showCopyToast(markdown.len);
+        markUiDirty();
+    } else {
+        overlays.showStatusToast("Copy failed");
+    }
+}
+
 pub fn currentTitlebarHeight() f32 {
     if (g_window) |w| return @floatFromInt(window_backend.titlebarHeight(w));
     return titlebar.titlebarHeight();
@@ -3524,8 +3684,23 @@ pub fn leftPanelsWidth() f32 {
     return titlebar.sidebarWidth() + file_explorer.width();
 }
 
+fn copilotSidebarHost() copilot_sidebar.Host {
+    return .{
+        .allocator = g_allocator,
+        .history_store = &g_agent_history,
+        .history_mutex = &g_agent_history_mutex,
+        .make_session = makeCopilotSession,
+        .open_api_config = openCopilotApiConfig,
+        .focus_input = input.focusAiCopilot,
+        .blur_input = input.blurAiCopilot,
+        .mark_dirty = markUiDirty,
+        .mark_history_dirty_locked = markAgentHistoryDirtyLocked,
+        .reopen_session = reopenCopilotSessionFromHistorySessionId,
+    };
+}
+
 pub fn aiCopilotVisible() bool {
-    return tab.activeCopilotVisible();
+    return copilot_sidebar.visible();
 }
 
 /// True when a right-docked panel (browser / Jupyter webview) is showing for the
@@ -3538,15 +3713,11 @@ pub fn anyRightDockPanelVisible() bool {
 /// Hide the active tab's copilot panel if visible (used by the right-slot
 /// arbiter when another right panel opens). No-op if already hidden.
 pub fn hideAiCopilot() void {
-    if (!tab.setActiveCopilotVisible(false)) return;
-    input.blurAiCopilot();
-    g_force_rebuild = true;
-    g_cells_valid = false;
+    copilot_sidebar.hide(copilotSidebarHost());
 }
 
 pub fn aiCopilotWidth(window_width: i32) f32 {
-    if (!aiCopilotVisible()) return 0;
-    return ai_sidebar.panelWidthForWindow(window_width, leftPanelsWidth(), 0);
+    return copilot_sidebar.width(window_width, leftPanelsWidth());
 }
 
 fn makeCopilotSession() ?*ai_chat.Session {
@@ -3554,19 +3725,73 @@ fn makeCopilotSession() ?*ai_chat.Session {
 }
 
 fn ensureActiveCopilotSession() ?*ai_chat.Session {
-    const session = tab.activeCopilotSession(makeCopilotSession) orelse return null;
-    if (g_agent_context_surface_id_len > 0) {
-        session.setBoundSurface(g_agent_context_surface_id[0..g_agent_context_surface_id_len]);
+    return copilot_sidebar.ensureActiveSession(copilotSidebarHost());
+}
+
+fn ensureAiHistoryCopilotTarget() ?*ai_chat.Session {
+    if (activeAiChat()) |session| return session;
+    if (activeCopilotSessionForInput()) |session| return session;
+    const allocator = g_allocator orelse {
+        _ = showAiHistoryActionToast("Attach failed");
+        return null;
+    };
+    const session = makeCopilotSession() orelse {
+        overlays.openAiConfigForMissingCopilotApi();
+        _ = showAiHistoryActionToast("Configure a Copilot profile first");
+        return null;
+    };
+    if (!tab.spawnAiChatSession(allocator, session)) {
+        session.deinit();
+        _ = showAiHistoryActionToast("Attach failed");
+        return null;
     }
-    return session;
+    clearUiStateOnTabChange();
+    return activeAiChat();
+}
+
+fn openCopilotApiConfig(session: ?*ai_chat.Session) void {
+    if (session) |s| {
+        overlays.openAiConfigForSession(s);
+    } else {
+        overlays.openAiConfigForMissingCopilotApi();
+    }
+    overlays.showStatusToast("Missing API key. Configure API settings.");
+}
+
+fn ensureActiveCopilotSessionConfigured() ?*ai_chat.Session {
+    return copilot_sidebar.ensureActiveSessionConfigured(copilotSidebarHost());
 }
 
 /// Input layer getter: the active terminal tab's copilot session, only when the
 /// copilot panel is visible. Used by input routing (next task).
 pub fn activeCopilotSessionForInput() ?*ai_chat.Session {
-    if (!aiCopilotVisible()) return null;
-    const t = tab.activeTab() orelse return null;
-    return t.copilot_session;
+    return copilot_sidebar.activeSessionForInput();
+}
+
+/// Build the picker rows from the store (copilot records only) and open it.
+pub fn openCopilotConversationPicker() void {
+    copilot_sidebar.openPicker(copilotSidebarHost());
+}
+
+/// (Re)load picker rows from the store. Called on open and after a delete.
+pub fn refreshCopilotPickerRows() void {
+    copilot_sidebar.refreshPickerRows(copilotSidebarHost());
+}
+
+/// Load conversation `session_id` into the active terminal tab's sidebar. If a
+/// live copy is already open in some tab, switch to that tab instead (a second
+/// live Session with the same id would corrupt the store).
+pub fn loadCopilotConversationById(session_id: []const u8) void {
+    copilot_sidebar.loadConversationById(copilotSidebarHost(), session_id);
+}
+
+pub fn deleteCopilotConversationById(session_id: []const u8) void {
+    copilot_sidebar.deleteConversationById(copilotSidebarHost(), session_id);
+}
+
+/// Start a fresh, empty Copilot conversation on the active terminal tab.
+pub fn newCopilotConversation() void {
+    copilot_sidebar.newConversation(copilotSidebarHost());
 }
 
 /// The preview pane that currently has split-tree focus, or null if the
@@ -3622,22 +3847,7 @@ pub fn appendDroppedPathToChatAtPoint(text: []const u8, x: i32, y: i32) bool {
 }
 
 pub fn toggleAiCopilot() void {
-    if (!isActiveTabTerminal()) return; // copilot is terminal-only
-    if (tab.activeCopilotVisible()) {
-        _ = tab.setActiveCopilotVisible(false);
-        input.blurAiCopilot();
-        g_force_rebuild = true;
-        g_cells_valid = false;
-        return;
-    }
-    // Exclusive right slot: close the other right panels first.
-    browser_panel.close();
-    _ = tab.setActiveCopilotVisible(true);
-    _ = ensureActiveCopilotSession();
-    input.focusAiCopilot();
-    if (g_allocator) |alloc| platform_window_state.setCopilotHintShown(alloc);
-    g_force_rebuild = true;
-    g_cells_valid = false;
+    copilot_sidebar.toggle(copilotSidebarHost());
 }
 
 pub fn rightPanelsWidth() f32 {
@@ -3684,8 +3894,58 @@ fn chooseAiChatMarkdownExportPath(
     return saveMarkdownDialogPath(allocator, root, filename);
 }
 
+fn chooseAiHistoryMarkdownExportPath(
+    allocator: std.mem.Allocator,
+    meta: ai_history_types.SessionMeta,
+) !?[]u8 {
+    const root = try aiChatExportRoot(allocator);
+    defer allocator.free(root);
+    std.fs.cwd().makePath(root) catch |err| {
+        log.warn("failed to create AI history export directory {s}: {}", .{ root, err });
+    };
+    var safe_buf: [180]u8 = undefined;
+    const raw = ai_history_markdown.rawDownloadFilename(meta, &safe_buf);
+    const filename = try std.fmt.allocPrint(allocator, "ai-history-{s}.md", .{std.fs.path.stem(raw)});
+    defer allocator.free(filename);
+    return saveMarkdownDialogPathWithTitle(allocator, "Save AI History Markdown", root, filename);
+}
+
+fn chooseAiHistoryRawDownloadPath(
+    allocator: std.mem.Allocator,
+    meta: ai_history_types.SessionMeta,
+) !?[]u8 {
+    const root = platform_dirs.downloadsDir(allocator) catch try aiChatExportRoot(allocator);
+    defer allocator.free(root);
+    var filename_buf: [180]u8 = undefined;
+    const filename = ai_history_markdown.rawDownloadFilename(meta, &filename_buf);
+    const filters = [_]platform_file_dialog.Filter{.{ .name = "All Files (*.*)", .pattern = "*.*" }};
+    const owner: platform_file_dialog.Owner = if (g_window) |w|
+        platform_file_dialog.windowOwner(window_backend.nativeHandleBits(w))
+    else
+        .{};
+    return platform_file_dialog.saveFile(allocator, .{
+        .owner = owner,
+        .title = "Save AI History Raw File",
+        .initial_dir = root,
+        .default_filename = filename,
+        .filters = &filters,
+    }) orelse {
+        overlays.showStatusToast("Raw download cancelled");
+        return null;
+    };
+}
+
 fn saveMarkdownDialogPath(
     allocator: std.mem.Allocator,
+    initial_dir: []const u8,
+    default_filename: []const u8,
+) !?[]u8 {
+    return saveMarkdownDialogPathWithTitle(allocator, "Save Copilot Markdown", initial_dir, default_filename);
+}
+
+fn saveMarkdownDialogPathWithTitle(
+    allocator: std.mem.Allocator,
+    title_text: []const u8,
     initial_dir: []const u8,
     default_filename: []const u8,
 ) !?[]u8 {
@@ -3699,7 +3959,7 @@ fn saveMarkdownDialogPath(
         .{};
     const path = platform_file_dialog.saveFile(allocator, .{
         .owner = owner,
-        .title = "Save Copilot Markdown",
+        .title = title_text,
         .initial_dir = initial_dir,
         .default_filename = default_filename,
         .default_extension = "md",
@@ -3712,20 +3972,22 @@ fn saveMarkdownDialogPath(
 }
 
 fn writeFilePath(path: []const u8, bytes: []const u8) !void {
-    if (std.fs.path.dirname(path)) |dir| {
-        try std.fs.cwd().makePath(dir);
-    }
+    try platform_atomic_file.writeFileReplaceSafe(path, bytes);
+}
 
+fn readLocalAiHistoryRaw(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     if (std.fs.path.isAbsolute(path)) {
-        var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+        const file = try std.fs.openFileAbsolute(path, .{});
         defer file.close();
-        try file.writeAll(bytes);
-        return;
+        return try file.readToEndAlloc(allocator, ai_history_session.MAX_TRANSCRIPT_FILE_BYTES);
     }
+    return try std.fs.cwd().readFileAlloc(allocator, path, ai_history_session.MAX_TRANSCRIPT_FILE_BYTES);
+}
 
-    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(bytes);
+fn readWslAiHistoryRaw(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var command_buf: [2048]u8 = undefined;
+    const command = try ai_history_session.remoteCatCommand(path, command_buf[0..]);
+    return remote_file.wslExecCapped(allocator, command, ai_history_session.MAX_TRANSCRIPT_FILE_BYTES) orelse error.RemoteExecFailed;
 }
 
 fn syncWindowTitlebarHeight(win: *window_backend.Window) f32 {
@@ -3748,8 +4010,7 @@ fn syncActiveSurfaceCaches() void {
     const surface = activeSurface();
     cell_renderer.g_current_render_surface = surface;
     if (surface) |s| {
-        @memcpy(g_agent_context_surface_id[0..], s.remote_id[0..]);
-        g_agent_context_surface_id_len = s.remote_id.len;
+        surface_snapshots.setAgentContextSurface(s);
         if (tab.activeTab()) |t| {
             if (t.kind == .terminal) {
                 if (t.copilot_session) |session| session.setBoundSurface(s.remote_id[0..]);
@@ -3761,12 +4022,13 @@ fn syncActiveSurfaceCaches() void {
 pub fn handleActiveSurfaceChangeWithinTab() void {
     syncVisibleFileExplorerForActiveTab(false);
     syncActiveSurfaceCaches();
-    g_force_rebuild = true;
-    g_cells_valid = false;
+    applyUiEffect(.{ .needs_rebuild = true, .cells_invalid = true });
 }
 
 fn clearUiStateOnTabChange() void {
     input.g_selecting = false;
+    input.g_sidebar_resize_hover = false;
+    input.g_sidebar_resize_dragging = false;
     input.g_explorer_resize_hover = false;
     input.g_explorer_resize_dragging = false;
     input.g_browser_resize_hover = false;
@@ -3782,8 +4044,7 @@ fn clearUiStateOnTabChange() void {
     syncVisibleFileExplorerForActiveTab(false);
     syncActiveSurfaceCaches();
     requestImmediateLayoutResize();
-    g_force_rebuild = true;
-    g_cells_valid = false;
+    applyUiEffect(.repaint);
 }
 
 /// Convert the active surface's CWD from a WSL guest path to a platform-native path.
@@ -3809,9 +4070,11 @@ fn ensureGlobalAgentHistoryStore(allocator: std.mem.Allocator) !void {
 
     if (g_agent_history != null) return;
 
-    const store = try allocator.create(agent_history.Store);
+    const store = try allocator.create(agent_history_store.MetaStore);
     errdefer allocator.destroy(store);
-    store.* = try agent_history.loadDefault(allocator);
+    const dir = try platform_dirs.agentHistoryDir(allocator);
+    defer allocator.free(dir);
+    store.* = try agent_history_store.MetaStore.open(allocator, dir);
     g_agent_history = store;
     g_flush_scheduler.reset();
     g_agent_history_revision = 0;
@@ -3822,10 +4085,14 @@ fn installSessionRestoreHooks() void {
     // tab.zig routes persisted AI snapshots back through these hooks.
     tab.g_ai_restore_hook = reopenAiChatTabFromHistorySessionId;
     tab.g_ai_history_restore_hook = reopenAiHistoryTabFromSnapshot;
+    // Copilot sidebar conversations are stored in the same agent-history store;
+    // rehydrate them in place when restoring their owning terminal tab.
+    tab.g_copilot_restore_hook = reopenCopilotSessionFromHistorySessionId;
     // tmux session persistence (#4c): save the active tmux profile names; on
     // restore, re-attach each via the launcher's tmux connect path.
     tab.g_tmux_active_profiles_hook = tmux_controller.activeProfileNames;
     tab.g_tmux_restore_hook = overlays.connectProfileByNameTmux;
+    tab.g_ssh_restore_arm_hook = overlays.armSshPasswordFromProfileForSurface;
 }
 
 fn deinitGlobalAgentHistoryStore(allocator: std.mem.Allocator) void {
@@ -3861,8 +4128,15 @@ fn saveAiHistoryChangeEvent(event: ai_chat.HistoryChangeEvent) void {
 fn persistOpenAiChatTabsToHistoryStore(allocator: std.mem.Allocator) void {
     for (0..tab.g_tab_count) |idx| {
         const tab_state = tab.g_tabs[idx] orelse continue;
-        if (tab_state.kind != .ai_chat) continue;
-        const session = tab_state.ai_chat_session orelse continue;
+        const session: *ai_chat.Session = switch (tab_state.kind) {
+            .ai_chat => tab_state.ai_chat_session orelse continue,
+            .terminal => blk: {
+                const cs = tab_state.copilot_session orelse continue;
+                if (!cs.shouldPersistCopilot()) continue;
+                break :blk cs;
+            },
+            else => continue,
+        };
 
         var record = session.toHistoryRecord(allocator) catch |err| {
             log.warn("failed to snapshot open AI tab for session restore: {}", .{err});
@@ -3890,51 +4164,17 @@ fn markAgentHistoryDirtyLocked() void {
 
 fn flushAgentHistoryStoreIfDirty(force: bool) void {
     const now = std.time.milliTimestamp();
-    var json: ?[]u8 = null;
-    var path: ?[]const u8 = null;
-    var snapshot_allocator: ?std.mem.Allocator = null;
-
     g_agent_history_mutex.lock();
-    if (!g_flush_scheduler.shouldFlush(force, now)) {
-        g_agent_history_mutex.unlock();
-        return;
-    }
+    defer g_agent_history_mutex.unlock();
 
-    const store = g_agent_history orelse {
-        g_agent_history_mutex.unlock();
-        return;
-    };
-    snapshot_allocator = store.allocator;
-    json = store.toJsonString(store.allocator) catch |err| {
-        log.warn("failed to snapshot agent history store for flush: {}", .{err});
-        g_flush_scheduler.deferFlush(now);
-        g_agent_history_mutex.unlock();
-        return;
-    };
-    path = agent_history.defaultPath(store.allocator) catch |err| {
-        log.warn("failed to resolve agent history path for flush: {}", .{err});
-        store.allocator.free(json.?);
-        g_flush_scheduler.deferFlush(now);
-        g_agent_history_mutex.unlock();
+    if (!g_flush_scheduler.shouldFlush(force, now)) return;
+    const store = g_agent_history orelse return;
+    store.flush() catch |err| {
+        log.warn("failed to flush agent history store: {}", .{err});
+        g_flush_scheduler.failFlush(std.time.milliTimestamp());
         return;
     };
     g_flush_scheduler.beginFlush();
-    g_agent_history_mutex.unlock();
-
-    agent_history.saveJsonToPath(path.?, json.?) catch |err| {
-        log.warn("failed to flush agent history store: {}", .{err});
-        g_agent_history_mutex.lock();
-        g_flush_scheduler.failFlush(std.time.milliTimestamp());
-        snapshot_allocator.?.free(path.?);
-        snapshot_allocator.?.free(json.?);
-        g_agent_history_mutex.unlock();
-        return;
-    };
-
-    g_agent_history_mutex.lock();
-    snapshot_allocator.?.free(path.?);
-    snapshot_allocator.?.free(json.?);
-    g_agent_history_mutex.unlock();
 }
 
 fn spawnTabWithCwd(allocator: std.mem.Allocator, cwd: platform_pty_command.Cwd) bool {
@@ -3958,7 +4198,7 @@ pub fn spawnTabWithCommandUtf8(command: []const u8) bool {
 /// for key auth). The controller (pumped from the main loop) builds tabs/splits
 /// from the remote tmux windows/panes. Returns false if the transport could not
 /// be launched.
-pub fn startTmuxSession(ssh_cmd: []const u8, password: []const u8, profile_name: []const u8, ssh_conn: ?@import("ssh_connection.zig").SshConnection) bool {
+pub fn startTmuxSession(ssh_cmd: []const u8, password: []const u8, profile_name: []const u8, ssh_conn: ?@import("ssh/connection.zig").SshConnection) bool {
     const allocator = g_allocator orelse return false;
     return tmux_controller.start(
         allocator,
@@ -4060,12 +4300,13 @@ fn spawnDefaultAgentAndLocalShellTabs(allocator: std.mem.Allocator) bool {
         switchTab(first_tab_index);
     }
 
-    // No AI profile yet: surface the profile-creation form so the user can set one
-    // up (the form is an overlay, not a tab) — but only on the first launch. After
-    // it has been shown once, the persisted flag suppresses it so it does not
-    // reappear every launch. Users can still open setup via the session launcher.
+    // No AI profile yet, first launch only: surface the Quick Configure AI overlay so
+    // the user can paste a DeepSeek key in one step (it's an overlay, not a tab). The
+    // persisted ai-setup-prompted flag suppresses it after it has been shown once, so
+    // it does not reappear every launch — opening the Copilot sidebar later still
+    // prompts setup when no AI is configured.
     if (startup_tabs.shouldAutoShowAgentForm(has_ai_profile, platform_window_state.aiSetupPrompted(allocator))) {
-        _ = overlays.openDefaultAgentSessionForStartup();
+        overlays.openQuickAiForm();
         platform_window_state.setAiSetupPrompted(allocator);
     }
 
@@ -4091,9 +4332,10 @@ pub fn spawnAiChatTab(
     agent_val: []const u8,
     max_tokens: u32,
     vision_val: []const u8,
+    command: []const u8,
 ) bool {
     const allocator = g_allocator orelse return false;
-    if (!tab.spawnAiChatTab(allocator, name, base_url, api_key, model, protocol, system_prompt, thinking, reasoning_effort, stream_val, agent_val, max_tokens, vision_val)) return false;
+    if (!tab.spawnAiChatTab(allocator, name, base_url, api_key, model, protocol, system_prompt, thinking, reasoning_effort, stream_val, agent_val, max_tokens, vision_val, command)) return false;
     clearUiStateOnTabChange();
     return true;
 }
@@ -4103,6 +4345,32 @@ pub fn spawnAiHistoryTab(source: ai_history_source.Source) bool {
     if (!tab.spawnAiHistoryTab(allocator, source)) return false;
     clearUiStateOnTabChange();
     if (activeAiHistory()) |session| startAiHistoryScan(allocator, session);
+    return true;
+}
+
+pub fn spawnMemoryCenterTab() bool {
+    const allocator = g_allocator orelse return false;
+    if (!tab.spawnMemoryCenterTab(allocator)) return false;
+    clearUiStateOnTabChange();
+    markUiDirty();
+    return true;
+}
+
+/// Opens a dedicated Memory Center tab so digest progress stays scoped to it.
+pub fn runMemoryDigestNow() bool {
+    const allocator = g_allocator orelse return false;
+    if (!spawnMemoryCenterTab()) return false;
+    memory_digest_scheduler.runNow(allocator);
+    syncMemoryDigestStatus();
+    return true;
+}
+
+/// Runs a digest from the focused Memory Center without creating another tab.
+pub fn runMemoryDigestFromCenter() bool {
+    const allocator = g_allocator orelse return false;
+    if (activeMemoryCenter() == null) return false;
+    memory_digest_scheduler.runNow(allocator);
+    syncMemoryDigestStatus();
     return true;
 }
 
@@ -4120,6 +4388,14 @@ pub fn spawnSkillCenterTab() bool {
 pub fn spawnPortForwardingTab() bool {
     const allocator = g_allocator orelse return false;
     if (!tab.spawnPortForwardingTab(allocator)) return false;
+    clearUiStateOnTabChange();
+    markUiDirty();
+    return true;
+}
+
+pub fn openSettingsTab() bool {
+    const allocator = g_allocator orelse return false;
+    if (!tab.openSettingsTab(allocator)) return false;
     clearUiStateOnTabChange();
     markUiDirty();
     return true;
@@ -4145,6 +4421,25 @@ pub fn reopenAiChatTabFromHistorySessionId(session_id: []const u8) bool {
     if (!tab.spawnAiChatTabFromHistoryRecord(allocator, owned_record)) return false;
     clearUiStateOnTabChange();
     return true;
+}
+
+fn reopenCopilotSessionFromHistorySessionId(session_id: []const u8) ?*ai_chat.Session {
+    const allocator = g_allocator orelse return null;
+
+    const maybe_record: ?agent_history.SessionRecord = blk: {
+        g_agent_history_mutex.lock();
+        defer g_agent_history_mutex.unlock();
+        const store = g_agent_history orelse break :blk null;
+        break :blk store.cloneRecordBySessionId(allocator, session_id) catch null;
+    };
+    var record = maybe_record orelse return null;
+    defer agent_history.freeOwnedRecord(allocator, &record);
+
+    const session = ai_chat.Session.initFromHistoryRecord(allocator, record) catch return null;
+    // initFromHistoryRecord set session.copilot from the record marker; wire the
+    // same incremental-save hook AI-chat tabs use so future turns keep persisting.
+    session.setHistoryChangeHook(saveAiHistoryChangeEvent);
+    return session;
 }
 
 fn aiHistorySourceFromSnap(snap: session_persist.AiHistorySnap) ?ai_history_source.Source {
@@ -4308,12 +4603,15 @@ fn syncFileExplorerToActiveTerminalSurface(force: bool) void {
 pub fn closeTab(idx: usize) void {
     const allocator = g_allocator orelse return;
     if (tab.g_tab_count <= 1 or idx >= tab.g_tab_count) return;
+    var closing_settings = false;
     if (tab.g_tabs[idx]) |closing| {
+        closing_settings = closing.kind == .settings;
         if (closing.tmux_window_id != null) tmux_controller.forgetClosedTab(closing);
     }
     tab.closeTab(idx, allocator);
     file_explorer.onTabClosed(idx);
     browser_panel.onTabClosed(idx);
+    if (closing_settings) overlays.settingsPageDidClose();
     clearUiStateOnTabChange();
 }
 
@@ -4324,6 +4622,11 @@ pub fn closeFocusedSplitWouldCloseWindow() bool {
 }
 
 pub fn switchTab(idx: usize) void {
+    const deactivating_settings = if (activeTab()) |active|
+        active.kind == .settings and idx != active_tab_state.g_active_tab
+    else
+        false;
+    if (deactivating_settings) overlays.settingsPageDidDeactivate();
     tab.switchTab(idx);
     clearUiStateOnTabChange();
 }
@@ -4364,7 +4667,7 @@ pub fn splitFocusedReturningSurface(direction: SplitTree.Split.Direction) ?*Surf
         if (conn.usesPasswordAuth()) {
             const pw = conn.password();
             if (pw.len > 0)
-                overlays.scheduleSshPasswordForSurface(surface, pw);
+                overlays.scheduleSshPasswordForSurface(surface);
         }
     }
     handleActiveSurfaceChangeWithinTab();
@@ -4389,6 +4692,7 @@ pub fn closeFocusedSplit() void {
     }
 
     const closing_tab_idx = active_tab_state.g_active_tab;
+    const closing_settings = if (tab.activeTab()) |active| active.kind == .settings else false;
     var closing_surface_id: ?[16]u8 = null;
     if (tab.activeSurface()) |surface| closing_surface_id = surface.remote_id;
     switch (tab.closeFocusedSplit(allocator)) {
@@ -4401,98 +4705,16 @@ pub fn closeFocusedSplit() void {
         .closed_tab => {
             file_explorer.onTabClosed(closing_tab_idx);
             browser_panel.onTabClosed(closing_tab_idx);
+            if (closing_settings) overlays.settingsPageDidClose();
             clearUiStateOnTabChange();
         },
         .close_window => {
+            if (closing_settings) overlays.settingsPageDidClose();
             split_layout.invalidateCachedRects();
             cell_renderer.g_current_render_surface = null;
             g_should_close = true;
         },
         .no_op => {},
-    }
-}
-
-/// Close a specific split pane (by handle) in the tab at `tab_idx`, without
-/// touching the active tab or stealing focus. Used by `sweepExitedSurfaces`
-/// to auto-close a pane whose terminal process has exited. Mirrors the
-/// side-effect bookkeeping of `closeFocusedSplit`.
-pub fn closeSplitAt(tab_idx: usize, handle: SplitTree.Node.Handle) void {
-    const allocator = g_allocator orelse return;
-    if (tab_idx >= tab.g_tab_count) return;
-    const t = tab.g_tabs[tab_idx] orelse return;
-    // tmux owns pane lifetime; its bridge drives removal.
-    if (t.tmux_window_id != null) return;
-
-    var closing_surface_id: ?[16]u8 = null;
-    {
-        var it = t.tree.surfaces();
-        while (it.next()) |entry| {
-            if (entry.handle == handle) {
-                closing_surface_id = entry.surface.remote_id;
-                break;
-            }
-        }
-    }
-
-    switch (tab.closeSplitAt(allocator, t, handle)) {
-        .closed_split => {
-            if (closing_surface_id) |*source_id| html_server.stopForSurfaceId(source_id);
-            requestImmediateLayoutResize();
-        },
-        .closed_tab => {
-            file_explorer.onTabClosed(tab_idx);
-            browser_panel.onTabClosed(tab_idx);
-            clearUiStateOnTabChange();
-        },
-        .close_window => {
-            split_layout.invalidateCachedRects();
-            cell_renderer.g_current_render_surface = null;
-            g_should_close = true;
-        },
-        .no_op => {},
-    }
-}
-
-/// Per-frame sweep that closes any terminal pane whose process has exited.
-/// Skips tmux-backed tabs (the tmux bridge owns pane lifetime) and virtual
-/// surfaces (no real child process). At most one closure happens per frame so
-/// tab indices never shift mid-sweep. Mutates UI state, so callers rely on the
-/// event-driven render gate (we set the two rebuild globals here).
-fn sweepExitedSurfaces() void {
-    var closed_any = false;
-    var ti: usize = 0;
-    while (ti < tab.g_tab_count) : (ti += 1) {
-        const t = tab.g_tabs[ti] orelse continue;
-        if (t.tmux_window_id != null) continue;
-        if (t.kind != .terminal) continue;
-
-        var it = t.tree.surfaces();
-        var close_handle: ?SplitTree.Node.Handle = null;
-        while (it.next()) |entry| {
-            // The ReadThread marks `exited` when the PTY output pipe closes, but
-            // on Windows ConPTY the conhost keeps that pipe alive after the child
-            // exits, so the pipe never breaks. Poll the process handle with a
-            // non-blocking wait to detect a real process exit and mirror it onto
-            // `exited`. Virtual surfaces (no child) are skipped by `hasProcess`.
-            if (!entry.surface.exited.load(.acquire) and entry.surface.command.hasProcess()) {
-                if (entry.surface.command.wait(false) catch null) |_| {
-                    entry.surface.exited.store(true, .release);
-                }
-            }
-            if (entry.surface.exited.load(.acquire) and entry.surface.command.hasProcess()) {
-                close_handle = entry.handle;
-                break;
-            }
-        }
-        if (close_handle) |handle| {
-            closeSplitAt(ti, handle);
-            closed_any = true;
-            break; // indices may have shifted; finish on the next frame
-        }
-    }
-    if (closed_any) {
-        g_force_rebuild = true;
-        g_cells_valid = false;
     }
 }
 
@@ -4555,11 +4777,6 @@ pub threadlocal var term_rows: u16 = 24;
 // Dirty tracking — skip rebuildCells when nothing changed
 pub threadlocal var g_cells_valid: bool = false;
 pub threadlocal var g_force_rebuild: bool = true;
-/// One-shot per window thread: the first present that returns settles the
-/// D3D bring-up crash fuse (the process survived presenter bring-up, so the
-/// "probing" state-file marker can be removed). No-op off-Windows and when
-/// no marker exists.
-threadlocal var g_present_bringup_settled: bool = false;
 
 pub threadlocal var window_focused: bool = true; // Track window focus state
 
@@ -4571,24 +4788,30 @@ const saveQuakeFrame = platform_window_state.saveQuakeFrame;
 
 // Pending resize state (resize is deferred to main loop to avoid PageList integrity issues)
 // Ghostty coalesces resize events with a 25ms timer to batch rapid resizes
-pub threadlocal var g_pending_resize: bool = false;
-pub threadlocal var g_pending_cols: u16 = 0;
-pub threadlocal var g_pending_rows: u16 = 0;
-pub threadlocal var g_last_resize_time: i64 = 0;
 const RESIZE_COALESCE_MS: i64 = 25; // Same as Ghostty
 
-// One-shot layout changes such as opening a browser panel or creating a split
-// should not wait for the drag/window-resize coalescing timer.
-pub threadlocal var g_layout_resize_immediate: bool = false;
+pub fn requestGridResize(cols: u16, rows: u16, now_ms: i64) void {
+    windowState().queueResize(cols, rows, now_ms);
+}
+
+fn pendingResizeActive() bool {
+    return windowState().pending_resize.pending;
+}
+
+fn clearPendingResize() void {
+    windowState().clearPendingResize();
+}
+
+fn consumePendingGridResize(now_ms: i64) ?@import("appwindow/window_state.zig").GridSize {
+    return windowState().consumeCoalescedResize(now_ms, RESIZE_COALESCE_MS, term_cols, term_rows);
+}
 
 pub fn requestImmediateLayoutResize() void {
-    g_layout_resize_immediate = true;
+    windowState().requestImmediateLayoutResize();
 }
 
 pub fn consumeImmediateLayoutResize() bool {
-    const immediate = g_layout_resize_immediate;
-    g_layout_resize_immediate = false;
-    return immediate;
+    return windowState().consumeImmediateLayoutResize();
 }
 
 pub threadlocal var g_cursor_style: CursorStyle = .block; // Default cursor style
@@ -4599,13 +4822,10 @@ const CURSOR_BLINK_INTERVAL_MS: i64 = 600; // Blink interval in ms (same as Ghos
 
 const ConfigWatcher = @import("config_watcher.zig");
 
-// GL init, render helpers — see renderer/gpu/opengl/gl_init.zig (GLSL sources
-// in renderer/gpu/opengl/shaders.zig); exposed via AppWindow.gpu.gl_init.
+// Shared GPU pipeline init lives behind renderer/gpu plus ui/cell pipelines.
 
 /// Focus follows mouse - when true, moving mouse into a split pane focuses it
 pub threadlocal var g_focus_follows_mouse: bool = false;
-threadlocal var g_agent_context_surface_id: [16]u8 = undefined;
-threadlocal var g_agent_context_surface_id_len: usize = 0;
 pub threadlocal var g_copy_on_select: bool = false;
 pub threadlocal var g_copilot_hint: bool = true;
 threadlocal var g_copilot_shimmer_checked: bool = false;
@@ -4687,7 +4907,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
                 font.cell_height,
                 term_cols,
                 term_rows,
-                g_pending_resize,
+                pendingResizeActive(),
                 window_backend.isMaximized(w),
                 window_backend.isFullscreen(w),
             },
@@ -4695,7 +4915,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
     } else {
         render_diagnostics.log(
             "platform-resize begin arg={}x{} no-window font_dpi={} cell={d:.2}x{d:.2} term={}x{} pending={}",
-            .{ width, height, font.g_dpi, font.cell_width, font.cell_height, term_cols, term_rows, g_pending_resize },
+            .{ width, height, font.g_dpi, font.cell_width, font.cell_height, term_cols, term_rows, pendingResizeActive() },
         );
     }
 
@@ -4733,7 +4953,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
         term_cols = new_cols;
         term_rows = new_rows;
         // Clear any pending coalesced resize — we're handling it now
-        g_pending_resize = false;
+        clearPendingResize();
         render_diagnostics.log("platform-resize root-grid-updated {}x{}", .{ term_cols, term_rows });
     }
 
@@ -4765,7 +4985,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
             defer perf.end();
             break :blk computeSplitLayout(active_tab, content_x, content_y, content_w, content_h, font.cell_width, font.cell_height);
         };
-        if (g_allocator) |alloc| syncRemoteLayout(alloc);
+        if (g_allocator) |alloc| remote_sync.syncLayout(remoteSyncHost(), alloc);
 
         // A lone PREVIEW pane has no terminal surface and must take the generic
         // split path below so it still paints (preview-only tabs are legal).
@@ -4774,10 +4994,14 @@ fn renderResizeFrame(width: i32, height: i32) void {
                 renderAiChatFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .ai_history) {
                 renderAiHistoryFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (active_tab.kind == .memory_center) {
+                renderMemoryCenterFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .skill_center) {
                 renderSkillCenterFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .port_forwarding) {
                 renderPortForwardingFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (active_tab.kind == .settings) {
+                renderSettingsFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (split_layout.soleTerminalSurface()) |surface| {
                 // Single surface: simple render path
                 const rend = &surface.surface_renderer;
@@ -4792,7 +5016,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
                 if (needs_rebuild) cell_renderer.rebuildCells(rend);
 
                 gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-                gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
                 clearWithBackground(fb_width, fb_height);
 
                 const pad = surface.getPadding();
@@ -4807,7 +5031,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
         } else {
             // Multiple splits: render each surface in its own viewport
             gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-            gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+            ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
             clearWithBackground(fb_width, fb_height);
 
             titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -4824,7 +5048,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
 
                         const viewport_y = fb_height - rect.y - rect.height;
                         gpu.state.setViewport(rect.x, viewport_y, rect.width, rect.height);
-                        gpu.gl_init.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                        ui_pipeline.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
 
                         {
                             surface.render_state.mutex.lock();
@@ -4853,7 +5077,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
                         // restore the full-window viewport/projection first (the
                         // terminal arm leaves a per-rect viewport set).
                         gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-                        gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                        ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
                         const close_hovered = if (input.g_preview_close_hover) |h| h == rect.handle else false;
                         markdown_preview_renderer.renderInto(
                             p,
@@ -4871,13 +5095,13 @@ fn renderResizeFrame(width: i32, height: i32) void {
 
             // Restore full viewport for dividers
             gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-            gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+            ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
             overlays.renderSplitDividers(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
             overlays.renderPaneAgentDots(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
         }
     } else {
         gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-        gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+        ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
         clearWithBackground(fb_width, fb_height);
         titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -4892,9 +5116,12 @@ fn renderResizeFrame(width: i32, height: i32) void {
     overlays.renderBrowserUrlBar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderCommandPalette(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderJupyterPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
-    overlays.renderSettingsPage(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    overlays.renderCopilotPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderSessionLauncher(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    overlays.renderMcpServers(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     weixin_qr_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    feishu_reg_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    overlays.renderBtwConversation(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderDebugOverlay(@floatFromInt(fb_width));
     overlays.renderCloseShortcutConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderCopyToast(@floatFromInt(fb_width), @floatFromInt(fb_height));
@@ -4903,14 +5130,17 @@ fn renderResizeFrame(width: i32, height: i32) void {
     overlays.renderUpdatePrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderWindowCloseConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderRestoreDefaultsConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    overlays.renderIntegrationPrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderWhatsNew(@floatFromInt(fb_width), @floatFromInt(fb_height));
 
+    d3d11_offscreen_smoke.render(fb_width, fb_height);
+    d3d11_ui_smoke.render(fb_width, fb_height);
     render_diagnostics.log(
         "platform-resize swap fb={}x{} term={}x{} draw_calls={}",
-        .{ fb_width, fb_height, term_cols, term_rows, gpu.gl_init.g_draw_call_count },
+        .{ fb_width, fb_height, term_cols, term_rows, gpu.draw_call_count },
     );
     forceOpaqueBackbufferForPresent();
-    if (g_window) |w| window_backend.swapBuffers(w);
+    if (g_window) |w| presentBackendFrame(w);
 }
 
 fn resizeWindowToGrid() void {
@@ -4962,7 +5192,7 @@ fn pollSkillCenterOp(session: *skill_center.Session) void {
             }
             switch (skill_center.overwriteDecision(present, target_hash, v.src_hash)) {
                 .noop => overlays.showStatusToast(i18n.s().sc_toast_in_sync),
-                .direct => skillCenterRunTransfer(allocator, false, v.target, v.name),
+                .direct => skill_center_actions.runTransfer(allocator, false, v.target, v.name),
                 .confirm => skillCenterArmConfirm(allocator, false, v.target, v.name),
             }
         },
@@ -4981,6 +5211,19 @@ fn pollSkillCenterOp(session: *skill_center.Session) void {
         .preview => |*v| {
             session.mutex.lock();
             session.model.openTextPreview(v.title, v.content) catch {};
+            session.mutex.unlock();
+        },
+        .tool_import_preview => {
+            const moved = result;
+            result = .failed;
+            session.mutex.lock();
+            session.model.setOverlay(.{ .tool_import_preview = moved.tool_import_preview });
+            skillCenterSetStatusLocked(session, "");
+            session.mutex.unlock();
+        },
+        .tool_import_failed => |summary| {
+            session.mutex.lock();
+            skillCenterSetStatusLocked(session, summary);
             session.mutex.unlock();
         },
         .install_enumerate => {
@@ -5031,11 +5274,16 @@ pub fn reloadConfigImmediate(allocator: std.mem.Allocator) void {
 
 fn syncTransferToastFromFileExplorer() void {
     const notification = file_explorer.latestTransferNotification() orelse return;
-    if (notification.seq == g_last_transfer_notification_seq) return;
-    g_last_transfer_notification_seq = notification.seq;
+    if (!remoteState().acceptTransferNotification(notification.seq)) return;
     overlays.showTransferToast(notification.kind, notification.status, notification.message);
-    g_force_rebuild = true;
-    g_cells_valid = false;
+    markUiDirty();
+}
+
+fn syncMemoryDigestStatus() void {
+    const progress = memory_digest_scheduler.progressSnapshot();
+    if (activeMemoryCenter()) |session| {
+        if (session.syncDigestProgress(progress)) markUiDirty();
+    }
 }
 
 /// Apply freshly loaded configuration to this window/font/theme state.
@@ -5053,10 +5301,20 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
         .memory_enabled = cfg.@"ai-memory-enabled",
         .distill_suggest_enabled = cfg.@"ai-distill-suggest",
     });
+    ai_chat.reloadFirstPartyToolState(allocator);
     ai_chat.setDefaultWorkingDir(cfg.@"ai-agent-working-dir");
     overlays.setSubagentProfileName(cfg.@"ai-subagent-profile");
-    @import("web_search.zig").setJinaApiKey(cfg.@"jina-api-key");
+    @import("research/web_search.zig").setJinaApiKey(cfg.@"jina-api-key");
     @import("pty.zig").setConsoleHostPreference(cfg.@"windows-conpty");
+    memory_digest_scheduler.updateSettings(.{
+        .enabled = cfg.@"memory-digest-enabled",
+        .profile_name = cfg.@"memory-digest-profile",
+        .run_after = cfg.@"memory-digest-run-after",
+        .scan_remote = cfg.@"memory-digest-scan-remote",
+        .backfill_days = cfg.@"memory-digest-backfill-days",
+        .max_chars = cfg.@"memory-digest-max-chars",
+        .input_budget_chars = cfg.@"memory-digest-input-budget-chars",
+    });
 
     if (g_window == null) return;
     g_quake_mode = cfg.@"quake-mode";
@@ -5079,7 +5337,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     g_copy_on_select = cfg.@"copy-on-select";
     g_copilot_hint = cfg.@"copilot-hint";
     g_right_click_action = cfg.@"right-click-action";
-    input.g_url_open_mode = cfg.@"url-open-mode";
+    link_open.current_mode = cfg.@"url-open-mode";
     g_ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";
     g_desktop_notifications = cfg.@"desktop-notifications";
     g_confirm_close_running_program = cfg.@"confirm-close-running-program";
@@ -5091,7 +5349,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     {
         const mode_changed = background_image.g_mode != cfg.@"background-image-mode";
         background_image.g_mode = cfg.@"background-image-mode";
-        gpu.gl_init.g_bg_opacity = cfg.@"background-opacity";
+        gpu.background_opacity = cfg.@"background-opacity";
         if (!background_image.isLoaded(cfg.@"background-image")) {
             background_image.load(allocator, cfg.@"background-image");
         } else if (mode_changed) {
@@ -5158,6 +5416,7 @@ const MemoryDebugTotals = struct {
     visible_surfaces: usize = 0,
     surfaces: usize = 0,
     terminal_page_bytes: usize = 0,
+    terminal_page_committed_bytes: usize = 0,
     terminal_page_limit_bytes: usize = 0,
     terminal_min_page_bytes: usize = 0,
     renderer_cpu_capacity_bytes: usize = 0,
@@ -5171,6 +5430,7 @@ const SurfaceMemoryDebug = struct {
     rows: usize = 0,
     screen_count: usize = 0,
     terminal_page_bytes: usize = 0,
+    terminal_page_committed_bytes: usize = 0,
     terminal_page_limit_bytes: usize = 0,
     terminal_min_page_bytes: usize = 0,
     renderer_cpu_capacity_bytes: usize = 0,
@@ -5200,6 +5460,15 @@ fn collectSurfaceMemoryDebug(surface: *Surface) SurfaceMemoryDebug {
         const screen = entry.value.*;
         stats.screen_count += 1;
         stats.terminal_page_bytes += screen.pages.page_size;
+        // page_size excludes the pool's preheated-but-unused pages (committed
+        // via VirtualAlloc at init), while the pool arena's capacity includes
+        // the in-use pooled pages — so take the max instead of summing.
+        // ponytail: undercounts a screen holding both pool surplus and
+        // oversized non-pool pages; fine for a debug metric.
+        stats.terminal_page_committed_bytes += @max(
+            screen.pages.page_size,
+            screen.pages.pool.pages.arena.queryCapacity(),
+        );
         stats.terminal_page_limit_bytes += screen.pages.explicit_max_size;
         stats.terminal_min_page_bytes += screen.pages.min_max_size;
     }
@@ -5244,6 +5513,7 @@ fn maybePrintMemoryDebug(now: i64) void {
             totals.surfaces += 1;
             if (visible) totals.visible_surfaces += 1;
             totals.terminal_page_bytes += stats.terminal_page_bytes;
+            totals.terminal_page_committed_bytes += stats.terminal_page_committed_bytes;
             totals.terminal_page_limit_bytes += stats.terminal_page_limit_bytes;
             totals.terminal_min_page_bytes += stats.terminal_min_page_bytes;
             totals.renderer_cpu_capacity_bytes += stats.renderer_cpu_capacity_bytes;
@@ -5292,7 +5562,7 @@ fn maybePrintMemoryDebug(now: i64) void {
         font_stats.icon_atlas_gpu_bytes +
         font_stats.titlebar_atlas_gpu_bytes;
     const tracked_cpu_bytes =
-        totals.terminal_page_bytes +
+        totals.terminal_page_committed_bytes +
         totals.renderer_cpu_capacity_bytes +
         font_cpu_bytes +
         totals.kitty_pending_cpu_bytes;
@@ -5323,7 +5593,7 @@ fn maybePrintMemoryDebug(now: i64) void {
     if (memory_debug.queryProcess()) |process| {
         const untracked_private = process.private_usage -| tracked_cpu_bytes;
         std.debug.print(
-            "[memory] process private={d:.1}MiB ws={d:.1}MiB commit={d:.1}MiB peak_ws={d:.1}MiB tabs={} ai_tabs={} surfaces={} visible_surfaces={} terminal_pages={d:.1}/{d:.1}MiB min={d:.1}MiB renderer_cap={d:.1}MiB font_atlas(cpu/gpu)={d:.1}/{d:.1}MiB kitty_bytes(cpu/gpu)={d:.1}/{d:.1}MiB fbo={d:.1}MiB tracked_cpu={d:.1}MiB untracked_private~={d:.1}MiB faults={}\n",
+            "[memory] process private={d:.1}MiB ws={d:.1}MiB commit={d:.1}MiB peak_ws={d:.1}MiB tabs={} ai_tabs={} surfaces={} visible_surfaces={} terminal_pages={d:.1}/{d:.1}MiB committed={d:.1}MiB min={d:.1}MiB renderer_cap={d:.1}MiB font_atlas(cpu/gpu)={d:.1}/{d:.1}MiB kitty_bytes(cpu/gpu)={d:.1}/{d:.1}MiB fbo={d:.1}MiB tracked_cpu={d:.1}MiB untracked_private~={d:.1}MiB faults={}\n",
             .{
                 memory_debug.mib(process.private_usage),
                 memory_debug.mib(process.working_set),
@@ -5335,6 +5605,7 @@ fn maybePrintMemoryDebug(now: i64) void {
                 totals.visible_surfaces,
                 memory_debug.mib(totals.terminal_page_bytes),
                 memory_debug.mib(totals.terminal_page_limit_bytes),
+                memory_debug.mib(totals.terminal_page_committed_bytes),
                 memory_debug.mib(totals.terminal_min_page_bytes),
                 memory_debug.mib(totals.renderer_cpu_capacity_bytes),
                 memory_debug.mib(font_cpu_bytes),
@@ -5361,271 +5632,33 @@ fn maybePrintMemoryDebug(now: i64) void {
     }
 }
 
-fn syncRemoteLayout(allocator: std.mem.Allocator) void {
-    const app = g_app orelse return;
-    const client = app.remote_client orelse return;
-
-    const now = std.time.milliTimestamp();
-    if (now - g_remote_layout_last_ms < 250) return;
-    g_remote_layout_last_ms = now;
-
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    defer out.deinit(allocator);
-
-    buildRemoteLayoutJson(allocator, &out) catch return;
-    client.sendLayout(out.items);
+fn markRemoteSyncUiDirty() void {
+    g_force_rebuild = true;
 }
 
-fn appendAgentDetectionJson(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    surface: ?*const Surface,
-) !void {
-    const detection: agent_detector.Detection = if (surface) |s| s.agent_detection else .{};
-    try out.appendSlice(allocator, ",\"agentApp\":\"");
-    try remote.appendJsonString(out, allocator, detection.appLabel());
-    try out.appendSlice(allocator, "\",\"agentState\":\"");
-    try remote.appendJsonString(out, allocator, detection.stateLabel());
-    try out.appendSlice(allocator, "\",\"agentBadge\":\"");
-    try remote.appendJsonString(out, allocator, detection.badge());
-    try out.appendSlice(allocator, "\",\"agentConfidence\":");
-    try out.print(allocator, "{d}", .{detection.confidence});
-}
-
-fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
-    try out.appendSlice(allocator, "{\"type\":\"layout\",\"activeTab\":");
-    try out.print(allocator, "{d}", .{active_tab_state.g_active_tab});
-    try out.appendSlice(allocator, ",\"tabs\":[");
-
-    var wrote_tab = false;
-    for (0..tab.g_tab_count) |tab_index| {
-        const tab_state = tab.g_tabs[tab_index] orelse continue;
-        if (wrote_tab) try out.append(allocator, ',');
-        wrote_tab = true;
-
-        if (tab_state.kind == .ai_chat) {
-            try appendRemoteAiChatTabJson(allocator, out, tab_state, tab_index);
-            continue;
-        }
-        if (tab_state.kind == .ai_history) {
-            try appendRemoteAiHistoryTabJson(allocator, out, tab_state, tab_index);
-            continue;
-        }
-
-        try out.appendSlice(allocator, "{\"index\":");
-        try out.print(allocator, "{d}", .{tab_index});
-        try out.appendSlice(allocator, ",\"title\":\"");
-        try remote.appendJsonString(out, allocator, tab_state.getTitle());
-        try out.appendSlice(allocator, "\",\"focusedSurfaceId\":\"");
-        var focused_surface: ?*Surface = null;
-        if (tab_state.focusedSurface()) |focused| {
-            focused_surface = focused;
-            try remote.appendJsonString(out, allocator, focused.remote_id[0..]);
-        }
-        try out.append(allocator, '"');
-        try appendAgentDetectionJson(allocator, out, focused_surface);
-        try out.appendSlice(allocator, ",\"surfaces\":[");
-
-        var spatial = tab_state.tree.spatial(allocator) catch null;
-        defer if (spatial) |*sp| sp.deinit(allocator);
-
-        var wrote_surface = false;
-        var it = tab_state.tree.surfaces();
-        while (it.next()) |entry| {
-            if (wrote_surface) try out.append(allocator, ',');
-            wrote_surface = true;
-
-            try out.appendSlice(allocator, "{\"id\":\"");
-            try remote.appendJsonString(out, allocator, entry.surface.remote_id[0..]);
-            try out.appendSlice(allocator, "\",\"title\":\"");
-            try remote.appendJsonString(out, allocator, entry.surface.getTitle());
-            try out.appendSlice(allocator, "\",\"focused\":");
-            try out.appendSlice(allocator, if (entry.handle == tab_state.focused) "true" else "false");
-            try appendAgentDetectionJson(allocator, out, entry.surface);
-            try out.appendSlice(allocator, ",\"cols\":");
-            try out.print(allocator, "{d}", .{entry.surface.size.grid.cols});
-            try out.appendSlice(allocator, ",\"rows\":");
-            try out.print(allocator, "{d}", .{entry.surface.size.grid.rows});
-            var cursor_x: usize = 0;
-            var cursor_y: usize = 0;
-            {
-                entry.surface.render_state.mutex.lock();
-                defer entry.surface.render_state.mutex.unlock();
-                cursor_x = entry.surface.terminal.screens.active.cursor.x;
-                cursor_y = entry.surface.terminal.screens.active.cursor.y;
-            }
-            try out.appendSlice(allocator, ",\"cursorX\":");
-            try out.print(allocator, "{d}", .{cursor_x});
-            try out.appendSlice(allocator, ",\"cursorY\":");
-            try out.print(allocator, "{d}", .{cursor_y});
-            try out.appendSlice(allocator, ",\"snapshot\":\"");
-            const snapshot = buildRemoteSurfaceSnapshot(allocator, entry.surface, remote_snapshot.default_max_history_rows) catch null;
-            defer if (snapshot) |text| allocator.free(text);
-            if (snapshot) |text| try remote.appendJsonString(out, allocator, text);
-            try out.append(allocator, '"');
-
-            if (spatial) |sp| {
-                const slot = sp.slots[entry.handle.idx()];
-                try out.appendSlice(allocator, ",\"x\":");
-                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.x))});
-                try out.appendSlice(allocator, ",\"y\":");
-                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.y))});
-                try out.appendSlice(allocator, ",\"w\":");
-                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.width))});
-                try out.appendSlice(allocator, ",\"h\":");
-                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.height))});
-            } else {
-                try out.appendSlice(allocator, ",\"x\":0,\"y\":0,\"w\":1,\"h\":1");
-            }
-
-            try out.append(allocator, '}');
-        }
-
-        try out.appendSlice(allocator, "]}");
-    }
-
-    try out.appendSlice(allocator, "]}");
-}
-
-/// Lightweight panes listing for the agent-control API. Mirrors
-/// buildRemoteLayoutJson's terminal branch but omits the heavy per-surface
-/// scrollback snapshot (that is get-text's job) and adds the surface cwd.
-/// Non-terminal tabs (AI chat / history / etc.) appear as a minimal entry so
-/// the listing is complete. UI-thread only (reads threadlocal tab state).
-fn buildCtlPanesJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
-    try out.appendSlice(allocator, "{\"activeTab\":");
-    try out.print(allocator, "{d}", .{active_tab_state.g_active_tab});
-    try out.appendSlice(allocator, ",\"tabs\":[");
-
-    var wrote_tab = false;
-    for (0..tab.g_tab_count) |tab_index| {
-        const tab_state = tab.g_tabs[tab_index] orelse continue;
-        if (wrote_tab) try out.append(allocator, ',');
-        wrote_tab = true;
-
-        if (tab_state.kind != .terminal) {
-            try out.appendSlice(allocator, "{\"index\":");
-            try out.print(allocator, "{d}", .{tab_index});
-            try out.appendSlice(allocator, ",\"title\":\"");
-            try remote.appendJsonString(out, allocator, tab_state.getTitle());
-            try out.appendSlice(allocator, "\",\"kind\":\"");
-            try remote.appendJsonString(out, allocator, @tagName(tab_state.kind));
-            try out.appendSlice(allocator, "\",\"surfaces\":[]}");
-            continue;
-        }
-
-        try out.appendSlice(allocator, "{\"index\":");
-        try out.print(allocator, "{d}", .{tab_index});
-        try out.appendSlice(allocator, ",\"title\":\"");
-        try remote.appendJsonString(out, allocator, tab_state.getTitle());
-        try out.appendSlice(allocator, "\",\"kind\":\"terminal\",\"focusedSurfaceId\":\"");
-        if (tab_state.focusedSurface()) |focused|
-            try remote.appendJsonString(out, allocator, focused.remote_id[0..]);
-        try out.appendSlice(allocator, "\",\"surfaces\":[");
-
-        var spatial = tab_state.tree.spatial(allocator) catch null;
-        defer if (spatial) |*sp| sp.deinit(allocator);
-
-        var wrote_surface = false;
-        var it = tab_state.tree.surfaces();
-        while (it.next()) |entry| {
-            if (wrote_surface) try out.append(allocator, ',');
-            wrote_surface = true;
-
-            try out.appendSlice(allocator, "{\"id\":\"");
-            try remote.appendJsonString(out, allocator, entry.surface.remote_id[0..]);
-            try out.appendSlice(allocator, "\",\"title\":\"");
-            try remote.appendJsonString(out, allocator, entry.surface.getTitle());
-            try out.appendSlice(allocator, "\",\"focused\":");
-            try out.appendSlice(allocator, if (entry.handle == tab_state.focused) "true" else "false");
-            try appendAgentDetectionJson(allocator, out, entry.surface);
-            try out.appendSlice(allocator, ",\"cols\":");
-            try out.print(allocator, "{d}", .{entry.surface.size.grid.cols});
-            try out.appendSlice(allocator, ",\"rows\":");
-            try out.print(allocator, "{d}", .{entry.surface.size.grid.rows});
-            var cx: usize = 0;
-            var cy: usize = 0;
-            {
-                entry.surface.render_state.mutex.lock();
-                defer entry.surface.render_state.mutex.unlock();
-                cx = entry.surface.terminal.screens.active.cursor.x;
-                cy = entry.surface.terminal.screens.active.cursor.y;
-            }
-            try out.appendSlice(allocator, ",\"cursorX\":");
-            try out.print(allocator, "{d}", .{cx});
-            try out.appendSlice(allocator, ",\"cursorY\":");
-            try out.print(allocator, "{d}", .{cy});
-            try out.appendSlice(allocator, ",\"cwd\":\"");
-            if (entry.surface.getCwd()) |cwd| try remote.appendJsonString(out, allocator, cwd);
-            try out.append(allocator, '"');
-
-            if (spatial) |sp| {
-                const slot = sp.slots[entry.handle.idx()];
-                try out.appendSlice(allocator, ",\"x\":");
-                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.x))});
-                try out.appendSlice(allocator, ",\"y\":");
-                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.y))});
-                try out.appendSlice(allocator, ",\"w\":");
-                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.width))});
-                try out.appendSlice(allocator, ",\"h\":");
-                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.height))});
-            } else {
-                try out.appendSlice(allocator, ",\"x\":0,\"y\":0,\"w\":1,\"h\":1");
-            }
-
-            try out.append(allocator, '}');
-        }
-
-        try out.appendSlice(allocator, "]}");
-    }
-
-    try out.appendSlice(allocator, "]}");
-}
-
-fn remoteAiSurfaceId(tab_index: usize) [16]u8 {
-    var id: [16]u8 = undefined;
-    _ = std.fmt.bufPrint(&id, "aichat{d:0>10}", .{tab_index}) catch unreachable;
-    return id;
-}
-
-fn remoteAiHistorySurfaceId(tab_index: usize) [16]u8 {
-    var id: [16]u8 = undefined;
-    _ = std.fmt.bufPrint(&id, "aihist{d:0>10}", .{tab_index}) catch unreachable;
-    return id;
-}
-
-fn registerRemoteAiInputSink(tab_index: usize) void {
-    const app = g_app orelse return;
-    const client = app.remote_client orelse return;
-    const window = g_window orelse return;
-    if (tab_index >= g_remote_ai_sinks.len) return;
-
-    g_remote_ai_sinks[tab_index] = .{
-        .native_handle = window_backend.nativeHandle(window),
-        .tab_index = tab_index,
+fn openDefaultAiAgentForRemoteSync() remote_sync.AiAgentOpenStatus {
+    return switch (overlays.openDefaultAgentSessionForRemote()) {
+        .opened => .opened,
+        .no_profile => .no_profile,
+        .failed => .failed,
     };
-    client.registerSurface(remoteAiSurfaceId(tab_index), &g_remote_ai_sinks[tab_index], remoteAiWrite);
 }
 
-fn remoteAiWrite(ctx: *anyopaque, data: []const u8) void {
-    const sink: *RemoteAiInputSink = @ptrCast(@alignCast(ctx));
-    const request = std.heap.page_allocator.create(RemoteAiInputRequest) catch return;
-    request.* = .{
-        .tab_index = sink.tab_index,
-        .data = std.heap.page_allocator.dupe(u8, data) catch {
-            std.heap.page_allocator.destroy(request);
-            return;
-        },
+fn remoteSyncHost() remote_sync.Host {
+    const client = if (g_app) |app| app.remote_client else null;
+    return .{
+        .client = client,
+        .window = g_window,
+        .state = &g_appwindow_state,
+        .allocator = g_allocator,
+        .markUiDirty = markRemoteSyncUiDirty,
+        .openDefaultAiAgentForRemote = openDefaultAiAgentForRemoteSync,
     };
-
-    const ok = thread_message.postPointer(sink.native_handle, .remote_ai_input, @intFromPtr(request));
-    if (!ok) {
-        std.heap.page_allocator.free(request.data);
-        std.heap.page_allocator.destroy(request);
-    }
 }
 
-fn remoteAiAgentOpen(ctx: *anyopaque, request_id: []const u8) void {
+// Allowed P3.1 shim: this callback owns App-window lookup under App.mutex and
+// keeps remote_sync.zig decoupled from App.zig while forwarding to the UI thread.
+fn openRemoteAiAgentForClient(ctx: *anyopaque, request_id: []const u8) void {
     const app: *App = @ptrCast(@alignCast(ctx));
     const client = app.remote_client orelse return;
 
@@ -5654,7 +5687,7 @@ fn remoteAiAgentOpen(ctx: *anyopaque, request_id: []const u8) void {
         return;
     };
 
-    var request = RemoteAiAgentOpenRequest{ .request_id = owned_request_id };
+    var request = remote_sync.RemoteAiAgentOpenRequest{ .request_id = owned_request_id };
     const result = thread_message.sendPointer(target, .remote_open_ai_agent, @intFromPtr(&request));
     if (result == 0) {
         if (app.remote_client) |current_client| {
@@ -5663,1034 +5696,412 @@ fn remoteAiAgentOpen(ctx: *anyopaque, request_id: []const u8) void {
     }
 }
 
-fn appendRemoteAiChatTabJson(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    tab_state: *tab.TabState,
-    tab_index: usize,
-) !void {
-    registerRemoteAiInputSink(tab_index);
-    const surface_id = remoteAiSurfaceId(tab_index);
-    const title_text = tab_state.getTitle();
-
-    try out.appendSlice(allocator, "{\"index\":");
-    try out.print(allocator, "{d}", .{tab_index});
-    try out.appendSlice(allocator, ",\"title\":\"");
-    try remote.appendJsonString(out, allocator, title_text);
-    try out.appendSlice(allocator, "\",\"focusedSurfaceId\":\"");
-    try remote.appendJsonString(out, allocator, surface_id[0..]);
-    try out.append(allocator, '"');
-    try appendAgentDetectionJson(allocator, out, null);
-    try out.appendSlice(allocator, ",\"surfaces\":[{\"id\":\"");
-    try remote.appendJsonString(out, allocator, surface_id[0..]);
-    try out.appendSlice(allocator, "\",\"title\":\"");
-    try remote.appendJsonString(out, allocator, title_text);
-    try out.appendSlice(allocator, "\",\"focused\":true");
-    try appendAgentDetectionJson(allocator, out, null);
-    try out.appendSlice(allocator, ",\"kind\":\"ai_chat\",\"readOnly\":false,\"cols\":120,\"rows\":30,\"cursorX\":0,\"cursorY\":0,\"snapshot\":\"");
-    var request_state: ai_chat.Session.RequestState = .{ .inflight = false, .stopping = false };
-    if (tab_state.ai_chat_session) |session| {
-        request_state = session.requestState();
-        const snapshot = session.allocRemoteSnapshot(allocator) catch null;
-        defer if (snapshot) |text| allocator.free(text);
-        if (snapshot) |text| try remote.appendJsonString(out, allocator, text);
-    }
-    try out.appendSlice(allocator, "\",\"requestInflight\":");
-    try out.appendSlice(allocator, if (request_state.inflight) "true" else "false");
-    try out.appendSlice(allocator, ",\"requestStopping\":");
-    try out.appendSlice(allocator, if (request_state.stopping) "true" else "false");
-    try out.appendSlice(allocator, ",\"x\":0,\"y\":0,\"w\":1,\"h\":1}]}");
-}
-
-fn appendRemoteAiHistoryTabJson(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    tab_state: *tab.TabState,
-    tab_index: usize,
-) !void {
-    const surface_id = remoteAiHistorySurfaceId(tab_index);
-    const title_text = tab_state.getTitle();
-
-    try out.appendSlice(allocator, "{\"index\":");
-    try out.print(allocator, "{d}", .{tab_index});
-    try out.appendSlice(allocator, ",\"title\":\"");
-    try remote.appendJsonString(out, allocator, title_text);
-    try out.appendSlice(allocator, "\",\"focusedSurfaceId\":\"");
-    try remote.appendJsonString(out, allocator, surface_id[0..]);
-    try out.append(allocator, '"');
-    try appendAgentDetectionJson(allocator, out, null);
-    try out.appendSlice(allocator, ",\"surfaces\":[{\"id\":\"");
-    try remote.appendJsonString(out, allocator, surface_id[0..]);
-    try out.appendSlice(allocator, "\",\"title\":\"");
-    try remote.appendJsonString(out, allocator, title_text);
-    try out.appendSlice(allocator, "\",\"focused\":true");
-    try appendAgentDetectionJson(allocator, out, null);
-    // AI History is read-only in remote layouts. Keep it terminal-style so the
-    // remote client does not show AI Chat composer/input affordances.
-    try out.appendSlice(allocator, ",\"kind\":\"terminal\",\"readOnly\":true,\"cols\":120,\"rows\":30,\"cursorX\":0,\"cursorY\":0,\"snapshot\":\"Sessions\\n");
-    try remote.appendJsonString(out, allocator, title_text);
-    try out.appendSlice(allocator, "\",\"x\":0,\"y\":0,\"w\":1,\"h\":1}]}");
-}
-
-fn handleRemoteAiInputRequest(request: *RemoteAiInputRequest) void {
-    defer {
-        std.heap.page_allocator.free(request.data);
-        std.heap.page_allocator.destroy(request);
-    }
-    if (request.tab_index >= tab.g_tab_count) return;
-    const tab_state = tab.g_tabs[request.tab_index] orelse return;
-    if (tab_state.kind != .ai_chat) return;
-    const session = tab_state.ai_chat_session orelse return;
-    session.applyRemoteInput(request.data);
+fn markWeixinUiDirty() void {
     g_force_rebuild = true;
 }
 
-fn handleRemoteAiAgentOpenRequest(request: *RemoteAiAgentOpenRequest) void {
-    const app = g_app orelse return;
-    const client = app.remote_client orelse return;
-
-    const status: remote.AiAgentOpenStatus = switch (overlays.openDefaultAgentSessionForRemote()) {
+fn openDefaultAgentSessionForWeixin() weixin_control.OpenResult {
+    return switch (overlays.openDefaultAgentSessionForRemote()) {
         .opened => .opened,
         .no_profile => .no_profile,
         .failed => .failed,
     };
-    client.sendAiAgentOpenResult(request.request_id, status);
-
-    if (status == .opened) {
-        g_remote_layout_last_ms = 0;
-        if (g_allocator) |alloc| syncRemoteLayout(alloc);
-    }
 }
 
-// ============================================================================
-// WeChat direct (embedded ilink) — UI-thread control surface.
-//
-// The weixin poller runs on its own thread, but tab state (tab.g_tabs etc.) is
-// threadlocal to the UI thread. So the Control vtable marshals each request to
-// the UI thread via SendMessage (.weixin_control), where handleWeixinControlRequest
-// reads/acts on tab state, mirroring the remote .remote_ai_input path.
-//
-// UNVERIFIED AT RUNTIME: cross-compiles to the Windows exe, but has not been run
-// (no Windows runtime / live WeChat here). AI progress follow-up timers remain
-// in the poller backlog; the UI control surface below exposes terminal writes
-// and AI transcript snapshots for that layer.
-// ============================================================================
-
-var g_weixin_ui_handle = std.atomic.Value(usize).init(0);
-var g_weixin_ctx: u8 = 0;
-var g_weixin_transcript_mutex: std.Thread.Mutex = .{};
-var g_weixin_transcript_owned: []u8 = &.{};
-/// The AI conversation WeChat is pinned to (independent of the on-screen active
-/// tab). UI-thread-only — read/written exclusively inside
-/// handleWeixinControlRequest, so no lock is needed. Cleared automatically when
-/// its conversation closes (see weixinActiveAiTabIndex).
-var g_weixin_pinned_session: ?*ai_chat.Session = null;
-
-const WeixinRequest = struct {
-    op: enum { find_ai, find_term, open_ai, open_ai_profile, model_profiles, switch_ai_profile, send_input, latest_transcript, ai_approval_pending, resolve_ai_approval, inbound_file_dir, list_conversations, pin_by_index },
-    // operation inputs (valid for the duration of the synchronous call):
-    surface_id: [16]u8 = [_]u8{0} ** 16, // send_input
-    bytes: []const u8 = "", // send_input
-    reply_context: ?weixin_types.ReplyContext = null, // send_input
-    profile_name: []const u8 = "", // open_ai_profile / switch_ai_profile
-    approve: bool = false, // resolve_ai_approval
-    pin_index: usize = 0, // pin_by_index input
-    conv_list_out: ?*weixin_control.ConversationList = null, // list_conversations output
-    conv_one_out: ?*weixin_control.Conversation = null, // pin_by_index output
-    // outputs filled by the UI-thread handler:
-    found: bool = false,
-    out_surface_id: [16]u8 = [_]u8{0} ** 16,
-    open_result: weixin_control.OpenResult = .failed,
-    switch_result: weixin_control.SwitchModelResult = .failed,
-    sent: bool = false,
-    busy: bool = false, // send_input: AI chat rejected the prompt (request inflight)
-    transcript: []u8 = &.{},
-    profiles: []u8 = &.{}, // model_profiles (heap, page_allocator)
-    dir: []u8 = &.{}, // inbound_file_dir (heap, page_allocator)
-};
-
-/// The *ai_chat.Session a tab contributes as its AI conversation, or null:
-/// a dedicated AI-chat tab's session, or a terminal tab's Copilot sidebar
-/// session (once opened). A tab contributes at most one.
-fn tabConversationSession(ts: *tab.TabState) ?*ai_chat.Session {
-    if (ts.kind == .ai_chat) return ts.ai_chat_session;
-    return ts.copilot_session;
+fn openAgentSessionProfileForWeixin(profile_name: []const u8) weixin_control.OpenResult {
+    return switch (overlays.openAgentSessionForRemoteProfile(profile_name)) {
+        .opened => .opened,
+        .no_profile => .no_profile,
+        .unknown_profile => .unknown_profile,
+        .failed => .failed,
+    };
 }
 
-/// Index of the AI-chat tab to target: the active tab if it is AI chat, else the
-/// first AI-chat tab. UI-thread only (reads threadlocal tab state).
-fn weixinActiveAiTabIndex() ?usize {
-    // 1) Honor an explicit WeChat pin if its conversation is still open.
-    //    Pointer identity only — never dereference a possibly-stale pointer.
-    if (g_weixin_pinned_session) |pinned| {
-        for (0..tab.g_tab_count) |i| {
-            if (tab.g_tabs[i]) |ts| {
-                if (tabConversationSession(ts) == pinned) return i;
-            }
-        }
-        // The pinned conversation was closed: drop the stale pin and fall back.
-        g_weixin_pinned_session = null;
-    }
-    // 2) Default (unchanged): the active tab if it is an AI-chat tab, else the
-    //    first AI-chat tab. Copilot sidebars are reachable only via an explicit
-    //    /switch pin, not the default.
-    if (active_tab_state.g_active_tab < tab.g_tab_count) {
-        if (tab.g_tabs[active_tab_state.g_active_tab]) |ts| {
-            if (ts.kind == .ai_chat) return active_tab_state.g_active_tab;
-        }
-    }
-    for (0..tab.g_tab_count) |i| {
-        if (tab.g_tabs[i]) |ts| {
-            if (ts.kind == .ai_chat) return i;
-        }
-    }
-    return null;
+fn weixinModelProfiles(allocator: std.mem.Allocator) anyerror![]u8 {
+    return overlays.aiModelProfileList(allocator);
 }
 
-fn weixinTabIndexFromSurfaceId(id: [16]u8) ?usize {
-    if (!std.mem.eql(u8, id[0..6], "aichat")) return null;
-    return std.fmt.parseInt(usize, id[6..16], 10) catch null;
+fn switchSessionModelProfileForWeixin(session: *ai_chat.Session, profile_name: []const u8) weixin_control.SwitchModelResult {
+    return switch (overlays.switchSessionModelByProfileName(session, profile_name)) {
+        .switched => .switched,
+        .no_profile => .no_profile,
+        .unknown_profile => .unknown_profile,
+        .failed => .failed,
+    };
 }
 
-fn weixinActiveTerminalSurface() ?*Surface {
-    if (active_tab_state.g_active_tab < tab.g_tab_count) {
-        if (tab.g_tabs[active_tab_state.g_active_tab]) |ts| {
-            if (ts.kind == .terminal) {
-                if (ts.focusedSurface()) |surface| return surface;
-            }
-        }
-    }
-    for (0..tab.g_tab_count) |i| {
-        if (tab.g_tabs[i]) |ts| {
-            if (ts.kind == .terminal) {
-                if (ts.focusedSurface()) |surface| return surface;
-            }
-        }
-    }
-    return null;
+fn weixinBridgeHost() weixin_bridge.Host {
+    return .{
+        .markUiDirty = markWeixinUiDirty,
+        .openDefaultAgentSession = openDefaultAgentSessionForWeixin,
+        .openAgentSessionProfile = openAgentSessionProfileForWeixin,
+        .modelProfiles = weixinModelProfiles,
+        .switchSessionModelProfile = switchSessionModelProfileForWeixin,
+    };
 }
 
-fn weixinTerminalSurfaceFromId(id: [16]u8) ?*Surface {
-    for (0..tab.g_tab_count) |tab_index| {
-        const tab_state = tab.g_tabs[tab_index] orelse continue;
-        if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.surfaces();
-        while (it.next()) |entry| {
-            if (std.mem.eql(u8, entry.surface.remote_id[0..], id[0..])) return entry.surface;
-        }
-    }
-    return null;
+/// The Control the chatops channel drives. Backed by process-global state.
+pub fn chatopsControl() weixin_control.Control {
+    return weixin_bridge.control();
 }
 
-/// Runs on the UI thread (dispatched from the window message pump).
-fn handleWeixinControlRequest(req: *WeixinRequest) void {
-    switch (req.op) {
-        .find_ai => {
-            if (weixinActiveAiTabIndex()) |idx| {
-                req.out_surface_id = remoteAiSurfaceId(idx);
-                req.found = true;
-            }
-        },
-        .find_term => {
-            if (weixinActiveTerminalSurface()) |surface| {
-                req.out_surface_id = surface.remote_id;
-                req.found = true;
-            }
-        },
-        .open_ai => {
-            req.open_result = switch (overlays.openDefaultAgentSessionForRemote()) {
-                .opened => .opened,
-                .no_profile => .no_profile,
-                .failed => .failed,
-            };
-            if (req.open_result == .opened) g_force_rebuild = true;
-        },
-        .open_ai_profile => {
-            req.open_result = switch (overlays.openAgentSessionForRemoteProfile(req.profile_name)) {
-                .opened => .opened,
-                .no_profile => .no_profile,
-                .unknown_profile => .unknown_profile,
-                .failed => .failed,
-            };
-            if (req.open_result == .opened) g_force_rebuild = true;
-        },
-        .model_profiles => {
-            req.profiles = overlays.aiModelProfileList(std.heap.page_allocator) catch return;
-            req.found = true;
-        },
-        .switch_ai_profile => {
-            const idx = weixinActiveAiTabIndex() orelse {
-                req.switch_result = .no_ai;
-                return;
-            };
-            const tab_state = tab.g_tabs[idx] orelse {
-                req.switch_result = .no_ai;
-                return;
-            };
-            const session = tabConversationSession(tab_state) orelse {
-                req.switch_result = .no_ai;
-                return;
-            };
-            req.switch_result = switch (overlays.switchSessionModelByProfileName(session, req.profile_name)) {
-                .switched => .switched,
-                .no_profile => .no_profile,
-                .unknown_profile => .unknown_profile,
-                .failed => .failed,
-            };
-            if (req.switch_result == .switched) g_force_rebuild = true;
-        },
-        .send_input => {
-            if (weixinTabIndexFromSurfaceId(req.surface_id)) |idx| {
-                if (idx >= tab.g_tab_count) return;
-                const tab_state = tab.g_tabs[idx] orelse return;
-                // copilot_session is unreachable here in practice: aichat{N} surface
-                // IDs are only issued for .ai_chat tabs. The fallthrough keeps this
-                // correct if the surface registry is ever extended to Copilot panes.
-                const session = tabConversationSession(tab_state) orelse return;
-                if (req.reply_context) |ctx| {
-                    req.busy = !session.applyWeixinInput(req.bytes, ctx);
-                } else {
-                    session.applyRemoteInput(req.bytes);
-                }
-                g_force_rebuild = true;
-                req.sent = true;
-                return;
-            }
-            const surface = weixinTerminalSurfaceFromId(req.surface_id) orelse return;
-            surface.queuePtyWrite(req.bytes);
-            req.sent = true;
-        },
-        .latest_transcript => {
-            const idx = weixinActiveAiTabIndex() orelse return;
-            const tab_state = tab.g_tabs[idx] orelse return;
-            const session = tabConversationSession(tab_state) orelse return;
-            req.transcript = session.allocRemoteSnapshot(std.heap.page_allocator) catch return;
-            req.found = true;
-        },
-        .ai_approval_pending => {
-            const idx = weixinActiveAiTabIndex() orelse return;
-            const tab_state = tab.g_tabs[idx] orelse return;
-            const session = tabConversationSession(tab_state) orelse return;
-            req.found = session.approvalView() != null;
-        },
-        .resolve_ai_approval => {
-            const idx = weixinActiveAiTabIndex() orelse return;
-            const tab_state = tab.g_tabs[idx] orelse return;
-            const session = tabConversationSession(tab_state) orelse return;
-            req.sent = session.resolveApprovalExternal(req.approve);
-            if (req.sent) g_force_rebuild = true;
-        },
-        .inbound_file_dir => {
-            // Per-conversation working dir if set, else the global default.
-            if (weixinActiveAiTabIndex()) |idx| {
-                if (tab.g_tabs[idx]) |tab_state| {
-                    if (tabConversationSession(tab_state)) |session| {
-                        if (session.workingDirOverride()) |w| {
-                            req.dir = std.heap.page_allocator.dupe(u8, w) catch return;
-                            req.found = true;
-                            return;
-                        }
-                    }
-                }
-            }
-            if (ai_chat.defaultWorkingDir()) |w| {
-                req.dir = std.heap.page_allocator.dupe(u8, w) catch return;
-                req.found = true;
-            }
-        },
-        .list_conversations => {
-            const out = req.conv_list_out orelse return;
-            // Also clears g_weixin_pinned_session as a side effect if the pin is
-            // stale (its conversation closed) — listing then correctly marks no
-            // row current and drops the dead pin.
-            const cur = weixinActiveAiTabIndex();
-            var n: usize = 0;
-            for (0..tab.g_tab_count) |i| {
-                if (n >= out.items.len) break;
-                const ts = tab.g_tabs[i] orelse continue;
-                const session = tabConversationSession(ts) orelse continue;
-                var c = &out.items[n];
-                c.* = .{};
-                c.is_copilot = (ts.kind != .ai_chat);
-                c.is_current = (cur != null and cur.? == i);
-                c.busy = session.request_inflight;
-                c.setTitle(ts.getTitle());
-                c.setModel(session.model());
-                if (session.workingDirOverride()) |w| c.setCwd(w);
-                n += 1;
-            }
-            out.count = n;
-            req.found = true;
-        },
-        .pin_by_index => {
-            const out = req.conv_one_out orelse return;
-            var n: usize = 0;
-            for (0..tab.g_tab_count) |i| {
-                const ts = tab.g_tabs[i] orelse continue;
-                const session = tabConversationSession(ts) orelse continue;
-                if (n == req.pin_index) {
-                    g_weixin_pinned_session = session;
-                    out.* = .{};
-                    out.is_copilot = (ts.kind != .ai_chat);
-                    out.is_current = true;
-                    out.busy = session.request_inflight;
-                    out.setTitle(ts.getTitle());
-                    out.setModel(session.model());
-                    if (session.workingDirOverride()) |w| out.setCwd(w);
-                    req.found = true;
-                    return;
-                }
-                n += 1;
-            }
-        },
-    }
+pub fn clearWeixinTranscriptCache() void {
+    weixin_bridge.clearTranscriptCache();
 }
-
-/// Marshals a request to the UI thread synchronously. Returns false if no UI
-/// window is currently published. Called from the poller thread.
-fn weixinDispatch(req: *WeixinRequest) bool {
-    const bits = g_weixin_ui_handle.load(.acquire);
-    if (bits == 0) return false;
-    const handle = window_backend.nativeHandleFromBits(bits) orelse return false;
-    _ = thread_message.sendPointer(handle, .weixin_control, @intFromPtr(req));
-    return true;
-}
-
-fn wxIsConnected(_: *anyopaque) bool {
-    return g_weixin_ui_handle.load(.acquire) != 0;
-}
-
-fn wxFindAiSurface(_: *anyopaque) ?weixin_control.Surface {
-    var req = WeixinRequest{ .op = .find_ai };
-    if (!weixinDispatch(&req) or !req.found) return null;
-    return .{ .id = req.out_surface_id, .title = "" };
-}
-
-fn wxFindTerminalSurface(_: *anyopaque) ?weixin_control.Surface {
-    var req = WeixinRequest{ .op = .find_term };
-    if (!weixinDispatch(&req) or !req.found) return null;
-    return .{ .id = req.out_surface_id, .title = "" };
-}
-
-fn wxOpenAiAgent(_: *anyopaque, _: u32) weixin_control.OpenResult {
-    var req = WeixinRequest{ .op = .open_ai };
-    if (!weixinDispatch(&req)) return .offline;
-    return req.open_result;
-}
-
-fn wxOpenAiAgentProfile(_: *anyopaque, profile_name: []const u8, _: u32) weixin_control.OpenResult {
-    var req = WeixinRequest{ .op = .open_ai_profile, .profile_name = profile_name };
-    if (!weixinDispatch(&req)) return .offline;
-    return req.open_result;
-}
-
-fn wxModelProfiles(_: *anyopaque, buf: []u8) []const u8 {
-    var req = WeixinRequest{ .op = .model_profiles };
-    if (!weixinDispatch(&req) or !req.found) return "";
-    defer if (req.profiles.len != 0) std.heap.page_allocator.free(req.profiles);
-    const n = @min(req.profiles.len, buf.len);
-    @memcpy(buf[0..n], req.profiles[0..n]);
-    return buf[0..n];
-}
-
-fn wxSwitchAiProfile(_: *anyopaque, profile_name: []const u8) weixin_control.SwitchModelResult {
-    var req = WeixinRequest{ .op = .switch_ai_profile, .profile_name = profile_name };
-    if (!weixinDispatch(&req)) return .offline;
-    return req.switch_result;
-}
-
-fn wxSendInput(_: *anyopaque, surface_id: [16]u8, bytes: []const u8, reply_context: ?weixin_types.ReplyContext) weixin_control.SendResult {
-    var req = WeixinRequest{ .op = .send_input, .surface_id = surface_id, .bytes = bytes, .reply_context = reply_context };
-    if (!weixinDispatch(&req) or !req.sent) return .offline;
-    return if (req.busy) .busy else .ok;
-}
-
-fn wxTranscript(_: *anyopaque) []const u8 {
-    var req = WeixinRequest{ .op = .latest_transcript };
-    if (!weixinDispatch(&req) or !req.found) return "";
-
-    g_weixin_transcript_mutex.lock();
-    defer g_weixin_transcript_mutex.unlock();
-    if (g_weixin_transcript_owned.len != 0) std.heap.page_allocator.free(g_weixin_transcript_owned);
-    g_weixin_transcript_owned = req.transcript;
-    return g_weixin_transcript_owned;
-}
-
-fn wxInboundFileDir(_: *anyopaque, buf: []u8) []const u8 {
-    var req = WeixinRequest{ .op = .inbound_file_dir };
-    if (!weixinDispatch(&req) or !req.found or req.dir.len == 0) return "";
-    defer std.heap.page_allocator.free(req.dir);
-    const n = @min(req.dir.len, buf.len);
-    @memcpy(buf[0..n], req.dir[0..n]);
-    return buf[0..n];
-}
-
-fn wxListAiConversations(_: *anyopaque, out: *weixin_control.ConversationList) void {
-    out.count = 0;
-    var req = WeixinRequest{ .op = .list_conversations, .conv_list_out = out };
-    _ = weixinDispatch(&req);
-    // On dispatch failure (no UI window) out stays count=0, which is correct.
-}
-
-fn wxPinAiConversationByIndex(_: *anyopaque, idx0: usize, out: *weixin_control.Conversation) bool {
-    var req = WeixinRequest{ .op = .pin_by_index, .pin_index = idx0, .conv_one_out = out };
-    if (!weixinDispatch(&req)) return false;
-    return req.found;
-}
-
-fn wxAiApprovalPending(_: *anyopaque) bool {
-    var req = WeixinRequest{ .op = .ai_approval_pending };
-    if (!weixinDispatch(&req)) return false;
-    return req.found;
-}
-
-fn wxResolveAiApproval(_: *anyopaque, approve: bool) bool {
-    var req = WeixinRequest{ .op = .resolve_ai_approval, .approve = approve };
-    if (!weixinDispatch(&req)) return false;
-    return req.sent;
-}
-
-const weixin_vtable = weixin_control.Control.VTable{
-    .is_connected = wxIsConnected,
-    .find_ai_surface = wxFindAiSurface,
-    .find_terminal_surface = wxFindTerminalSurface,
-    .open_ai_agent = wxOpenAiAgent,
-    .open_ai_agent_profile = wxOpenAiAgentProfile,
-    .model_profiles = wxModelProfiles,
-    .switch_ai_profile = wxSwitchAiProfile,
-    .send_input = wxSendInput,
-    .latest_transcript = wxTranscript,
-    .ai_approval_pending = wxAiApprovalPending,
-    .resolve_ai_approval = wxResolveAiApproval,
-    .inbound_file_dir = wxInboundFileDir,
-    .list_ai_conversations = wxListAiConversations,
-    .pin_ai_conversation_by_index = wxPinAiConversationByIndex,
-};
-
-/// The Control the weixin controller drives. Backed by process-global state, so
-/// the dummy ctx is unused.
-pub fn weixinControl() weixin_control.Control {
-    return .{ .ctx = &g_weixin_ctx, .vtable = &weixin_vtable };
-}
-
-fn clearWeixinTranscriptCache() void {
-    g_weixin_transcript_mutex.lock();
-    defer g_weixin_transcript_mutex.unlock();
-    if (g_weixin_transcript_owned.len != 0) std.heap.page_allocator.free(g_weixin_transcript_owned);
-    g_weixin_transcript_owned = &.{};
-}
-
-// ============================================================================
-// Agent terminal control (wisptermctl) — cross-platform Control surface.
-//
-// Unlike the weixin path, this does NOT marshal to the UI thread: Win32
-// SendMessage is a no-op on Linux (window_linux.zig). get-text/send-text pin
-// the target surface through surface_registry (a mutex liveness guard) and run
-// directly on the ctl server thread, exactly like the agent worker host
-// (agentSurfaceSnapshot / agentWriteSurface). Only `panes` needs threadlocal
-// tab topology, so the UI thread publishes a JSON snapshot into
-// g_ctl_panes_json on the render tick (syncCtlPanes).
-// ============================================================================
-
-var g_agent_control_enabled = std.atomic.Value(bool).init(false);
-var g_ctl_ctx: u8 = 0;
-var g_ctl_panes_mutex: std.Thread.Mutex = .{};
-var g_ctl_panes_json: []u8 = &.{}; // page_allocator-owned latest panes JSON
-// Atomic: syncCtlPanes runs from every window's render thread (the panes cache
-// is process-global, last-writer-wins — acceptable, matching the relay layout
-// sync). The timestamp must be touched atomically to avoid a data race.
-var g_ctl_panes_last_ms = std.atomic.Value(i64).init(0);
-
-const ctl_default_rows: u32 = 1000;
 
 pub fn enableAgentControl() void {
-    g_agent_control_enabled.store(true, .release);
+    control_api.setUiStateBuilder(overlays.buildUiStateJson);
+    control_api.setSpawnHandler(ctlSpawnTab);
+    control_api.enable();
 }
 
-fn ctlListPanes(ctx: *anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 {
-    _ = ctx;
-    g_ctl_panes_mutex.lock();
-    defer g_ctl_panes_mutex.unlock();
-    if (g_ctl_panes_json.len == 0) return null;
-    return try allocator.dupe(u8, g_ctl_panes_json);
-}
+/// UI-thread handler for `wisptermctl spawn`: open a new terminal tab. `cwd`
+/// empty = inherit the active tab's cwd; `command` empty = the configured shell.
+fn ctlSpawnTab(cwd_path: []const u8, command: []const u8) void {
+    const allocator = g_allocator orelse return;
+    var cwd_buf: platform_pty_command.CwdBuffer = undefined;
+    const cwd = if (cwd_path.len != 0)
+        platform_pty_command.cwdFromUtf8(&cwd_buf, cwd_path)
+    else
+        getActiveCwd(&cwd_buf);
 
-fn ctlGetText(ctx: *anyopaque, allocator: std.mem.Allocator, id: []const u8, recent: ?u32) anyerror!?[]u8 {
-    _ = ctx;
-    // Cross-platform + UAF-safe: the registry blocks Surface.deinit for the
-    // duration of the snapshot, and the id match rejects a reused pointer.
-    const ptr = surface_registry.acquireById(id) orelse return null;
-    defer surface_registry.release();
-    const surface: *Surface = @ptrCast(@alignCast(ptr));
-    const want: usize = if (recent) |r| r else ctl_default_rows;
-    const rows = @min(want, remote_snapshot.default_max_history_rows);
-    return try buildRemoteSurfaceSnapshot(allocator, surface, rows);
-}
+    const ok = if (command.len != 0) blk: {
+        const command_line = platform_pty_command.allocCommandLineFromUtf8(allocator, command) catch break :blk false;
+        defer platform_pty_command.freeCommandLine(allocator, command_line);
+        break :blk tab.spawnTabWithCommandAndCwd(allocator, term_cols, term_rows, platform_pty_command.commandLineFromOwned(command_line), g_cursor_style, g_cursor_blink, cwd);
+    } else tab.spawnTabWithCwd(allocator, term_cols, term_rows, g_cursor_style, g_cursor_blink, cwd);
 
-fn ctlSendText(ctx: *anyopaque, id: []const u8, data: []const u8) bool {
-    _ = ctx;
-    const ptr = surface_registry.acquireById(id) orelse return false;
-    defer surface_registry.release();
-    const surface: *Surface = @ptrCast(@alignCast(ptr));
-    surface.queuePtyWrite(data);
-    return true;
+    if (ok) clearUiStateOnTabChange();
 }
-
-const ctl_vtable = ctl_control.Control.VTable{
-    .list_panes = ctlListPanes,
-    .get_text = ctlGetText,
-    .send_text = ctlSendText,
-};
 
 /// The Control the agent-control server drives. Backed by process-global state,
 /// so the dummy ctx is unused.
 pub fn agentControl() ctl_control.Control {
-    return .{ .ctx = &g_ctl_ctx, .vtable = &ctl_vtable };
-}
-
-fn clearCtlPanesCache() void {
-    g_ctl_panes_mutex.lock();
-    defer g_ctl_panes_mutex.unlock();
-    if (g_ctl_panes_json.len != 0) std.heap.page_allocator.free(g_ctl_panes_json);
-    g_ctl_panes_json = &.{};
-}
-
-/// UI-thread: publish a fresh panes JSON snapshot (throttled). Called from the
-/// render loop next to syncRemoteLayout. No-op unless ctl is enabled.
-fn syncCtlPanes(allocator: std.mem.Allocator) void {
-    if (!g_agent_control_enabled.load(.acquire)) return;
-    const now = std.time.milliTimestamp();
-    if (now - g_ctl_panes_last_ms.load(.monotonic) < 200) return;
-    g_ctl_panes_last_ms.store(now, .monotonic);
-
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    defer out.deinit(allocator);
-    buildCtlPanesJson(allocator, &out) catch return;
-
-    const owned = std.heap.page_allocator.dupe(u8, out.items) catch return;
-    g_ctl_panes_mutex.lock();
-    defer g_ctl_panes_mutex.unlock();
-    if (g_ctl_panes_json.len != 0) std.heap.page_allocator.free(g_ctl_panes_json);
-    g_ctl_panes_json = owned;
-}
-
-test "ctl surface callbacks reject an unregistered id without dereferencing" {
-    try std.testing.expect((try ctlGetText(&g_ctl_ctx, std.testing.allocator, "missing", null)) == null);
-    try std.testing.expect(!ctlSendText(&g_ctl_ctx, "missing", "x"));
-}
-
-fn buildRemoteSurfaceSnapshot(allocator: std.mem.Allocator, surface: *Surface, max_history_rows: usize) ![]u8 {
-    surface.render_state.mutex.lock();
-    defer surface.render_state.mutex.unlock();
-    return remote_snapshot.allocTerminalSnapshot(
-        allocator,
-        &surface.terminal,
-        max_history_rows,
-    );
+    return control_api.control();
 }
 
 pub fn activeSurfaceSnapshot(allocator: std.mem.Allocator) ?[]u8 {
-    const surface = activeSurface() orelse return null;
-    // Jupyter-URL detection / web-remote mirror want the full scrollback, not the
-    // smaller agent budget.
-    return buildRemoteSurfaceSnapshot(allocator, surface, remote_snapshot.default_max_history_rows) catch null;
+    return surface_snapshots.activeSurfaceSnapshot(allocator);
 }
 
-const AgentSurfaceLocation = struct {
+fn agentRequestNativeHandle(ctx: *anyopaque) ?window_backend.NativeHandle {
+    const window: *AppWindow = @ptrCast(@alignCast(ctx));
+    return window.getNativeHandle();
+}
+
+fn agentRequestSpawnDefaultTab() ?*Surface {
+    const allocator = g_allocator orelse return null;
+    if (!spawnTab(allocator)) return null;
+    return activeSurface();
+}
+
+fn agentRequestSpawnTabWithCommand(command: []const u8) ?*Surface {
+    return spawnTabWithCommandUtf8ReturningSurface(command);
+}
+
+fn agentRequestCloseTabByIndex(idx: usize) void {
+    closeTab(idx);
+}
+
+fn agentRequestConnectSshProfile(identifier: []const u8) agent_requests.SshConnectResult {
+    return switch (overlays.agentConnectSshProfile(identifier)) {
+        .connected => |surface| .{ .connected = surface },
+        .not_found => .not_found,
+        .failed => .failed,
+    };
+}
+
+fn agentRequestSaveSshProfile(allocator: std.mem.Allocator, args: ai_chat.SshProfileSaveArgs) anyerror!ai_chat.SavedSshProfile {
+    return overlays.agentSaveSshProfile(allocator, args);
+}
+
+const AgentTerminalFocusTarget = struct {
+    surface: *Surface,
     tab_index: usize,
-    focused: bool,
 };
 
-fn findAgentSurfaceLocation(surface: *const Surface) ?AgentSurfaceLocation {
+fn focusAgentTerminalSurfaceById(surface_id_raw: []const u8) ?AgentTerminalFocusTarget {
+    const surface_id = std.mem.trim(u8, surface_id_raw, " \t\r\n");
+    if (surface_id.len == 0) return null;
+
     for (0..tab.g_tab_count) |tab_index| {
         const tab_state = tab.g_tabs[tab_index] orelse continue;
         if (tab_state.kind != .terminal) continue;
         var it = tab_state.tree.surfaces();
         while (it.next()) |entry| {
-            if (entry.surface == surface) {
-                return .{
-                    .tab_index = tab_index,
-                    .focused = tab_index == active_tab_state.g_active_tab and entry.handle == tab_state.focused,
-                };
+            if (!std.mem.eql(u8, entry.surface.remote_id[0..], surface_id)) continue;
+
+            if (active_tab_state.g_active_tab != tab_index) {
+                switchTab(tab_index);
             }
+            tab_state.focused = entry.handle;
+            handleActiveSurfaceChangeWithinTab();
+            return .{
+                .surface = entry.surface,
+                .tab_index = tab_index,
+            };
         }
     }
     return null;
 }
 
-fn makeAgentToolSurface(
-    allocator: std.mem.Allocator,
-    surface: *Surface,
-    tab_index: usize,
-    focused: bool,
-) anyerror!ai_chat.ToolSurface {
-    const snapshot = buildRemoteSurfaceSnapshot(allocator, surface, remote_snapshot.agent_max_history_rows) catch try allocator.dupe(u8, "");
-    return ai_chat.ToolSurface.initOwned(
+fn reconnectAgentTerminalSurface(allocator: std.mem.Allocator, surface_id_raw: []const u8) anyerror!ai_chat.ToolSurface {
+    const surface_id = std.mem.trim(u8, surface_id_raw, " \t\r\n");
+    if (surface_id.len == 0) return error.SurfaceNotFound;
+
+    for (0..tab.g_tab_count) |tab_index| {
+        const tab_state = tab.g_tabs[tab_index] orelse continue;
+        if (tab_state.kind != .terminal) continue;
+        var it = tab_state.tree.surfaces();
+        while (it.next()) |entry| {
+            const surface = entry.surface;
+            if (!std.mem.eql(u8, surface.remote_id[0..], surface_id)) continue;
+            if (surface.launch_kind != .ssh) return error.NotSshSurface;
+            if (!surface.canRespawn()) return error.NotReconnectable;
+            surface.respawn();
+            // Match the UI Enter-to-reconnect path: respawn retains the SSH
+            // profile but does not arm password prompt detection itself.
+            if (surface.ssh_connection) |*conn| {
+                if (conn.usesPasswordAuth()) overlays.scheduleSshPasswordForSurface(surface);
+            }
+            return surface_snapshots.makeAgentToolSurface(allocator, surface, tab_index, false);
+        }
+    }
+    return error.SurfaceNotFound;
+}
+
+fn agentRequestFocusTerminalSurface(allocator: std.mem.Allocator, surface_id: []const u8) anyerror!ai_chat.ToolSurface {
+    const target = focusAgentTerminalSurfaceById(surface_id) orelse return error.SurfaceNotFound;
+    return surface_snapshots.makeAgentToolSurface(
         allocator,
-        surface.remote_id[0..],
-        surface.getTitle(),
-        surface.getCwd() orelse surface.getInitialCwd() orelse "",
-        snapshot,
-        .{
-            .tab_index = tab_index,
-            .focused = focused,
-            .is_ssh = surface.launch_kind == .ssh and surface.ssh_connection != null,
-            .is_wsl = surface.launch_kind == .wsl,
-            .agent_app = surface.agent_detection.app,
-            .agent_state = surface.agent_detection.state,
-            .agent_confidence = surface.agent_detection.confidence,
-            .ptr = @ptrCast(surface),
-        },
+        target.surface,
+        target.tab_index,
+        true,
     );
 }
 
-fn collectAgentToolSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator) anyerror!ai_chat.ToolSnapshot {
-    _ = ctx;
-    var surfaces: std.ArrayListUnmanaged(ai_chat.ToolSurface) = .empty;
-    errdefer {
-        for (surfaces.items) |surface| surface.deinit(allocator);
-        surfaces.deinit(allocator);
-    }
+const AgentUiScreenshotCapture = struct {
+    rect: appwindow_ui_screenshot.Rect,
+    target: ai_chat_types.UiScreenshotTarget,
+    surface_id: ?[]const u8 = null,
+};
 
-    var active_tab = active_tab_state.g_active_tab;
-    const context_surface_id = g_agent_context_surface_id[0..g_agent_context_surface_id_len];
-    for (0..tab.g_tab_count) |tab_index| {
-        const tab_state = tab.g_tabs[tab_index] orelse continue;
-        if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.surfaces();
-        while (it.next()) |entry| {
-            const is_context = context_surface_id.len > 0 and std.mem.eql(u8, entry.surface.remote_id[0..], context_surface_id);
-            if (is_context) active_tab = tab_index;
-            const tool_surface = try makeAgentToolSurface(
-                allocator,
-                entry.surface,
-                tab_index,
-                is_context,
-            );
-            errdefer tool_surface.deinit(allocator);
-            try surfaces.append(allocator, tool_surface);
-        }
-    }
+const LiveUiScreenshotRect = struct {
+    rect: appwindow_ui_screenshot.Rect,
+    surface_id: ?[]const u8 = null,
+};
 
+fn fullUiScreenshotCapture(fb_width: u32, fb_height: u32) AgentUiScreenshotCapture {
     return .{
-        .surfaces = try surfaces.toOwnedSlice(allocator),
-        .active_tab = active_tab,
+        .rect = .{ .x = 0, .y = 0, .width = fb_width, .height = fb_height },
+        .target = .active_tab,
     };
 }
 
-fn agentSurfaceSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator, surface_id: []const u8, surface_ptr: *anyopaque) anyerror![]u8 {
-    _ = ctx;
-    // Runs on the agent request worker with a pointer captured at request
-    // start; the UI thread may have freed the surface since. The registry
-    // guard blocks Surface.deinit for the duration of the snapshot. Matching
-    // the captured id prevents a reused pointer from targeting a new surface.
-    if (!surface_registry.acquire(surface_ptr, surface_id)) return error.SurfaceClosed;
-    defer surface_registry.release();
-    const surface: *Surface = @ptrCast(@alignCast(surface_ptr));
-    return buildRemoteSurfaceSnapshot(allocator, surface, remote_snapshot.agent_max_history_rows);
-}
-
-fn agentWriteSurface(ctx: *anyopaque, surface_id: []const u8, surface_ptr: *anyopaque, data: []const u8) bool {
-    _ = ctx;
-    // Same worker-thread hazard as agentSurfaceSnapshot.
-    if (!surface_registry.acquire(surface_ptr, surface_id)) return false;
-    defer surface_registry.release();
-    const surface: *Surface = @ptrCast(@alignCast(surface_ptr));
-    surface.queuePtyWrite(data);
-    return true;
-}
-
-test "agent surface callbacks reject a surface that is not registered as live" {
-    // The agent request worker holds ToolSurface.ptr across an entire request
-    // while the UI thread may free the surface at any time (close tab/split).
-    // Both callbacks must refuse an unregistered pointer before touching any
-    // Surface field. The stand-in below is zeroed, never-registered memory; if
-    // a callback dereferences it the test crashes instead of erroring.
-    var dummy_buf: [@sizeOf(Surface)]u8 align(@alignOf(Surface)) = @splat(0);
-    const ptr: *anyopaque = @ptrCast(&dummy_buf);
-
-    try std.testing.expectError(error.SurfaceClosed, agentSurfaceSnapshot(ptr, std.testing.allocator, "missing", ptr));
-    try std.testing.expect(!agentWriteSurface(ptr, "missing", ptr, "x"));
-}
-
-fn agentSshConnectionForSurface(ctx: *anyopaque, surface_id: []const u8) ?Surface.SshConnection {
-    _ = ctx;
-    if (surface_id.len == 0) return null;
-    for (0..tab.g_tab_count) |tab_index| {
-        const tab_state = tab.g_tabs[tab_index] orelse continue;
-        if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.surfaces();
-        while (it.next()) |entry| {
-            const sfc = entry.surface;
-            if (!std.mem.eql(u8, sfc.remote_id[0..], surface_id)) continue;
-            return sfc.ssh_connection; // value copy (or null if not SSH)
-        }
-    }
-    return null;
-}
-
-fn postAgentTabNew(native_handle: window_backend.NativeHandle, request: *AgentTabNewRequest) void {
-    _ = thread_message.sendPointer(native_handle, .agent_tab_new, @intFromPtr(request));
-}
-
-fn postAgentTabClose(native_handle: window_backend.NativeHandle, request: *AgentTabCloseRequest) void {
-    _ = thread_message.sendPointer(native_handle, .agent_tab_close, @intFromPtr(request));
-}
-
-fn postAgentSshConnect(native_handle: window_backend.NativeHandle, request: *AgentSshConnectRequest) void {
-    _ = thread_message.sendPointer(native_handle, .agent_ssh_connect, @intFromPtr(request));
-}
-
-fn postAgentSshSave(native_handle: window_backend.NativeHandle, request: *AgentSshSaveRequest) void {
-    _ = thread_message.sendPointer(native_handle, .agent_ssh_save, @intFromPtr(request));
-}
-
-fn agentSpawnTab(ctx: *anyopaque, allocator: std.mem.Allocator, kind: []const u8, command: ?[]const u8) anyerror!ai_chat.ToolSurface {
-    const window: *AppWindow = @ptrCast(@alignCast(ctx));
-    const native_handle = window.getNativeHandle() orelse return error.WindowUnavailable;
-
-    var request = AgentTabNewRequest{
-        .allocator = allocator,
-        .kind = kind,
-        .command = command,
+fn splitRectToUiScreenshotRect(rect: split_layout.SplitRect) ?appwindow_ui_screenshot.Rect {
+    if (rect.width <= 0 or rect.height <= 0) return null;
+    return .{
+        .x = rect.x,
+        .y = rect.y,
+        .width = @intCast(rect.width),
+        .height = @intCast(rect.height),
     };
-
-    if (g_window) |current| {
-        if (window_backend.nativeHandle(current) == native_handle) {
-            handleAgentTabNewRequest(&request);
-        } else {
-            postAgentTabNew(native_handle, &request);
-        }
-    } else {
-        postAgentTabNew(native_handle, &request);
-    }
-
-    if (request.err) |err| return err;
-    return request.result orelse error.SpawnFailed;
 }
 
-fn agentCloseTab(ctx: *anyopaque, allocator: std.mem.Allocator, tab_index: ?usize, surface_id: ?[]const u8, title_text: ?[]const u8) anyerror!ai_chat.ToolClosedTab {
-    const window: *AppWindow = @ptrCast(@alignCast(ctx));
-    const native_handle = window.getNativeHandle() orelse return error.WindowUnavailable;
-
-    var request = AgentTabCloseRequest{
-        .allocator = allocator,
-        .tab_index = tab_index,
-        .surface_id = surface_id,
-        .title = title_text,
-    };
-
-    if (g_window) |current| {
-        if (window_backend.nativeHandle(current) == native_handle) {
-            handleAgentTabCloseRequest(&request);
-        } else {
-            postAgentTabClose(native_handle, &request);
-        }
-    } else {
-        postAgentTabClose(native_handle, &request);
-    }
-
-    if (request.err) |err| return err;
-    return request.result orelse error.TabNotFound;
-}
-
-fn agentConnectSshProfile(ctx: *anyopaque, allocator: std.mem.Allocator, profile_name: []const u8) anyerror!ai_chat.ToolSurface {
-    const window: *AppWindow = @ptrCast(@alignCast(ctx));
-    const native_handle = window.getNativeHandle() orelse return error.WindowUnavailable;
-
-    var request = AgentSshConnectRequest{
-        .allocator = allocator,
-        .profile_name = profile_name,
-    };
-
-    if (g_window) |current| {
-        if (window_backend.nativeHandle(current) == native_handle) {
-            handleAgentSshConnectRequest(&request);
-        } else {
-            postAgentSshConnect(native_handle, &request);
-        }
-    } else {
-        postAgentSshConnect(native_handle, &request);
-    }
-
-    if (request.err) |err| return err;
-    return request.result orelse error.ConnectFailed;
-}
-
-fn agentSaveSshProfile(ctx: *anyopaque, allocator: std.mem.Allocator, args: ai_chat.SshProfileSaveArgs) anyerror!ai_chat.SavedSshProfile {
-    const window: *AppWindow = @ptrCast(@alignCast(ctx));
-    const native_handle = window.getNativeHandle() orelse return error.WindowUnavailable;
-
-    var request = AgentSshSaveRequest{
-        .allocator = allocator,
-        .args = args,
-    };
-
-    if (g_window) |current| {
-        if (window_backend.nativeHandle(current) == native_handle) {
-            handleAgentSshSaveRequest(&request);
-        } else {
-            postAgentSshSave(native_handle, &request);
-        }
-    } else {
-        postAgentSshSave(native_handle, &request);
-    }
-
-    if (request.err) |err| return err;
-    return request.result orelse error.SaveFailed;
-}
-
-fn agentTabCommand(kind_raw: []const u8, command_raw: ?[]const u8) anyerror!?[]const u8 {
-    return platform_pty_command.tabCommandForKind(kind_raw, command_raw, tab.getShellCmd());
-}
-
-fn handleAgentTabNewRequest(request: *AgentTabNewRequest) void {
-    const command = agentTabCommand(request.kind, request.command) catch |err| {
-        request.err = err;
-        return;
-    };
-
-    const surface = if (command) |cmd|
-        spawnTabWithCommandUtf8ReturningSurface(cmd)
-    else blk: {
-        const allocator = g_allocator orelse {
-            request.err = error.SpawnFailed;
-            return;
+fn liveUiScreenshotRectForHandle(handle: SplitTree.Node.Handle) ?LiveUiScreenshotRect {
+    for (0..split_layout.g_split_rect_count) |i| {
+        const rect = split_layout.g_split_rects[i];
+        if (rect.handle != handle) continue;
+        if (!split_layout.cachedRectIsLive(rect)) continue;
+        return .{
+            .rect = splitRectToUiScreenshotRect(rect) orelse return null,
+            .surface_id = if (rect.surface()) |surface| surface.remote_id[0..] else null,
         };
-        if (!spawnTab(allocator)) {
-            request.err = error.SpawnFailed;
-            return;
-        }
-        break :blk activeSurface();
-    };
-
-    const new_surface = surface orelse {
-        request.err = error.SpawnFailed;
-        return;
-    };
-
-    const location = findAgentSurfaceLocation(new_surface) orelse {
-        request.err = error.SpawnFailed;
-        return;
-    };
-    request.result = makeAgentToolSurface(
-        request.allocator,
-        new_surface,
-        location.tab_index,
-        location.focused,
-    ) catch |err| {
-        request.err = err;
-        return;
-    };
+    }
+    return null;
 }
 
-fn findTabIndexBySurfaceId(surface_id: []const u8) ?usize {
-    for (0..tab.g_tab_count) |tab_index| {
-        const tab_state = tab.g_tabs[tab_index] orelse continue;
-        if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.surfaces();
-        while (it.next()) |entry| {
-            if (std.mem.eql(u8, entry.surface.remote_id[0..], surface_id)) return tab_index;
+fn liveUiScreenshotRectForSurfaceId(surface_id: []const u8) ?LiveUiScreenshotRect {
+    for (0..split_layout.g_split_rect_count) |i| {
+        const rect = split_layout.g_split_rects[i];
+        if (!split_layout.cachedRectIsLive(rect)) continue;
+        const surface = rect.surface() orelse continue;
+        if (std.mem.eql(u8, surface.remote_id[0..], surface_id)) {
+            return .{
+                .rect = splitRectToUiScreenshotRect(rect) orelse continue,
+                .surface_id = surface.remote_id[0..],
+            };
         }
     }
     return null;
 }
 
-fn findTabIndexByTitle(title_text: []const u8) ?usize {
-    const title_trimmed = std.mem.trim(u8, title_text, " \t\r\n");
-    if (title_trimmed.len == 0) return null;
-
-    for (0..tab.g_tab_count) |tab_index| {
-        const tab_state = tab.g_tabs[tab_index] orelse continue;
-        if (std.ascii.eqlIgnoreCase(tab_state.getTitle(), title_trimmed)) return tab_index;
-    }
-
-    var partial: ?usize = null;
-    var partial_count: usize = 0;
-    for (0..tab.g_tab_count) |tab_index| {
-        const tab_state = tab.g_tabs[tab_index] orelse continue;
-        if (std.ascii.indexOfIgnoreCase(tab_state.getTitle(), title_trimmed) != null) {
-            partial = tab_index;
-            partial_count += 1;
-        }
-    }
-    return if (partial_count == 1) partial else null;
+fn isFocusedUiScreenshotSelector(surface_id: []const u8) bool {
+    return surface_id.len == 0 or
+        std.ascii.eqlIgnoreCase(surface_id, "focused") or
+        std.ascii.eqlIgnoreCase(surface_id, "active") or
+        std.ascii.eqlIgnoreCase(surface_id, "current");
 }
 
-fn resolveAgentCloseTabIndex(request: *const AgentTabCloseRequest) ?usize {
-    if (request.tab_index) |idx| return idx;
-    if (request.surface_id) |surface_id| {
-        if (findTabIndexBySurfaceId(surface_id)) |idx| return idx;
-    }
-    if (request.title) |title_text| {
-        if (findTabIndexByTitle(title_text)) |idx| return idx;
-    }
-    return active_tab_state.g_active_tab;
-}
-
-fn handleAgentTabCloseRequest(request: *AgentTabCloseRequest) void {
-    if (tab.g_tab_count <= 1) {
-        request.err = error.LastTab;
-        return;
-    }
-
-    const idx = resolveAgentCloseTabIndex(request) orelse {
-        request.err = error.TabNotFound;
-        return;
-    };
-    if (idx >= tab.g_tab_count) {
-        request.err = error.TabNotFound;
-        return;
-    }
-
-    const tab_state = tab.g_tabs[idx] orelse {
-        request.err = error.TabNotFound;
-        return;
-    };
-    if (tab_state.kind != .terminal) {
-        request.err = error.CannotCloseAiChatTab;
-        return;
-    }
-
-    const title_copy = request.allocator.dupe(u8, tab_state.getTitle()) catch |err| {
-        request.err = err;
-        return;
-    };
-
-    closeTab(idx);
-    request.result = .{
-        .tab_index = idx,
-        .active_tab = active_tab_state.g_active_tab,
-        .title = title_copy,
-    };
-}
-
-fn handleAgentSshConnectRequest(request: *AgentSshConnectRequest) void {
-    switch (overlays.agentConnectSshProfile(request.profile_name)) {
-        .connected => |surface| {
-            const location = findAgentSurfaceLocation(surface) orelse {
-                request.err = error.ConnectFailed;
-                return;
+fn resolveAgentUiScreenshotCapture(
+    target: ai_chat_types.UiScreenshotTarget,
+    surface_id: ?[]const u8,
+    fb_width: u32,
+    fb_height: u32,
+) anyerror!AgentUiScreenshotCapture {
+    const full = fullUiScreenshotCapture(fb_width, fb_height);
+    const id = if (surface_id) |raw| std.mem.trim(u8, raw, " \t\r\n") else "";
+    const focused_selector = isFocusedUiScreenshotSelector(id);
+    switch (target) {
+        .active_tab => {
+            if (focused_selector) return full;
+            const active_tab = tab.activeTab() orelse return error.SurfaceNotInActiveTab;
+            if (active_tab.kind != .terminal) return error.SurfaceNotInActiveTab;
+            const live = liveUiScreenshotRectForSurfaceId(id) orelse return error.SurfaceNotInActiveTab;
+            return .{ .rect = full.rect, .target = .active_tab, .surface_id = live.surface_id };
+        },
+        .focused_panel => {
+            const active_tab = tab.activeTab() orelse {
+                if (focused_selector) return full;
+                return error.SurfaceNotInActiveTab;
             };
-            request.result = makeAgentToolSurface(
-                request.allocator,
-                surface,
-                location.tab_index,
-                location.focused,
-            ) catch |err| {
-                request.err = err;
-                return;
+            if (active_tab.kind != .terminal) {
+                if (focused_selector) return full;
+                return error.SurfaceNotInActiveTab;
+            }
+
+            if (focused_selector) {
+                const live = liveUiScreenshotRectForHandle(active_tab.focused) orelse return full;
+                return .{ .rect = live.rect, .target = .focused_panel, .surface_id = live.surface_id };
+            }
+
+            const live = liveUiScreenshotRectForSurfaceId(id) orelse return error.SurfaceNotInActiveTab;
+            return .{ .rect = live.rect, .target = .focused_panel, .surface_id = live.surface_id };
+        },
+    }
+}
+
+fn ensureAbsoluteDir(path: []const u8) !void {
+    std.fs.makeDirAbsolute(path) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        error.FileNotFound => {
+            const parent = std.fs.path.dirname(path) orelse return err;
+            try ensureAbsoluteDir(parent);
+            std.fs.makeDirAbsolute(path) catch |err2| switch (err2) {
+                error.PathAlreadyExists => {},
+                else => return err2,
             };
         },
-        .not_found => request.err = error.ProfileNotFound,
-        .failed => request.err = error.ConnectFailed,
-    }
+        else => return err,
+    };
 }
 
-fn handleAgentSshSaveRequest(request: *AgentSshSaveRequest) void {
-    request.result = overlays.agentSaveSshProfile(request.allocator, request.args) catch |err| {
-        request.err = err;
-        return;
+fn writeUiScreenshotFile(path: []const u8, bytes: []const u8) !void {
+    if (std.fs.path.dirname(path)) |parent| {
+        if (parent.len > 0) {
+            if (std.fs.path.isAbsolute(parent)) {
+                try ensureAbsoluteDir(parent);
+            } else {
+                try std.fs.cwd().makePath(parent);
+            }
+        }
+    }
+
+    var file = if (std.fs.path.isAbsolute(path))
+        try std.fs.createFileAbsolute(path, .{ .truncate = true })
+    else
+        try std.fs.cwd().createFile(path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(bytes);
+}
+
+fn agentUiScreenshotBaseDir(allocator: std.mem.Allocator, working_dir: ?[]const u8) ![]const u8 {
+    if (working_dir) |wd| {
+        if (wd.len > 0) return allocator.dupe(u8, wd);
+    }
+    return platform_dirs.exportsDir(allocator);
+}
+
+fn agentRequestCaptureUiScreenshot(
+    allocator: std.mem.Allocator,
+    target: ai_chat_types.UiScreenshotTarget,
+    surface_id: ?[]const u8,
+    working_dir: ?[]const u8,
+) anyerror!ai_chat_types.UiScreenshotResult {
+    const win = g_window orelse return error.WindowUnavailable;
+    if (window_backend.isMinimized(win)) return error.WindowUnavailable;
+
+    const fb = window_backend.framebufferSize(win);
+    if (fb.width <= 0 or fb.height <= 0) return error.WindowUnavailable;
+    const fb_width: u32 = @intCast(fb.width);
+    const fb_height: u32 = @intCast(fb.height);
+
+    const output_base = try agentUiScreenshotBaseDir(allocator, working_dir);
+    defer allocator.free(output_base);
+
+    const capture = try resolveAgentUiScreenshotCapture(target, surface_id, fb_width, fb_height);
+    const rect = appwindow_ui_screenshot.clampRect(capture.rect, fb_width, fb_height) orelse return error.WindowUnavailable;
+
+    const bottom_up = try gpu.readback.readRgba(
+        allocator,
+        rect.x,
+        appwindow_ui_screenshot.glReadY(rect, fb_height),
+        rect.width,
+        rect.height,
+    );
+    defer allocator.free(bottom_up);
+
+    const top_down = try png_writer.flipRgbaRows(allocator, bottom_up, rect.width, rect.height);
+    defer allocator.free(top_down);
+
+    const output_image = try appwindow_ui_screenshot.fitRgbaToMaxLongEdge(
+        allocator,
+        top_down,
+        rect.width,
+        rect.height,
+        appwindow_ui_screenshot.max_output_long_edge,
+    );
+    defer output_image.deinit(allocator);
+
+    const png = try png_writer.encodeRgba(allocator, .{
+        .width = output_image.width,
+        .height = output_image.height,
+        .rgba = output_image.rgba,
+    });
+    defer allocator.free(png);
+
+    var result_surface_id: ?[]u8 = null;
+    errdefer if (result_surface_id) |id| allocator.free(id);
+    if (capture.surface_id) |id| {
+        result_surface_id = try allocator.dupe(u8, id);
+    }
+
+    const path = try appwindow_ui_screenshot.outputPath(allocator, output_base, std.time.milliTimestamp());
+    errdefer allocator.free(path);
+    try writeUiScreenshotFile(path, png);
+
+    return .{
+        .path = path,
+        .mime = "image/png",
+        .width = output_image.width,
+        .height = output_image.height,
+        .target = capture.target,
+        .surface_id = result_surface_id,
+    };
+}
+
+fn agentRequestHost() agent_requests.Host {
+    return .{
+        .nativeHandleForContext = agentRequestNativeHandle,
+        .currentNativeHandle = currentNativeHandle,
+        .spawnDefaultTab = agentRequestSpawnDefaultTab,
+        .spawnTabWithCommand = agentRequestSpawnTabWithCommand,
+        .closeTabByIndex = agentRequestCloseTabByIndex,
+        .connectSshProfile = agentRequestConnectSshProfile,
+        .saveSshProfile = agentRequestSaveSshProfile,
+        .captureUiScreenshot = agentRequestCaptureUiScreenshot,
+        .focusTerminalSurface = agentRequestFocusTerminalSurface,
+        .reconnectTerminalSurface = reconnectAgentTerminalSurface,
     };
 }
 
@@ -6823,35 +6234,45 @@ fn onPlatformMessage(msg: window_backend.MessageId, wParam: window_backend.WordP
     }
 
     const decoded = thread_message.decode(msg, lParam) orelse return null;
+    const agent_host = agentRequestHost();
     switch (decoded.tag) {
-        .agent_ssh_connect => handleAgentSshConnectRequest(@ptrFromInt(decoded.ptr)),
-        .agent_ssh_save => handleAgentSshSaveRequest(@ptrFromInt(decoded.ptr)),
-        .agent_tab_new => handleAgentTabNewRequest(@ptrFromInt(decoded.ptr)),
-        .agent_tab_close => handleAgentTabCloseRequest(@ptrFromInt(decoded.ptr)),
-        .remote_ai_input => handleRemoteAiInputRequest(@ptrFromInt(decoded.ptr)),
-        .remote_open_ai_agent => handleRemoteAiAgentOpenRequest(@ptrFromInt(decoded.ptr)),
-        .weixin_control => handleWeixinControlRequest(@ptrFromInt(decoded.ptr)),
+        .agent_ssh_connect => agent_requests.handleSshConnectRequest(@ptrFromInt(decoded.ptr), agent_host),
+        .agent_ssh_save => agent_requests.handleSshSaveRequest(@ptrFromInt(decoded.ptr), agent_host),
+        .agent_tab_new => agent_requests.handleTabNewRequest(@ptrFromInt(decoded.ptr), agent_host),
+        .agent_tab_close => agent_requests.handleTabCloseRequest(@ptrFromInt(decoded.ptr), agent_host),
+        .agent_ui_screenshot => agent_requests.handleUiScreenshotRequest(@ptrFromInt(decoded.ptr), agent_host),
+        .agent_terminal_focus => agent_requests.handleTerminalFocusRequest(@ptrFromInt(decoded.ptr), agent_host),
+        .agent_terminal_reconnect => agent_requests.handleTerminalReconnectRequest(@ptrFromInt(decoded.ptr), agent_host),
+        .remote_ai_input => remote_sync.handleAiInputRequest(@ptrFromInt(decoded.ptr), remoteSyncHost()),
+        .remote_open_ai_agent => remote_sync.handleAiAgentOpenRequest(@ptrFromInt(decoded.ptr), remoteSyncHost()),
+        .chatops_control => weixin_bridge.handleControlRequest(@ptrFromInt(decoded.ptr), weixinBridgeHost()),
     }
     return 1;
 }
 
 fn installAgentToolHost(self: *AppWindow) void {
+    agent_requests.setHost(agentRequestHost());
     ai_chat.setToolHost(.{
         .ctx = @ptrCast(self),
-        .collectSnapshot = collectAgentToolSnapshot,
-        .surfaceSnapshot = agentSurfaceSnapshot,
-        .writeSurface = agentWriteSurface,
-        .spawnTab = agentSpawnTab,
-        .closeTab = agentCloseTab,
-        .saveSshProfile = agentSaveSshProfile,
-        .connectSshProfile = agentConnectSshProfile,
-        .sshConnectionForSurface = agentSshConnectionForSurface,
+        .collectSnapshot = surface_snapshots.collectAgentToolSnapshot,
+        .surfaceSnapshot = surface_snapshots.agentSurfaceSnapshot,
+        .writeSurface = surface_snapshots.agentWriteSurface,
+        .spawnTab = agent_requests.spawnTab,
+        .closeTab = agent_requests.closeTab,
+        .saveSshProfile = agent_requests.saveSshProfile,
+        .connectSshProfile = agent_requests.connectSshProfile,
+        .sshConnectionForSurface = surface_snapshots.agentSshConnectionForSurface,
+        .uiScreenshot = agent_requests.uiScreenshot,
+        .focusTerminal = agent_requests.focusTerminal,
+        .reconnectTerminal = agent_requests.reconnectTerminal,
+        .surfaceExitStatus = surface_snapshots.agentSurfaceExitStatus,
+        .killSurfaceChild = surface_snapshots.agentKillSurfaceChild,
     });
 }
 
 fn installRemoteControlHandlers(self: *AppWindow) void {
     if (self.app.remote_client) |client| {
-        client.registerAiAgentOpener(self.app, remoteAiAgentOpen);
+        client.registerAiAgentOpener(self.app, openRemoteAiAgentForClient);
     }
 }
 
@@ -6938,31 +6359,6 @@ fn recordFrameLatencyIfInputDriven() void {
     g_frame_latency.resetWindow();
 }
 
-/// Run deferred agent detections (throttled on the IO thread during output
-/// floods, see Surface.agent_throttle) so detection converges once output
-/// stops — e.g. an approval prompt arriving as the last chunk of a burst.
-/// Repaints only when the detection result actually changed.
-fn flushAgentDetectionSweep() void {
-    const now = std.time.milliTimestamp();
-    for (0..tab.g_tab_count) |ti| {
-        if (tab.g_tabs[ti]) |tb| {
-            var it = tb.tree.surfaces();
-            while (it.next()) |entry| {
-                const surface = entry.surface;
-                if (!surface.agent_throttle.pendingPeek()) continue;
-                const before = surface.agent_detection;
-                surface.render_state.mutex.lock();
-                const ran = surface.flushAgentDetection(now);
-                surface.render_state.mutex.unlock();
-                if (ran and !std.meta.eql(before, surface.agent_detection)) {
-                    g_force_rebuild = true;
-                    g_cells_valid = false;
-                }
-            }
-        }
-    }
-}
-
 /// Whether any surface in `tb` has unconsumed PTY output. Pure over the tab so
 /// the active-tab-only render gate is unit-testable.
 fn anyTabSurfaceDirty(tb: *const tab.TabState) bool {
@@ -6996,6 +6392,9 @@ fn clearVisibleSurfaceDirty() void {
 }
 
 fn aiStreamingActive() bool {
+    if (overlays.btwConversationSession()) |session| {
+        if (session.requestState().inflight) return true;
+    }
     if (activeAiChat()) |session| {
         if (session.request_inflight) return true;
     }
@@ -7016,10 +6415,9 @@ fn clearIconFont(allocator: std.mem.Allocator) void {
         a.deinit(allocator);
         font.g_icon_atlas = null;
     }
-    if (font.g_icon_atlas_texture != 0) {
-        var t = gpu.Texture.fromHandle(font.g_icon_atlas_texture);
-        t.destroy();
-        font.g_icon_atlas_texture = 0;
+    if (font.g_icon_atlas_texture.isValid()) {
+        font.g_icon_atlas_texture.destroy();
+        font.g_icon_atlas_texture = gpu.Texture.invalid();
         font.g_icon_atlas_modified = 0;
     }
 }
@@ -7047,10 +6445,9 @@ fn clearTitlebarFont(allocator: std.mem.Allocator) void {
         a.deinit(allocator);
         font.g_titlebar_atlas = null;
     }
-    if (font.g_titlebar_atlas_texture != 0) {
-        var t = gpu.Texture.fromHandle(font.g_titlebar_atlas_texture);
-        t.destroy();
-        font.g_titlebar_atlas_texture = 0;
+    if (font.g_titlebar_atlas_texture.isValid()) {
+        font.g_titlebar_atlas_texture.destroy();
+        font.g_titlebar_atlas_texture = gpu.Texture.invalid();
         font.g_titlebar_atlas_modified = 0;
     }
 }
@@ -7240,6 +6637,17 @@ const ImeCaret = struct {
 };
 
 fn syncImeCaretPosition(win: *window_backend.Window, split_count: usize) void {
+    if (overlays.btwConversationSession()) |session| {
+        if (win.ime_composing) return;
+        const size = window_backend.clientSize(win);
+        const layout = overlays.btwConversationLayout(
+            @floatFromInt(size.width),
+            currentTitlebarHeight(),
+        );
+        syncAiChatImeCaret(win, session, layout.chat_x, layout.chat_w);
+        return;
+    }
+
     // The command palette is a modal overlay on top of every tab; anchor the IME
     // caret to its text filter, not the underlying terminal/AI-chat cursor.
     if (overlays.commandPaletteVisible()) {
@@ -7426,13 +6834,13 @@ fn syncAiChatImeCaret(win: *window_backend.Window, session: *ai_chat.Session, ch
     const wh: f32 = @floatFromInt(size.height);
     session.mutex.lock();
     const input_text = session.input();
-    const layout = ai_chat_renderer.inputLayout(chat_x, chat_w, input_text);
-    const cursor = ai_chat_renderer.inputCursorRect(input_text, session.input_cursor, layout.text_x, layout.text_w);
+    const layout = assistant_conversation_renderer.inputLayout(chat_x, chat_w, input_text);
+    const cursor = assistant_conversation_renderer.inputCursorRect(input_text, session.inputCursorLocked(), layout.text_x, layout.text_w);
     const scrolled_row = session.input_scroll_row;
     const follow_cursor = session.input_scroll_follow_cursor;
     session.mutex.unlock();
     const input_line_h = @round(@max(23.0, font.g_titlebar_cell_height + 8.0));
-    const visible_rows = ai_chat_renderer.inputVisibleRowsForField(layout.field_h);
+    const visible_rows = assistant_conversation_renderer.inputVisibleRowsForField(layout.field_h);
     var first_row = scrolled_row;
     if (follow_cursor) {
         if (cursor.row < first_row) {
@@ -7444,7 +6852,7 @@ fn syncAiChatImeCaret(win: *window_backend.Window, session: *ai_chat.Session, ch
     if (cursor.row < first_row) return;
     const row = cursor.row - first_row;
     const field_top_px = wh - layout.field_y - layout.field_h;
-    const cursor_top_px = field_top_px + ai_chat_renderer.INPUT_FIELD_PAD_TOP + @as(f32, @floatFromInt(row)) * input_line_h;
+    const cursor_top_px = field_top_px + assistant_conversation_renderer.INPUT_FIELD_PAD_TOP + @as(f32, @floatFromInt(row)) * input_line_h;
     const cursor_y = cursor_top_px;
     const h = font.g_titlebar_cell_height;
     window_backend.setImeCaret(
@@ -7474,8 +6882,8 @@ fn renderImePreedit(win: *window_backend.Window, fb_width: i32, fb_height: i32) 
     const bg = g_theme.selection_background;
     const fg = g_theme.selection_foreground orelse g_theme.foreground;
 
-    gpu.gl_init.renderQuad(x, y, width, height, bg);
-    gpu.gl_init.renderQuad(x, y, width, @max(1.0, @as(f32, @floatFromInt(font.box_thickness))), g_theme.cursor_color);
+    ui_pipeline.fillQuad(x, y, width, height, bg);
+    ui_pipeline.fillQuad(x, y, width, @max(1.0, @as(f32, @floatFromInt(font.box_thickness))), g_theme.cursor_color);
 
     view = std.unicode.Utf8View.init(text) catch return;
     var it = view.iterator();
@@ -7522,12 +6930,7 @@ fn handleNotification(surface: *Surface, is_active_surface: bool) void {
             continue;
         }
 
-        // Lazy authorization request (macOS): first time we'd want a toast,
-        // ask once. This delivery falls back to badge until the user answers.
-        if (native_toast and !g_notif_auth_requested) {
-            platform_notifications.requestNotificationAuth();
-            g_notif_auth_requested = true;
-        }
+        ensureNotifAuthRequested(native_toast);
 
         const auth: notif_mod.AuthStatus = @enumFromInt(
             @intFromEnum(platform_notifications.notificationAuthStatus()),
@@ -7543,18 +6946,7 @@ fn handleNotification(surface: *Surface, is_active_surface: bool) void {
         switch (route) {
             .none => {},
             .toast => {
-                var title_z: [notif_mod.max_title + 1]u8 = undefined;
-                var body_z: [notif_mod.max_body + 1]u8 = undefined;
-                const t = item.title();
-                const b = item.body();
-                @memcpy(title_z[0..t.len], t);
-                title_z[t.len] = 0;
-                @memcpy(body_z[0..b.len], b);
-                body_z[b.len] = 0;
-                platform_notifications.showDesktopNotification(
-                    title_z[0..t.len :0],
-                    body_z[0..b.len :0],
-                );
+                showToastZ(item.title(), item.body());
                 surface.bell_indicator = true; // also badge the tab
                 surface.bell_indicator_time = now;
                 surface.last_notif_hash = h;
@@ -7581,6 +6973,121 @@ fn handleNotification(surface: *Surface, is_active_surface: bool) void {
             }
         }
     }
+}
+
+/// Lazy authorization request (macOS): first time we'd want a toast, ask once.
+/// Deliveries fall back to badge until the user answers.
+fn ensureNotifAuthRequested(native_toast: bool) void {
+    if (native_toast and !g_notif_auth_requested) {
+        platform_notifications.requestNotificationAuth();
+        g_notif_auth_requested = true;
+    }
+}
+
+/// Z-terminate title/body (truncating to the notification limits) and show a
+/// native toast. Caller has already routed via `notif_mod.decideRoute`.
+fn showToastZ(title: []const u8, body: []const u8) void {
+    var title_z: [notif_mod.max_title + 1]u8 = undefined;
+    var body_z: [notif_mod.max_body + 1]u8 = undefined;
+    const t = title[0..@min(title.len, notif_mod.max_title)];
+    const b = body[0..@min(body.len, notif_mod.max_body)];
+    @memcpy(title_z[0..t.len], t);
+    title_z[t.len] = 0;
+    @memcpy(body_z[0..b.len], b);
+    body_z[b.len] = 0;
+    platform_notifications.showDesktopNotification(
+        title_z[0..t.len :0],
+        body_z[0..b.len :0],
+    );
+}
+
+/// Per-frame OSC 7748 edge poll for one surface: a terminal agent that stops
+/// for approval/input notifies immediately; `done` goes through a quiet window
+/// (goal-loop agents bounce done→running between milestones). Notifications
+/// are pushed into the surface's own notif queue, so they inherit the whole
+/// existing pipeline — rate limit/dedup (vs. the hook's own OSC 777, typically
+/// in the same burst), focus suppression, and the desktop-notifications gate.
+fn pollAgentMarker(surface: *Surface) void {
+    const det = surface.agent_detection;
+    const cur: agent_detector.State = if (det.visible()) det.state else .none;
+    const now = std.time.milliTimestamp();
+    if (cur != surface.agent_notify_prev_state) {
+        switch (notif_mod.agentMarkerAction(surface.agent_notify_prev_state, cur)) {
+            .none => {},
+            .notify_attention => surface.notif_queue.push(
+                notif_mod.makeItem(det.app.displayName(), i18n.s().notif_agent_attention),
+            ),
+            .stage_done => surface.agent_done_staged_ms = now,
+        }
+        if (cur != .done) surface.agent_done_staged_ms = 0;
+        surface.agent_notify_prev_state = cur;
+    }
+    if (surface.agent_done_staged_ms != 0 and cur == .done and
+        now - surface.agent_done_staged_ms >= notif_mod.agent_done_quiet_ms)
+    {
+        const staged = surface.agent_done_staged_ms;
+        surface.agent_done_staged_ms = 0;
+        // The hook's own OSC 777 (richer, custom text) may have announced this
+        // completion already — it arrives in the same burst as the marker,
+        // but our synthetic fires past the rate-limit window. Let it win.
+        if (!notif_mod.doneAlreadyAnnounced(surface.last_notif_time, staged)) {
+            surface.notif_queue.push(
+                notif_mod.makeItem(det.app.displayName(), i18n.s().notif_agent_done),
+            );
+        }
+    }
+}
+
+/// Per-frame attention poll for one in-app AI session (AI-chat tab / copilot
+/// sidebar). Edge-triggered: entering waiting notifies "needs approval"; a
+/// turn ending notifies "finished" unless the user stopped it. `is_viewing`
+/// means the user is looking at this conversation right now (its tab is
+/// active; for copilot the sidebar is also open) — combined with window focus
+/// it suppresses the toast and the sticky done badge, Orca-style.
+fn pollSessionAttention(session: *ai_chat.Session, is_viewing: bool) void {
+    if (session.closing.load(.acquire)) return;
+
+    const viewing_now = window_focused and is_viewing;
+    if (viewing_now) session.attention_done = false;
+
+    const waiting = session.approvalView() != null or session.questionView() != null;
+    const cur: notif_mod.SessionPhase = if (waiting)
+        .waiting
+    else if (session.requestState().inflight)
+        .running
+    else
+        .idle;
+
+    const prev = session.ui_attention_phase;
+    if (cur == prev) return;
+    session.ui_attention_phase = cur;
+
+    const edge = notif_mod.sessionEdge(prev, cur, session.ui_stop_seen);
+    if (cur == .idle) session.ui_stop_seen = false;
+    switch (edge) {
+        .none => {},
+        .finished => {
+            if (!viewing_now) session.attention_done = true;
+            deliverSessionToast(session, i18n.s().notif_agent_done, is_viewing);
+        },
+        // The live waiting state itself badges the tab (tab.agentDetection),
+        // so only the toast needs delivering here.
+        .needs_attention => deliverSessionToast(session, i18n.s().notif_agent_attention, is_viewing),
+    }
+}
+
+fn deliverSessionToast(session: *ai_chat.Session, body: []const u8, is_viewing: bool) void {
+    if (!g_desktop_notifications) return;
+    const native_toast = platform_notifications.supports_desktop_notifications;
+    ensureNotifAuthRequested(native_toast);
+    const auth: notif_mod.AuthStatus = @enumFromInt(
+        @intFromEnum(platform_notifications.notificationAuthStatus()),
+    );
+    const route = notif_mod.decideRoute(true, native_toast, auth, window_focused, is_viewing);
+    if (route != .toast) return; // .badge is covered by attention_done / live state
+    const session_title = session.title();
+    const title = if (session_title.len > 0) session_title else i18n.s().sl_ai_agent;
+    showToastZ(title, body);
 }
 
 /// Internal main loop - called by AppWindow.run() after init() has set up globals.
@@ -7658,8 +7165,8 @@ fn runMainLoop(self: *AppWindow) !void {
     defer self.native_handle_bits.store(0, .release);
     // Publish a process-global UI handle so the WeChat poller thread can marshal
     // control requests here. Last window to init wins; cleared on teardown.
-    g_weixin_ui_handle.store(window_backend.nativeHandleBits(&backend_window), .release);
-    defer g_weixin_ui_handle.store(0, .release);
+    weixin_bridge.setUiHandle(window_backend.nativeHandleBits(&backend_window));
+    defer weixin_bridge.setUiHandle(0);
     if (g_quake_mode and (g_start_maximize or g_start_fullscreen)) {
         std.debug.print("Quake mode disabled for this window because maximize/fullscreen is enabled\n", .{});
         g_quake_mode = false;
@@ -7678,7 +7185,31 @@ fn runMainLoop(self: *AppWindow) !void {
     // --- Initialize the active GPU backend through the host surface seam ---
     switch (gpu.active) {
         .metal => try gpu.Context.initWithLayer(window_backend.metalLayer(&backend_window)),
-        .opengl => try gpu.Context.init(@ptrCast(&window_backend.glGetProcAddress)),
+        .opengl => {
+            try gpu.Context.init(@ptrCast(&window_backend.glGetProcAddress));
+            render_diagnostics.log(
+                "gpu-backend=opengl present=window_backend fallback_path=available d3d11_active=false default_unchanged=true",
+                .{},
+            );
+        },
+        .d3d11 => {
+            const fb = window_backend.framebufferSize(&backend_window);
+            try gpu.Context.initForWindow(window_backend.nativeHandle(&backend_window), fb.width, fb.height);
+        },
+    }
+    // Free the per-window-thread heap-backed TLS state (overlay state and, on
+    // D3D11, the handle registries) when this window unwinds. Declared before
+    // the pipeline/texture-owning defers below so it runs after all of them
+    // (defers are LIFO); their deinits still see live storage to release
+    // resources through.
+    defer {
+        overlays.releaseThreadState();
+        if (comptime gpu.active == .d3d11) {
+            gpu.Pipeline.releaseRegistry();
+            gpu.Texture.releaseRegistry();
+            gpu.Buffer.releaseRegistry();
+            gpu.vertex.releaseRegistry();
+        }
     }
 
     // Initialize FreeType
@@ -7755,12 +7286,7 @@ fn runMainLoop(self: *AppWindow) !void {
     // Store font size globally for fallback fonts
     font.g_font_size = font_size;
 
-    if (!gpu.gl_init.initShaders()) {
-        std.debug.print("Failed to initialize shaders\n", .{});
-        return error.ShaderInitFailed;
-    }
     ui_pipeline.init();
-    gpu.gl_init.syncSharedHandles();
     cell_pipeline.init();
     font.preloadCharacters(face);
 
@@ -7792,10 +7318,9 @@ fn runMainLoop(self: *AppWindow) !void {
             a.deinit(allocator);
             font.g_icon_atlas = null;
         }
-        if (font.g_icon_atlas_texture != 0) {
-            var t = gpu.Texture.fromHandle(font.g_icon_atlas_texture);
-            t.destroy();
-            font.g_icon_atlas_texture = 0;
+        if (font.g_icon_atlas_texture.isValid()) {
+            font.g_icon_atlas_texture.destroy();
+            font.g_icon_atlas_texture = gpu.Texture.invalid();
         }
 
         // Clean up titlebar font. Reset cache to .empty for the same reason
@@ -7808,10 +7333,9 @@ fn runMainLoop(self: *AppWindow) !void {
             a.deinit(allocator);
             font.g_titlebar_atlas = null;
         }
-        if (font.g_titlebar_atlas_texture != 0) {
-            var t = gpu.Texture.fromHandle(font.g_titlebar_atlas_texture);
-            t.destroy();
-            font.g_titlebar_atlas_texture = 0;
+        if (font.g_titlebar_atlas_texture.isValid()) {
+            font.g_titlebar_atlas_texture.destroy();
+            font.g_titlebar_atlas_texture = gpu.Texture.invalid();
         }
     }
     // Initialize custom post-processing shader if requested
@@ -7829,6 +7353,8 @@ fn runMainLoop(self: *AppWindow) !void {
     }
     defer {
         background_image.deinit();
+        d3d11_offscreen_smoke.deinit();
+        d3d11_ui_smoke.deinit();
         post_process.deinit();
         // macOS/Metal: cell_pipeline/ui_pipeline.deinit() release the
         // MTLRenderPipelineState/MTLBuffer objects held in the render thread's
@@ -7875,7 +7401,7 @@ fn runMainLoop(self: *AppWindow) !void {
     // - So total subtracted from fb_height: 54 + 20 = 74
     //   Wait, let me recalculate...
     //   Actually: content_h = fb_height - (10+34) - 10 = fb_height - 54
-    //   Then setScreenSize: avail_h = content_h - 20 = fb_height - 74
+    //   Then setScreenSizeWithPolicy: avail_h = content_h - 20 = fb_height - 74
     //
     // Actually there might be edge extension for top/bottom too. Let me just match exactly:
     // For a full-window single split (at all edges):
@@ -7885,7 +7411,7 @@ fn runMainLoop(self: *AppWindow) !void {
     //
     // Looking at the code: only left/right edges get extension, not top/bottom.
     // So:
-    //   setScreenSize(pw=fb_width, ph=fb_height-54, explicit_padding)
+    //   setScreenSizeWithPolicy(pw=fb_width, ph=fb_height-54, explicit_padding)
     //   avail_w = fb_width - 10 - 22 = fb_width - 32
     //   avail_h = (fb_height - 54) - 10 - 10 = fb_height - 74
     const titlebar_height = currentTitlebarHeight();
@@ -7950,51 +7476,72 @@ fn runMainLoop(self: *AppWindow) !void {
     // No resize will be needed because term_cols/term_rows match
     // what setScreenSize will compute from the window size.
     {
-        // Prioritised cwd resolution: CLI/spawn override > single-instance IPC > process default.
         const initial_cwd: platform_pty_command.Cwd = if (g_initial_cwd_len > 0)
             @ptrCast(&g_initial_cwd_buf)
-        else if (tryTakeSingleInstanceCwd(allocator, &g_initial_cwd_buf)) |cwd|
-            cwd
         else
             null;
         g_initial_cwd_len = 0; // Clear after use
 
-        // Try to restore the previous session, but only:
-        //   - once per process (first window only),
-        //   - if config.restore-tabs-on-startup is true,
-        //   - if no CWD override was provided (CLI/spawn).
-        // TODO: also detect --command CLI override once a structured CLI
-        // arg parser exists (today CLI args are merged into Config keys
-        // and there is no positional/--command flag).
-        const restore_once = !g_session_restore_attempted.swap(true, .seq_cst);
-        const restore_enabled = if (g_app) |app| app.restore_tabs_on_startup else false;
-        const should_try_restore = restore_once and restore_enabled and initial_cwd == null;
-        const restored = should_try_restore and tab.restoreSessionFromFile(
-            allocator,
-            term_cols,
-            term_rows,
-            g_cursor_style,
-            g_cursor_blink,
-        );
+        if (bench_driver.isEnabled()) {
+            // In-app GPU benchmark: spawn a no-shell virtual surface and hand
+            // it (plus the virtual PTY controller) to the driver. Disable vsync
+            // on both present paths so the loop spins at the GPU's max rate.
+            // Session restore and the normal shell-tab plan are skipped — the
+            // benchmark owns the single virtual surface for its whole run.
+            const spawn = tab.spawnBenchmarkTab(allocator, term_cols, term_rows, g_cursor_style, g_cursor_blink) orelse {
+                std.debug.print("Failed to spawn benchmark surface\n", .{});
+                return error.SpawnFailed;
+            };
+            bench_driver.start(allocator, spawn.surface, term_cols, spawn.controller) catch {
+                std.debug.print("Failed to start benchmark driver\n", .{});
+                return error.SpawnFailed;
+            };
+            window_backend.setPresentInterval(0);
+            // Native D3D11 Present uses its own interval (OpenGL goes through
+            // window_backend above). Comptime-gated so non-D3D11 builds skip it.
+            if (gpu.active == .d3d11) gpu.Context.setPresentInterval(0);
+        } else {
+            // Try to restore the previous session, but only:
+            //   - once per process (first window only),
+            //   - if config.restore-tabs-on-startup is true,
+            //   - if no CWD override was provided (CLI/spawn).
+            // TODO: also detect --command CLI override once a structured CLI
+            // arg parser exists (today CLI args are merged into Config keys
+            // and there is no positional/--command flag).
+            const restore_once = !g_session_restore_attempted.swap(true, .seq_cst);
+            const restore_enabled = if (g_app) |app| app.restore_tabs_on_startup else false;
+            const should_try_restore = restore_once and restore_enabled and initial_cwd == null;
+            const restored = should_try_restore and tab.restoreSessionFromFile(
+                allocator,
+                term_cols,
+                term_rows,
+                g_cursor_style,
+                g_cursor_blink,
+            );
 
-        switch (startup_tabs.initialTabPlan(.{
-            .restored_session = restored,
-            .initial_cwd_present = initial_cwd != null,
-            .first_plain_window = restore_once,
-        })) {
-            .restored_session => {},
-            .single_terminal => {
-                if (!spawnTabWithCwd(allocator, initial_cwd)) {
-                    std.debug.print("Failed to spawn initial tab\n", .{});
-                    return error.SpawnFailed;
-                }
-            },
-            .agent_and_local_shell => {
-                if (!spawnDefaultAgentAndLocalShellTabs(allocator)) {
-                    std.debug.print("Failed to spawn default Agent and local shell tabs\n", .{});
-                    return error.SpawnFailed;
-                }
-            },
+            switch (startup_tabs.initialTabPlan(.{
+                .restored_session = restored,
+                .initial_cwd_present = initial_cwd != null,
+                .first_plain_window = restore_once,
+            })) {
+                // Restoring tabs bypasses the normal tab-switch integration
+                // path. Seed the active surface context now so a restored SSH
+                // tab's Copilot binds to SSH instead of falling back to the
+                // host-local command tool.
+                .restored_session => syncActiveSurfaceCaches(),
+                .single_terminal => {
+                    if (!spawnTabWithCwd(allocator, initial_cwd)) {
+                        std.debug.print("Failed to spawn initial tab\n", .{});
+                        return error.SpawnFailed;
+                    }
+                },
+                .agent_and_local_shell => {
+                    if (!spawnDefaultAgentAndLocalShellTabs(allocator)) {
+                        std.debug.print("Failed to spawn default Agent and local shell tabs\n", .{});
+                        return error.SpawnFailed;
+                    }
+                },
+            }
         }
 
         // Dev/automation hook: WISPTERM_AUTOCONNECT names an SSH profile to
@@ -8057,8 +7604,11 @@ fn runMainLoop(self: *AppWindow) !void {
         g_loop_iter +%= 1; // tag each iteration so the latency probe can tell same-iteration paints from stalls
         // Check for config file changes
         if (config_watcher) |*w| checkConfigReload(allocator, w);
+        memory_digest_scheduler.tick(allocator);
+        syncMemoryDigestStatus();
         tmux_controller.tickAll(allocator, term_cols, term_rows);
         overlays.tickSessionLauncher();
+        overlays.tickQuickAiVerify();
         if (file_explorer.tickAsync()) {
             g_force_rebuild = true;
             g_cells_valid = false;
@@ -8087,9 +7637,29 @@ fn runMainLoop(self: *AppWindow) !void {
         // Check for incoming single-instance cwd forwarded from a second instance.
         // Open a new tab in the received directory.
         if (tryTakeSingleInstanceCwd(allocator, &g_initial_cwd_buf)) |cwd| {
+            std.debug.print("[single-instance] main-loop: got cwd, spawning tab...\n", .{});
             if (spawnTabWithCwd(allocator, cwd)) {
+                std.debug.print("[single-instance] main-loop: tab spawned OK\n", .{});
                 g_force_rebuild = true;
                 g_cells_valid = false;
+            } else {
+                std.debug.print("[single-instance] main-loop: spawnTabWithCwd FAILED\n", .{});
+            }
+        }
+
+        // Check for a pending activate request from a second instance.
+        // Bring the window to the foreground so the user sees the new tab.
+        if (single_instance.getActiveServer()) |srv| {
+            if (srv.tryTakeActivate()) {
+                if (g_window) |win| {
+                    if (window_backend.isMinimized(win) or g_quake_hidden) {
+                        _ = window_backend.showVisible(win);
+                        g_quake_hidden = false;
+                    }
+                    _ = window_backend.setForeground(win);
+                    g_force_rebuild = true;
+                    g_cells_valid = false;
+                }
             }
         }
 
@@ -8097,16 +7667,9 @@ fn runMainLoop(self: *AppWindow) !void {
         // We wait for RESIZE_COALESCE_MS after last resize event before applying.
         // Only update the root grid dimensions here — actual terminal + PTY resize
         // is handled by computeSplitLayout → setScreenSize in the render loop below.
-        if (g_pending_resize) {
-            const now = std.time.milliTimestamp();
-            if (now - g_last_resize_time >= RESIZE_COALESCE_MS) {
-                g_pending_resize = false;
-
-                if (g_pending_cols != term_cols or g_pending_rows != term_rows) {
-                    term_cols = g_pending_cols;
-                    term_rows = g_pending_rows;
-                }
-            }
+        if (consumePendingGridResize(std.time.milliTimestamp())) |grid| {
+            term_cols = grid.cols;
+            term_rows = grid.rows;
         }
 
         // PTY reading is handled by per-surface IO threads (termio.Thread).
@@ -8160,24 +7723,24 @@ fn runMainLoop(self: *AppWindow) !void {
         rememberWindowedPosition(win);
         // Fire any due /loop or /watch tasks (UI thread: tab.g_tabs is populated).
         ai_loop_store.tick(std.time.milliTimestamp());
-        // Catch up agent detections deferred by the IO-thread throttle.
-        flushAgentDetectionSweep();
-
-        // Auto-close terminal panes whose process has exited.
-        sweepExitedSurfaces();
+        // Open any tabs requested via `wisptermctl spawn` (queued by the ctl
+        // server thread, created here on the UI thread).
+        control_api.drainSpawnQueue();
 
         // Handle bells, notifications, and OSC 52 clipboard writes staged by
         // the IO threads. This runs before the render gate: background-tab
         // output no longer triggers frames, so these must not depend on one.
         for (0..tab.g_tab_count) |ti| {
             if (tab.g_tabs[ti]) |tb| {
+                const tab_active = ti == active_tab_state.g_active_tab;
                 var it = tb.tree.surfaces();
                 while (it.next()) |entry| {
                     if (entry.surface.bell_pending.swap(false, .acquire)) {
-                        handleBell(entry.surface, win, ti == active_tab_state.g_active_tab);
+                        handleBell(entry.surface, win, tab_active);
                     }
+                    pollAgentMarker(entry.surface);
                     {
-                        const is_active_surface = (ti == active_tab_state.g_active_tab) and
+                        const is_active_surface = tab_active and
                             (if (tb.focusedSurface()) |fs| fs == entry.surface else false);
                         handleNotification(entry.surface, is_active_surface);
                     }
@@ -8186,6 +7749,10 @@ fn runMainLoop(self: *AppWindow) !void {
                         entry.surface.allocator.free(text);
                     }
                 }
+                // In-app AI sessions: turn-end / needs-approval attention edges.
+                if (tb.ai_chat_session) |s| pollSessionAttention(s, tab_active);
+                if (tb.copilot_session) |s|
+                    pollSessionAttention(s, tab_active and tb.copilot_visible);
             }
         }
 
@@ -8198,6 +7765,7 @@ fn runMainLoop(self: *AppWindow) !void {
         const fb_width: c_int = fb.width;
         const fb_height: c_int = fb.height;
         if (window_backend.isMinimized(win) or fb_width <= 0 or fb_height <= 0) {
+            agent_requests.failPendingUiScreenshots(error.WindowUnavailable);
             const timeout_ms = render_gate.computeBlockTimeoutMs(.{
                 .visibility = .hidden,
                 .cursor_blink_enabled = false,
@@ -8206,6 +7774,7 @@ fn runMainLoop(self: *AppWindow) !void {
             window_backend.pumpAppEvents(@as(f64, @floatFromInt(timeout_ms)) / 1000.0);
             continue;
         }
+        syncBackendSurfaceSize(fb_width, fb_height);
 
         const gate_now = std.time.milliTimestamp();
         const visible = window_backend.isVisible(win);
@@ -8216,14 +7785,18 @@ fn runMainLoop(self: *AppWindow) !void {
         else
             .unfocused_visible;
 
-        const blink_enabled = g_cursor_blink and vis == .focused;
-        const blink_due = blink_enabled and
-            (gate_now - g_gate_last_blink_render >= CURSOR_BLINK_INTERVAL_MS);
+        const blink = frame_scheduler.decideBlink(.{
+            .cursor_blink_enabled = g_cursor_blink,
+            .focused = vis == .focused,
+            .now_ms = gate_now,
+            .last_blink_render_ms = g_gate_last_blink_render,
+            .interval_ms = CURSOR_BLINK_INTERVAL_MS,
+        });
 
         const signals = render_gate.RenderSignals{
-            .force_rebuild = g_force_rebuild or !g_cells_valid or g_pending_resize or g_layout_resize_immediate,
+            .force_rebuild = g_force_rebuild or !g_cells_valid or pendingResizeActive() or windowState().layout_resize_immediate or agent_requests.hasPendingUiScreenshot(),
             .any_surface_dirty = anyVisibleSurfaceDirty(),
-            .cursor_blink_due = blink_due,
+            .cursor_blink_due = blink.due,
             .ai_streaming = aiStreamingActive(),
             .overlay_active = overlays.anyOverlayActive(gate_now),
             .atlas_sync_pending = font.atlasSyncPending(),
@@ -8231,21 +7804,28 @@ fn runMainLoop(self: *AppWindow) !void {
 
         const needs_render = render_gate.frameNeedsRender(signals);
         if (!needs_render) {
-            const ms_until_blink = if (blink_enabled)
-                CURSOR_BLINK_INTERVAL_MS - (gate_now - g_gate_last_blink_render)
-            else
-                CURSOR_BLINK_INTERVAL_MS;
             const timeout_ms = render_gate.computeBlockTimeoutMs(.{
                 .visibility = vis,
-                .cursor_blink_enabled = blink_enabled,
-                .ms_until_next_blink = ms_until_blink,
+                .cursor_blink_enabled = blink.enabled,
+                .ms_until_next_blink = blink.ms_until_next,
             });
             window_backend.pumpAppEvents(@as(f64, @floatFromInt(timeout_ms)) / 1000.0);
             continue;
         }
-        if (blink_due) g_gate_last_blink_render = gate_now;
+        if (blink.due) g_gate_last_blink_render = gate_now;
 
-        gpu.gl_init.g_draw_call_count = 0;
+        // In-app GPU benchmark: capture the render-branch start timestamp. The
+        // matching frameEnd (after present + dirty-clear) records the sample and
+        // feeds the next VT chunk; see driver.zig for the measurement model.
+        if (bench_driver.isEnabled()) bench_driver.frameBegin();
+
+        // A pending ui_screenshot is captured from this frame's framebuffer right
+        // after endFrame. The Metal backend can't read a presented+released
+        // drawable, so arm an in-frame capture before we render+endFrame. No-op
+        // on OpenGL (it reads the live back buffer post-endFrame).
+        if (agent_requests.hasPendingUiScreenshot()) gpu.state.armUiScreenshotCapture();
+
+        gpu.draw_call_count = 0;
         overlays.updateFps();
 
         // Sync atlas textures to GPU if modified
@@ -8274,10 +7854,11 @@ fn runMainLoop(self: *AppWindow) !void {
             const content_w: i32 = @intFromFloat(@as(f32, @floatFromInt(fb_width)) - left_panels_w - right_panels_w - padding * 2);
             const content_h: i32 = @intFromFloat(@as(f32, @floatFromInt(fb_height)) - top_padding - padding);
             const split_count = computeSplitLayout(active_tab, content_x, content_y, content_w, content_h, font.cell_width, font.cell_height);
-            syncRemoteLayout(allocator);
-            syncCtlPanes(allocator);
+            remote_sync.syncLayout(remoteSyncHost(), allocator);
+            control_api.syncPanes(allocator);
+            control_api.syncUiState(allocator);
             syncImeCaretPosition(win, split_count);
-            if (active_tab.kind != .ai_chat and active_tab.kind != .ai_history and active_tab.kind != .skill_center and active_tab.kind != .port_forwarding and synchronizedOutputPendingForVisibleSplits(split_count)) {
+            if (active_tab.kind != .ai_chat and active_tab.kind != .ai_history and active_tab.kind != .memory_center and active_tab.kind != .skill_center and active_tab.kind != .port_forwarding and active_tab.kind != .settings and synchronizedOutputPendingForVisibleSplits(split_count)) {
                 // Block instead of spinning at ~1kHz: the IO thread posts a
                 // wakeup when the application ends synchronized output (or new
                 // output arrives), and the timeout bounds the watchdog check.
@@ -8291,10 +7872,14 @@ fn runMainLoop(self: *AppWindow) !void {
                 renderAiChatFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .ai_history) {
                 renderAiHistoryFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (active_tab.kind == .memory_center) {
+                renderMemoryCenterFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .skill_center) {
                 renderSkillCenterFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .port_forwarding) {
                 renderPortForwardingFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (active_tab.kind == .settings) {
+                renderSettingsFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (post_process.g_post_enabled and activeSurface() != null) {
                 // Post-processing path: only render focused surface for now.
                 // (With no focused terminal — e.g. a preview pane focused — fall
@@ -8332,7 +7917,7 @@ fn runMainLoop(self: *AppWindow) !void {
                     if (needs_rebuild) cell_renderer.rebuildCells(rend);
 
                     gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-                    gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
                     clearWithBackground(fb_width, fb_height);
 
                     // Use surface's computed padding (includes titlebar offset from content_y)
@@ -8350,7 +7935,7 @@ fn runMainLoop(self: *AppWindow) !void {
             } else {
                 // Multiple splits: render with scissor/viewport per surface
                 gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-                gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
                 clearWithBackground(fb_width, fb_height);
 
                 titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -8373,7 +7958,7 @@ fn runMainLoop(self: *AppWindow) !void {
                                 gpu.state.setViewport(rect.x, viewport_y, rect.width, rect.height);
 
                                 // Set projection for this viewport size
-                                gpu.gl_init.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                                ui_pipeline.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
 
                                 // Update cells for this surface
                                 var needs_rebuild: bool = false;
@@ -8430,7 +8015,7 @@ fn runMainLoop(self: *AppWindow) !void {
                                 // The preview renderer paints in window-absolute coords,
                                 // so restore the full-window viewport/projection first.
                                 gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-                                gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                                ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
                                 const close_hovered = if (input.g_preview_close_hover) |h| h == rect.handle else false;
                                 markdown_preview_renderer.renderInto(
                                     p,
@@ -8457,14 +8042,14 @@ fn runMainLoop(self: *AppWindow) !void {
                                 if (is_swap_target or is_swap_source) {
                                     const vp_y = fb_height - rect.y - rect.height;
                                     gpu.state.setViewport(rect.x, vp_y, rect.width, rect.height);
-                                    gpu.gl_init.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                                    ui_pipeline.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
                                     if (is_swap_target) {
                                         overlays.renderSwapTargetHighlight(@floatFromInt(rect.width), @floatFromInt(rect.height));
                                     } else {
                                         overlays.renderUnfocusedOverlaySimple(@floatFromInt(rect.width), @floatFromInt(rect.height));
                                     }
                                     gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-                                    gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                                    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
                                 }
                             },
                         }
@@ -8472,7 +8057,7 @@ fn runMainLoop(self: *AppWindow) !void {
 
                     // Restore full viewport for dividers
                     gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-                    gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
 
                     // Draw split dividers and per-pane agent dots
                     overlays.renderSplitDividers(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
@@ -8481,7 +8066,7 @@ fn runMainLoop(self: *AppWindow) !void {
             }
         } else if (!post_process.g_post_enabled) {
             gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-            gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+            ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
             clearWithBackground(fb_width, fb_height);
             titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
             titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -8489,14 +8074,13 @@ fn runMainLoop(self: *AppWindow) !void {
         }
 
         gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-        gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+        ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
         // Copilot panel draws on top of the reserved right region (terminal tabs
         // only; renderAiCopilotPanel gates on aiCopilotVisible). Placed after the
         // full-window viewport/projection are restored — so it is unaffected by the
         // per-split viewport and the post-process framebuffer paths above — and
         // after terminal content, occupying the exclusive right slot.
         renderAiCopilotPanel(fb_width, fb_height, titlebar_offset);
-        titlebar.renderSidebarTooltipOverlay(@floatFromInt(fb_height), titlebar_offset);
         overlays.renderBrowserUrlBar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         if (copilot_hint_gate.handleEligible(g_copilot_hint, aiCopilotVisible(), isActiveTabTerminal(), anyRightDockPanelVisible())) {
             if (!g_copilot_shimmer_checked) {
@@ -8517,9 +8101,12 @@ fn runMainLoop(self: *AppWindow) !void {
         overlays.renderStartupShortcutsOverlay(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderCommandPalette(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderJupyterPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
-        overlays.renderSettingsPage(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+        overlays.renderCopilotPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderSessionLauncher(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+        overlays.renderMcpServers(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         weixin_qr_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+        feishu_reg_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+        overlays.renderBtwConversation(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderDebugOverlay(@floatFromInt(fb_width));
         overlays.renderCloseShortcutConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderCopyToast(@floatFromInt(fb_width), @floatFromInt(fb_height));
@@ -8528,21 +8115,39 @@ fn runMainLoop(self: *AppWindow) !void {
         overlays.renderUpdatePrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderWindowCloseConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderRestoreDefaultsConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
+        overlays.renderIntegrationPrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderWhatsNew(@floatFromInt(fb_width), @floatFromInt(fb_height));
         renderImePreedit(win, fb_width, fb_height);
 
+        d3d11_offscreen_smoke.render(fb_width, fb_height);
+        d3d11_ui_smoke.render(fb_width, fb_height);
+        d3d11_recreate_smoke.maybeRequest();
         logSwapDiagnosticsIfChanged(win, fb_width, fb_height);
         forceOpaqueBackbufferForPresent();
         gpu.state.endFrame();
-        window_backend.swapBuffers(win);
-        if (!g_present_bringup_settled) {
-            g_present_bringup_settled = true;
+        agent_requests.capturePendingUiScreenshots(agentRequestHost());
+        presentBackendFrame(win);
+        handleD3D11RecoveryRequest(allocator, fb_width, fb_height);
+        if (windowState().takePresentBringupSettlement()) {
             platform_window_state.settleD3dBringup(allocator);
         }
         recordFrameLatencyIfInputDriven();
         clearVisibleSurfaceDirty();
         g_force_rebuild = false;
         g_cells_valid = true;
+        if (bench_driver.isEnabled()) {
+            // Records this frame's pipeline sample, feeds the next VT chunk for
+            // the upcoming frame, and advances the scenario schedule. On the
+            // final frame of the last scenario, write the report and exit.
+            bench_driver.frameEnd() catch |err| {
+                std.debug.print("wispterm-benchmark: driver error: {}, aborting\n", .{err});
+                g_should_close = true;
+            };
+            if (bench_driver.finished()) {
+                finishBenchReport(win);
+                g_should_close = true;
+            }
+        }
         if (window_backend.takePresentFallbackEvent(win)) {
             // The DXGI present path was just latched off mid-session. While
             // it was broken the GPU may have dropped glyph-atlas uploads
@@ -8565,6 +8170,8 @@ fn runMainLoop(self: *AppWindow) !void {
             platform_window_state.blockD3dBringup(allocator, build_options.app_version);
         }
     }
+
+    agent_requests.failPendingUiScreenshots(error.WindowUnavailable);
 
     // Save window position + size for next session
     if (g_window) |w| {
@@ -8593,16 +8200,22 @@ fn runMainLoop(self: *AppWindow) !void {
     // Stop accepting cross-thread WeChat control calls before UI-owned globals
     // and renderer resources start tearing down. The App-level controller is
     // stopped shortly after this window loop returns.
-    g_weixin_ui_handle.store(0, .release);
+    weixin_bridge.setUiHandle(0);
     render_diagnostics.log("shutdown window-loop-ended", .{});
     render_diagnostics.close();
 
     // Clean up file explorer async state (join background thread, free job)
     file_explorer.deinit();
+    memory_digest_scheduler.deinit();
     weixin_qr_renderer.deinit();
     weixin_qr_panel.deinit();
+    feishu_reg_renderer.deinit();
+    feishu_reg_panel.deinit();
+    feishu_registration.shutdown();
     clearWeixinTranscriptCache();
-    clearCtlPanesCache();
+    control_api.clearPanesCache();
+    control_api.clearUiStateCache();
+    control_api.clearSpawnQueue();
     markdown_preview_renderer.deinit();
     browser_panel.deinit();
 
@@ -8710,47 +8323,172 @@ test "appwindow: render gate ignores background-tab surface dirty" {
     try std.testing.expect(background_surface.dirty.load(.acquire));
 }
 
+test "appwindow: ui screenshot focused_panel uses focused non-terminal split rect" {
+    const allocator = std.testing.allocator;
+    const saved_active = active_tab_state.g_active_tab;
+    const saved_tab_count = tab.g_tab_count;
+    const saved_tab0 = tab.g_tabs[0];
+    const saved_split_rect_count = split_layout.g_split_rect_count;
+    const saved_split_rect0: split_layout.SplitRect = if (saved_split_rect_count > 0) split_layout.g_split_rects[0] else undefined;
+
+    var surface: Surface = undefined;
+    surface.ref_count = 1;
+    var active_tab_v = tab.TabState{ .tree = try SplitTree.init(allocator, &surface) };
+    defer active_tab_v.tree.deinit();
+
+    tab.g_tabs[0] = &active_tab_v;
+    tab.g_tab_count = 1;
+    active_tab_state.g_active_tab = 0;
+    split_layout.g_split_rect_count = 0;
+    defer {
+        if (saved_split_rect_count > 0) split_layout.g_split_rects[0] = saved_split_rect0;
+        split_layout.g_split_rect_count = saved_split_rect_count;
+        tab.g_tabs[0] = saved_tab0;
+        tab.g_tab_count = saved_tab_count;
+        active_tab_state.g_active_tab = saved_active;
+    }
+
+    const preview = tab.splitIntoPreview(allocator) orelse return error.SplitIntoPreviewFailed;
+    try std.testing.expect(tab.focusPreviewPane(preview));
+    const focused_pane = switch (active_tab_v.tree.nodes[active_tab_v.focused.idx()]) {
+        .leaf => |pane| pane,
+        .split => return error.FocusedIsSplit,
+    };
+
+    split_layout.g_split_rects[0] = .{
+        .x = 11,
+        .y = 22,
+        .width = 33,
+        .height = 44,
+        .cols = 0,
+        .rows = 0,
+        .pane = focused_pane,
+        .handle = active_tab_v.focused,
+    };
+    split_layout.g_split_rect_count = 1;
+
+    const capture = try resolveAgentUiScreenshotCapture(.focused_panel, null, 100, 100);
+    try std.testing.expectEqual(ai_chat_types.UiScreenshotTarget.focused_panel, capture.target);
+    try std.testing.expectEqual(appwindow_ui_screenshot.Rect{ .x = 11, .y = 22, .width = 33, .height = 44 }, capture.rect);
+}
+
+test "appwindow: ui screenshot explicit surface id errors on non-terminal active tab" {
+    const saved_active = active_tab_state.g_active_tab;
+    const saved_tab_count = tab.g_tab_count;
+    const saved_tab0 = tab.g_tabs[0];
+
+    var active_tab_v = tab.TabState{ .kind = .ai_chat, .tree = .empty };
+    tab.g_tabs[0] = &active_tab_v;
+    tab.g_tab_count = 1;
+    active_tab_state.g_active_tab = 0;
+    defer {
+        tab.g_tabs[0] = saved_tab0;
+        tab.g_tab_count = saved_tab_count;
+        active_tab_state.g_active_tab = saved_active;
+    }
+
+    try std.testing.expectError(
+        error.SurfaceNotInActiveTab,
+        resolveAgentUiScreenshotCapture(.focused_panel, "surface-123", 100, 100),
+    );
+    try std.testing.expectError(
+        error.SurfaceNotInActiveTab,
+        resolveAgentUiScreenshotCapture(.active_tab, "surface-123", 100, 100),
+    );
+}
+
+test "appwindow: agent terminal focus activates the owning tab and split" {
+    const allocator = std.testing.allocator;
+    const id_a = "00000000000000a1";
+    const id_b = "00000000000000b2";
+    const id_c = "00000000000000c3";
+
+    var surface_a: Surface = undefined;
+    surface_a.ref_count = 1;
+    @memcpy(surface_a.remote_id[0..], id_a);
+    var surface_b: Surface = undefined;
+    surface_b.ref_count = 1;
+    @memcpy(surface_b.remote_id[0..], id_b);
+    var surface_c: Surface = undefined;
+    surface_c.ref_count = 1;
+    @memcpy(surface_c.remote_id[0..], id_c);
+
+    var tab0_v = tab.TabState{ .tree = try SplitTree.init(allocator, &surface_a) };
+    defer tab0_v.tree.deinit();
+
+    var left = session_persist.NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
+    var right = session_persist.NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
+    var root = session_persist.NodeSnap{ .split = .{ .layout = .horizontal, .ratio = 0.5, .left = &left, .right = &right } };
+    const Stub = struct {
+        var idx: usize = 0;
+        var surfaces: [2]*Surface = undefined;
+        fn make(_: *const session_persist.SurfaceSnap, _: std.mem.Allocator) ?*Surface {
+            const surface = surfaces[idx];
+            idx += 1;
+            return surface;
+        }
+    };
+    Stub.idx = 0;
+    Stub.surfaces = .{ &surface_b, &surface_c };
+    var tab1_v = tab.TabState{
+        .tree = try SplitTree.fromSnapshot(allocator, &root, Stub.make),
+        .focused = @enumFromInt(1),
+    };
+    defer tab1_v.tree.arena.deinit();
+
+    const saved_active = active_tab_state.g_active_tab;
+    const saved_tab_count = tab.g_tab_count;
+    const saved_tab0 = tab.g_tabs[0];
+    const saved_tab1 = tab.g_tabs[1];
+    defer {
+        tab.g_tabs[0] = saved_tab0;
+        tab.g_tabs[1] = saved_tab1;
+        tab.g_tab_count = saved_tab_count;
+        active_tab_state.g_active_tab = saved_active;
+    }
+
+    tab.g_tabs[0] = &tab0_v;
+    tab.g_tabs[1] = &tab1_v;
+    tab.g_tab_count = 2;
+    active_tab_state.g_active_tab = 0;
+
+    const target = focusAgentTerminalSurfaceById(id_c) orelse return error.FocusTargetMissing;
+    try std.testing.expect(target.surface == &surface_c);
+    try std.testing.expectEqual(@as(usize, 1), target.tab_index);
+    try std.testing.expectEqual(@as(usize, 1), active_tab_state.g_active_tab);
+    try std.testing.expectEqual(@as(SplitTree.Node.Handle.Backing, 2), @intFromEnum(tab1_v.focused));
+}
+
+test "appwindow: ui screenshot base dir falls back to exports dir" {
+    const allocator = std.testing.allocator;
+    platform_dirs.setTestConfigDirForCurrentThread("/tmp/wispterm-test-config");
+    defer platform_dirs.clearTestConfigDirForCurrentThread();
+
+    const fallback = try agentUiScreenshotBaseDir(allocator, null);
+    defer allocator.free(fallback);
+    const expected = try std.fs.path.join(allocator, &.{ "/tmp/wispterm-test-config", "exports" });
+    defer allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, fallback);
+
+    const explicit = try agentUiScreenshotBaseDir(allocator, "/work/project");
+    defer allocator.free(explicit);
+    try std.testing.expectEqualStrings("/work/project", explicit);
+}
+
+test "appwindow: ui screenshot reports unavailable window before missing working dir" {
+    const saved_window = g_window;
+    g_window = null;
+    defer g_window = saved_window;
+
+    try std.testing.expectError(
+        error.WindowUnavailable,
+        agentRequestCaptureUiScreenshot(std.testing.allocator, .active_tab, null, null),
+    );
+}
+
 test "appwindow: ai history content width accounts for right panels" {
     try std.testing.expectEqual(@as(f32, 700), aiHistoryContentWidth(1000, 200, 100));
     try std.testing.expectEqual(@as(f32, 0), aiHistoryContentWidth(250, 200, 100));
-}
-
-test "appwindow: remote layout serializes ai_history as non-terminal surface" {
-    const allocator = std.testing.allocator;
-    for (0..tab.MAX_TABS) |idx| tab.g_tabs[idx] = null;
-    tab.g_tab_count = 0;
-    active_tab_state.g_active_tab = 0;
-    defer {
-        for (0..tab.MAX_TABS) |idx| tab.g_tabs[idx] = null;
-        tab.g_tab_count = 0;
-        active_tab_state.g_active_tab = 0;
-    }
-
-    var session = @import("ai_history_session.zig").Session.init(allocator, .{
-        .id = "local-history",
-        .name = "Local History",
-        .target = .local,
-    });
-    defer session.deinit();
-    var tab_state = tab.TabState{
-        .kind = .ai_history,
-        .tree = .empty,
-        .focused = .root,
-        .ai_chat_session = null,
-        .ai_history_session = &session,
-        .copilot_session = null,
-    };
-    tab.g_tabs[0] = &tab_state;
-    tab.g_tab_count = 1;
-
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    defer out.deinit(allocator);
-    try buildRemoteLayoutJson(allocator, &out);
-
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"kind\":\"terminal\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"kind\":\"ai_chat\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"readOnly\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"surfaces\":[]") == null);
 }
 
 test "appwindow: localExplorerLiveCwd resolves the surface live cwd" {
@@ -8763,3 +8501,4 @@ test "appwindow: localExplorerLiveCwd resolves the surface live cwd" {
     defer std.testing.allocator.free(got);
     try std.testing.expectEqualStrings(live, got);
 }
+

@@ -4,13 +4,15 @@
 //! '\n'-terminated.
 const std = @import("std");
 
-pub const Cmd = enum { panes, get_text, send_text };
+pub const Cmd = enum { panes, get_text, send_text, ui_state, spawn };
 
 pub fn cmdToStr(c: Cmd) []const u8 {
     return switch (c) {
         .panes => "panes",
         .get_text => "get-text",
         .send_text => "send-text",
+        .ui_state => "ui-state",
+        .spawn => "spawn",
     };
 }
 
@@ -18,6 +20,8 @@ pub fn cmdFromStr(s: []const u8) ?Cmd {
     if (std.mem.eql(u8, s, "panes")) return .panes;
     if (std.mem.eql(u8, s, "get-text")) return .get_text;
     if (std.mem.eql(u8, s, "send-text")) return .send_text;
+    if (std.mem.eql(u8, s, "ui-state")) return .ui_state;
+    if (std.mem.eql(u8, s, "spawn")) return .spawn;
     return null;
 }
 
@@ -26,7 +30,8 @@ pub const Request = struct {
     cmd: Cmd,
     id: []const u8 = "",
     recent: ?u32 = null,
-    data: []const u8 = "",
+    data: []const u8 = "", // send-text input, or spawn's command line
+    cwd: []const u8 = "", // spawn working directory ("" = inherit active tab's)
 };
 
 /// Build one newline-terminated JSON request line. Caller owns the result.
@@ -45,9 +50,13 @@ pub fn encodeRequest(allocator: std.mem.Allocator, req: Request) ![]u8 {
         try out.appendSlice(allocator, ",\"recent\":");
         try out.print(allocator, "{d}", .{n});
     }
-    if (req.cmd == .send_text) {
+    if (req.cmd == .send_text or req.cmd == .spawn) {
         try out.appendSlice(allocator, ",\"data\":");
         try writeJsonString(allocator, &out, req.data);
+    }
+    if (req.cwd.len != 0) {
+        try out.appendSlice(allocator, ",\"cwd\":");
+        try writeJsonString(allocator, &out, req.cwd);
     }
     try out.appendSlice(allocator, "}\n");
     return out.toOwnedSlice(allocator);
@@ -77,6 +86,7 @@ pub fn parseRequest(allocator: std.mem.Allocator, line: []const u8) !ParsedReque
     req.token = stringField(obj, "token") orelse "";
     req.id = stringField(obj, "id") orelse "";
     req.data = stringField(obj, "data") orelse "";
+    req.cwd = stringField(obj, "cwd") orelse "";
     if (obj.get("recent")) |v| {
         // Clamp to u32 range: a huge value must not panic (@intCast) the server
         // thread — and parseRequest runs BEFORE token auth, so this is reachable
@@ -195,6 +205,35 @@ test "parseRequest clamps an out-of-u32 recent instead of panicking" {
     var pr = try parseRequest(t.allocator, "{\"token\":\"x\",\"cmd\":\"get-text\",\"id\":\"s\",\"recent\":5000000000}");
     defer pr.deinit();
     try t.expectEqual(@as(?u32, std.math.maxInt(u32)), pr.value.recent);
+}
+
+test "spawn round-trips command + cwd" {
+    const line = try encodeRequest(t.allocator, .{ .token = "x", .cmd = .spawn, .data = "claude -r abc", .cwd = "F:\\proj" });
+    defer t.allocator.free(line);
+    var pr = try parseRequest(t.allocator, line);
+    defer pr.deinit();
+    try t.expectEqual(Cmd.spawn, pr.value.cmd);
+    try t.expectEqualStrings("claude -r abc", pr.value.data);
+    try t.expectEqualStrings("F:\\proj", pr.value.cwd);
+}
+
+test "spawn with empty cwd omits the field" {
+    const line = try encodeRequest(t.allocator, .{ .token = "x", .cmd = .spawn, .data = "bash" });
+    defer t.allocator.free(line);
+    try t.expect(std.mem.indexOf(u8, line, "cwd") == null);
+    var pr = try parseRequest(t.allocator, line);
+    defer pr.deinit();
+    try t.expectEqualStrings("", pr.value.cwd);
+}
+
+test "ui-state command round-trips through cmd<->str and encode/parse" {
+    try t.expectEqual(Cmd.ui_state, cmdFromStr("ui-state").?);
+    try t.expectEqualStrings("ui-state", cmdToStr(.ui_state));
+    const line = try encodeRequest(t.allocator, .{ .token = "tok", .cmd = .ui_state });
+    defer t.allocator.free(line);
+    var pr = try parseRequest(t.allocator, line);
+    defer pr.deinit();
+    try t.expectEqual(Cmd.ui_state, pr.value.cmd);
 }
 
 test "parseRequest rejects unknown command and non-object" {

@@ -118,7 +118,48 @@ pub const FontDiscovery = struct {
 
     pub fn listFontFamilies(self: *FontDiscovery, allocator: std.mem.Allocator) ![][]const u8 {
         _ = self;
-        return allocator.alloc([]const u8, 0);
+        const pattern = fc.FcPatternCreate() orelse return error.FontconfigPatternCreateFailed;
+        defer fc.FcPatternDestroy(pattern);
+        const objects = fc.FcObjectSetCreate() orelse return error.FontconfigObjectSetFailed;
+        defer fc.FcObjectSetDestroy(objects);
+        if (fc.FcObjectSetAdd(objects, fc.FC_FAMILY) == 0) return error.FontconfigObjectSetFailed;
+
+        const font_set = fc.FcFontList(null, pattern, objects) orelse return error.FontconfigFontListFailed;
+        defer fc.FcFontSetDestroy(font_set);
+
+        var families: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (families.items) |family| allocator.free(family);
+            families.deinit(allocator);
+        }
+        var seen = std.StringHashMap(void).init(allocator);
+        defer seen.deinit();
+
+        const fonts = font_set.*.fonts;
+        const font_count: usize = @intCast(font_set.*.nfont);
+        for (0..font_count) |font_index| {
+            const font_pattern = fonts[font_index];
+            if (font_pattern == null) continue;
+            var value_index: c_int = 0;
+            while (true) : (value_index += 1) {
+                var family_ptr: ?[*:0]fc.FcChar8 = null;
+                if (fc.FcPatternGetString(font_pattern, fc.FC_FAMILY, value_index, @ptrCast(&family_ptr)) != fc.FcResultMatch) break;
+                const family = std.mem.span(@as([*:0]const u8, @ptrCast(family_ptr orelse continue)));
+                if (family.len == 0 or seen.contains(family)) continue;
+
+                const owned = try allocator.dupe(u8, family);
+                errdefer allocator.free(owned);
+                try seen.put(owned, {});
+                try families.append(allocator, owned);
+            }
+        }
+
+        std.sort.heap([]const u8, families.items, {}, struct {
+            fn lessThan(_: void, left: []const u8, right: []const u8) bool {
+                return std.mem.order(u8, left, right) == .lt;
+            }
+        }.lessThan);
+        return families.toOwnedSlice(allocator);
     }
 
     pub fn findFontFilePath(

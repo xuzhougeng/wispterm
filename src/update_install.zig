@@ -5,15 +5,27 @@ const platform_update_package = @import("platform/update_package.zig");
 const update_check = @import("update_check.zig");
 
 pub fn runtimePackage(webview_enabled: bool, has_embedded_browser_payload: bool) update_check.ReleasePackage {
-    return platform_update_package.runtimePackage(webview_enabled, has_embedded_browser_payload);
+    return platform_update_package.runtimePackage(
+        build_options.gpu_backend,
+        webview_enabled,
+        has_embedded_browser_payload,
+    );
 }
 
 pub fn defaultPackage() update_check.ReleasePackage {
-    return platform_update_package.defaultPackage();
+    return platform_update_package.runtimePackage(
+        build_options.gpu_backend,
+        build_options.webview,
+        false,
+    );
 }
 
 pub fn currentPackage(allocator: std.mem.Allocator) !update_check.ReleasePackage {
-    return platform_update_package.currentPackage(allocator, build_options.webview);
+    return platform_update_package.currentPackage(
+        allocator,
+        build_options.webview,
+        build_options.gpu_backend,
+    );
 }
 
 /// Absolute path the release asset is saved to: the user's Downloads folder
@@ -22,10 +34,6 @@ pub fn downloadDestPath(allocator: std.mem.Allocator, asset_name: []const u8) ![
     const downloads = try platform_dirs.downloadsDir(allocator);
     defer allocator.free(downloads);
     return try std.fs.path.join(allocator, &.{ downloads, asset_name });
-}
-
-fn siblingTempPath(allocator: std.mem.Allocator, path: []const u8, suffix: []const u8) ![]u8 {
-    return try std.mem.concat(allocator, u8, &.{ path, suffix });
 }
 
 /// Download `url` to `dest_path`, overwriting any existing file with that name.
@@ -44,7 +52,7 @@ pub fn downloadAssetAccept(allocator: std.mem.Allocator, url: []const u8, dest_p
         try std.fs.cwd().makePath(dir_path);
     }
 
-    const temp_path = try siblingTempPath(allocator, dest_path, ".part");
+    const temp_path = try std.mem.concat(allocator, u8, &.{ dest_path, ".part" });
     defer allocator.free(temp_path);
     std.fs.deleteFileAbsolute(temp_path) catch |err| switch (err) {
         error.FileNotFound => {},

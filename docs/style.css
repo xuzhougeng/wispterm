@@ -452,6 +452,13 @@ h1 {
   flex-grow: 1;
 }
 .install-card .cta { align-self: flex-start; margin-top: 6px; }
+.download-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.install-card .download-row .cta { margin-top: 0; }
 
 .install-card pre.code-block {
   margin: 6px 0 0;
@@ -934,9 +941,83 @@ pre.code-block code {
 }
 
 .ai-setup-grid pre.code-block,
-#tools pre.code-block {
+#tools pre.code-block,
+#feishu pre.code-block {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.feishu-steps {
+  display: grid;
+  gap: 32px;
+  margin-top: 28px;
+}
+
+.feishu-step {
+  border-top: 1px solid var(--border);
+  padding-top: 24px;
+}
+
+.feishu-step:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.feishu-step h3 {
+  margin: 0 0 10px;
+  color: var(--accent);
+  font-size: 1.08rem;
+}
+
+.feishu-step p,
+.feishu-step ol {
+  color: var(--fg-muted);
+}
+
+.feishu-step p {
+  margin: 0 0 14px;
+}
+
+.feishu-step ol {
+  margin: 0 0 16px 1.25rem;
+  padding: 0;
+}
+
+.feishu-step li + li {
+  margin-top: 8px;
+}
+
+.feishu-step .code-block {
+  margin: 12px 0 16px;
+}
+
+.feishu-step-shots {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.feishu-shot {
+  margin: 0;
+}
+
+.feishu-shot.wide {
+  grid-column: 1 / -1;
+}
+
+.feishu-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+}
+
+.feishu-shot figcaption {
+  margin-top: 8px;
+  color: var(--fg-muted);
+  font-size: 0.9rem;
 }
 
 .config-table {
@@ -974,6 +1055,14 @@ pre.code-block code {
   .ai-hero-grid,
   .ai-setup-grid {
     grid-template-columns: 1fr;
+  }
+
+  .feishu-step-shots {
+    grid-template-columns: 1fr;
+  }
+
+  .feishu-shot.wide {
+    grid-column: auto;
   }
 }
 

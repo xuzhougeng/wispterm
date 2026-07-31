@@ -4,10 +4,10 @@
 
 > Open web URLs in a side panel without leaving the terminal.
 
-## Embedded browser panel (Windows)
+## Embedded browser panel
 
-On Windows builds with WebView2 support, WispTerm can show web pages in a
-right-side panel:
+On builds with an embedded browser backend (WebView2 on Windows, WKWebView on
+macOS), WispTerm can show web pages in a right-side panel:
 
 - Open the command center (`Ctrl+Shift+P`) and run **Toggle Browser**.
 - `Ctrl`-click (`Cmd`-click on macOS) an `http://` or `https://` URL in terminal
@@ -15,8 +15,8 @@ right-side panel:
 - Click the panel's URL bar to type a new address and press `Enter`.
 - Drag the panel's left edge to resize it.
 
-Builds without embedded WebView2 support — or without a usable WebView2 runtime
-— open URLs in the system default browser instead. The embedded panel shares the
+Builds without embedded browser support, or without a usable browser runtime,
+open URLs in the system default browser instead. The embedded panel shares the
 right slot with the Copilot sidebar and Markdown preview, so opening one hides
 the others.
 

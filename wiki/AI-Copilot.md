@@ -134,7 +134,150 @@ that reply back into the same approval dialog that would otherwise wait in the
 desktop UI. The desktop app remains the source of truth, and protected file
 paths still use the normal access gate before an approval prompt is emitted.
 
+## Feishu/Lark direct control
+
+WispTerm can receive messages from a Feishu self-built app and route them into
+the active Copilot/Agent flow. In Feishu Open Platform, open your self-built app,
+or create a new **enterprise self-built app**:
+
+```text
+https://open.feishu.cn/app
+```
+
+For international Lark tenants, use the corresponding Open Platform API domain:
+
+```text
+https://open.larksuite.com
+```
+
+Create and publish the Feishu app first:
+
+### Step 1: Create an enterprise self-built app
+
+Log in to Feishu Open Platform and create an **enterprise self-built app**, for
+example `WispTerm-Lab`.
+
+![Create Feishu enterprise self-built app](assets/feishu-create-enterprise-app.png)
+
+### Step 2: Add the Robot capability
+
+Open **Add app capabilities** and select **Robot**.
+
+![Add Robot capability](assets/feishu-add-robot-capability.png)
+
+### Step 3: Import permissions
+
+In **Permission management**, open **Bulk import/export permissions**, switch to
+**Import**, and paste this JSON:
+
+```json
+{
+  "scopes": {
+    "tenant": [
+      "application:application:self_manage",
+      "application:bot.basic_info:read",
+      "application:bot.menu:write",
+      "cardkit:card:read",
+      "cardkit:card:write",
+      "contact:contact.base:readonly",
+      "docs:document.comment:create",
+      "docs:document.comment:delete",
+      "docs:document.comment:read",
+      "docs:document.comment:update",
+      "docs:document.comment:write_only",
+      "docx:document.block:convert",
+      "docx:document:readonly",
+      "docx:document:write_only",
+      "drive:drive.metadata:readonly",
+      "im:chat.members:bot_access",
+      "im:chat:create",
+      "im:chat:read",
+      "im:chat:update",
+      "im:message.group_at_msg.include_bot:readonly",
+      "im:message.group_at_msg:readonly",
+      "im:message.p2p_msg:readonly",
+      "im:message.pins:read",
+      "im:message.pins:write_only",
+      "im:message.reactions:read",
+      "im:message.reactions:write_only",
+      "im:message:readonly",
+      "im:message:send_as_bot",
+      "im:message:send_multi_users",
+      "im:message:send_sys_msg",
+      "im:message:update",
+      "im:resource",
+      "wiki:node:read"
+    ],
+    "user": [
+      "offline_access"
+    ]
+  }
+}
+```
+
+![Import Feishu permissions as JSON](assets/feishu-permission-bulk-import.png)
+
+### Step 4: Configure long-connection events
+
+Open **Events & Callbacks → Event configuration** and select **Long connection**
+mode.
+
+![Choose Feishu long-connection event mode](assets/feishu-event-long-connection.png)
+
+Then add the event **Receive message** / `im.message.receive_v1`.
+
+![Add im.message.receive_v1 event](assets/feishu-event-receive-message.png)
+
+The long-connection status showing **connection failed** is expected at this
+point because WispTerm has not been configured with the app credentials yet.
+
+### Step 5: Publish the app
+
+Open **App release → Create version**. Use version `1.0.0`, select **Robot** as
+the default mobile and desktop capability, add any release note, and submit the
+release. Feishu personal tenants usually publish immediately.
+
+### Step 6: Copy credentials into WispTerm
+
+After the app is published, copy the App ID and App Secret from Feishu:
+
+![Feishu app created](assets/feishu-app-created.png)
+
+### Step 7: Configure in WispTerm
+
+Then configure WispTerm:
+
+1. Open the command center with `Ctrl+Shift+P` (`Cmd+Shift+P` on macOS).
+2. Type `feishu`.
+3. Run **Feishu: Configure**.
+4. Fill `App ID` and `App Secret`, then save.
+5. Restart WispTerm. The Feishu long-connection channel starts only during app
+   startup.
+
+![WispTerm Feishu bot configuration form](assets/feishu-command-center-config.png)
+
+Equivalent config keys:
+
+```text
+feishu-enabled = true
+feishu-app-id = cli_xxx
+feishu-app-secret = your-app-secret
+# Optional: restrict control to one Feishu open_id.
+feishu-allowed-user = ou_xxx
+```
+
+If `feishu-app-id` or `feishu-app-secret` is empty, WispTerm falls back to
+`FEISHU_APP_ID` and `FEISHU_APP_SECRET`.
+
 ## Sessions browser & resume
+
+Open the command center (`Ctrl+Shift+P`) and run **Copilot History** to reopen
+WispTerm's own saved AI Chat tabs and Copilot sidebar conversations. The picker
+is grouped by local date (**Today**, **Yesterday**, **Past Week**, **Earlier**),
+shows relative update times, and searches conversation titles plus model names.
+Press `Tab` to cycle the source chip between **All**, **Sidebar**, and **Tab**;
+use Up/Down to move, `Enter` to reopen, `Delete` to remove the selected saved
+conversation, and `Esc` to return to the normal command center.
 
 Open the session launcher (`Ctrl+Shift+T`) and choose **Sessions** to browse
 Codex, Claude Code, and Reasonix transcripts on a Local, WSL, or SSH target.
@@ -191,6 +334,12 @@ current working directory, or the directory containing the executable. Use
 `$skill-name your request` to load a skill for the next request. The loaded
 skill is stored as a replayable tool result, so existing conversations stay
 reproducible even if the skill file changes later.
+
+Third-party companion tools can use ordinary WispTerm entry points too. For
+example, [Claude ChatMap](https://github.com/AHMUJia/claude-chatmap) is a local
+Claude Code history dashboard that groups chats by folder and can resume a
+selected chat in a WispTerm tab through `wisptermctl`. Community tools are not
+bundled with WispTerm.
 
 ## Skill distillation
 

@@ -9,11 +9,10 @@ const tab = AppWindow.tab;
 const input = AppWindow.input;
 const overlays = AppWindow.overlays;
 const font = AppWindow.font;
-const gl_init = AppWindow.gpu.gl_init;
 const Surface = @import("../Surface.zig");
 const SplitTree = @import("../split_tree.zig");
 const renderer = @import("../renderer.zig");
-const PreviewPane = @import("../preview_pane.zig");
+const PreviewPane = @import("../preview/pane.zig");
 const preview_close_button = @import("../input/preview_close_button.zig");
 
 const TabState = tab.TabState;

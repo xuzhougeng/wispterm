@@ -1,13 +1,21 @@
 //! GL render-state + frame seam over Context.gl. Backend-level helpers that
 //! eliminate direct glTable() calls for common state mutations. The Metal
 //! backend will mirror this file with its own command-buffer seam.
+const std = @import("std");
 const Context = @import("Context.zig");
 const c = @import("c.zig").c;
+const types = @import("../types.zig");
 
-pub const Rect = struct { x: i32, y: i32, w: i32, h: i32 };
+pub const Rect = types.Scissor;
+pub const Viewport = types.Viewport;
+pub const Scissor = types.Scissor;
+pub const ClearColor = types.ClearColor;
+pub const DriverInfo = types.DriverInfo;
+pub const BlendFactor = types.BlendFactor;
+pub const SwapDiagnostics = types.SwapDiagnostics;
 pub const Size = struct { w: i32, h: i32 };
-pub const BlendMode = enum { alpha, premultiplied };
-pub const ScissorState = struct { enabled: bool, box: Rect };
+pub const BlendMode = types.BlendMode;
+pub const ScissorState = struct { enabled: bool, box: Scissor };
 
 /// Called before any state mutation below takes effect. The UI glyph batcher
 /// registers its flush here so deferred draws are submitted under the state
@@ -25,6 +33,11 @@ pub fn beginFrame() void {}
 pub fn endFrame() void {
     notifyPreChange();
 }
+
+/// No-op: the OpenGL `readback.readRgba` reads the live back buffer with
+/// `glReadPixels` directly (the buffer is still intact between endFrame and
+/// swapBuffers). Only the Metal backend needs an armed in-frame capture.
+pub fn armUiScreenshotCapture() void {}
 
 pub fn setBlendEnabled(enabled: bool) void {
     notifyPreChange();
@@ -63,6 +76,68 @@ pub fn viewportSize() Size {
     var vp: [4]c.GLint = undefined;
     Context.gl.GetIntegerv.?(c.GL_VIEWPORT, &vp);
     return .{ .w = @intCast(vp[2]), .h = @intCast(vp[3]) };
+}
+
+fn glString(name: c.GLenum) []const u8 {
+    const get_string = Context.gl.GetString orelse return "(unavailable)";
+    const ptr = get_string(name);
+    if (ptr == null) return "(null)";
+    return std.mem.span(@as([*:0]const u8, @ptrCast(ptr)));
+}
+
+pub fn driverInfo() DriverInfo {
+    return .{
+        .vendor = glString(c.GL_VENDOR),
+        .renderer = glString(c.GL_RENDERER),
+        .version = glString(c.GL_VERSION),
+        .shading_language = glString(c.GL_SHADING_LANGUAGE_VERSION),
+    };
+}
+
+/// GPU adapter identity for the benchmark report. OpenGL has no portable PCI-id
+/// query, so vendor/device stay 0 and the name is the GL renderer string (GL-
+/// owned pointer, valid while the context is current). Returns null when the GL
+/// table isn't loaded yet.
+pub fn adapterReport() ?types.AdapterReport {
+    const renderer = glString(c.GL_RENDERER);
+    if (renderer.len == 0) return null;
+    return .{ .name = renderer, .vendor_id = 0, .device_id = 0 };
+}
+
+pub fn swapDiagnostics() ?SwapDiagnostics {
+    const get_integerv = Context.gl.GetIntegerv orelse return null;
+    const is_enabled = Context.gl.IsEnabled orelse return null;
+
+    var vp: [4]c.GLint = undefined;
+    get_integerv(c.GL_VIEWPORT, &vp);
+
+    var blend: [4]c.GLint = undefined;
+    get_integerv(c.GL_BLEND_SRC_RGB, &blend[0]);
+    get_integerv(c.GL_BLEND_DST_RGB, &blend[1]);
+    get_integerv(c.GL_BLEND_SRC_ALPHA, &blend[2]);
+    get_integerv(c.GL_BLEND_DST_ALPHA, &blend[3]);
+
+    return .{
+        .viewport = .{ .x = @intCast(vp[0]), .y = @intCast(vp[1]), .w = @intCast(vp[2]), .h = @intCast(vp[3]) },
+        .blend = .{
+            .enabled = is_enabled(c.GL_BLEND) != 0,
+            .src_rgb = blendFactorFromBackend(blend[0]),
+            .dst_rgb = blendFactorFromBackend(blend[1]),
+            .src_alpha = blendFactorFromBackend(blend[2]),
+            .dst_alpha = blendFactorFromBackend(blend[3]),
+        },
+    };
+}
+
+fn blendFactorFromBackend(value: c.GLint) BlendFactor {
+    const factor: c.GLenum = @intCast(value);
+    return switch (factor) {
+        c.GL_ZERO => .zero,
+        c.GL_ONE => .one,
+        c.GL_SRC_ALPHA => .src_alpha,
+        c.GL_ONE_MINUS_SRC_ALPHA => .one_minus_src_alpha,
+        else => .unknown,
+    };
 }
 
 pub fn setScissor(rect: Rect) void {

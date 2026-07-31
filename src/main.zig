@@ -8,14 +8,16 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Config = @import("config.zig");
 const App = @import("App.zig");
+const memory_digest_scheduler = @import("memory_digest/scheduler.zig");
 const image_decoder = @import("image_decoder.zig");
 const app_metadata = @import("app_metadata.zig");
 const platform_console = @import("platform/console.zig");
 const font_backend = @import("platform/font_backend.zig");
 const render_diagnostics = @import("render_diagnostics.zig");
 const window_backend = @import("platform/window_backend.zig");
+const gpu = @import("renderer/gpu/gpu.zig");
 const i18n = @import("i18n.zig");
-const ai_chat = @import("ai_chat.zig");
+const ai_chat = @import("assistant/conversation/session.zig");
 const build_options = @import("build_options");
 const diag_log = @import("diag_log.zig");
 const single_instance = @import("platform/single_instance.zig");
@@ -165,6 +167,13 @@ pub fn main() !void {
         return;
     }
 
+    // In-app GPU render benchmark: needs a real window + GPU context, so it
+    // runs through the normal App/AppWindow startup with a flag that makes
+    // AppWindow substitute a virtual benchmark surface and drive the loop.
+    if (Config.hasCommand(allocator, "benchmark")) {
+        @import("benchmark/driver.zig").enabled = true;
+    }
+
     if (build_options.debug_console) {
         diag_log.init();
         diag_log.installCrashHandlers();
@@ -194,16 +203,43 @@ pub fn main() !void {
                 std.debug.print("Another WispTerm instance is running — forwarding directory...\n", .{});
                 if (single_instance.forwardCwd(allocator, cfg.cli_cwd)) {
                     std.debug.print("Forwarded directory. Exiting.\n", .{});
-                } else {
-                    std.debug.print("Could not reach the running instance. Starting anyway.\n", .{});
-                    break :blk null;
+                    return;
                 }
-                return;
+                std.debug.print("Could not reach the running instance. Retrying acquire...\n", .{});
+                // The first instance may have crashed after we detected the
+                // mutex but before we connected. Re-acquire: if the mutex is
+                // now free, become the new first instance; otherwise fall
+                // through without IPC (the first instance is alive but its
+                // server is unreachable).
+                switch (single_instance.acquire(allocator) catch .second) {
+                    .first => {
+                        std.debug.print("Previous instance gone — becoming first instance.\n", .{});
+                        break :blk .first;
+                    },
+                    .second => {
+                        std.debug.print("Starting anyway (IPC unreachable).\n", .{});
+                        break :blk null;
+                    },
+                }
             },
             .first => break :blk .first,
         }
     } else null;
     var g_single_instance_server: ?*single_instance.Server = null;
+
+    // Apply memory-digest scheduler settings from the initial config load.
+    // AppWindow.init only copies individual fields out of App (not the whole
+    // Config), so this is the one place that sees the full Config before
+    // window setup; applyReloadedConfig covers every later hot-reload.
+    memory_digest_scheduler.updateSettings(.{
+        .enabled = cfg.@"memory-digest-enabled",
+        .profile_name = cfg.@"memory-digest-profile",
+        .run_after = cfg.@"memory-digest-run-after",
+        .scan_remote = cfg.@"memory-digest-scan-remote",
+        .backfill_days = cfg.@"memory-digest-backfill-days",
+        .max_chars = cfg.@"memory-digest-max-chars",
+        .input_budget_chars = cfg.@"memory-digest-input-budget-chars",
+    });
 
     // Resolve UI language (explicit config > system locale > en) before any
     // window/UI renders. Restart-applied (no live switch in v1).
@@ -215,7 +251,8 @@ pub fn main() !void {
 
     // Present-path selection must be decided before the first window is
     // created (the presenter is built right after the GL context).
-    window_backend.setFlipPresentEnabled(cfg.@"wispterm-d3d-present");
+    const use_legacy_gl_dx_present = cfg.@"wispterm-d3d-present" and gpu.active != .d3d11;
+    window_backend.setFlipPresentEnabled(use_legacy_gl_dx_present);
 
     // Bring-up crash fuse: presenter init runs driver code (wglDX*NV, D3D11)
     // that broken ICDs crash in instead of failing — which previously meant
@@ -224,7 +261,7 @@ pub fn main() !void {
     // present. Finding our own marker at startup = last bring-up died →
     // stop trying the D3D path for this app version (an upgrade retries).
     if (comptime builtin.os.tag == .windows) {
-        if (cfg.@"wispterm-d3d-present") {
+        if (use_legacy_gl_dx_present) {
             const window_state = @import("platform/window_state.zig");
             const dxgi_core = @import("platform/dxgi_core.zig");
             var stored_buf: [dxgi_core.bringup_marker_max_len]u8 = undefined;
@@ -253,8 +290,13 @@ pub fn main() !void {
     // Create the App and run (first window on main thread, spawned windows on separate threads)
     var app = try App.init(allocator, cfg);
     defer ai_chat.deinitAccessRules();
+    defer ai_chat.deinitMcpTools(allocator);
     defer app.deinit();
     ai_chat.loadAccessRules(allocator);
+    // Build the MCP tool catalog from <configDir>/mcp.json + the disk catalog
+    // cache. No MCP server is spawned at startup — discovery happens in the
+    // panel "Test" probe or on first mcp_activate (see mcp_catalog.zig).
+    ai_chat.reloadMcpTools(allocator);
 
     // If a CLI directory argument was provided and we are not a second-instance
     // forwarder, resolve it against the CWD and set as initial CWD for the first tab.
@@ -276,6 +318,9 @@ pub fn main() !void {
 
     // Start the WeChat direct bridge (no-op unless weixin-direct-enabled is set).
     app.startWeixin(&cfg);
+
+    // Start the Feishu long-connection channel (no-op unless feishu-enabled is set).
+    app.startFeishu(&cfg);
 
     // Start the local agent terminal control API (no-op unless agent-control-enabled).
     app.startAgentControl(&cfg);

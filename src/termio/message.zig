@@ -4,7 +4,7 @@
 /// The tagged union is trivially extensible — adding a new variant requires
 /// only adding the field here and a switch case in Thread.drainMailbox().
 const std = @import("std");
-const renderer = @import("../renderer.zig");
+const geometry = @import("../core/geometry.zig");
 
 pub const Message = union(enum) {
     pub const WRITE_SMALL_MAX = 256;
@@ -21,11 +21,11 @@ pub const Message = union(enum) {
 
     /// Resize the terminal grid to the given dimensions.
     /// Coalesced with a 25ms timer before applying.
-    resize: renderer.size.GridSize,
+    resize: geometry.GridSize,
 
     /// Resize the terminal grid immediately.
     /// Used for one-shot layout changes where TUI redraw latency is visible.
-    resize_immediate: renderer.size.GridSize,
+    resize_immediate: geometry.GridSize,
 
     /// Write data to the PTY input pipe from the IO writer thread.
     write_small: WriteSmall,

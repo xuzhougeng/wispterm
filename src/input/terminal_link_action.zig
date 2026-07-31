@@ -7,7 +7,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const platform_pty_command = @import("../platform/pty_command.zig");
 const preview_path = @import("preview_path.zig");
-const html_server_model = @import("../html_server_model.zig");
+const html_server_model = @import("../html/server_model.zig");
 
 const looksLikePreviewPath = preview_path.looksLikePreviewPath;
 
@@ -26,8 +26,8 @@ pub fn primaryOpenMod(ctrl: bool, super: bool) bool {
     return if (builtin.target.os.tag == .macos) super else ctrl;
 }
 
-pub fn terminalPathClickAction(launch_kind: platform_pty_command.LaunchKind, has_ssh_conn: bool, mod: bool, shift: bool, alt: bool) TerminalPathClickAction {
-    if (mod and shift and !alt and launch_kind == .ssh and has_ssh_conn) return .download_ssh_file;
+pub fn terminalPathClickAction(launch_kind: platform_pty_command.LaunchKind, mod: bool, shift: bool, alt: bool) TerminalPathClickAction {
+    if (mod and shift and !alt and launch_kind == .ssh) return .download_ssh_file;
     if (mod and !shift and !alt) return .open_url_or_preview;
     return .pass_through;
 }
@@ -93,19 +93,15 @@ test "primary open modifier is Cmd on macOS, Ctrl elsewhere" {
 test "terminal path click action maps ctrl shift ssh to download" {
     try std.testing.expectEqual(
         TerminalPathClickAction.download_ssh_file,
-        terminalPathClickAction(.ssh, true, true, true, false),
+        terminalPathClickAction(.ssh, true, true, false),
     );
     try std.testing.expectEqual(
         TerminalPathClickAction.pass_through,
-        terminalPathClickAction(.ssh, false, true, true, false),
-    );
-    try std.testing.expectEqual(
-        TerminalPathClickAction.pass_through,
-        terminalPathClickAction(.wsl, false, true, true, false),
+        terminalPathClickAction(.wsl, true, true, false),
     );
     try std.testing.expectEqual(
         TerminalPathClickAction.open_url_or_preview,
-        terminalPathClickAction(.ssh, true, true, false, false),
+        terminalPathClickAction(.ssh, true, false, false),
     );
 }
 

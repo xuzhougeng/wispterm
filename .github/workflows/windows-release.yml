@@ -74,7 +74,7 @@ jobs:
           }
 
           Invoke-WithRetry -Name "zig dependency fetch" -Command { zig build -Doptimize=ReleaseFast --fetch }
-          Invoke-WithRetry -Name "windows packaging" -Command { powershell -ExecutionPolicy Bypass -File .\packaging\windows\package.ps1 -Version "${{ github.ref_name }}" -SkipInstaller }
+          Invoke-WithRetry -Name "windows packaging" -Command { powershell -ExecutionPolicy Bypass -File .\packaging\windows\package.ps1 -Version "${{ github.ref_name }}" }
 
       - name: Validate packaged outputs
         shell: pwsh
@@ -88,9 +88,9 @@ jobs:
           $portableCompatConPty = "zig-out\dist\portable-compat\conpty.dll"
           $portableCompatConsoleHost = "zig-out\dist\portable-compat\OpenConsole.exe"
           $portableCompatPluginSkills = "zig-out\dist\portable-compat\plugins\skills"
-          $portableNoWebViewExe = "zig-out\dist\portable-no-webview\wispterm.exe"
-          $portableNoWebViewVersion = "zig-out\dist\portable-no-webview\version.txt"
-          $portableNoWebViewPluginSkills = "zig-out\dist\portable-no-webview\plugins\skills"
+          $portableOpenGLExe = "zig-out\dist\portable-opengl\wispterm.exe"
+          $portableOpenGLVersion = "zig-out\dist\portable-opengl\version.txt"
+          $portableOpenGLPluginSkills = "zig-out\dist\portable-opengl\plugins\skills"
           $skillFiles = @(
             "plugins\skills\inspect-computer-config\SKILL.md",
             "plugins\skills\inspect-computer-config\scripts\inspect_computer_config.py"
@@ -132,19 +132,19 @@ jobs:
             throw "Portable compat plugin skills directory not found: $portableCompatPluginSkills"
           }
 
-          if (!(Test-Path $portableNoWebViewExe)) {
-            throw "Portable no-WebView executable not found: $portableNoWebViewExe"
+          if (!(Test-Path $portableOpenGLExe)) {
+            throw "Portable OpenGL fallback executable not found: $portableOpenGLExe"
           }
 
-          if (!(Test-Path $portableNoWebViewVersion)) {
-            throw "Portable no-WebView version file not found: $portableNoWebViewVersion"
+          if (!(Test-Path $portableOpenGLVersion)) {
+            throw "Portable OpenGL fallback version file not found: $portableOpenGLVersion"
           }
 
-          if (!(Test-Path $portableNoWebViewPluginSkills -PathType Container)) {
-            throw "Portable no-WebView plugin skills directory not found: $portableNoWebViewPluginSkills"
+          if (!(Test-Path $portableOpenGLPluginSkills -PathType Container)) {
+            throw "Portable OpenGL fallback plugin skills directory not found: $portableOpenGLPluginSkills"
           }
 
-          foreach ($distDir in @("zig-out\dist\portable", "zig-out\dist\portable-compat", "zig-out\dist\portable-no-webview")) {
+          foreach ($distDir in @("zig-out\dist\portable", "zig-out\dist\portable-compat", "zig-out\dist\portable-opengl")) {
             foreach ($skillFile in $skillFiles) {
               $path = Join-Path $distDir $skillFile
               if (!(Test-Path $path)) {
@@ -158,7 +158,7 @@ jobs:
         run: |
           # Dependencies were already fetched by the release build step above, so
           # package.ps1's -DebugConsole branch does the (single) debug build itself.
-          powershell -ExecutionPolicy Bypass -File .\packaging\windows\package.ps1 -DebugConsole -Optimize ReleaseSafe -SkipInstaller
+          powershell -ExecutionPolicy Bypass -File .\packaging\windows\package.ps1 -DebugConsole -Optimize ReleaseSafe
           if (!(Test-Path "zig-out\dist\portable-debug\wispterm.exe")) {
             throw "Debug bundle not found: zig-out\dist\portable-debug\wispterm.exe"
           }
@@ -169,7 +169,7 @@ jobs:
           $tag = "${{ github.ref_name }}"
           $portableAsset = "wispterm-windows-portable-$tag.zip"
           $portableCompatAsset = "wispterm-windows-portable-compat-$tag.zip"
-          $portableNoWebViewAsset = "wispterm-windows-portable-no-webview-$tag.zip"
+          $portableOpenGLAsset = "wispterm-windows-portable-opengl-$tag.zip"
           $debugAsset = "wispterm-windows-debug-$tag.zip"
 
           if (Test-Path $portableAsset) {
@@ -178,14 +178,14 @@ jobs:
           if (Test-Path $portableCompatAsset) {
             Remove-Item $portableCompatAsset -Force
           }
-          if (Test-Path $portableNoWebViewAsset) {
-            Remove-Item $portableNoWebViewAsset -Force
+          if (Test-Path $portableOpenGLAsset) {
+            Remove-Item $portableOpenGLAsset -Force
           }
           if (Test-Path $debugAsset) { Remove-Item $debugAsset -Force }
 
           Compress-Archive -Path zig-out\dist\portable\* -DestinationPath $portableAsset -Force
           Compress-Archive -Path zig-out\dist\portable-compat\* -DestinationPath $portableCompatAsset -Force
-          Compress-Archive -Path zig-out\dist\portable-no-webview\* -DestinationPath $portableNoWebViewAsset -Force
+          Compress-Archive -Path zig-out\dist\portable-opengl\* -DestinationPath $portableOpenGLAsset -Force
           Compress-Archive -Path zig-out\dist\portable-debug\* -DestinationPath $debugAsset -Force
 
       - name: Upload portable artifact
@@ -202,11 +202,11 @@ jobs:
           path: wispterm-windows-portable-compat-${{ github.ref_name }}.zip
           if-no-files-found: error
 
-      - name: Upload portable no-WebView artifact
+      - name: Upload portable OpenGL fallback artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wispterm-windows-portable-no-webview-${{ github.ref_name }}
-          path: wispterm-windows-portable-no-webview-${{ github.ref_name }}.zip
+          name: wispterm-windows-portable-opengl-${{ github.ref_name }}
+          path: wispterm-windows-portable-opengl-${{ github.ref_name }}.zip
           if-no-files-found: error
 
       - name: Upload diagnostic artifact
@@ -224,7 +224,7 @@ jobs:
           $tag = "${{ github.ref_name }}"
           $portableAsset = "wispterm-windows-portable-$tag.zip"
           $portableCompatAsset = "wispterm-windows-portable-compat-$tag.zip"
-          $portableNoWebViewAsset = "wispterm-windows-portable-no-webview-$tag.zip"
+          $portableOpenGLAsset = "wispterm-windows-portable-opengl-$tag.zip"
           $debugAsset = "wispterm-windows-debug-$tag.zip"
 
           if (!(Test-Path $portableAsset)) {
@@ -233,8 +233,8 @@ jobs:
           if (!(Test-Path $portableCompatAsset)) {
             throw "Portable compat release asset not found: $portableCompatAsset"
           }
-          if (!(Test-Path $portableNoWebViewAsset)) {
-            throw "Portable no-WebView release asset not found: $portableNoWebViewAsset"
+          if (!(Test-Path $portableOpenGLAsset)) {
+            throw "Portable OpenGL fallback release asset not found: $portableOpenGLAsset"
           }
           if (!(Test-Path $debugAsset)) {
             throw "Diagnostic release asset not found: $debugAsset"
@@ -242,17 +242,17 @@ jobs:
 
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag $portableAsset $portableCompatAsset $portableNoWebViewAsset $debugAsset --repo $env:GITHUB_REPOSITORY --clobber
+            gh release upload $tag $portableAsset $portableCompatAsset $portableOpenGLAsset $debugAsset --repo $env:GITHUB_REPOSITORY --clobber
           } else {
             $assetNotes = @(
               "Windows assets included in this release:",
               "",
-              "- Portable: lightweight zip archive containing wispterm.exe",
-              "- Portable compat: zip archive for older Windows 10 machines - bundles WebView2Loader.dll for the embedded browser plus a modern ConPTY (conpty.dll + OpenConsole.exe) so TUI apps like Codex and Claude Code get mouse scrolling and scrollbars",
-              "- Portable no-WebView: zip archive containing wispterm.exe, built with embedded WebView2 disabled",
+              "- Portable: default native Direct3D 11 zip archive containing wispterm.exe",
+              "- Portable compat: native Direct3D 11 zip archive for older Windows 10 machines - bundles WebView2Loader.dll for the embedded browser plus a modern ConPTY (conpty.dll + OpenConsole.exe) so TUI apps like Codex and Claude Code get mouse scrolling and scrollbars",
+              "- Portable OpenGL fallback: compatibility zip archive for systems where the native D3D11 renderer cannot start or render correctly",
               "- Diagnostic (debug): console build with on-disk logging + crash reports for troubleshooting (ReleaseSafe). See docs/windows-debug-build.md.",
               "",
-              "The unsigned IExpress setup executable is not published because Windows Defender can quarantine it as a false positive. Use one of the portable zip assets for now."
+              "Portable builds can add or remove WispTerm from Windows Search and enable or disable startup from Settings."
             ) -join "`n"
 
             $releaseNotesPath = Join-Path "release-notes" "$tag.md"
@@ -267,7 +267,7 @@ jobs:
               $notes = $assetNotes
             }
 
-            gh release create $tag $portableAsset $portableCompatAsset $portableNoWebViewAsset $debugAsset `
+            gh release create $tag $portableAsset $portableCompatAsset $portableOpenGLAsset $debugAsset `
               --repo $env:GITHUB_REPOSITORY `
               --verify-tag `
               --generate-notes `

@@ -1,0 +1,10 @@
+{
+  "name": "wispterm-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:cloudflare": "node scripts/build-cloudflare-docs.mjs",
+    "test": "node --test test/*.test.js",
+    "deploy": "npm run build:cloudflare && npx wrangler deploy --config wrangler.toml"
+  }
+}
