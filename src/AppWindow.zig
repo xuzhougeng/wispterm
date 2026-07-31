@@ -33,6 +33,7 @@ const platform_notifications = @import("platform/notifications.zig");
 const notif_mod = @import("notification.zig");
 const agent_detector = @import("terminal_agents/detector.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
+const single_instance = @import("platform/single_instance.zig");
 const copilot_hint_gate = @import("assistant/sidebar/hint_gate.zig");
 const platform_window_state = @import("platform/window_state.zig");
 const platform_wsl = @import("platform/wsl.zig");
