@@ -801,7 +801,7 @@ pub fn acceptsInput(self: *Surface) bool {
 
 pub fn isExited(self: *Surface) bool {
     return switch (self.currentIoState()) {
-        .exited => true,
+        .exited, .failed => true,
         else => false,
     };
 }

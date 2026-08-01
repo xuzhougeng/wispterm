@@ -2246,6 +2246,11 @@ pub fn toggleFileExplorer() void {
     const perf = ui_perf.begin("input.toggle_file_explorer");
     defer perf.end();
 
+    // File explorer only applies to terminal tabs — it shows the file tree
+    // for the active terminal's working directory. Suppress on AI chat,
+    // Copilot, settings, or other non-terminal tabs.
+    if (!AppWindow.isActiveTabTerminal()) return;
+
     file_explorer.toggle();
     if (file_explorer.isVisibleForActiveTab()) {
         AppWindow.syncVisibleFileExplorerForActiveTab(true);
@@ -6835,6 +6840,16 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
     if (new_close_hover != g_preview_close_hover) {
         g_preview_close_hover = new_close_hover;
         requestInputRepaint();
+    }
+
+    // Sidebar tooltip: request a repaint when the mouse is over the sidebar
+    // so renderSidebar() can update the hover-tab tracking. Without this the
+    // event-driven render loop sleeps and the tooltip never appears.
+    if (tab.g_sidebar_visible) {
+        const sidebar_w: f64 = @floatCast(titlebar.sidebarWidth());
+        if (xpos < sidebar_w and ypos >= @as(f64, @floatCast(titlebarHeight()))) {
+            requestInputRepaint();
+        }
     }
 
     // Normal selection handling
