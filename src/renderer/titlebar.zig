@@ -32,6 +32,7 @@ threadlocal var g_sidebar_tooltip_hovered_tab: ?usize = null;
 threadlocal var g_sidebar_tooltip_hover_since: i64 = 0;
 threadlocal var g_sidebar_tooltip_shown_at: i64 = 0;
 pub const TITLEBAR_TOGGLE_W: f32 = 46;
+pub const TITLEBAR_FOLDER_W: f32 = 46;
 // On macOS the native menu bar (WispTerm › Settings…, command palette) replaces
 // these in-titlebar buttons, so they collapse to zero width and are not drawn.
 pub const TITLEBAR_CONFIG_W: f32 = if (builtin.os.tag == .macos) 0 else 46;
@@ -119,6 +120,8 @@ fn captionButtonVisual(
 }
 
 pub fn sidebarNeedsAnimation() bool {
+    if (!tab.g_sidebar_visible) return false;
+    if (g_sidebar_tooltip_hovered_tab == null) return false;
     const now_ms = std.time.milliTimestamp();
     if (g_sidebar_tooltip_hover_since > 0 and now_ms - g_sidebar_tooltip_hover_since < SIDEBAR_TOOLTIP_DWELL_MS) return true;
     if (g_sidebar_tooltip_shown_at > 0 and now_ms - g_sidebar_tooltip_shown_at < SIDEBAR_TOOLTIP_SHOW_MS) return true;
@@ -490,6 +493,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
             titlebar_h,
             titlebarLeftReserved(),
             TITLEBAR_TOGGLE_W,
+            TITLEBAR_FOLDER_W,
             TITLEBAR_CONFIG_W,
             TITLEBAR_HELP_W,
             TITLEBAR_COPILOT_W,
@@ -520,6 +524,33 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
             }
         } else {
             renderFallbackMenuIcon(toggle_x, layout.top_y, TITLEBAR_TOGGLE_W, titlebar_h, icon_color);
+        }
+
+        // File-explorer toggle button (folder icon) next to sidebar toggle
+        const folder_x = layout.folder_x;
+        if (TITLEBAR_FOLDER_W > 0) {
+            const folder_hovered = mouseInTitlebarRange(titlebar_h, folder_x, folder_x + TITLEBAR_FOLDER_W);
+            if (folder_hovered) {
+                ui_pipeline.fillQuad(folder_x, layout.top_y, TITLEBAR_FOLDER_W, titlebar_h, hover_bg);
+            }
+            const fe_is_open = file_explorer.isVisibleForActiveTab();
+            const folder_color = if (fe_is_open) AppWindow.g_theme.cursor_color else icon_color;
+            if (font.icon_face != null) {
+                if (font.loadIconGlyph(0xE8B7)) |ch| { // MDL2 "Folder" icon
+                    renderIconGlyph(ch, folder_x, layout.top_y, TITLEBAR_FOLDER_W, titlebar_h, folder_color, 1.0);
+                } else {
+                    // Fallback: emoji folder
+                    const fe_cp: u32 = 0x1F4C2; // 📂
+                    const fe_icon_x = folder_x + (TITLEBAR_FOLDER_W - titlebarGlyphVisualWidth(fe_cp)) / 2;
+                    const fe_icon_y = layout.top_y + (titlebar_h - font.g_titlebar_cell_height) / 2;
+                    renderTitlebarChar(fe_cp, fe_icon_x, fe_icon_y, folder_color);
+                }
+            } else {
+                const fe_cp: u32 = 0x1F4C2; // 📂
+                const fe_icon_x = folder_x + (TITLEBAR_FOLDER_W - titlebarGlyphVisualWidth(fe_cp)) / 2;
+                const fe_icon_y = layout.top_y + (titlebar_h - font.g_titlebar_cell_height) / 2;
+                renderTitlebarChar(fe_cp, fe_icon_x, fe_icon_y, folder_color);
+            }
         }
 
         const top_hovered: window_backend.CaptionButton = if (AppWindow.g_window) |w| window_backend.hoveredCaptionButton(w) else .none;
@@ -1224,30 +1255,8 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
         tab.g_tab_text_y_end[tab_idx] = row_top_px + row_h_actual;
     }
 
-    // Render file-explorer toggle button (folder icon) below tabs
-    const fe_toggle_row_top = list_top_px + @as(f32, @floatFromInt(tab.g_tab_count)) * row_h;
-    if (fe_toggle_row_top < window_height) {
-        const fe_row_h = @min(row_h, window_height - fe_toggle_row_top);
-        const fe_y = window_height - fe_toggle_row_top - fe_row_h;
-        const fe_hovered = mouseInRect(0, fe_toggle_row_top, sidebar_w, fe_row_h);
-
-        if (fe_hovered) {
-            ui_pipeline.fillQuad(0, fe_y, sidebar_w, fe_row_h, hover_bg);
-        }
-
-        // Separator line above file-explorer toggle
-        ui_pipeline.fillQuad(4, fe_y + fe_row_h, sidebar_w - 8, 1, border_color);
-
-        const fe_icon_cp: u32 = 0x1F4C2; // 📂 open file folder
-        const fe_icon_x = (sidebar_w - titlebarGlyphVisualWidth(fe_icon_cp)) / 2;
-        const fe_icon_y = fe_y + (fe_row_h - font.g_titlebar_cell_height) / 2;
-        const fe_is_open = file_explorer.isVisibleForActiveTab();
-        const fe_color = if (fe_is_open) accent else blend(bg, fg, 0.60);
-        renderTitlebarChar(fe_icon_cp, fe_icon_x, fe_icon_y, fe_color);
-    }
-
-    // Render + (new tab) button below file-explorer toggle
-    const plus_row_top = list_top_px + @as(f32, @floatFromInt(tab.g_tab_count + 1)) * row_h;
+    // Render + (new tab) button below tabs
+    const plus_row_top = list_top_px + @as(f32, @floatFromInt(tab.g_tab_count)) * row_h;
     if (plus_row_top < window_height) {
         const plus_row_h = @min(row_h, window_height - plus_row_top);
         const plus_y = window_height - plus_row_top - plus_row_h;

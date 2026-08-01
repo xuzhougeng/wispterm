@@ -4055,10 +4055,6 @@ fn hitTestSidebarPlusButton(xpos: f64, ypos: f64) bool {
     return hit_test.sidebarPlusButton(sidebarLayout(), xpos, ypos);
 }
 
-fn hitTestSidebarFileExplorerToggle(xpos: f64, ypos: f64) bool {
-    return hit_test.sidebarFileExplorerToggle(sidebarLayout(), xpos, ypos);
-}
-
 fn hitTestSidebarTabCloseButton(xpos: f64, ypos: f64, tab_idx: usize) bool {
     return hit_test.sidebarTabCloseButton(sidebarLayout(), xpos, ypos, tab_idx);
 }
@@ -4589,6 +4585,13 @@ fn handleTopbarPress(xpos: f64) void {
         return;
     }
 
+    // File-explorer toggle button (next to sidebar toggle)
+    const folder_end: f64 = toggle_end + @as(f64, titlebar.TITLEBAR_FOLDER_W);
+    if (xpos >= toggle_end and xpos < folder_end) {
+        toggleFileExplorer();
+        return;
+    }
+
     if (hitTestCopilotButton(xpos, titlebarHeight() / 2)) {
         AppWindow.toggleAiCopilot();
         return;
@@ -4606,12 +4609,6 @@ fn handleTopbarPress(xpos: f64) void {
 
 fn handleSidebarPress(xpos: f64, ypos: f64) void {
     if (tab.g_tab_rename_active) tab.commitTabRename();
-
-    if (hitTestSidebarFileExplorerToggle(xpos, ypos)) {
-        // Left-click on file-explorer toggle → same as Ctrl+Shift+Alt+E
-        toggleFileExplorer();
-        return;
-    }
 
     if (hitTestSidebarPlusButton(xpos, ypos)) {
         // Left-click on + button → spawn a new terminal tab directly.
@@ -5767,19 +5764,19 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
     if (ev.button == .right and ev.action == .release) {
         const rc_xpos: f64 = @floatFromInt(ev.x);
         const rc_ypos: f64 = @floatFromInt(ev.y);
-        // Right-click on sidebar tab → close confirmation dialog
+        // Right-click on sidebar tab → always show close confirmation dialog
         if (hitTestSidebarTab(rc_xpos, rc_ypos)) |tab_idx| {
-            requestCloseTabGesture(tab_idx);
+            const closes_window = tab.g_tab_count <= 1;
+            const has_running = AppWindow.tabHasRunningProgram(tab_idx);
+            const action: close_confirm.PendingClose = if (closes_window) .window else .{ .tab = tab_idx };
+            const variant: overlays.CloseConfirmVariant = if (has_running) .running_program else .window_generic;
+            overlays.closeConfirmOpen(action, variant);
+            requestInputRepaint();
             return;
         }
         // Right-click on sidebar + button → session launcher (new window type dialog)
         if (hitTestSidebarPlusButton(rc_xpos, rc_ypos)) {
             overlays.sessionLauncherOpen();
-            return;
-        }
-        // Right-click on file-explorer toggle → toggle file explorer (same as left-click)
-        if (hitTestSidebarFileExplorerToggle(rc_xpos, rc_ypos)) {
-            toggleFileExplorer();
             return;
         }
         if (handleSidebarTabRenameGesture(rc_xpos, rc_ypos)) return;

@@ -251,6 +251,7 @@ pub fn fallbackCodepoint(byte: u8) u32 {
 pub const TopBarLayout = struct {
     top_y: f32,
     toggle_x: f32,
+    folder_x: f32,
     caption_button_w: f32,
     caption_start_x: f32,
     caption_buttons: CaptionButtonRects,
@@ -358,6 +359,7 @@ pub fn topBarLayout(
     titlebar_h: f32,
     left_reserved: f32,
     toggle_w: f32,
+    folder_w: f32,
     config_w: f32,
     help_w: f32,
     copilot_w: f32,
@@ -369,10 +371,12 @@ pub fn topBarLayout(
     const config_x = caption_start_x - config_w;
     const help_x = config_x - help_w;
     const copilot_x = help_x - copilot_w;
-    const title_text_x = left_reserved + toggle_w + 10.0;
+    const folder_x = left_reserved + toggle_w;
+    const title_text_x = folder_x + folder_w + 10.0;
     return .{
         .top_y = window_height - titlebar_h,
         .toggle_x = left_reserved,
+        .folder_x = folder_x,
         .caption_button_w = caption_button_w,
         .caption_start_x = caption_start_x,
         .caption_buttons = caption_buttons,
@@ -565,10 +569,11 @@ test "fallbackCodepoint maps printable ASCII, else '?'" {
 }
 
 test "topBarLayout computes titlebar chrome rectangles" {
-    const l = topBarLayout(1200, 800, 34, 0, 46, 46, 46, 46, 46);
+    const l = topBarLayout(1200, 800, 34, 0, 46, 46, 46, 46, 46, 46);
 
     try std.testing.expectEqual(@as(f32, 766), l.top_y);
     try std.testing.expectEqual(@as(f32, 0), l.toggle_x);
+    try std.testing.expectEqual(@as(f32, 46), l.folder_x);
     try std.testing.expectEqual(@as(f32, 46), l.caption_button_w);
     try std.testing.expectEqual(@as(f32, 1062), l.caption_start_x);
     try std.testing.expectEqual(Rect{ .x = 1062, .y = 766, .w = 46, .h = 34 }, l.caption_buttons.minimize);
@@ -577,22 +582,23 @@ test "topBarLayout computes titlebar chrome rectangles" {
     try std.testing.expectEqual(@as(f32, 1016), l.config_x);
     try std.testing.expectEqual(@as(f32, 970), l.help_x);
     try std.testing.expectEqual(@as(f32, 924), l.copilot_x);
-    try std.testing.expectEqual(@as(f32, 56), l.title_text_x);
-    try std.testing.expectEqual(@as(f32, 856), l.title_text_max_w);
+    try std.testing.expectEqual(@as(f32, 102), l.title_text_x);
+    try std.testing.expectEqual(@as(f32, 810), l.title_text_max_w);
 }
 
 test "topBarLayout collapses optional titlebar controls cleanly" {
-    const l = topBarLayout(360, 240, 40, 160, 46, 0, 0, 0, 46);
+    const l = topBarLayout(360, 240, 40, 160, 46, 46, 0, 0, 0, 46);
 
     try std.testing.expectEqual(@as(f32, 200), l.top_y);
     try std.testing.expectEqual(@as(f32, 160), l.toggle_x);
+    try std.testing.expectEqual(@as(f32, 206), l.folder_x);
     try std.testing.expectEqual(@as(f32, 222), l.caption_start_x);
     try std.testing.expectEqual(Rect{ .x = 222, .y = 200, .w = 46, .h = 40 }, l.caption_buttons.minimize);
     try std.testing.expectEqual(Rect{ .x = 314, .y = 200, .w = 46, .h = 40 }, l.caption_buttons.close);
     try std.testing.expectEqual(@as(f32, 222), l.config_x);
     try std.testing.expectEqual(@as(f32, 222), l.help_x);
     try std.testing.expectEqual(@as(f32, 222), l.copilot_x);
-    try std.testing.expectEqual(@as(f32, 216), l.title_text_x);
+    try std.testing.expectEqual(@as(f32, 262), l.title_text_x);
     try std.testing.expectEqual(@as(f32, 0), l.title_text_max_w);
 }
 
