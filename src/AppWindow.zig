@@ -4747,7 +4747,18 @@ pub fn sweepExitedSurfaces() bool {
         var close_count: usize = 0;
         var it = t.tree.surfaces();
         while (it.next()) |entry| {
-            if (entry.surface.isExited() and entry.surface.command.hasProcess()) {
+            // If the read thread hasn't detected exit yet (it may be blocked
+            // on ReadFile if ConPTY hasn't closed the pipe), poll the process
+            // handle directly. On Windows the child can exit while the PTY
+            // output pipe stays open.
+            if (!entry.surface.isExited() and entry.surface.command.hasProcess()) {
+                if (entry.surface.pollExitStatus()) |status| {
+                    entry.surface.markExited(.eof, status);
+                }
+            }
+            const exited = entry.surface.isExited();
+            const has_proc = entry.surface.command.hasProcess();
+            if (exited and has_proc) {
                 if (close_count < MaxClose) {
                     to_close_handles[close_count] = entry.handle;
                     to_close_ids[close_count] = entry.surface.remote_id;
@@ -8202,6 +8213,9 @@ fn runMainLoop(self: *AppWindow) !void {
         overlays.renderRestoreDefaultsConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderIntegrationPrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderWhatsNew(@floatFromInt(fb_width), @floatFromInt(fb_height));
+        // Sidebar tooltip overlay — must be after all terminal content and
+        // overlays so the popup is not overwritten by cell rendering.
+        titlebar.renderSidebarTooltipOverlay(@floatFromInt(fb_height), titlebar_offset);
         renderImePreedit(win, fb_width, fb_height);
 
         d3d11_offscreen_smoke.render(fb_width, fb_height);

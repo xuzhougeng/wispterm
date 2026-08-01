@@ -6575,6 +6575,19 @@ fn updateAiTranscriptSelectionDrag(chat: *AppWindow.ai_chat.Session, xpos: f64, 
 fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
     const xpos: f64 = @floatFromInt(ev.x);
     const ypos: f64 = @floatFromInt(ev.y);
+
+    // Sidebar tooltip: request a repaint when the mouse is over the sidebar
+    // so renderSidebar() can update the hover-tab tracking. This must run
+    // before any early return below — the chicken-and-egg between the
+    // event-driven render gate and the renderer-side hover detection means
+    // without this trigger the tooltip can never appear.
+    if (tab.g_sidebar_visible) {
+        const sidebar_w: f64 = @floatCast(titlebar.sidebarWidth());
+        if (xpos < sidebar_w and ypos >= @as(f64, @floatCast(titlebarHeight()))) {
+            requestInputRepaint();
+        }
+    }
+
     if (overlays.btwConversationVisible()) {
         platform_cursor.set(.arrow);
         return;
@@ -6840,16 +6853,6 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
     if (new_close_hover != g_preview_close_hover) {
         g_preview_close_hover = new_close_hover;
         requestInputRepaint();
-    }
-
-    // Sidebar tooltip: request a repaint when the mouse is over the sidebar
-    // so renderSidebar() can update the hover-tab tracking. Without this the
-    // event-driven render loop sleeps and the tooltip never appears.
-    if (tab.g_sidebar_visible) {
-        const sidebar_w: f64 = @floatCast(titlebar.sidebarWidth());
-        if (xpos < sidebar_w and ypos >= @as(f64, @floatCast(titlebarHeight()))) {
-            requestInputRepaint();
-        }
     }
 
     // Normal selection handling
