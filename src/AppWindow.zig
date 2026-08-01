@@ -1,4 +1,4 @@
-//! AppWindow — per-window state and rendering.
+﻿//! AppWindow — per-window state and rendering.
 //!
 //! This module contains all the terminal rendering, input handling, and
 //! per-window state. Currently uses module-level globals for state, which
@@ -33,6 +33,7 @@ const platform_notifications = @import("platform/notifications.zig");
 const notif_mod = @import("notification.zig");
 const agent_detector = @import("terminal_agents/detector.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
+const single_instance = @import("platform/single_instance.zig");
 const copilot_hint_gate = @import("assistant/sidebar/hint_gate.zig");
 const platform_window_state = @import("platform/window_state.zig");
 const platform_wsl = @import("platform/wsl.zig");
@@ -1499,6 +1500,21 @@ fn loopInjector(session_id: []const u8, prompt: []const u8) ai_loop_store.Inject
 // Initial CWD for this window (used when spawning the first tab)
 threadlocal var g_initial_cwd_buf: platform_pty_command.CwdBuffer = undefined;
 threadlocal var g_initial_cwd_len: usize = 0;
+
+/// Check the single-instance IPC server for a pending cwd forwarded from a
+/// second instance. If one exists, convert it to the native Cwd type and
+/// return it. Caller must free the returned slice (if non-null).
+fn tryTakeSingleInstanceCwd(allocator: std.mem.Allocator, cwd_buf: *platform_pty_command.CwdBuffer) platform_pty_command.Cwd {
+    const srv = single_instance.getActiveServer() orelse return null;
+    const utf8_cwd = srv.tryTakeCwd() orelse return null;
+    defer allocator.free(utf8_cwd);
+    std.debug.print("[single-instance] tryTakeSingleInstanceCwd: utf8='{s}'\n", .{utf8_cwd});
+    const result = platform_pty_command.cwdFromUtf8(cwd_buf, utf8_cwd);
+    if (result == null) {
+        std.debug.print("[single-instance] tryTakeSingleInstanceCwd: cwdFromUtf8 returned null!\n", .{});
+    }
+    return result;
+}
 
 // Tracks whether session restore has been attempted this process. We only
 // try to restore tabs from session.json once — for the first window. New
@@ -4703,6 +4719,96 @@ pub fn closeFocusedSplit() void {
     }
 }
 
+/// Sweep all tabs for terminal surfaces whose child process has exited and
+/// auto-close them. This is the "close on exit" feature — when the shell
+/// process (bash/powershell/ssh) exits, the pane/tab/window is closed
+/// automatically instead of staying open showing "Press Enter to reconnect".
+///
+/// Virtual panes (tmux control-mode) and non-terminal tabs are skipped.
+/// Returns true if any pane was closed (caller should redraw).
+pub fn sweepExitedSurfaces() bool {
+    const allocator = g_allocator orelse return false;
+    var any_closed = false;
+    var ti: usize = 0;
+    while (ti < tab.g_tab_count) {
+        const t = tab.g_tabs[ti] orelse {
+            ti += 1;
+            continue;
+        };
+        // Skip non-terminal tabs and tmux tabs (tmux drives its own removal)
+        if (t.kind != .terminal or t.tmux_window_id != null) {
+            ti += 1;
+            continue;
+        }
+        // Collect exited surfaces first (closing mutates the tree)
+        const MaxClose = 16;
+        var to_close_handles: [MaxClose]SplitTree.Node.Handle = undefined;
+        var to_close_ids: [MaxClose][16]u8 = undefined;
+        var close_count: usize = 0;
+        var it = t.tree.surfaces();
+        while (it.next()) |entry| {
+            // If the read thread hasn't detected exit yet (it may be blocked
+            // on ReadFile if ConPTY hasn't closed the pipe), poll the process
+            // handle directly. On Windows the child can exit while the PTY
+            // output pipe stays open.
+            if (!entry.surface.isExited() and entry.surface.command.hasProcess()) {
+                if (entry.surface.pollExitStatus()) |status| {
+                    entry.surface.markExited(.eof, status);
+                }
+            }
+            const exited = entry.surface.isExited();
+            const has_proc = entry.surface.command.hasProcess();
+            if (exited and has_proc) {
+                if (close_count < MaxClose) {
+                    to_close_handles[close_count] = entry.handle;
+                    to_close_ids[close_count] = entry.surface.remote_id;
+                    close_count += 1;
+                }
+            }
+        }
+        if (close_count == 0) {
+            ti += 1;
+            continue;
+        }
+        // Close each exited surface
+        for (0..close_count) |ci| {
+            const handle = to_close_handles[ci];
+            const surface_id = to_close_ids[ci];
+            switch (tab.closeSplitAt(allocator, t, handle)) {
+                .closed_split => {
+                    any_closed = true;
+                    html_server.stopForSurfaceId(&surface_id);
+                    input.g_selecting = false;
+                    handleActiveSurfaceChangeWithinTab();
+                    requestImmediateLayoutResize();
+                },
+                .closed_tab => {
+                    any_closed = true;
+                    file_explorer.onTabClosed(ti);
+                    browser_panel.onTabClosed(ti);
+                    clearUiStateOnTabChange();
+                    // Tab was removed; restart the sweep since indices shifted
+                    return sweepExitedSurfaces();
+                },
+                .close_window => {
+                    any_closed = true;
+                    split_layout.invalidateCachedRects();
+                    cell_renderer.g_current_render_surface = null;
+                    g_should_close = true;
+                    return true;
+                },
+                .no_op => {},
+            }
+        }
+        ti += 1;
+    }
+    if (any_closed) {
+        g_force_rebuild = true;
+        g_cells_valid = false;
+    }
+    return any_closed;
+}
+
 /// Move focus to the split in the given direction. Returns whether focus
 /// actually moved — false means there is no pane in that direction, so callers
 /// can let the key fall through to the terminal instead of consuming it.
@@ -5012,6 +5118,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
                 cell_renderer.drawCells(rend, @floatFromInt(fb_height), left_panels_w + @as(f32, @floatFromInt(pad.left)), pad_top);
                 overlays.renderScrollbar(@floatFromInt(fb_width), @floatFromInt(fb_height), pad_top);
                 overlays.renderResizeOverlayWithOffset(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+                titlebar.renderSidebarTooltipOverlay(@floatFromInt(fb_height), titlebar_offset);
             }
         } else {
             // Multiple splits: render each surface in its own viewport
@@ -5083,6 +5190,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
             ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
             overlays.renderSplitDividers(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
             overlays.renderPaneAgentDots(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
+            titlebar.renderSidebarTooltipOverlay(@floatFromInt(fb_height), titlebar_offset);
         }
     } else {
         gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
@@ -5091,6 +5199,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
         titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+        titlebar.renderSidebarTooltipOverlay(@floatFromInt(fb_height), titlebar_offset);
     }
 
     // Copilot panel draws on top of the reserved right region (terminal tabs only;
@@ -7603,6 +7712,8 @@ fn runMainLoop(self: *AppWindow) !void {
             g_force_rebuild = true;
             g_cells_valid = false;
         }
+        // Auto-close terminal panes whose child process has exited (close-on-exit)
+        _ = sweepExitedSurfaces();
         if (weixin_qr_panel.visible()) {
             const qr_allocator = g_allocator orelse allocator;
             if (weixin_qr_panel.refresh(qr_allocator)) {
@@ -7617,6 +7728,35 @@ fn runMainLoop(self: *AppWindow) !void {
         if (self.app.port_forward_manager.tick() and activePortForwarding() != null) {
             g_force_rebuild = true;
             g_cells_valid = false;
+        }
+
+        // Check for incoming single-instance cwd forwarded from a second instance.
+        // Open a new tab in the received directory.
+        if (tryTakeSingleInstanceCwd(allocator, &g_initial_cwd_buf)) |cwd| {
+            std.debug.print("[single-instance] main-loop: got cwd, spawning tab...\n", .{});
+            if (spawnTabWithCwd(allocator, cwd)) {
+                std.debug.print("[single-instance] main-loop: tab spawned OK\n", .{});
+                g_force_rebuild = true;
+                g_cells_valid = false;
+            } else {
+                std.debug.print("[single-instance] main-loop: spawnTabWithCwd FAILED\n", .{});
+            }
+        }
+
+        // Check for a pending activate request from a second instance.
+        // Bring the window to the foreground so the user sees the new tab.
+        if (single_instance.getActiveServer()) |srv| {
+            if (srv.tryTakeActivate()) {
+                if (g_window) |win| {
+                    if (window_backend.isMinimized(win) or g_quake_hidden) {
+                        _ = window_backend.showVisible(win);
+                        g_quake_hidden = false;
+                    }
+                    _ = window_backend.setForeground(win);
+                    g_force_rebuild = true;
+                    g_cells_valid = false;
+                }
+            }
         }
 
         // Process pending resize (coalesced, like Ghostty)
@@ -8073,6 +8213,9 @@ fn runMainLoop(self: *AppWindow) !void {
         overlays.renderRestoreDefaultsConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderIntegrationPrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderWhatsNew(@floatFromInt(fb_width), @floatFromInt(fb_height));
+        // Sidebar tooltip overlay — must be after all terminal content and
+        // overlays so the popup is not overwritten by cell rendering.
+        titlebar.renderSidebarTooltipOverlay(@floatFromInt(fb_height), titlebar_offset);
         renderImePreedit(win, fb_width, fb_height);
 
         d3d11_offscreen_smoke.render(fb_width, fb_height);
@@ -8457,3 +8600,4 @@ test "appwindow: localExplorerLiveCwd resolves the surface live cwd" {
     defer std.testing.allocator.free(got);
     try std.testing.expectEqualStrings(live, got);
 }
+

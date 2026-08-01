@@ -15,6 +15,7 @@ const gpu = @import("../renderer/gpu/gpu.zig");
 const PreviewPane = @This();
 
 pub const DEFAULT_WIDTH: f32 = 440; // used to derive the initial right-edge split ratio
+pub const MAX_RENDER_LINES: usize = 2000; // must match markdown_preview_renderer.zig's value
 pub const LoadStatus = enum { idle, loading, ready, failed, too_large };
 pub const PreviewSourceKind = preview_source.SourceKind;
 pub const PreviewReadResult = union(enum) { ok: []u8, ok_truncated: []u8, failed, too_large };
@@ -36,6 +37,26 @@ const IMAGE_ZOOM_STEP: f32 = 1.2;
 const IMAGE_ZOOM_WHEEL_REF_UNITS: f32 = 120.0;
 const IMAGE_ZOOM_WHEEL_PER_EVENT_MAX: f32 = 1.25;
 threadlocal var g_usize_field_buf: [32]u8 = undefined;
+
+pub const Selection = struct {
+    anchor_line: usize = 0,
+    active_line: usize = 0,
+    active_b: bool = false,
+
+    pub fn start(self: @This()) usize { return @min(self.anchor_line, self.active_line); }
+    pub fn end(self: @This()) usize { return @max(self.anchor_line, self.active_line); }
+};
+
+// Per-source-line rendered heights (pixels), filled by the renderer each frame.
+// Used by the mouse handler to map a click y-coordinate to a source line.
+// `buf` is indexed by source-line number (0-based) with each element being the
+// pixel height that line consumed on screen (including wrapping).  When `len`
+// is 0 or `generation` does not match `content_generation` the data is stale.
+pub const LineHeights = struct {
+    buf: [MAX_RENDER_LINES]f32 = undefined,
+    len: usize = 0,
+    generation: u64 = 0,
+};
 
 const PreviewJob = struct {
     request_id: u64 = 0,
@@ -96,6 +117,8 @@ image_width: c_int = 0,
 image_height: c_int = 0,
 image_generation: u64 = std.math.maxInt(u64),
 image_failed: bool = false,
+selection: Selection = .{},
+line_heights: LineHeights = .{},
 
 pub fn create(gpa: Allocator) Allocator.Error!*PreviewPane {
     const self = try gpa.create(PreviewPane);
@@ -172,6 +195,8 @@ fn applyOwned(self: *PreviewPane, kind: markdown_preview.Kind, t: []const u8, p:
     self.setTitlePath(t, p);
     self.freeSource();
     self.source = owned;
+    self.clearSelection();
+    self.line_heights = .{};
 }
 
 pub fn scrollBy(self: *PreviewPane, delta: f32) void {
@@ -494,6 +519,70 @@ fn destroyJob(job: *PreviewJob) void {
     if (job.pdf_input) |d| std.heap.page_allocator.free(d);
     if (job.pdf_out_data) |d| std.heap.page_allocator.free(d);
     std.heap.page_allocator.destroy(job);
+}
+
+pub fn beginSelection(self: *PreviewPane, line: usize) void {
+    self.selection = .{ .anchor_line = line, .active_line = line, .active_b = true };
+}
+
+pub fn extendSelection(self: *PreviewPane, line: usize) void {
+    if (!self.selection.active_b) return;
+    self.selection.active_line = line;
+}
+
+pub fn clearSelection(self: *PreviewPane) void {
+    self.selection = .{};
+}
+
+pub fn hasSelection(self: *const PreviewPane) bool {
+    return self.selection.active_b;
+}
+
+/// Return a slice of sourceText() spanning the selected line range.
+/// Returns "" when no selection is active or for raster panes.
+pub fn selectedText(self: *const PreviewPane) []const u8 {
+    if (!self.selection.active_b) return "";
+    const source = self.sourceText();
+    if (source.len == 0) return "";
+    if (self.kind.isRaster()) return "";
+    const start_line = self.selection.start();
+    const end_line = self.selection.end();
+    const count = lineCountRaw(source);
+    if (start_line >= count) return "";
+
+    var line_start: usize = 0;
+    var current_line: usize = 0;
+    while (current_line < start_line and line_start < source.len) {
+        const nl = std.mem.indexOfScalarPos(u8, source, line_start, '\n') orelse source.len;
+        line_start = nl + 1;
+        current_line += 1;
+    }
+    var line_end = line_start;
+    while (current_line < end_line and line_end < source.len) {
+        const nl = std.mem.indexOfScalarPos(u8, source, line_end, '\n') orelse source.len;
+        line_end = nl + 1;
+        current_line += 1;
+    }
+    if (line_end < source.len) {
+        const nl = std.mem.indexOfScalarPos(u8, source, line_end, '\n') orelse source.len;
+        line_end = nl + 1;
+    }
+    return source[line_start..@min(line_end, source.len)];
+}
+
+pub fn selectAll(self: *PreviewPane) void {
+    const count = lineCountRaw(self.sourceText());
+    if (count == 0) return;
+    self.selection = .{ .anchor_line = 0, .active_line = count - 1, .active_b = true };
+}
+
+fn lineCountRaw(source: []const u8) usize {
+    if (source.len == 0) return 0;
+    var count: usize = 1;
+    for (source) |ch| {
+        if (ch == '\n') count += 1;
+    }
+    return count;
 }
 
 pub fn unloadImageTexture(self: *PreviewPane) void {

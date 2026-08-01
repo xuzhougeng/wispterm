@@ -147,6 +147,9 @@ Use `keybind = clear` before custom bindings if you want to remove all defaults 
 | Preview files (Ctrl/Cmd-click in terminal, or double-click in File Explorer) | Ctrl-click | Cmd-click |
 | Previous / next image/PDF in gallery (preview focused) | Left / Right | Left / Right |
 | Previous / next PDF page (PDF preview focused) | PageUp / PageDown | PageUp / PageDown |
+| Close preview | **Esc** | **Esc** |
+| Select all text in preview | **Ctrl+A** | **Cmd+A** |
+| Copy selected text from preview | **Ctrl+Shift+C** | **Cmd+Shift+C** |
 | Download SSH remote file | Ctrl+Shift-click path in SSH output | Cmd+Shift-click path in SSH output |
 | Close focused panel, tab, or window | **Ctrl+Shift+W** | **Cmd+W** |
 | Maximize or restore window | **Alt+Enter** | **Opt+Enter** |

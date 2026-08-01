@@ -1,4 +1,4 @@
-//! Overlay rendering for AppWindow.
+﻿//! Overlay rendering for AppWindow.
 //!
 //! Scrollbar (virtual overlay with idle visibility), resize overlay ("cols x rows"),
 //! debug overlays (FPS, draw calls), split dividers, and unfocused split overlays.
@@ -8597,6 +8597,9 @@ pub fn anyOverlayActive(now: i64) bool {
 
     // Copilot edge handle: shimmer / reveal-fade / hover-tooltip dwell.
     if (copilot_edge_handle.isAnimating()) return true;
+
+    // Sidebar tab tooltip: keep frame loop running during dwell + show duration.
+    if (titlebar.sidebarNeedsAnimation()) return true;
 
     // Command palette: open fade-in / close fade-out / highlight slide.
     if (commandPaletteAnimActive(now)) return true;

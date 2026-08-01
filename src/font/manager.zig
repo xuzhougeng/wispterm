@@ -1165,12 +1165,44 @@ pub fn loadTitlebarGlyph(codepoint: u32) ?Character {
         }
     }
 
+    const is_color_face = face_to_use.hasColor();
     const target = glyphTargetForCodepoint(codepoint);
-    face_to_use.loadGlyph(@intCast(glyph_index), .{ .target = target, .no_autohint = true }) catch return null;
+    face_to_use.loadGlyph(@intCast(glyph_index), .{
+        .target = target,
+        .color = is_color_face,
+        .no_autohint = true,
+    }) catch return null;
     face_to_use.renderGlyph(if (isCjkCodepoint(codepoint)) .normal else .light) catch return null;
 
     const glyph = face_to_use.handle.*.glyph;
     const bitmap = glyph.*.bitmap;
+
+    const is_color_glyph = bitmap.pixel_mode == freetype.c.FT_PIXEL_MODE_BGRA;
+
+    if (is_color_glyph) {
+        const region = packColorBitmapIntoAtlas(
+            alloc,
+            bitmap.width,
+            bitmap.rows,
+            bitmap.buffer,
+            @intCast(@as(c_uint, @intCast(@abs(bitmap.pitch)))),
+        ) orelse return null;
+
+        const ch = Character{
+            .region = region,
+            .size_x = @intCast(bitmap.width),
+            .size_y = @intCast(bitmap.rows),
+            .bearing_x = glyph.*.bitmap_left,
+            .bearing_y = glyph.*.bitmap_top,
+            .advance = glyph.*.advance.x,
+            .valid = true,
+            .is_color = true,
+        };
+
+        g_titlebar_cache.put(alloc, codepoint, ch) catch return null;
+        return ch;
+    }
+
     const region = packBitmapIntoAtlas(
         &g_titlebar_atlas,
         alloc,

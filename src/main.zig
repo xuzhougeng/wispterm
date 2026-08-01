@@ -20,6 +20,8 @@ const i18n = @import("i18n.zig");
 const ai_chat = @import("assistant/conversation/session.zig");
 const build_options = @import("build_options");
 const diag_log = @import("diag_log.zig");
+const single_instance = @import("platform/single_instance.zig");
+const platform_pty_command = @import("platform/pty_command.zig");
 
 /// Diagnostic builds (-Ddebug-console) route std.log to the on-disk debug log;
 /// normal builds keep std defaults (zero cost).
@@ -193,6 +195,38 @@ pub fn main() !void {
         std.debug.print("No config file found, using defaults\n", .{});
     }
 
+    // Single-instance check: if enabled and a previous instance owns the mutex,
+    // forward the CLI directory (or our working directory) to it and exit.
+    const single_instance_role: ?single_instance.Role = if (cfg.@"single-instance") blk: {
+        switch (try single_instance.acquire(allocator)) {
+            .second => {
+                std.debug.print("Another WispTerm instance is running — forwarding directory...\n", .{});
+                if (single_instance.forwardCwd(allocator, cfg.cli_cwd)) {
+                    std.debug.print("Forwarded directory. Exiting.\n", .{});
+                    return;
+                }
+                std.debug.print("Could not reach the running instance. Retrying acquire...\n", .{});
+                // The first instance may have crashed after we detected the
+                // mutex but before we connected. Re-acquire: if the mutex is
+                // now free, become the new first instance; otherwise fall
+                // through without IPC (the first instance is alive but its
+                // server is unreachable).
+                switch (single_instance.acquire(allocator) catch .second) {
+                    .first => {
+                        std.debug.print("Previous instance gone — becoming first instance.\n", .{});
+                        break :blk .first;
+                    },
+                    .second => {
+                        std.debug.print("Starting anyway (IPC unreachable).\n", .{});
+                        break :blk null;
+                    },
+                }
+            },
+            .first => break :blk .first,
+        }
+    } else null;
+    var g_single_instance_server: ?*single_instance.Server = null;
+
     // Apply memory-digest scheduler settings from the initial config load.
     // AppWindow.init only copies individual fields out of App (not the whole
     // Config), so this is the one place that sees the full Config before
@@ -264,6 +298,20 @@ pub fn main() !void {
     // panel "Test" probe or on first mcp_activate (see mcp_catalog.zig).
     ai_chat.reloadMcpTools(allocator);
 
+    // If a CLI directory argument was provided and we are not a second-instance
+    // forwarder, resolve it against the CWD and set as initial CWD for the first tab.
+    if (cfg.cli_cwd) |dir| {
+        var resolved_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const resolved = std.fs.realpath(dir, &resolved_buf) catch dir;
+        var cwd_buf: platform_pty_command.CwdBuffer = undefined;
+        if (platform_pty_command.cwdFromUtf8(&cwd_buf, resolved)) |cwd_ptr| {
+            const len = std.mem.sliceTo(cwd_ptr, 0).len;
+            @memcpy(app.next_window_cwd[0..len], cwd_ptr[0..len]);
+            app.next_window_cwd[len] = 0;
+            app.next_window_cwd_len = len;
+        }
+    }
+
     // App now lives at a stable address; start app-owned background services
     // before opening the first window.
     app.startPortForwarding(&cfg);
@@ -277,7 +325,32 @@ pub fn main() !void {
     // Start the local agent terminal control API (no-op unless agent-control-enabled).
     app.startAgentControl(&cfg);
 
+    // Ensure the config directory exists before starting the single-instance IPC
+    // server (which writes its discovery file there).
+    Config.ensureConfigExists(allocator);
+
+    // Start the single-instance IPC server (no-op unless single-instance is enabled
+    // and this is the first instance).
+    if (single_instance_role == .first) {
+        g_single_instance_server = single_instance.Server.start(allocator) catch |err| blk: {
+            std.debug.print("single-instance server failed to start: {}\n", .{err});
+            break :blk null;
+        };
+        if (g_single_instance_server) |srv| {
+            single_instance.setActiveServer(srv);
+            std.debug.print("single-instance IPC server started\n", .{});
+        }
+    }
+
     try app.run();
+
+    // Cleanup single-instance IPC server
+    if (g_single_instance_server) |srv| {
+        srv.destroy();
+    }
+    if (single_instance_role != null) {
+        single_instance.release(allocator);
+    }
 
     std.debug.print("WispTerm exiting...\n", .{});
 }

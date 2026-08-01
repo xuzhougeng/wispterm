@@ -141,6 +141,13 @@ pub const Command = struct {
         }
     }
 
+    /// True when this command actually spawned a child process. Virtual PTYs
+    /// (preview panes, etc.) leave `pid` at -1, so this distinguishes a real
+    /// terminal session from a virtual one.
+    pub fn hasProcess(self: *const Command) bool {
+        return self.pid > 0;
+    }
+
     /// Best-effort SIGHUP (not SIGKILL): lets shells/REPLs exit gracefully,
     /// matching what closing the controlling terminal does. Reaping is left to
     /// the normal IO-thread exit path, so this does not touch `self.pid`.

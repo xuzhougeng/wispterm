@@ -648,6 +648,13 @@ pub const Command = struct {
         }
     }
 
+    /// True when this command actually spawned a child process. Virtual PTYs
+    /// (preview panes, etc.) leave `process` at INVALID_HANDLE_VALUE, so this
+    /// distinguishes a real terminal session from a virtual one.
+    pub fn hasProcess(self: *const Command) bool {
+        return self.process != INVALID_HANDLE_VALUE;
+    }
+
     /// Best-effort termination. No graceful-shutdown signal equivalent to
     /// POSIX SIGHUP exists for console processes here, so this hard-kills.
     pub fn kill(self: *Command) void {

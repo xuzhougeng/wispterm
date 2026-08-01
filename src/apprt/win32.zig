@@ -2105,10 +2105,9 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
                     return HTCLIENT;
                 }
 
-                // The top bar no longer contains tabs. Only the left sidebar
-                // toggle and settings button are client-handled; the rest is
-                // draggable caption area.
-                if (pt.x < 46) {
+                // Client-handled titlebar buttons: sidebar toggle (0..46) and
+                // folder icon (46..92). The rest is draggable caption area.
+                if (pt.x < 92) {
                     return HTCLIENT;
                 }
 
@@ -2259,14 +2258,14 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
             const x: i32 = @as(i16, @bitCast(@as(u16, @intCast(lParam & 0xFFFF))));
             const y: i32 = @as(i16, @bitCast(@as(u16, @intCast((lParam >> 16) & 0xFFFF))));
 
-            // Titlebar clicks outside the sidebar toggle initiate window drag.
+            // Titlebar clicks outside the toggle/folder buttons initiate window drag.
             const in_toolbar_button = blk: {
                 var rect: RECT = undefined;
                 _ = GetClientRect(hwnd, &rect);
                 const btn_width = getCaptionButtonWidth();
                 break :blk x >= rect.right - btn_width - getAppButtonStripWidth() and x < rect.right - btn_width;
             };
-            if (y < w.titlebar_height and x >= 46 and !in_toolbar_button) {
+            if (y < w.titlebar_height and x >= 92 and !in_toolbar_button) {
                 _ = ReleaseCapture();
                 _ = SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, lParam);
                 return 0;

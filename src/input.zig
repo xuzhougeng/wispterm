@@ -1,4 +1,4 @@
-//! Input handling for AppWindow.
+﻿//! Input handling for AppWindow.
 //!
 //! Processes platform input events (keyboard, mouse, resize) and dispatches
 //! to appropriate handlers. Manages clipboard, selection, scrollbar dragging,
@@ -1880,13 +1880,13 @@ test "input: right-clicking a sidebar tab starts tab rename" {
     const previous_count = tab.g_tab_count;
     const previous_active = active_tab_state.g_active_tab;
     const previous_sidebar = tab.g_sidebar_visible;
-    const previous_sidebar_width = titlebar.g_sidebar_width;
+    // icon-only sidebar: width is fixed, no resizing
     defer {
         tab.g_tabs = previous_tabs;
         tab.g_tab_count = previous_count;
         active_tab_state.g_active_tab = previous_active;
         tab.g_sidebar_visible = previous_sidebar;
-        titlebar.g_sidebar_width = previous_sidebar_width;
+        // icon-only sidebar: no width to restore
         tab.g_tab_rename_active = false;
         tab.g_tab_rename_idx = 0;
     }
@@ -1899,7 +1899,7 @@ test "input: right-clicking a sidebar tab starts tab rename" {
     tab.g_tab_count = 2;
     active_tab_state.g_active_tab = 0;
     tab.g_sidebar_visible = true;
-    titlebar.g_sidebar_width = 220;
+    // icon-only sidebar: fixed width
     tab.g_tab_rename_active = false;
 
     const y: i32 = @intFromFloat(titlebarHeight() + titlebar.sidebarHeaderHeight() + 6 + titlebar.sidebarRowHeight() / 2);
@@ -2245,6 +2245,11 @@ pub fn toggleSidebar() void {
 pub fn toggleFileExplorer() void {
     const perf = ui_perf.begin("input.toggle_file_explorer");
     defer perf.end();
+
+    // File explorer only applies to terminal tabs — it shows the file tree
+    // for the active terminal's working directory. Suppress on AI chat,
+    // Copilot, settings, or other non-terminal tabs.
+    if (!AppWindow.isActiveTabTerminal()) return;
 
     file_explorer.toggle();
     if (file_explorer.isVisibleForActiveTab()) {
@@ -2791,10 +2796,9 @@ fn processSizeChange(win: anytype) void {
         "input-size-change client={}x{} dpi={} font_dpi={} cell={d:.2}x{d:.2} term={}x{}",
         .{ size.width, size.height, window_backend.effectiveDpi(win), font.g_dpi, font.cell_width, font.cell_height, AppWindow.term_cols, AppWindow.term_rows },
     );
-    if (titlebar.setSidebarWidth(titlebar.g_sidebar_width, @floatFromInt(size.width))) {
-        syncSidebarWidthToBackend(win);
-        requestInputRepaint();
-    }
+    // icon-only sidebar: fixed width, no resize needed
+    syncSidebarWidthToBackend(win);
+    requestInputRepaint();
 
     syncGridFromWindowSize(size.width, size.height);
 }
@@ -3992,7 +3996,7 @@ fn sidebarLayout() hit_test.SidebarLayout {
         .header_h = @floatCast(titlebar.sidebarHeaderHeight()),
         .row_h = @floatCast(titlebar.sidebarRowHeight()),
         .tab_count = tab.g_tab_count,
-        .resize_hit_width = @floatCast(titlebar.SIDEBAR_RESIZE_HIT_WIDTH),
+        .resize_hit_width = 8,
         .close_btn_w = @floatCast(tab.TAB_CLOSE_BTN_W),
     };
 }
@@ -4073,10 +4077,9 @@ fn hitTestSidebarResizeHandle(xpos: f64, ypos: f64) bool {
     return hit_test.sidebarResizeHandle(sidebarLayout(), xpos, ypos);
 }
 
-fn applySidebarWidthFromMouse(xpos: f64) void {
+fn applySidebarWidthFromMouse(_: f64) void {
     const win = AppWindow.g_window orelse return;
-    const size = clientSize(win);
-    if (!titlebar.setSidebarWidth(@floatCast(xpos), @floatFromInt(size.width))) return;
+    // icon-only sidebar: no resize drag
     syncGridFromWindow(win);
     syncSidebarWidthToBackend(win);
     requestInputRepaint();
@@ -4587,6 +4590,13 @@ fn handleTopbarPress(xpos: f64) void {
         return;
     }
 
+    // File-explorer toggle button (next to sidebar toggle)
+    const folder_end: f64 = toggle_end + @as(f64, titlebar.TITLEBAR_FOLDER_W);
+    if (xpos >= toggle_end and xpos < folder_end) {
+        toggleFileExplorer();
+        return;
+    }
+
     if (hitTestCopilotButton(xpos, titlebarHeight() / 2)) {
         AppWindow.toggleAiCopilot();
         return;
@@ -4606,7 +4616,12 @@ fn handleSidebarPress(xpos: f64, ypos: f64) void {
     if (tab.g_tab_rename_active) tab.commitTabRename();
 
     if (hitTestSidebarPlusButton(xpos, ypos)) {
-        overlays.sessionLauncherOpen();
+        // Left-click on + button → spawn a new terminal tab directly.
+        // Right-click on + button is handled in the right-click release handler
+        // (opens session launcher for choosing window type).
+        if (AppWindow.g_allocator) |alloc| {
+            _ = AppWindow.spawnTab(alloc);
+        }
         return;
     }
 
@@ -5752,7 +5767,24 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
     // Ctrl+right-click (Cmd on macOS) over a local terminal opens the file under
     // the cursor in the OS default app; otherwise follow the configured action.
     if (ev.button == .right and ev.action == .release) {
-        if (handleSidebarTabRenameGesture(@floatFromInt(ev.x), @floatFromInt(ev.y))) return;
+        const rc_xpos: f64 = @floatFromInt(ev.x);
+        const rc_ypos: f64 = @floatFromInt(ev.y);
+        // Right-click on sidebar tab → always show close confirmation dialog
+        if (hitTestSidebarTab(rc_xpos, rc_ypos)) |tab_idx| {
+            const closes_window = tab.g_tab_count <= 1;
+            const has_running = AppWindow.tabHasRunningProgram(tab_idx);
+            const action: close_confirm.PendingClose = if (closes_window) .window else .{ .tab = tab_idx };
+            const variant: overlays.CloseConfirmVariant = if (has_running) .running_program else .window_generic;
+            overlays.closeConfirmOpen(action, variant);
+            requestInputRepaint();
+            return;
+        }
+        // Right-click on sidebar + button → session launcher (new window type dialog)
+        if (hitTestSidebarPlusButton(rc_xpos, rc_ypos)) {
+            overlays.sessionLauncherOpen();
+            return;
+        }
+        if (handleSidebarTabRenameGesture(rc_xpos, rc_ypos)) return;
         if (openInEditorAtRightClick(ev)) return;
         handleConfiguredRightClick();
         return;
@@ -6365,9 +6397,13 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
 
             if (plus_btn_pressed) {
                 plus_btn_pressed = false;
-                // Only fire if still in the + button area
+                // Left-click on + button → spawn a new terminal tab directly.
+                // Right-click on + button is handled in the right-click release
+                // handler (opens session launcher for choosing window type).
                 if (hitTestSidebarPlusButton(xpos, ypos)) {
-                    overlays.sessionLauncherOpen();
+                    if (AppWindow.g_allocator) |alloc| {
+                        _ = AppWindow.spawnTab(alloc);
+                    }
                 }
                 return;
             }
@@ -6539,6 +6575,19 @@ fn updateAiTranscriptSelectionDrag(chat: *AppWindow.ai_chat.Session, xpos: f64, 
 fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
     const xpos: f64 = @floatFromInt(ev.x);
     const ypos: f64 = @floatFromInt(ev.y);
+
+    // Sidebar tooltip: request a repaint when the mouse is over the sidebar
+    // so renderSidebar() can update the hover-tab tracking. This must run
+    // before any early return below — the chicken-and-egg between the
+    // event-driven render gate and the renderer-side hover detection means
+    // without this trigger the tooltip can never appear.
+    if (tab.g_sidebar_visible) {
+        const sidebar_w: f64 = @floatCast(titlebar.sidebarWidth());
+        if (xpos < sidebar_w and ypos >= @as(f64, @floatCast(titlebarHeight()))) {
+            requestInputRepaint();
+        }
+    }
+
     if (overlays.btwConversationVisible()) {
         platform_cursor.set(.arrow);
         return;

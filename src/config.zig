@@ -275,6 +275,9 @@ theme: ?[]const u8 = null,
 /// Copy terminal selections to the clipboard when selection completes.
 @"copy-on-select": bool = false,
 
+/// Positional CLI argument — initial directory for the first tab.
+cli_cwd: ?[]u8 = null,
+
 /// Right-click action for terminal surfaces.
 @"right-click-action": RightClickAction = .copy,
 
@@ -414,6 +417,11 @@ language: i18n.LanguageSetting = .auto,
 /// default off. Binds 127.0.0.1 only; a random token + the chosen port are
 /// written to <config-dir>/agent-control.json (0600) for client auto-discovery.
 @"agent-control-enabled": bool = false,
+
+/// When true, only one instance of WispTerm may run at a time. If a second
+/// instance is launched it will forward its working directory to the running
+/// instance (which opens a new tab in that directory) and then exit.
+@"single-instance": bool = false,
 
 /// Fixed loopback port for the agent control API (0 = let the OS assign one).
 @"agent-control-port": u16 = 0,
@@ -591,6 +599,9 @@ _owned_strings: std.ArrayListUnmanaged([]const u8) = .empty,
 pub fn deinit(self: *const Config, allocator: std.mem.Allocator) void {
     if (self.config_path) |path| {
         allocator.free(path);
+    }
+    if (self.cli_cwd) |cwd| {
+        allocator.free(cwd);
     }
     for (self._owned_strings.items) |s| {
         allocator.free(s);
@@ -775,7 +786,9 @@ fn loadFile(self: *Config, allocator: std.mem.Allocator, path: []const u8) !void
 /// Parse config file content. `base_dir` is used to resolve relative
 /// `config-file` paths.
 fn parseContent(self: *Config, allocator: std.mem.Allocator, content: []const u8, base_dir: []const u8) void {
-    var lines = std.mem.splitScalar(u8, content, '\n');
+    const bom = "\xEF\xBB\xBF";
+    const clean = if (std.mem.startsWith(u8, content, bom)) content[bom.len..] else content;
+    var lines = std.mem.splitScalar(u8, clean, '\n');
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (trimmed.len == 0 or trimmed[0] == '#') continue;
@@ -1028,6 +1041,14 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
             log.warn("invalid agent-control-port: {s}", .{value});
             return;
         };
+    } else if (std.mem.eql(u8, key, "single-instance")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"single-instance" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"single-instance" = false;
+        } else {
+            log.warn("invalid single-instance: {s}", .{value});
+        }
     } else if (std.mem.eql(u8, key, "wispterm-debug-fps")) {
         if (std.mem.eql(u8, value, "true")) {
             self.@"wispterm-debug-fps" = true;
@@ -1304,8 +1325,15 @@ fn loadCliArgs(self: *Config, allocator: std.mem.Allocator) !void {
     while (i < args.len) : (i += 1) {
         const arg = args[i];
 
-        // Skip non-flag arguments
-        if (arg.len < 2 or arg[0] != '-') continue;
+        // Skip non-flag arguments; capture the first one as a CLI directory
+        // (these are never consumed as flag values, because the flag handler
+        // below peeks ahead and increments i over its value).
+        if (arg.len < 2 or arg[0] != '-') {
+            if (arg.len > 0 and self.cli_cwd == null) {
+                self.cli_cwd = try allocator.dupe(u8, arg);
+            }
+            continue;
+        }
 
         // Handle --key=value form
         if (std.mem.indexOf(u8, arg, "=")) |eq_pos| {
@@ -1520,6 +1548,7 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --weixin-notify-forward <bool> Forward agent notifications to the bound WeChat owner
         \\  --agent-control-enabled <bool> Enable the local wisptermctl terminal control API (loopback)
         \\  --agent-control-port <n>     Fixed loopback port for the control API (0 = auto)
+        \\  --single-instance <bool>     Only run one instance; second instance opens a tab in the first (default: false)
         \\  --quake-mode <bool>          Enable Quake-style drop-down mode (default: true)
         \\
         \\Color Options (override theme):

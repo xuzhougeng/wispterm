@@ -1,4 +1,4 @@
-//! Pure sidebar hit-test geometry, extracted from input.zig. Callers gather the
+﻿//! Pure sidebar hit-test geometry, extracted from input.zig. Callers gather the
 //! current layout into a SidebarLayout and ask which region a point hits. No
 //! globals here — the math is std-only and unit-testable.
 const std = @import("std");
@@ -62,13 +62,17 @@ pub fn sidebarTabIndexForDragY(l: SidebarLayout, y: f64) ?usize {
     return idx_raw;
 }
 
-/// True if (x, y) falls within the + (new-tab) button in the sidebar header.
+/// True if (x, y) falls within the + (new-tab) button below the tab list.
+/// In the icon-only sidebar there is no header (header_h == 0), so the plus
+/// button is rendered as the next row after the last tab — its y-range is
+/// [list_top + tab_count * row_h, list_top + (tab_count + 1) * row_h).
 pub fn sidebarPlusButton(l: SidebarLayout, x: f64, y: f64) bool {
     if (!l.visible) return false;
-    const plus_w: f64 = 42;
-    const plus_x = l.width - plus_w - 6;
-    return x >= plus_x and x < plus_x + plus_w and
-        y >= l.titlebar_h and y < l.titlebar_h + l.header_h;
+    if (x < 0 or x >= l.width) return false;
+    const top = listTop(l);
+    const plus_row_top = top + @as(f64, @floatFromInt(l.tab_count)) * l.row_h;
+    const plus_row_h = l.row_h;
+    return y >= plus_row_top and y < plus_row_top + plus_row_h;
 }
 
 /// True if (x, y) is over the close button of the given tab row, and the
@@ -177,11 +181,25 @@ test "sidebarTabIndexForDragY: clamps to ends" {
     try std.testing.expectEqual(@as(?usize, null), sidebarTabIndexForDragY(empty, 100));
 }
 
-test "sidebarPlusButton: top-right header box" {
-    // plus_x = 200 - 42 - 6 = 152; spans x in [152, 194); y in [30, 70)
-    try std.testing.expect(sidebarPlusButton(sample, 160, 50));
-    try std.testing.expect(!sidebarPlusButton(sample, 151, 50)); // left of box
-    try std.testing.expect(!sidebarPlusButton(sample, 160, 70)); // y == header bottom (outside)
+test "sidebarPlusButton: row below the tab list" {
+    // sample: titlebar_h=30, header_h=40, row_h=28, tab_count=3
+    // list_top = 30 + 40 + 6 = 76
+    // plus_row_top = 76 + 3 * 28 = 160; spans y in [160, 188)
+    try std.testing.expect(sidebarPlusButton(sample, 100, 170));
+    try std.testing.expect(!sidebarPlusButton(sample, 100, 159)); // above
+    try std.testing.expect(!sidebarPlusButton(sample, 100, 188)); // below
+    try std.testing.expect(!sidebarPlusButton(sample, 100, 100)); // tab area
+    try std.testing.expect(!sidebarPlusButton(sample, 200, 170)); // x outside
+    try std.testing.expect(!sidebarPlusButton(sample, -1, 170)); // x < 0
+    var hidden = sample;
+    hidden.visible = false;
+    try std.testing.expect(!sidebarPlusButton(hidden, 100, 170));
+    // icon-only: list_top=36, plus y in [120, 148)
+    var icon_only = sample;
+    icon_only.header_h = 0;
+    try std.testing.expect(sidebarPlusButton(icon_only, 100, 130));
+    try std.testing.expect(!sidebarPlusButton(icon_only, 100, 119)); // above
+    try std.testing.expect(!sidebarPlusButton(icon_only, 100, 148)); // below
 }
 
 test "sidebarTabCloseButton: only on its own hovered row, needs >1 tab" {
