@@ -4055,6 +4055,10 @@ fn hitTestSidebarPlusButton(xpos: f64, ypos: f64) bool {
     return hit_test.sidebarPlusButton(sidebarLayout(), xpos, ypos);
 }
 
+fn hitTestSidebarFileExplorerToggle(xpos: f64, ypos: f64) bool {
+    return hit_test.sidebarFileExplorerToggle(sidebarLayout(), xpos, ypos);
+}
+
 fn hitTestSidebarTabCloseButton(xpos: f64, ypos: f64, tab_idx: usize) bool {
     return hit_test.sidebarTabCloseButton(sidebarLayout(), xpos, ypos, tab_idx);
 }
@@ -4602,6 +4606,12 @@ fn handleTopbarPress(xpos: f64) void {
 
 fn handleSidebarPress(xpos: f64, ypos: f64) void {
     if (tab.g_tab_rename_active) tab.commitTabRename();
+
+    if (hitTestSidebarFileExplorerToggle(xpos, ypos)) {
+        // Left-click on file-explorer toggle → same as Ctrl+Shift+Alt+E
+        toggleFileExplorer();
+        return;
+    }
 
     if (hitTestSidebarPlusButton(xpos, ypos)) {
         // Left-click on + button → spawn a new terminal tab directly.
@@ -5765,6 +5775,11 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
         // Right-click on sidebar + button → session launcher (new window type dialog)
         if (hitTestSidebarPlusButton(rc_xpos, rc_ypos)) {
             overlays.sessionLauncherOpen();
+            return;
+        }
+        // Right-click on file-explorer toggle → toggle file explorer (same as left-click)
+        if (hitTestSidebarFileExplorerToggle(rc_xpos, rc_ypos)) {
+            toggleFileExplorer();
             return;
         }
         if (handleSidebarTabRenameGesture(rc_xpos, rc_ypos)) return;

@@ -18,6 +18,7 @@ const font_backend = @import("../platform/font_backend.zig");
 const window_backend = @import("../platform/window_backend.zig");
 const agent_detector = @import("../terminal_agents/detector.zig");
 const keybind = @import("../keybind.zig");
+const file_explorer = @import("../file_explorer.zig");
 const Character = font.Character;
 
 pub const SIDEBAR_WIDTH: f32 = 48;
@@ -407,6 +408,21 @@ pub fn titlebarGlyphAdvance(codepoint: u32) f32 {
             return raw_advance * scale;
         }
         return raw_advance;
+    }
+    return font.g_titlebar_cell_width;
+}
+
+/// Get the visual width of a titlebar glyph — the actual pixel width of the
+/// rendered bitmap, not the advance. For color emoji this is `size_x * scale`
+/// (which may differ from the advance), so centering on this value places the
+/// glyph visually centered instead of advance-centered.
+pub fn titlebarGlyphVisualWidth(codepoint: u32) f32 {
+    if (font.loadTitlebarGlyph(codepoint)) |g| {
+        if (g.is_color) {
+            const scale = font.g_titlebar_cell_height / @as(f32, @floatFromInt(g.size_y));
+            return @as(f32, @floatFromInt(g.size_x)) * scale;
+        }
+        return @as(f32, @floatFromInt(g.size_x));
     }
     return font.g_titlebar_cell_width;
 }
@@ -1187,7 +1203,7 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
             else
                 sidebarTabKindIcon(t);
             const icon_y = row_y + (row_h_actual - font.g_titlebar_cell_height) / 2;
-            renderTitlebarChar(icon_cp, (sidebar_w - titlebarGlyphAdvance(icon_cp)) / 2, icon_y, fg);
+            renderTitlebarChar(icon_cp, (sidebar_w - titlebarGlyphVisualWidth(icon_cp)) / 2, icon_y, fg);
         }
 
         // Agent state dot at bottom of row
@@ -1208,8 +1224,30 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
         tab.g_tab_text_y_end[tab_idx] = row_top_px + row_h_actual;
     }
 
-    // Render + (new tab) button below tabs
-    const plus_row_top = list_top_px + @as(f32, @floatFromInt(tab.g_tab_count)) * row_h;
+    // Render file-explorer toggle button (folder icon) below tabs
+    const fe_toggle_row_top = list_top_px + @as(f32, @floatFromInt(tab.g_tab_count)) * row_h;
+    if (fe_toggle_row_top < window_height) {
+        const fe_row_h = @min(row_h, window_height - fe_toggle_row_top);
+        const fe_y = window_height - fe_toggle_row_top - fe_row_h;
+        const fe_hovered = mouseInRect(0, fe_toggle_row_top, sidebar_w, fe_row_h);
+
+        if (fe_hovered) {
+            ui_pipeline.fillQuad(0, fe_y, sidebar_w, fe_row_h, hover_bg);
+        }
+
+        // Separator line above file-explorer toggle
+        ui_pipeline.fillQuad(4, fe_y + fe_row_h, sidebar_w - 8, 1, border_color);
+
+        const fe_icon_cp: u32 = 0x1F4C2; // 📂 open file folder
+        const fe_icon_x = (sidebar_w - titlebarGlyphVisualWidth(fe_icon_cp)) / 2;
+        const fe_icon_y = fe_y + (fe_row_h - font.g_titlebar_cell_height) / 2;
+        const fe_is_open = file_explorer.isVisibleForActiveTab();
+        const fe_color = if (fe_is_open) accent else blend(bg, fg, 0.60);
+        renderTitlebarChar(fe_icon_cp, fe_icon_x, fe_icon_y, fe_color);
+    }
+
+    // Render + (new tab) button below file-explorer toggle
+    const plus_row_top = list_top_px + @as(f32, @floatFromInt(tab.g_tab_count + 1)) * row_h;
     if (plus_row_top < window_height) {
         const plus_row_h = @min(row_h, window_height - plus_row_top);
         const plus_y = window_height - plus_row_top - plus_row_h;
@@ -1223,7 +1261,7 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
         ui_pipeline.fillQuad(4, plus_y + plus_row_h, sidebar_w - 8, 1, border_color);
 
         const plus_icon_cp: u32 = 0x2795; // ➕ heavy plus sign
-        const plus_icon_x = (sidebar_w - titlebarGlyphAdvance(plus_icon_cp)) / 2;
+        const plus_icon_x = (sidebar_w - titlebarGlyphVisualWidth(plus_icon_cp)) / 2;
         const plus_icon_y = plus_y + (plus_row_h - font.g_titlebar_cell_height) / 2;
         renderTitlebarChar(plus_icon_cp, plus_icon_x, plus_icon_y, blend(bg, fg, 0.70));
     }

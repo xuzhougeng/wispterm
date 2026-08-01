@@ -62,13 +62,30 @@ pub fn sidebarTabIndexForDragY(l: SidebarLayout, y: f64) ?usize {
     return idx_raw;
 }
 
-/// True if (x, y) falls within the + (new-tab) button in the sidebar header.
+/// True if (x, y) falls within the + (new-tab) button below the file-explorer
+/// toggle. In the icon-only sidebar the layout is:
+///   tabs → file-explorer toggle (1 row) → plus button (1 row)
+/// The plus button's y-range is:
+///   [list_top + (tab_count + 1) * row_h, list_top + (tab_count + 2) * row_h)
 pub fn sidebarPlusButton(l: SidebarLayout, x: f64, y: f64) bool {
     if (!l.visible) return false;
-    const plus_w: f64 = 42;
-    const plus_x = l.width - plus_w - 6;
-    return x >= plus_x and x < plus_x + plus_w and
-        y >= l.titlebar_h and y < l.titlebar_h + l.header_h;
+    if (x < 0 or x >= l.width) return false;
+    const top = listTop(l);
+    const plus_row_top = top + @as(f64, @floatFromInt(l.tab_count + 1)) * l.row_h;
+    const plus_row_h = l.row_h;
+    return y >= plus_row_top and y < plus_row_top + plus_row_h;
+}
+
+/// True if (x, y) falls within the file-explorer toggle button — the row
+/// between the tab list and the plus button. In the icon-only sidebar the
+/// layout is: tabs → file-explorer toggle → plus button, each one row_h tall.
+pub fn sidebarFileExplorerToggle(l: SidebarLayout, x: f64, y: f64) bool {
+    if (!l.visible) return false;
+    if (x < 0 or x >= l.width) return false;
+    const top = listTop(l);
+    const toggle_row_top = top + @as(f64, @floatFromInt(l.tab_count)) * l.row_h;
+    const toggle_row_h = l.row_h;
+    return y >= toggle_row_top and y < toggle_row_top + toggle_row_h;
 }
 
 /// True if (x, y) is over the close button of the given tab row, and the
@@ -84,6 +101,7 @@ pub fn sidebarTabCloseButton(l: SidebarLayout, x: f64, y: f64, tab_idx: usize) b
 pub fn sidebarTabRenameTarget(l: SidebarLayout, x: f64, y: f64) ?usize {
     const tab_idx = sidebarTabAt(l, x, y) orelse return null;
     if (sidebarPlusButton(l, x, y)) return null;
+    if (sidebarFileExplorerToggle(l, x, y)) return null;
     if (sidebarResizeHandle(l, x, y)) return null;
     if (sidebarTabCloseButton(l, x, y, tab_idx)) return null;
     return tab_idx;
@@ -177,11 +195,52 @@ test "sidebarTabIndexForDragY: clamps to ends" {
     try std.testing.expectEqual(@as(?usize, null), sidebarTabIndexForDragY(empty, 100));
 }
 
-test "sidebarPlusButton: top-right header box" {
-    // plus_x = 200 - 42 - 6 = 152; spans x in [152, 194); y in [30, 70)
-    try std.testing.expect(sidebarPlusButton(sample, 160, 50));
-    try std.testing.expect(!sidebarPlusButton(sample, 151, 50)); // left of box
-    try std.testing.expect(!sidebarPlusButton(sample, 160, 70)); // y == header bottom (outside)
+test "sidebarPlusButton: row below the file-explorer toggle" {
+    // sample: titlebar_h=30, header_h=40, row_h=28, tab_count=3
+    // list_top = 30 + 40 + 6 = 76
+    // file-explorer toggle: y in [160, 188) (row after tabs)
+    // plus button: y in [188, 216) (row after file-explorer toggle)
+    // x must be in [0, 200)
+    try std.testing.expect(sidebarPlusButton(sample, 100, 200));
+    try std.testing.expect(!sidebarPlusButton(sample, 100, 187)); // file-explorer toggle row
+    try std.testing.expect(!sidebarPlusButton(sample, 100, 159)); // tab area
+    try std.testing.expect(!sidebarPlusButton(sample, 100, 216)); // below plus row
+    try std.testing.expect(!sidebarPlusButton(sample, 200, 200)); // x == width (outside)
+    try std.testing.expect(!sidebarPlusButton(sample, -1, 200)); // x < 0
+    // invisible sidebar never hits
+    var hidden = sample;
+    hidden.visible = false;
+    try std.testing.expect(!sidebarPlusButton(hidden, 100, 200));
+    // icon-only sidebar (header_h == 0): tabs → toggle → plus
+    var icon_only = sample;
+    icon_only.header_h = 0;
+    // list_top = 30 + 0 + 6 = 36
+    // toggle: y in [120, 148); plus: y in [148, 176)
+    try std.testing.expect(!sidebarPlusButton(icon_only, 100, 130)); // toggle row, not plus
+    try std.testing.expect(sidebarPlusButton(icon_only, 100, 160)); // plus row
+    try std.testing.expect(!sidebarPlusButton(icon_only, 100, 147)); // above plus
+    try std.testing.expect(!sidebarPlusButton(icon_only, 100, 176)); // below plus
+}
+
+test "sidebarFileExplorerToggle: row between tabs and plus" {
+    // sample: titlebar_h=30, header_h=40, row_h=28, tab_count=3
+    // list_top = 30 + 40 + 6 = 76
+    // toggle: y in [160, 188) (row after tabs, before plus)
+    try std.testing.expect(sidebarFileExplorerToggle(sample, 100, 170));
+    try std.testing.expect(!sidebarFileExplorerToggle(sample, 100, 159)); // above
+    try std.testing.expect(!sidebarFileExplorerToggle(sample, 100, 188)); // below (plus row)
+    try std.testing.expect(!sidebarFileExplorerToggle(sample, 100, 100)); // tab area
+    try std.testing.expect(!sidebarFileExplorerToggle(sample, 200, 170)); // x outside
+    try std.testing.expect(!sidebarFileExplorerToggle(sample, -1, 170)); // x < 0
+    var hidden = sample;
+    hidden.visible = false;
+    try std.testing.expect(!sidebarFileExplorerToggle(hidden, 100, 170));
+    // icon-only: list_top=36, toggle y in [120, 148)
+    var icon_only = sample;
+    icon_only.header_h = 0;
+    try std.testing.expect(sidebarFileExplorerToggle(icon_only, 100, 130));
+    try std.testing.expect(!sidebarFileExplorerToggle(icon_only, 100, 119)); // above
+    try std.testing.expect(!sidebarFileExplorerToggle(icon_only, 100, 148)); // below
 }
 
 test "sidebarTabCloseButton: only on its own hovered row, needs >1 tab" {
