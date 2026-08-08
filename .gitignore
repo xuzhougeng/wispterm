@@ -40,3 +40,6 @@ docs/wrangler.toml
 
 # Local high-res app-icon source (generate assets/wispterm.* from it; not tracked)
 /wispterm.png
+
+# OpenCode working directory
+.omo/

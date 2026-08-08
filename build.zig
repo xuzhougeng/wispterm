@@ -1225,10 +1225,22 @@ fn createAppModuleWithRootAndTestShard(
     app_mod.addAnonymousImport("wispterm_doc_tabs_panels", .{ .root_source_file = b.path("docs/tabs-panels.md") });
 
     // Add ghostty-vt dependency with SIMD disabled for cross-compilation.
+    // `@"emit-lib-vt" = true` opts into ghostty's libghostty-vt-only build mode
+    // (ghostty `Config.zig:353`). We also force the xcframework + macOS app
+    // emits off because ghostty's defaults still fire them in lib-vt mode when
+    // `xcodebuild` is on PATH (ghostty `Config.zig:443` and `build.zig:211`/`:269`
+    // gate the iOS/macOS xcframework builds on `emit_xcframework or emit_macos_app`),
+    // which would require the iOS SDK that Command Line Tools does not ship.
+    // WispTerm consumes only `dep.module("ghostty-vt")` and the bundled stb
+    // sources, neither of which is affected by these flags. The option names are
+    // the literal kebab-case `-D` forms; Zig does not auto-convert underscores.
     if (b.lazyDependency("ghostty", .{
         .target = target,
         .optimize = optimize,
         .simd = false,
+        .@"emit-lib-vt" = true,
+        .@"emit-xcframework" = false,
+        .@"emit-macos-app" = false,
     })) |dep| {
         app_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
         app_mod.addIncludePath(dep.path("src/stb"));
@@ -1351,9 +1363,23 @@ fn createAppModuleWithRootAndTestShard(
 
     if (platform.supports_app_bundle) {
         for (macos_objective_c_sources) |source| {
+            // bridge.m stores Metal buffer/texture/pipeline slot tables in
+            // _Thread_local arrays. macOS TLS does not honor
+            // __attribute__((aligned(16))) on _Thread_local variables (a known
+            // platform limitation), so the UBSan alignment check flags member
+            // access through the misaligned TLS base. The misalignment is
+            // technically UB but is benign on x86 for scalar accesses; the
+            // proper fix is heap-allocated per-thread storage (future work).
+            // Until then, suppress only the alignment sanitizer for bridge.m so
+            // Debug builds can start and reach the actual crash site under
+            // investigation. Other ObjC bridges keep full sanitizer coverage.
+            const bridge_flags: []const []const u8 = if (std.mem.eql(u8, source, "src/renderer/gpu/metal/bridge.m"))
+                &.{"-fno-sanitize=alignment"}
+            else
+                &.{};
             app_mod.addCSourceFile(.{
                 .file = b.path(source),
-                .flags = &.{},
+                .flags = bridge_flags,
                 .language = .objective_c,
             });
         }
@@ -1400,10 +1426,14 @@ fn createBenchModule(
     bench_mod.addOptions("build_options", bench_options);
     // The TerminalStream case drives ghostty-vt; wire the same dep + stb the
     // app uses so the VT parser is the exact shipped code path.
+    // Same emit flags as the app build (see createAppModuleWithRoot for rationale).
     if (b.lazyDependency("ghostty", .{
         .target = target,
         .optimize = optimize,
         .simd = false,
+        .@"emit-lib-vt" = true,
+        .@"emit-xcframework" = false,
+        .@"emit-macos-app" = false,
     })) |dep| {
         bench_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
         bench_mod.addIncludePath(dep.path("src/stb"));

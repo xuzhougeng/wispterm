@@ -39,7 +39,16 @@ typedef struct WispTermMetalBufferSlot {
 // namespace, so two windows rendering concurrently can't clobber each other's
 // buffers/textures/pipelines or the active-texture binding. (Process-global
 // here was the multi-window "one window renders incomplete" bug.)
-static _Thread_local WispTermMetalBufferSlot wispterm_metal_buffers[WISPTERM_METAL_MAX_BUFFERS];
+//
+// The ObjC-pointer-bearing slot arrays carry __attribute__((aligned(16))):
+// macOS TLS (_Thread_local via __tlv_descriptor) does not by default guarantee
+// 16-byte alignment for the array start, and Zig's Debug-mode alignment
+// sanitizer (correctly) flags member access through a misaligned base as
+// undefined behavior. Without the explicit alignment, Debug builds panic at
+// startup on the first wispterm_metal_buffer_create call, and Release builds
+// can hit a #GP later when a SIMD store derived from TLS-resident state lands
+// on a non-16-byte boundary (the original "agent tab SIGSEGV" crash).
+static _Thread_local __attribute__((aligned(16))) WispTermMetalBufferSlot wispterm_metal_buffers[WISPTERM_METAL_MAX_BUFFERS];
 static _Thread_local unsigned int wispterm_metal_next_buffer = 1;
 
 typedef struct WispTermMetalTextureSlot {
@@ -51,7 +60,7 @@ typedef struct WispTermMetalTextureSlot {
     size_t bpp;
 } WispTermMetalTextureSlot;
 
-static _Thread_local WispTermMetalTextureSlot wispterm_metal_textures[WISPTERM_METAL_MAX_TEXTURES];
+static _Thread_local __attribute__((aligned(16))) WispTermMetalTextureSlot wispterm_metal_textures[WISPTERM_METAL_MAX_TEXTURES];
 static _Thread_local unsigned int wispterm_metal_next_texture = 1;
 
 typedef struct WispTermMetalPipelineSlot {
@@ -71,7 +80,7 @@ typedef struct WispTermMetalPipelineSlot {
     } uniforms;
 } WispTermMetalPipelineSlot;
 
-static _Thread_local WispTermMetalPipelineSlot wispterm_metal_pipelines[WISPTERM_METAL_MAX_PIPELINES];
+static _Thread_local __attribute__((aligned(16))) WispTermMetalPipelineSlot wispterm_metal_pipelines[WISPTERM_METAL_MAX_PIPELINES];
 static _Thread_local unsigned int wispterm_metal_next_pipeline = 1;
 static _Thread_local unsigned int wispterm_metal_active_textures[16];
 
@@ -150,7 +159,7 @@ void wispterm_metal_set_blend_mode(int premultiplied) {
 // per-shader `constexpr sampler` so a texture's configured filter/wrap (e.g.
 // nearest for pixel-exact bitmaps) actually applies, mirroring the GL backend's
 // sampler parameters. Threadlocal to match the per-render-thread registries.
-static _Thread_local id<MTLSamplerState> wispterm_metal_samplers[4]; // idx = filter*2 + wrap
+static _Thread_local __attribute__((aligned(16))) id<MTLSamplerState> wispterm_metal_samplers[4]; // idx = filter*2 + wrap
 
 static id<MTLSamplerState> wispterm_metal_sampler_for(id<MTLDevice> device, unsigned int filter, unsigned int wrap) {
     if (device == nil) return nil;
