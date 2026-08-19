@@ -268,8 +268,8 @@ MIT
 
 ## Star History
 
-<a href="https://star-history.com/#xuzhougeng/wispterm&Date">
-  <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=xuzhougeng/wispterm&type=Date" />
+<a href="https://star-history.dera.page/#xuzhougeng/wispterm&Date">
+  <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=xuzhougeng/wispterm&type=Date" />
 </a>
 
 ## Citation
