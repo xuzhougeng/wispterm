@@ -86,6 +86,29 @@ pub fn findConnectionInContent(content: []const u8, profile_name: []const u8, le
     return null;
 }
 
+/// Like `connectionByName`, but also matches a saved profile's host/IP when the
+/// name does not hit. Name wins so two profiles that share a host stay distinct.
+pub fn connectionByNameOrHost(allocator: std.mem.Allocator, key: []const u8, legacy_algorithms: bool) ?ssh_connection.SshConnection {
+    const path = profilesPath(allocator) catch return null;
+    defer allocator.free(path);
+    const content = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch return null;
+    defer allocator.free(content);
+    return findConnectionInContentByNameOrHost(content, key, legacy_algorithms);
+}
+
+pub fn findConnectionInContentByNameOrHost(content: []const u8, key: []const u8, legacy_algorithms: bool) ?ssh_connection.SshConnection {
+    if (findConnectionInContent(content, key, legacy_algorithms)) |conn| return conn;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trimRight(u8, line_raw, "\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        const profile = profile_codec.decodeSshProfileLine(line) orelse continue;
+        if (!std.ascii.eqlIgnoreCase(key, profile_codec.profileField(&profile, .ip))) continue;
+        return connectionFromProfile(&profile, legacy_algorithms);
+    }
+    return null;
+}
+
 pub fn connectionFromProfile(profile: *const profile_codec.SshProfile, legacy_algorithms: bool) ?ssh_connection.SshConnection {
     const host = profile_codec.profileField(profile, .ip);
     const user = profile_codec.profileField(profile, .user);
@@ -236,6 +259,20 @@ test "ssh_profile_store: resolves key-auth connection from encoded ssh_hosts con
     try std.testing.expectEqual(ssh_connection.SshAuthMethod.key, conn.auth_method);
     try std.testing.expectEqualStrings("C:/Users/alice/.ssh/id_ed25519", conn.identityFile());
     try std.testing.expect(!conn.password_auth);
+}
+
+test "ssh_profile_store: name-or-host lookup prefers name then host" {
+    var content: std.ArrayListUnmanaged(u8) = .empty;
+    defer content.deinit(std.testing.allocator);
+    try appendEncodedProfileForTest(std.testing.allocator, &content, &.{
+        "CPU", "10.0.0.9", "alice", "", "22", "",
+    });
+
+    const by_name = findConnectionInContentByNameOrHost(content.items, "cpu", false) orelse return error.ExpectedConnection;
+    try std.testing.expectEqualStrings("10.0.0.9", by_name.host());
+    const by_host = findConnectionInContentByNameOrHost(content.items, "10.0.0.9", false) orelse return error.ExpectedConnection;
+    try std.testing.expectEqualStrings("alice", by_host.user());
+    try std.testing.expect(findConnectionInContentByNameOrHost(content.items, "missing", false) == null);
 }
 
 test "ssh_profile_store: rejects unsafe profile fields" {

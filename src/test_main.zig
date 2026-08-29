@@ -64,6 +64,7 @@ comptime {
         _ = @import("agent_tools/sessions.zig");
         _ = @import("agent_tools/access.zig");
         _ = @import("agent_tools/files.zig");
+        _ = @import("agent_tools/transfer.zig");
         _ = @import("agent_tools/exec.zig");
         _ = @import("agent_tools/dynamic.zig");
         _ = @import("agent_tools/weixin.zig");

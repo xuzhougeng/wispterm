@@ -632,6 +632,39 @@ fn buildDownloadCommand(buf: *[2048]u8, remote_path: []const u8) ?[]const u8 {
     return buildRemoteReadCommand(buf, remote_path);
 }
 
+/// Remote path kind returned by `probeRemotePath` / `classifyRemoteProbeOutput`.
+pub const RemotePathKind = enum { missing, file, directory };
+
+/// Parse the compact token printed by `buildRemoteProbeCommand`.
+pub fn classifyRemoteProbeOutput(output: []const u8) ?RemotePathKind {
+    const trimmed = std.mem.trim(u8, output, " \t\r\n");
+    if (std.mem.eql(u8, trimmed, "DIR")) return .directory;
+    if (std.mem.eql(u8, trimmed, "FILE")) return .file;
+    if (std.mem.eql(u8, trimmed, "MISSING")) return .missing;
+    return null;
+}
+
+/// Build a remote `test -d` / `test -e` probe that prints DIR, FILE, or MISSING.
+pub fn buildRemoteProbeCommand(buf: *[2048]u8, path: []const u8) ?[]const u8 {
+    var pos: usize = 0;
+    if (!appendSlice(buf, &pos, "if test -d ")) return null;
+    if (!appendShellQuote(buf, &pos, path)) return null;
+    if (!appendSlice(buf, &pos, "; then printf DIR; elif test -e ")) return null;
+    if (!appendShellQuote(buf, &pos, path)) return null;
+    if (!appendSlice(buf, &pos, "; then printf FILE; else printf MISSING; fi")) return null;
+    return buf[0..pos];
+}
+
+/// Classify a remote path by running the probe over ssh. Returns null when
+/// ssh fails or the remote output is not one of the three tokens.
+pub fn probeRemotePath(allocator: std.mem.Allocator, conn: *const SshConnection, path: []const u8) ?RemotePathKind {
+    var cmd_buf: [2048]u8 = undefined;
+    const command = buildRemoteProbeCommand(&cmd_buf, path) orelse return null;
+    const output = sshExec(allocator, conn, command) orelse return null;
+    defer allocator.free(output);
+    return classifyRemoteProbeOutput(output);
+}
+
 /// Build `cat -- '<path>'` to stream a remote file's bytes to stdout.
 pub fn buildRemoteReadCommand(buf: *[2048]u8, path: []const u8) ?[]const u8 {
     var pos: usize = 0;
@@ -1297,6 +1330,22 @@ test "buildUploadCommand handles target directories" {
     var buf: [2048]u8 = undefined;
     const command = buildUploadCommand(&buf, "/tmp", "C:\\Users\\me\\image.png") orelse unreachable;
     try std.testing.expectEqualStrings("if test -d '/tmp'; then cat > '/tmp'/'image.png'; else cat > '/tmp'; fi", command);
+}
+
+test "buildRemoteProbeCommand quotes the path and prints DIR/FILE/MISSING" {
+    var buf: [2048]u8 = undefined;
+    const command = buildRemoteProbeCommand(&buf, "/data6/ofo_data/test_file/osrc") orelse unreachable;
+    try std.testing.expectEqualStrings(
+        "if test -d '/data6/ofo_data/test_file/osrc'; then printf DIR; elif test -e '/data6/ofo_data/test_file/osrc'; then printf FILE; else printf MISSING; fi",
+        command,
+    );
+}
+
+test "classifyRemoteProbeOutput maps DIR/FILE/MISSING tokens" {
+    try std.testing.expectEqual(RemotePathKind.directory, classifyRemoteProbeOutput("DIR\n").?);
+    try std.testing.expectEqual(RemotePathKind.file, classifyRemoteProbeOutput("FILE").?);
+    try std.testing.expectEqual(RemotePathKind.missing, classifyRemoteProbeOutput("  MISSING\r\n").?);
+    try std.testing.expect(classifyRemoteProbeOutput("nope") == null);
 }
 
 test "appendSshOptions key-based auth" {

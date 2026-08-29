@@ -41,6 +41,7 @@ const static_definitions = [_]Definition{
     .{ .name = "continue_later", .label = "continue_later", .description = "Schedule this Agent session to continue a long-running task later.", .category = .agent },
     .{ .name = "read_file", .label = "read_file", .description = "Read a local or remote text file.", .category = .file },
     .{ .name = "copy_file", .label = "copy_file", .description = "Copy a file between local, WSL, and SSH contexts.", .category = .file },
+    .{ .name = "transfer_between_contexts", .label = "transfer_between_contexts", .description = "Transfer a file or directory between local disk and SSH.", .category = .file },
     .{ .name = "write_file", .label = "write_file", .description = "Create or overwrite a local or remote text file.", .category = .file },
     .{ .name = "edit_file", .label = "edit_file", .description = "Replace exact text in a local or remote text file.", .category = .file },
     .{ .name = "ssh_profile_save", .label = "ssh_profile_save", .description = "Create or update a saved WispTerm SSH profile.", .category = .session },
@@ -295,6 +296,7 @@ test "first_party_tools: active definitions include webread and the local comman
     const local_name = platform_process.localCommandToolName();
 
     try std.testing.expect(catalogContains(defs, "webread"));
+    try std.testing.expect(catalogContains(defs, "transfer_between_contexts"));
     try std.testing.expect(catalogContains(defs, "continue_later"));
     try std.testing.expect(catalogContains(defs, local_name));
     try std.testing.expectEqual(@as(?bool, true), catalogDisableable("webread"));

@@ -192,8 +192,12 @@ The AI agent can read and edit files directly:
 - **read_file** — read a local or remote text file (returns numbered lines; supports an `offset`/`limit` line range for large files).
 - **write_file** — create or overwrite a file with exact content.
 - **edit_file** — replace an exact, unique string (or every occurrence with `replace_all`).
+- **copy_file** — copy a small artifact between local, WSL, and SSH (for example staging a plot under `wispterm-files` before `send_attachment`).
+- **transfer_between_contexts** — copy one exact file or directory between local disk and an SSH host, including multi-GB dataset trees. Uses the same OpenSSH `scp` helpers as File Explorer (`scp -r` for directories). Never overwrites an existing destination; local downloads stage beside the target then rename. The agent should call this instead of composing `scp` / `rsync` in `powershell_exec`, `shell_exec`, or `ssh_session_exec`.
 
 To edit a file on a remote SSH server, the agent passes the `surface_id` of an open SSH terminal tab; the operation runs on that host over the existing connection. Local files (no `surface_id`) resolve relative paths against the conversation's working directory. Writes and edits display a diff and, depending on the permission level (confirm / auto / full), may ask you to approve before applying.
+
+`transfer_between_contexts` identifies the SSH side as `local`, an open terminal `surface_id`, or a saved SSH profile name/host (for example `CPU`). Paths must be exact: SSH paths are absolute or `~/`, local paths are absolute, and globs are rejected. For a download to this machine, pass the exact new local path the user chose — if they have not chosen one, the tool refuses to guess `Downloads`.
 
 SSH `edit_file` can use the optional `wispterm-filetool` helper on the remote host so the exact-string replacement is checked and applied server-side. Build it separately with `zig build wispterm-filetool -Dtarget=<remote-target>` and put `zig-out/bin/wispterm-filetool` on the remote server's `PATH`. If the helper is missing, WispTerm automatically falls back to the legacy SSH read/apply/write path.
 
