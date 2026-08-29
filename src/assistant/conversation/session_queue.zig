@@ -13,6 +13,7 @@ const prompt_queue = @import("prompt_queue.zig");
 const chatops_reply = @import("../../chatops/reply.zig");
 const ai_chat_protocol = @import("protocol.zig");
 const ai_chat_types = @import("types.zig");
+const input_key = @import("../../input/key.zig");
 
 const Session = session_mod.Session;
 const OwnedReplyContext = ai_chat_types.OwnedReplyContext;
@@ -92,6 +93,7 @@ pub fn drainPromptQueue(self: *Session) bool {
     self.pending_reply_context = entry.reply_context;
     entry.reply_context = null;
     if (self.queue_selected > 0) self.queue_selected -= 1;
+    closePanelIfEmptyLocked(self);
     self.mutex.unlock();
 
     self.submit();
@@ -132,7 +134,44 @@ pub fn clearPromptQueue(self: *Session) usize {
     const n = self.prompt_queue.len();
     self.prompt_queue.clear();
     self.queue_selected = 0;
+    self.queue_open = false;
     return n;
+}
+
+fn closePanelIfEmptyLocked(self: *Session) void {
+    if (self.prompt_queue.len() == 0) self.queue_open = false;
+}
+
+/// Queue-panel key dispatch. Returns true if the key was consumed. An empty
+/// panel closes without swallowing Enter (so a following submit still fires);
+/// Escape and other keys still close and consume so they cannot stop an
+/// in-flight request or arm rewind. Enter with composer text dismisses the
+/// panel and falls through so the new prompt is submitted (and re-queued if
+/// the request is still inflight) instead of recalling the selected entry.
+pub fn handlePanelKey(self: *Session, ev: input_key.KeyEvent) bool {
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    if (!self.queue_open) return false;
+    if (self.prompt_queue.len() == 0) {
+        self.queue_open = false;
+        return ev.key != .enter;
+    }
+    switch (ev.key) {
+        .arrow_up => if (ev.alt) moveQueuedPromptLocked(self, -1) else moveQueueSelectionLocked(self, -1),
+        .arrow_down => if (ev.alt) moveQueuedPromptLocked(self, 1) else moveQueueSelectionLocked(self, 1),
+        .delete, .backspace => removeSelectedQueuedPromptLocked(self),
+        .enter => {
+            if (std.mem.trim(u8, self.input(), " \t\r\n").len == 0) {
+                recallSelectedQueuedPromptLocked(self);
+                self.queue_open = false;
+                return true;
+            }
+            self.queue_open = false;
+            return false;
+        },
+        else => self.queue_open = false,
+    }
+    return true;
 }
 
 /// 在 [0, len) 内移动面板选中项，到边界停住（不回绕）。假定 mutex 已持有。
@@ -167,6 +206,7 @@ pub fn removeSelectedQueuedPromptLocked(self: *Session) void {
     _ = self.prompt_queue.remove(sel);
     const remain = self.prompt_queue.len();
     self.queue_selected = if (remain == 0) 0 else @min(sel, remain - 1);
+    closePanelIfEmptyLocked(self);
 }
 
 /// 把选中条目取回 composer 编辑：出队，文本/图片/回复上下文回到输入区。
@@ -406,4 +446,117 @@ test "prompt queue: drain replays the head through the normal submit path" {
     try std.testing.expectEqualStrings("first", session.input());
     try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
     try std.testing.expect(!session.request_inflight);
+}
+
+test "prompt queue: drain closes the panel after the last entry is sent" {
+    const allocator = std.testing.allocator;
+    const session = try testSession(allocator, "");
+    defer session.deinit();
+
+    session.mutex.lock();
+    try std.testing.expect(enqueueQueuedPromptLocked(session, "only", false, null));
+    session.queue_open = true;
+    session.mutex.unlock();
+
+    try std.testing.expect(session.drainPromptQueue());
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expectEqual(@as(usize, 0), session.prompt_queue.len());
+    try std.testing.expect(!session.queue_open);
+}
+
+test "prompt queue: drain keeps the panel open while entries remain" {
+    const allocator = std.testing.allocator;
+    const session = try testSession(allocator, "");
+    defer session.deinit();
+
+    session.mutex.lock();
+    try std.testing.expect(enqueueQueuedPromptLocked(session, "first", false, null));
+    try std.testing.expect(enqueueQueuedPromptLocked(session, "second", false, null));
+    session.queue_open = true;
+    session.mutex.unlock();
+
+    try std.testing.expect(session.drainPromptQueue());
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expectEqual(@as(usize, 1), session.prompt_queue.len());
+    try std.testing.expect(session.queue_open);
+}
+
+test "prompt queue: removing the last entry closes the panel" {
+    const allocator = std.testing.allocator;
+    const session = try testSession(allocator, "key");
+    defer session.deinit();
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expect(enqueueQueuedPromptLocked(session, "only", false, null));
+    session.queue_open = true;
+    session.queue_selected = 0;
+    removeSelectedQueuedPromptLocked(session);
+    try std.testing.expectEqual(@as(usize, 0), session.prompt_queue.len());
+    try std.testing.expect(!session.queue_open);
+}
+
+test "prompt queue: empty panel lets Enter fall through" {
+    const allocator = std.testing.allocator;
+    const session = try testSession(allocator, "key");
+    defer session.deinit();
+
+    session.queue_open = true;
+    try std.testing.expect(!handlePanelKey(session, .{ .key = .enter }));
+    try std.testing.expect(!session.queue_open);
+}
+
+test "prompt queue: empty panel still consumes Escape" {
+    const allocator = std.testing.allocator;
+    const session = try testSession(allocator, "key");
+    defer session.deinit();
+
+    session.queue_open = true;
+    try std.testing.expect(handlePanelKey(session, .{ .key = .escape }));
+    try std.testing.expect(!session.queue_open);
+}
+
+test "prompt queue: Enter with composer text dismisses instead of recalling" {
+    const allocator = std.testing.allocator;
+    const session = try testSession(allocator, "key");
+    defer session.deinit();
+
+    session.mutex.lock();
+    try std.testing.expect(enqueueQueuedPromptLocked(session, "queued", false, null));
+    session.setInputTextLocked("new prompt");
+    session.queue_open = true;
+    session.mutex.unlock();
+
+    try std.testing.expect(!handlePanelKey(session, .{ .key = .enter }));
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expect(!session.queue_open);
+    try std.testing.expectEqual(@as(usize, 1), session.prompt_queue.len());
+    try std.testing.expectEqualStrings("queued", session.prompt_queue.entries.items[0].text);
+    try std.testing.expectEqualStrings("new prompt", session.input());
+}
+
+test "prompt queue: Enter with empty composer recalls the selected entry" {
+    const allocator = std.testing.allocator;
+    const session = try testSession(allocator, "key");
+    defer session.deinit();
+
+    session.mutex.lock();
+    try std.testing.expect(enqueueQueuedPromptLocked(session, "edit me", false, null));
+    session.queue_open = true;
+    session.queue_selected = 0;
+    session.mutex.unlock();
+
+    try std.testing.expect(handlePanelKey(session, .{ .key = .enter }));
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expect(!session.queue_open);
+    try std.testing.expectEqual(@as(usize, 0), session.prompt_queue.len());
+    try std.testing.expectEqualStrings("edit me", session.input());
 }

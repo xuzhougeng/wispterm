@@ -35,6 +35,7 @@ pub const INPUT_MAX_H: f32 = composer_layout.input_max_h;
 pub const INPUT_FIELD_PAD_TOP: f32 = composer_layout.Field.pad_top;
 const PERMISSION_CHIP_W: f32 = 104;
 const PERMISSION_CHIP_H: f32 = 24;
+const PERMISSION_CHIP_GAP: f32 = 12;
 const STATUS_SLOT_W: f32 = 280;
 // Wide panels (a full AI-chat tab) show the status as text plus an "Esc Stop"
 // button while a request runs.
@@ -212,10 +213,7 @@ pub fn render(
     // handful of pixels for both the model and the Agent label. Anchor the
     // chip beside the dot in compact mode and give the model the reclaimed
     // header width.
-    const chip_x = if (compact)
-        x + w - LINE_PAD_X - COMPACT_STATUS_TRAILING_RESERVE - 12 - PERMISSION_CHIP_W
-    else
-        permissionChipX(x, w);
+    const chip_x = headerPermissionChipX(x, w, compact);
     const mode_text = if (session.agent_enabled) "Agent" else "Chat";
     const mode_slot_w = @max(MODE_SLOT_W, titlebarTextWidth(mode_text) + 20);
     const mode_x = @max(x + LINE_PAD_X, chip_x - mode_slot_w - 8);
@@ -679,11 +677,12 @@ pub fn permissionChipHitTest(
     titlebar_offset: f32,
     chat_x: f32,
     chat_w: f32,
+    compact: bool,
 ) bool {
     _ = window_width;
     const x = @round(chat_x);
     const w = @round(@max(1.0, chat_w));
-    const chip_x = permissionChipX(x, w);
+    const chip_x = headerPermissionChipX(x, w, compact);
     return pointInRect(@floatCast(xpos), @floatCast(ypos), .{
         .x = chip_x,
         .top_px = titlebar_offset + 12,
@@ -695,8 +694,8 @@ pub fn permissionChipHitTest(
 /// Bounding box of the header model label (top-left of the panel), or null when
 /// the label is hidden because the panel is too narrow (mirrors the render-time
 /// `model_limit > 24` guard in `render`).
-fn modelLabelRect(session: *ai_chat.Session, x: f32, w: f32, titlebar_offset: f32) ?Rect {
-    const chip_x = permissionChipX(x, w);
+fn modelLabelRect(session: *ai_chat.Session, x: f32, w: f32, titlebar_offset: f32, compact: bool) ?Rect {
+    const chip_x = headerPermissionChipX(x, w, compact);
     const mode_x = @max(x + LINE_PAD_X, chip_x - MODE_SLOT_W - 8);
     const model_x = x + LINE_PAD_X;
     const model_limit = mode_x - model_x - 12;
@@ -713,11 +712,12 @@ pub fn modelLabelHitTest(
     titlebar_offset: f32,
     chat_x: f32,
     chat_w: f32,
+    compact: bool,
 ) bool {
     _ = window_width;
     const x = @round(chat_x);
     const w = @round(@max(1.0, chat_w));
-    const rect = modelLabelRect(session, x, w, titlebar_offset) orelse return false;
+    const rect = modelLabelRect(session, x, w, titlebar_offset, compact) orelse return false;
     return pointInRect(@floatCast(xpos), @floatCast(ypos), rect);
 }
 
@@ -1366,7 +1366,21 @@ fn permissionChipX(x: f32, w: f32) f32 {
     // so the right-anchored [mode][chip] cluster can't collapse onto the
     // left-aligned model label. On wide tabs this matches the old ~280 reserve.
     const status_reserve = @min(STATUS_SLOT_W, @max(72.0, w * 0.22));
-    return ai_chat_layout.permissionChipX(x, w, LINE_PAD_X, status_reserve, 12, PERMISSION_CHIP_W);
+    return ai_chat_layout.permissionChipX(x, w, LINE_PAD_X, status_reserve, PERMISSION_CHIP_GAP, PERMISSION_CHIP_W);
+}
+
+fn headerPermissionChipX(x: f32, w: f32, compact: bool) f32 {
+    if (compact) {
+        return ai_chat_layout.permissionChipX(
+            x,
+            w,
+            LINE_PAD_X,
+            COMPACT_STATUS_TRAILING_RESERVE,
+            PERMISSION_CHIP_GAP,
+            PERMISSION_CHIP_W,
+        );
+    }
+    return permissionChipX(x, w);
 }
 
 // Clickable square centered on the status dot. When a request is in flight the
@@ -1422,7 +1436,7 @@ fn statusActionRect(x: f32, w: f32, titlebar_offset: f32, text: []const u8, comp
     // the LEFT of the status dot. Either way it is clamped to the space right of
     // the permission chip so it can't overlap the chip/dot on a narrow panel.
     const right = if (compact) statusDotRect(x, w, titlebar_offset).x - 8 else x + w - LINE_PAD_X;
-    const avail = @max(1.0, right - (permissionChipX(x, w) + PERMISSION_CHIP_W + 12));
+    const avail = @max(1.0, right - (headerPermissionChipX(x, w, compact) + PERMISSION_CHIP_W + 12));
     const status_w = @min(@min(measureText(text), STATUS_SLOT_W), avail);
     return .{
         .x = right - status_w,
@@ -1468,8 +1482,20 @@ fn renderPromptQueuePanel(session: *ai_chat.Session, layout: InputLayout) void {
     const popup_w = @min(layout.field_w, SUGGESTION_MAX_W);
     const popup_x = layout.field_x;
     const popup_y = layout.field_y + layout.field_h + SUGGESTION_GAP;
-    const header_h = @max(SUGGESTION_ROW_H + 2, font.g_titlebar_cell_height + REWIND_HEADER_EXTRA);
+    const header_row_h = @max(SUGGESTION_ROW_H + 2, font.g_titlebar_cell_height + REWIND_HEADER_EXTRA);
     const row_h = @max(SUGGESTION_ROW_H + 8, font.g_titlebar_cell_height + REWIND_ROW_EXTRA);
+    var title_buf: [40]u8 = undefined;
+    const title = std.fmt.bufPrint(&title_buf, "Queued Prompts ({d})", .{total}) catch "Queued Prompts";
+    const hints = "Enter edit  Del  Alt+Up/Dn  Esc";
+    const split = ai_chat_layout.popupHeaderSplit(
+        popup_x,
+        popup_w,
+        REWIND_PAD_X,
+        titlebarTextWidth(title),
+        80,
+        16,
+    );
+    const header_h = header_row_h * if (split.stacked) @as(f32, 2) else 1;
     // At least one row so an empty queue still shows its empty-state line.
     const visible = @min(@max(total, 1), QUEUE_MAX_ROWS);
     const popup_h = REWIND_PAD_Y * 2 + header_h + row_h * @as(f32, @floatFromInt(visible));
@@ -1484,23 +1510,23 @@ fn renderPromptQueuePanel(session: *ai_chat.Session, layout: InputLayout) void {
 
     const top = popup_y + popup_h - REWIND_PAD_Y;
 
-    const title_row_y = top - header_h;
-    const title_text_y = title_row_y + @round((header_h - font.g_titlebar_cell_height) / 2);
-    var title_buf: [40]u8 = undefined;
-    const title = std.fmt.bufPrint(&title_buf, "Queued Prompts ({d})", .{total}) catch "Queued Prompts";
+    const title_row_y = top - header_row_h;
+    const title_text_y = title_row_y + @round((header_row_h - font.g_titlebar_cell_height) / 2);
     _ = titlebar.renderTextLimited(
         title,
-        popup_x + REWIND_PAD_X,
+        split.title_x,
         title_text_y,
         mixColor(fg, accent, 0.16),
-        popup_w - REWIND_PAD_X * 2,
+        split.title_w,
     );
+    const hint_row_y = if (split.stacked) top - header_row_h * 2 else title_row_y;
+    const hint_text_y = hint_row_y + @round((header_row_h - font.g_titlebar_cell_height) / 2);
     _ = titlebar.renderTextLimited(
-        "Enter edit  Del remove  Alt+Up/Dn move  Esc close",
-        popup_x + REWIND_PAD_X + 176,
-        title_text_y,
+        hints,
+        split.hint_x,
+        hint_text_y,
         mixColor(bg, fg, 0.52),
-        @max(24.0, popup_w - REWIND_PAD_X * 2 - 176),
+        split.hint_w,
     );
 
     if (total == 0) {

@@ -181,6 +181,46 @@ pub fn permissionChipX(x: f32, w: f32, line_pad_x: f32, status_slot_w: f32, chip
     return x + w - line_pad_x - status_slot_w - chip_gap - chip_w;
 }
 
+/// Left-aligned title plus a hint string in a popup header, never overlapping.
+/// If both cannot fit on one row (with `gap` between them), `stacked` is true
+/// and both occupy the full inner width on separate rows.
+pub const PopupHeaderSplit = struct {
+    title_x: f32,
+    title_w: f32,
+    hint_x: f32,
+    hint_w: f32,
+    stacked: bool,
+};
+
+pub fn popupHeaderSplit(
+    popup_x: f32,
+    popup_w: f32,
+    pad_x: f32,
+    title_w: f32,
+    min_hint_w: f32,
+    gap: f32,
+) PopupHeaderSplit {
+    const title_x = popup_x + pad_x;
+    const inner_w = @max(0.0, popup_w - pad_x * 2);
+    if (title_w + gap + min_hint_w <= inner_w) {
+        const hint_x = title_x + title_w + gap;
+        return .{
+            .title_x = title_x,
+            .title_w = title_w,
+            .hint_x = hint_x,
+            .hint_w = @max(min_hint_w, popup_x + popup_w - pad_x - hint_x),
+            .stacked = false,
+        };
+    }
+    return .{
+        .title_x = title_x,
+        .title_w = inner_w,
+        .hint_x = title_x,
+        .hint_w = inner_w,
+        .stacked = true,
+    };
+}
+
 pub fn stopButtonRect(
     x: f32,
     w: f32,
@@ -434,6 +474,34 @@ test "copyButtonRectForBlock anchors to block top-right" {
 test "permissionChipX" {
     const px = permissionChipX(0, 1000, 18, 280, 12, 104); // w - line_pad - status - gap - chip
     try std.testing.expectApproxEqAbs(@as(f32, 586), px, 0.001);
+}
+
+test "compact copilot chip is to the right of the wide-tab chip" {
+    // Default copilot sidebar is 480px. Wide-tab layout reserves ~22% for
+    // status text; compact only reserves the 36px status-dot trailing pad.
+    // A click on the right half of the compact chip (the underlined Full /
+    // Auto / Ask label) must not land in the wide-tab hit box — that miss is
+    // why the copilot sidebar chip used to ignore clicks.
+    const compact = permissionChipX(0, 480, 18, 36, 12, 104);
+    const status_reserve = @min(@as(f32, 280), @max(@as(f32, 72), 480.0 * 0.22));
+    const wide = permissionChipX(0, 480, 18, status_reserve, 12, 104);
+    try std.testing.expect(compact > wide);
+    const click_x = compact + 52;
+    try std.testing.expect(click_x > wide + 104);
+}
+
+test "popupHeaderSplit keeps title and hints from overlapping on a wide popup" {
+    const s = popupHeaderSplit(0, 800, 14, 160, 80, 16);
+    try std.testing.expect(!s.stacked);
+    try std.testing.expect(s.hint_x >= s.title_x + s.title_w);
+    try std.testing.expectApproxEqAbs(@as(f32, 14 + 160 + 16), s.hint_x, 0.001);
+}
+
+test "popupHeaderSplit stacks on a narrow sidebar popup" {
+    const s = popupHeaderSplit(0, 280, 14, 176, 80, 16);
+    try std.testing.expect(s.stacked);
+    try std.testing.expectApproxEqAbs(s.title_x, s.hint_x, 0.001);
+    try std.testing.expectApproxEqAbs(s.title_w, s.hint_w, 0.001);
 }
 
 test "stopButtonRect centers in header_h" {
