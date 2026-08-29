@@ -28,6 +28,7 @@ const terminal_tools = @import("terminal.zig");
 const agent_sessions = @import("sessions.zig");
 const tool_access = @import("access.zig");
 const agent_files = @import("files.zig");
+const agent_transfer = @import("transfer.zig");
 const agent_schedule = @import("schedule.zig");
 const agent_exec = @import("exec.zig");
 const agent_dynamic = @import("dynamic.zig");
@@ -213,6 +214,15 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         const dest_path = tool_args.string(args.value, "dest_path");
         const dest_name = tool_args.string(args.value, "dest_name");
         return agent_files.copyFile(ctx, source_path, source_surface_id, dest_surface_id, dest_path, dest_name);
+    }
+    if (std.mem.eql(u8, call.name, "transfer_between_contexts")) {
+        const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const source_context_id = tool_args.string(args.value, "source_context_id") orelse return ctx.allocator.dupe(u8, "Missing source_context_id");
+        const source_path = tool_args.string(args.value, "source_path") orelse return ctx.allocator.dupe(u8, "Missing source_path");
+        const destination_context_id = tool_args.string(args.value, "destination_context_id") orelse return ctx.allocator.dupe(u8, "Missing destination_context_id");
+        const destination_path = tool_args.string(args.value, "destination_path");
+        return agent_transfer.run(ctx, source_context_id, source_path, destination_context_id, destination_path, .{});
     }
     if (std.mem.eql(u8, call.name, "write_file")) {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
@@ -1192,6 +1202,27 @@ test "fileAccessGate: write outside the working dir forces approval" {
     const gate = tool_access.fileGate(&ctx, "/etc/hosts", true);
     try std.testing.expect(gate.force); // risky: absolute path outside working dir
     try std.testing.expect(!gate.skip);
+}
+
+test "executeToolCall requires transfer_between_contexts source_context_id" {
+    const a = std.testing.allocator;
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .permission = .full, .access_rules = null },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const out = try executeToolCall(&ctx, .{
+        .id = @constCast("call-xfer"),
+        .name = @constCast("transfer_between_contexts"),
+        .arguments = @constCast("{}"),
+    });
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Missing source_context_id") != null);
 }
 
 test "copy_file copies a local artifact into wispterm-files by default" {
