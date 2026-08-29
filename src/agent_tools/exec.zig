@@ -837,6 +837,31 @@ fn extractPromptLine(snapshot: []const u8) []const u8 {
     return "";
 }
 
+fn endsWithIgnoreCase(hay: []const u8, needle: []const u8) bool {
+    if (hay.len < needle.len) return false;
+    return std.ascii.eqlIgnoreCase(hay[hay.len - needle.len ..], needle);
+}
+
+/// zsh/bash PS2 while a heredoc, quote, or similar construct is still open.
+/// These end in `>` so the ready-prompt heuristic would otherwise treat a stuck
+/// `heredoc>` line as idle and inject the next command into the body.
+fn looksLikeContinuationPrompt(line: []const u8) bool {
+    const trimmed = std.mem.trim(u8, line, " \t\r\n");
+    if (trimmed.len == 0) return false;
+    const suffixes = [_][]const u8{
+        "heredoc>",
+        "dquote>",
+        "quote>",
+        "bquote>",
+        "cmdsubst>",
+        "mathsubst>",
+    };
+    for (suffixes) |suffix| {
+        if (endsWithIgnoreCase(trimmed, suffix)) return true;
+    }
+    return false;
+}
+
 /// Heuristic: does a trailing line look like an interactive REPL prompt waiting
 /// for input? True for `>>>`, `>`, `In [3]:`, `julia>`, `dbname=#`, `$`, ... .
 /// Conservative on length so long output lines are not mistaken for a prompt.
@@ -845,6 +870,7 @@ fn extractPromptLine(snapshot: []const u8) []const u8 {
 fn looksLikeReadyPrompt(line: []const u8) bool {
     const trimmed = std.mem.trim(u8, line, " \t\r\n");
     if (trimmed.len == 0 or trimmed.len > 64) return false;
+    if (looksLikeContinuationPrompt(trimmed)) return false;
     return switch (trimmed[trimmed.len - 1]) {
         '>', ':', '$', '#' => true,
         else => false,
@@ -958,14 +984,18 @@ fn unixSessionExecTool(ctx: *ToolContext, kind: UnixSessionKind, surface_id: []c
 }
 
 fn allocUnixSessionCommand(allocator: std.mem.Allocator, nonce: i64, command: []const u8) ![]u8 {
-    // Keep `{` on the same incomplete first line so hist_ignore_space covers
-    // the whole compound command. Put the body between newlines so a heredoc
-    // terminator (`EOF`) stays alone on its line — gluing `; }` onto it leaves
-    // the remote interactive shell waiting at PS2.
+    // Do not wrap the user command in `{ } 2>&1; var=$?; printf END`. That
+    // closer is swallowed when the interactive shell is still in a heredoc
+    // (indented terminator, PS2 `heredoc>`), so the agent hangs and a second
+    // command gets typed into the body. Write the command to a temp script
+    // with a delimiter we own, then source it in the current shell so `cd`
+    // and exports persist. START/END stay as sentinels; `$?` is printed
+    // directly (no `__wispterm_agent_status`). A PTY already merges stderr.
+    const body = std.mem.trimRight(u8, command, "\r\n");
     return std.fmt.allocPrint(
         allocator,
-        " setopt hist_ignore_space 2>/dev/null; HISTCONTROL=ignorespace; printf '\\n__WISPTERM_AGENT_START_{d}__\\n'; {{\n{s}\n}} 2>&1; __wispterm_agent_status=$?; printf '\\n__WISPTERM_AGENT_END_{d}__:%s\\n' \"$__wispterm_agent_status\"\r",
-        .{ nonce, std.mem.trimRight(u8, command, "\r\n"), nonce },
+        " setopt hist_ignore_space 2>/dev/null; HISTCONTROL=ignorespace; cat > /tmp/.wispterm-agent-{d}.sh <<'WISPTERM_CMD_{d}'\n{s}\nWISPTERM_CMD_{d}\nprintf '\\n__WISPTERM_AGENT_START_{d}__\\n'; . /tmp/.wispterm-agent-{d}.sh; printf '\\n__WISPTERM_AGENT_END_{d}__:%s\\n' \"$?\"; rm -f /tmp/.wispterm-agent-{d}.sh\r",
+        .{ nonce, nonce, body, nonce, nonce, nonce, nonce, nonce },
     );
 }
 
@@ -1254,23 +1284,29 @@ test "shell exec refuses bare REPL launchers but allows run-and-exit invocations
     }
 }
 
-test "shell exec wraps the command on its own lines so a heredoc terminator stays intact" {
+test "shell exec wraps the command as a temp script so nested heredocs stay intact" {
     const allocator = std.testing.allocator;
 
     const wrapped = try allocUnixSessionCommand(allocator, 123, "python3 -c \"\nprint(1)\n\"\n");
     defer allocator.free(wrapped);
     try std.testing.expect(wrapped[0] == ' ');
     try std.testing.expect(std.mem.endsWith(u8, wrapped, "\r"));
-    try std.testing.expect(std.mem.indexOf(u8, wrapped, "; {\npython3 -c \"\nprint(1)\n\"\n} 2>&1;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, wrapped, "python3 -c \"\nprint(1)\n\"; }") == null);
+    try std.testing.expect(std.mem.indexOf(u8, wrapped, "<<'WISPTERM_CMD_123'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrapped, "python3 -c \"\nprint(1)\n\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrapped, "\nWISPTERM_CMD_123\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrapped, "} 2>&1") == null);
+    try std.testing.expect(std.mem.indexOf(u8, wrapped, "__wispterm_agent_status") == null);
+    try std.testing.expect(std.mem.indexOf(u8, wrapped, "\"$?\"") != null);
 
     const simple = try allocUnixSessionCommand(allocator, 1, "ls -la");
     defer allocator.free(simple);
-    try std.testing.expect(std.mem.indexOf(u8, simple, "; {\nls -la\n} 2>&1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, simple, "\nls -la\nWISPTERM_CMD_1\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, simple, ". /tmp/.wispterm-agent-1.sh") != null);
+    try std.testing.expect(std.mem.indexOf(u8, simple, "rm -f /tmp/.wispterm-agent-1.sh") != null);
 
     const escaped_space = try allocUnixSessionCommand(allocator, 123, "printf foo\\ \n");
     defer allocator.free(escaped_space);
-    try std.testing.expect(std.mem.indexOf(u8, escaped_space, "; {\nprintf foo\\ \n} 2>&1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, escaped_space, "\nprintf foo\\ \nWISPTERM_CMD_123\n") != null);
 
     const heredoc = try allocUnixSessionCommand(
         allocator,
@@ -1278,8 +1314,9 @@ test "shell exec wraps the command on its own lines so a heredoc terminator stay
         "cd /root && python3 - <<'EOF'\nprint(1)\nEOF\n",
     );
     defer allocator.free(heredoc);
-    try std.testing.expect(std.mem.indexOf(u8, heredoc, "\nEOF\n} 2>&1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, heredoc, "\nEOF\nWISPTERM_CMD_456\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, heredoc, "EOF;") == null);
+    try std.testing.expect(std.mem.indexOf(u8, heredoc, "EOF\n} 2>&1") == null);
     try std.testing.expect(std.mem.indexOf(u8, heredoc, "__WISPTERM_AGENT_START_456__") != null);
     try std.testing.expect(std.mem.indexOf(u8, heredoc, "__WISPTERM_AGENT_END_456__") != null);
 }
@@ -1288,11 +1325,13 @@ test "agent exec sentinel extracts output after a multiline heredoc wrapper echo
     const allocator = std.testing.allocator;
     const snapshot =
         "(base) u@h:~$  setopt hist_ignore_space 2>/dev/null; HISTCONTROL=ignorespace; " ++
-        "printf '\\n__WISPTERM_AGENT_START_789__\\n'; {\n" ++
+        "cat > /tmp/.wispterm-agent-789.sh <<'WISPTERM_CMD_789'\n" ++
         "python3 - <<'EOF'\n" ++
         "print(1)\n" ++
         "EOF\n" ++
-        "} 2>&1; __wispterm_agent_status=$?; printf '\\n__WISPTERM_AGENT_END_789__:%s\\n' \"$__wispterm_agent_status\"\n" ++
+        "WISPTERM_CMD_789\n" ++
+        "printf '\\n__WISPTERM_AGENT_START_789__\\n'; . /tmp/.wispterm-agent-789.sh; " ++
+        "printf '\\n__WISPTERM_AGENT_END_789__:%s\\n' \"$?\"; rm -f /tmp/.wispterm-agent-789.sh\n" ++
         "\n__WISPTERM_AGENT_START_789__\n" ++
         "1\n" ++
         "\n__WISPTERM_AGENT_END_789__:0\n" ++
@@ -1330,6 +1369,18 @@ test "looksLikeReadyPrompt accepts prompts and rejects output" {
     try std.testing.expect(!looksLikeReadyPrompt("2"));
     try std.testing.expect(!looksLikeReadyPrompt("TypeError: unsupported operand"));
     try std.testing.expect(!looksLikeReadyPrompt("this is a very long line of output that should not be treated as a prompt at all"));
+    try std.testing.expect(!looksLikeReadyPrompt("cursh heredoc>"));
+    try std.testing.expect(!looksLikeReadyPrompt("zsh heredoc>"));
+    try std.testing.expect(!looksLikeReadyPrompt("dquote>"));
+    try std.testing.expect(!looksLikeReadyPrompt("quote>"));
+}
+
+test "looksLikeContinuationPrompt detects heredoc and quote PS2" {
+    try std.testing.expect(looksLikeContinuationPrompt("cursh heredoc>"));
+    try std.testing.expect(looksLikeContinuationPrompt("heredoc>"));
+    try std.testing.expect(looksLikeContinuationPrompt("dquote>"));
+    try std.testing.expect(!looksLikeContinuationPrompt(">>>"));
+    try std.testing.expect(!looksLikeContinuationPrompt("$"));
 }
 
 test "promptReturned matches the captured prompt or a generic prompt" {
@@ -1505,6 +1556,16 @@ test "agent exec busy guard clears at a ready prompt after an interrupt" {
     // Completed normally -> not running regardless of the prompt heuristic.
     const done = "__WISPTERM_AGENT_START_444__\nhi\n__WISPTERM_AGENT_END_444__:0\n$ ";
     try std.testing.expect(!agentCommandStillRunning(done));
+
+    // Stuck in a heredoc PS2: ends with `>` so it used to look "ready" and a
+    // follow-up command was typed into the body.
+    const heredoc_ps2 =
+        "__WISPTERM_AGENT_START_555__\n" ++
+        "python3 - <<'PY'\n" ++
+        "print(1)\n" ++
+        "cursh heredoc> ";
+    try std.testing.expect(hasPendingAgentCommand(heredoc_ps2));
+    try std.testing.expect(agentCommandStillRunning(heredoc_ps2));
 }
 
 test "agent exec timeout message says still running, do not re-issue" {
