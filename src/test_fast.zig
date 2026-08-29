@@ -72,6 +72,21 @@ test "assistant conversation input routing owns keyboard target lookup" {
     try std.testing.expect(std.mem.indexOf(u8, input_source, "assistant_conversation.current(aiCopilotFocused())") != null);
 }
 
+test "copilot permission chip hit-test uses compact geometry" {
+    const renderer = @embedFile("renderer/assistant/conversation.zig");
+    const fn_start = std.mem.indexOf(u8, renderer, "pub fn permissionChipHitTest(") orelse return error.MissingPermissionChipHitTest;
+    const fn_body = renderer[fn_start .. fn_start + 600];
+    try std.testing.expect(std.mem.indexOf(u8, fn_body, "compact: bool") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fn_body, "headerPermissionChipX(x, w, compact)") != null);
+
+    const input_source = @embedFile("input.zig");
+    const copilot = std.mem.indexOf(u8, input_source, "true, // copilot sidebar: chip sits next to the status dot") orelse
+        return error.MissingCopilotCompactChip;
+    const tab = std.mem.indexOf(u8, input_source, "false, // full tab: chip uses the status-text reserve") orelse
+        return error.MissingTabWideChip;
+    try std.testing.expect(copilot < tab);
+}
+
 test "remote file ssh helpers include short keepalive options" {
     const remote_file_source = @embedFile("platform/remote_file.zig");
     try std.testing.expect(std.mem.indexOf(u8, remote_file_source, "\"ServerAliveInterval=5\"") != null);

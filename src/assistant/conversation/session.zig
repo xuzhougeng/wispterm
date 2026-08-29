@@ -2094,20 +2094,9 @@ pub const Session = struct {
         if (self.queue_open) {
             // 队列面板打开时优先截获按键（仿 rewind 选择器）：↑↓ 选择、
             // Alt+↑/↓ 重排、Delete/Backspace 删除、Enter 取回 composer 编辑、
-            // Esc 及其它键关闭。
-            self.mutex.lock();
-            switch (ev.key) {
-                .arrow_up => if (ev.alt) session_queue.moveQueuedPromptLocked(self, -1) else session_queue.moveQueueSelectionLocked(self, -1),
-                .arrow_down => if (ev.alt) session_queue.moveQueuedPromptLocked(self, 1) else session_queue.moveQueueSelectionLocked(self, 1),
-                .delete, .backspace => session_queue.removeSelectedQueuedPromptLocked(self),
-                .enter => {
-                    session_queue.recallSelectedQueuedPromptLocked(self);
-                    self.queue_open = false;
-                },
-                else => self.queue_open = false,
-            }
-            self.mutex.unlock();
-            return;
+            // Esc 关闭。空面板或 composer 已有新文本时 Enter 不吞掉，落到
+            // 下面的 submit 路径（busy 时再次入队）。
+            if (session_queue.handlePanelKey(self, ev)) return;
         }
 
         if (ev.ctrl and !ev.alt and ev.key == .key_a) {
