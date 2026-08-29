@@ -277,6 +277,10 @@ static int32_t wispterm_macos_round_double(double value) {
 // dispatch_sync self-deadlock; otherwise wait for the main run loop to drain
 // the block (the main thread idles in -nextEventMatchingMask: which keeps the
 // main queue running).
+//
+// Callers on the Zig main thread MUST keep pumping that queue while any
+// worker may still be in a run_on_main wait. A blocking Thread.join() on
+// the main thread during quit is issue #611.
 static void wispterm_macos_run_on_main(dispatch_block_t block) {
     if ([NSThread isMainThread]) {
         block();
@@ -1116,6 +1120,9 @@ void *wispterm_macos_window_create(
 }
 
 void wispterm_macos_window_destroy(void *handle) {
+    // Off-main this dispatch_sync's onto the GCD main queue. App.joinAllWindowThreads
+    // must keep pumping that queue until workers finish; otherwise quit deadlocks
+    // (GitHub issue #611).
     WispTermMacWindowState *state = wispterm_macos_state(handle);
     if (state == NULL) return;
     wispterm_macos_run_on_main(^{
