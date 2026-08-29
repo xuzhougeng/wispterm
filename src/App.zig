@@ -1268,19 +1268,19 @@ test "app: macOS window-thread join pumps the main queue (issue 611)" {
     const source = @embedFile("App.zig");
     const join_fn = "fn joinAllWindowThreads";
     const join_at = std.mem.indexOf(u8, source, join_fn) orelse return error.MissingJoin;
-    const body = source[join_at .. @min(source.len, join_at + 1500)];
+    const body = source[join_at..@min(source.len, join_at + 1500)];
     try std.testing.expect(std.mem.indexOf(u8, body, "live_window_threads") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "pumpWhileLive") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "pumpAppEvents") != null);
 
     const spawn_fn = "pub fn requestNewWindow(self: *App,";
     const spawn_at = std.mem.indexOf(u8, source, spawn_fn) orelse return error.MissingSpawn;
-    const spawn_body = source[spawn_at .. @min(source.len, spawn_at + 2500)];
+    const spawn_body = source[spawn_at..@min(source.len, spawn_at + 2500)];
     try std.testing.expect(std.mem.indexOf(u8, spawn_body, "live_window_threads.fetchAdd") != null);
 
     const thread_fn = "fn windowThreadMain";
     const thread_at = std.mem.indexOf(u8, source, thread_fn) orelse return error.MissingThreadMain;
-    const thread_body = source[thread_at .. @min(source.len, thread_at + 400)];
+    const thread_body = source[thread_at..@min(source.len, thread_at + 400)];
     try std.testing.expect(std.mem.indexOf(u8, thread_body, "live_window_threads.fetchSub") != null);
 }
 
