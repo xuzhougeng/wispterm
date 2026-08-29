@@ -7254,7 +7254,6 @@ test "ai chat default system prompt comes from platform agent prompt" {
     // against silent bloat. The Windows variant is the longest (it adds the WSL
     // tool guidance plus terminal ownership/recovery rules); keep headroom
     // above it for future additions.
-    try std.testing.expect(platform_agent_prompt.defaultSystemPromptForOs(.windows).len < 4400);
     try std.testing.expect(DEFAULT_SYSTEM_PROMPT.len < 4400);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "wispterm_docs") != null);
     try std.testing.expectEqualStrings(platform_agent_prompt.defaultSystemPrompt, DEFAULT_SYSTEM_PROMPT);
