@@ -19,6 +19,15 @@ const build_options = @import("build_options");
 const std = @import("std");
 const app_metadata = @import("app_metadata.zig");
 
+test "App joinAllWindowThreads pumps the macOS main queue (issue 611)" {
+    const source = @embedFile("App.zig");
+    const join_at = std.mem.indexOf(u8, source, "fn joinAllWindowThreads") orelse return error.MissingJoin;
+    const body = source[join_at..@min(source.len, join_at + 1500)];
+    try std.testing.expect(std.mem.indexOf(u8, body, "live_window_threads") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "pumpWhileLive") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "pumpAppEvents") != null);
+}
+
 test "input ssh download surfaces missing connection and helper probe failures" {
     const input_source = @embedFile("input.zig");
     try std.testing.expect(std.mem.indexOf(u8, input_source, "\"SSH connection unavailable\"") != null);
@@ -286,6 +295,7 @@ test {
     _ = @import("appwindow/state.zig");
     _ = @import("appwindow/state_guard.zig");
     _ = @import("appwindow/p3_1_guard.zig");
+    _ = @import("appwindow/thread_join.zig");
     _ = @import("ssh/scp.zig");
     _ = @import("surface_registry.zig");
     _ = @import("ctl/protocol.zig");
