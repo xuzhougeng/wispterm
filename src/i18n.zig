@@ -77,6 +77,7 @@ pub const Strings = struct {
     pf_detail: []const u8,
     pf_legend: []const u8,
     pf_form_legend: []const u8,
+    pf_profile_list: []const u8,
 
     // —— Skill Center 面板 ——
     sc_local: []const u8,
@@ -367,6 +368,7 @@ const en = Strings{
     .pf_detail = "Manage SSH port forwarding rules",
     .pf_legend = "[n] new   [e] edit   [space] start/stop   [r] restart   [a] auto   [d] delete   [esc] close/cancel",
     .pf_form_legend = "[up/down] move   [left/right/space] change   [enter] save   [esc] cancel",
+    .pf_profile_list = "SSH profiles",
 
     .sc_local = "Local",
     .sc_wsl = "WSL",
@@ -647,6 +649,7 @@ const zh_CN = Strings{
     .pf_detail = "管理 SSH 端口转发规则",
     .pf_legend = "[n] 新建   [e] 编辑   [space] 启停   [r] 重启   [a] 自动启动   [d] 删除   [esc] 关闭/取消",
     .pf_form_legend = "[上/下] 切换字段   [左/右 或 空格] 切换选项   [enter] 保存   [esc] 取消",
+    .pf_profile_list = "SSH 配置",
 
     .sc_local = "本地",
     .sc_wsl = "WSL",

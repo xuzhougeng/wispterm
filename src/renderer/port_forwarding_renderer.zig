@@ -49,6 +49,9 @@ pub const FormView = struct {
     mode: []const u8,
     focus: usize,
     rule: rule_mod.Rule,
+    profile_names: []const []const u8 = &.{},
+    profile_index: usize = 0,
+    profile_list_title: []const u8 = "SSH profiles",
 };
 
 pub const View = struct {
@@ -104,7 +107,7 @@ pub fn formFieldValue(form: *const FormView, index: usize, buf: []u8) []const u8
         // The Profile selector cannot be typed into; an empty name means the
         // ssh_hosts store has no decodable profiles, so hint at that instead
         // of rendering a silently dead blank field.
-        form_mod.FIELD_PROFILE => if (form.rule.profileName().len > 0) form.rule.profileName() else "No SSH profiles found",
+        form_mod.FIELD_PROFILE => profileFieldValue(form, buf),
         form_mod.FIELD_DIRECTION => directionLabel(form.rule.direction),
         form_mod.FIELD_LOCAL_HOST => form.rule.localHost(),
         form_mod.FIELD_LOCAL_PORT => std.fmt.bufPrint(buf, "{d}", .{form.rule.local_port}) catch "",
@@ -408,10 +411,32 @@ fn renderOverlayText(draw: DrawContext, text: []const u8, content_x: f32, conten
     _ = draw.renderTextLimited(text, text_x, text_y, fg, clampedTextWidth(text_x, content_right, content_w - PAD_X * 2));
 }
 
+fn profileFieldValue(form: *const FormView, buf: []u8) []const u8 {
+    const name = form.rule.profileName();
+    if (name.len == 0) return "No SSH profiles found";
+    if (form.profile_names.len == 0 or form.profile_index >= form.profile_names.len) return name;
+    return std.fmt.bufPrint(buf, "{s}  {d}/{d}", .{ name, form.profile_index + 1, form.profile_names.len }) catch name;
+}
+
+fn profileListRowHeight(cell_h: f32) f32 {
+    return cell_h + 6;
+}
+
+fn profileListVisibleCapacity(available_h: f32, cell_h: f32) usize {
+    const row_h = profileListRowHeight(cell_h);
+    if (available_h < row_h or row_h <= 0) return 0;
+    return @intFromFloat(@max(0.0, @floor(available_h / row_h)));
+}
+
 fn renderForm(draw: DrawContext, form: FormView, content_x: f32, content_w: f32, window_height: f32, top: f32, fg: [3]f32, accent: [3]f32) void {
     const box_w = @max(1.0, @min(@max(1.0, content_w - 32), 720));
     const available_h = @max(1.0, window_height - top - legendHeight(draw.cell_h));
-    const desired_h = @max(draw.cell_h * 11.0, 220);
+    const fields_h = @max(draw.cell_h * @as(f32, @floatFromInt(form_mod.FORM_FIELD_COUNT + 3)), 220);
+    const list_header_h = if (form.profile_names.len > 0) draw.cell_h + 10 else 0;
+    const list_row_h = profileListRowHeight(draw.cell_h);
+    const list_visible_desired = @min(form.profile_names.len, 6);
+    const list_h = list_header_h + @as(f32, @floatFromInt(list_visible_desired)) * list_row_h;
+    const desired_h = fields_h + list_h + 12;
     const box_h = @min(desired_h, available_h);
     const box_x = content_x + @max(0.0, (content_w - box_w) / 2);
     const box_top = top + @min(@max(0.0, available_h - box_h), @max(0.0, (available_h - box_h) / 2));
@@ -420,6 +445,8 @@ fn renderForm(draw: DrawContext, form: FormView, content_x: f32, content_w: f32,
     const box_top_y = box_y + box_h;
     const box_bottom_top_px = box_top + box_h;
     const content_right = @max(box_x, box_x + box_w - 18);
+    const muted = mixColor(draw.bg, fg, 0.58);
+    const selected_bg = mixColor(draw.bg, accent, 0.18);
 
     draw.fillQuadAlpha(box_x, box_y, box_w, box_h, draw.bg, 0.96);
     draw.fillQuadAlpha(box_x, box_y, box_w, box_h, accent, 0.22);
@@ -438,7 +465,7 @@ fn renderForm(draw: DrawContext, form: FormView, content_x: f32, content_w: f32,
     const value_x = @min(content_right, @max(min_value_x, label_x + widest_label + COL_GAP));
 
     var field: usize = 0;
-    while (field < 8) : (field += 1) {
+    while (field < form_mod.FORM_FIELD_COUNT) : (field += 1) {
         const row_top = box_top + draw.cell_h * @as(f32, @floatFromInt(field + 3));
         if (row_top + draw.cell_h > box_bottom_top_px) break;
         const row_y = yFromTop(window_height, row_top, draw.cell_h);
@@ -449,9 +476,68 @@ fn renderForm(draw: DrawContext, form: FormView, content_x: f32, content_w: f32,
             const focus_h = @max(0.0, @min(draw.cell_h + 6, box_top_y - focus_y));
             draw.fillQuadAlpha(focus_x, focus_y, clampedTextWidth(focus_x, box_x + box_w, box_w), focus_h, accent, 0.20);
         }
-        var value_buf: [32]u8 = undefined;
+        var value_buf: [rule_mod.PROFILE_MAX + 16]u8 = undefined;
         _ = draw.renderTextLimited(formFieldLabel(field), label_x, text_y, accent, clampedTextWidth(label_x, content_right, value_x - label_x - COL_GAP));
         _ = draw.renderTextLimited(formFieldValue(&form, field, &value_buf), value_x, text_y, fg, clampedTextWidth(value_x, content_right, content_right - value_x));
+    }
+
+    renderFormProfileList(draw, form, window_height, box_x, box_w, box_top, box_bottom_top_px, label_x, content_right, fg, muted, accent, selected_bg);
+}
+
+fn renderFormProfileList(
+    draw: DrawContext,
+    form: FormView,
+    window_height: f32,
+    box_x: f32,
+    box_w: f32,
+    box_top: f32,
+    box_bottom_top_px: f32,
+    label_x: f32,
+    content_right: f32,
+    fg: [3]f32,
+    muted: [3]f32,
+    accent: [3]f32,
+    selected_bg: [3]f32,
+) void {
+    if (form.profile_names.len == 0) return;
+    const header_top = box_top + draw.cell_h * @as(f32, @floatFromInt(form_mod.FORM_FIELD_COUNT + 3));
+    if (header_top + draw.cell_h > box_bottom_top_px) return;
+    _ = draw.renderTextLimited(
+        form.profile_list_title,
+        label_x,
+        yTextFromTop(draw, window_height, header_top),
+        muted,
+        clampedTextWidth(label_x, content_right, content_right - label_x),
+    );
+
+    const list_top = header_top + draw.cell_h + 10;
+    const visible = profileListVisibleCapacity(box_bottom_top_px - list_top, draw.cell_h);
+    if (visible == 0) return;
+    const selected = form.profile_index;
+    const scroll = scrollToSelection(selected, 0, form.profile_names.len, visible);
+    const row_h = profileListRowHeight(draw.cell_h);
+    const profile_focused = form.focus == form_mod.FIELD_PROFILE;
+    var rendered: usize = 0;
+    var ri: usize = scroll;
+    while (ri < form.profile_names.len and rendered < visible) : (ri += 1) {
+        const row_top = list_top + @as(f32, @floatFromInt(rendered)) * row_h;
+        if (row_top + row_h > box_bottom_top_px) break;
+        const row_y = yFromTop(window_height, row_top, row_h);
+        const is_selected = ri == selected;
+        if (is_selected) {
+            const alpha: f32 = if (profile_focused) 0.92 else 0.55;
+            draw.fillQuadAlpha(box_x + 12, row_y, @max(0.0, box_w - 24), row_h, selected_bg, alpha);
+            draw.fillQuad(box_x + 12, row_y, 3, row_h, accent);
+        }
+        const name_color = if (is_selected) fg else muted;
+        _ = draw.renderTextLimited(
+            form.profile_names[ri],
+            label_x,
+            yTextFromTop(draw, window_height, row_top + 2),
+            name_color,
+            clampedTextWidth(label_x, content_right, content_right - label_x),
+        );
+        rendered += 1;
     }
 }
 
@@ -460,7 +546,7 @@ fn renderForm(draw: DrawContext, form: FormView, content_x: f32, content_w: f32,
 fn widestFormLabelWidth(draw: DrawContext) f32 {
     var widest: f32 = 0;
     var i: usize = 0;
-    while (i < 8) : (i += 1) {
+    while (i < form_mod.FORM_FIELD_COUNT) : (i += 1) {
         const label = formFieldLabel(i);
         var w: f32 = 0;
         for (label) |ch| w += draw.glyphAdvance(ch);
@@ -586,6 +672,40 @@ test "port_forwarding_renderer: empty profile renders a store hint" {
     const rule = rule_mod.defaultReverseProxy("");
     const form = FormView{ .mode = "New forwarding rule", .focus = 1, .rule = rule };
     try std.testing.expectEqualStrings("No SSH profiles found", formFieldValue(&form, 1, &buf));
+}
+
+test "port_forwarding_renderer: profile field shows the selected list row" {
+    var buf: [32]u8 = undefined;
+    const rule = rule_mod.defaultReverseProxy("CPU3");
+    const names = [_][]const u8{ "CPU2", "CPU3", "lab" };
+    const form = FormView{
+        .mode = "Edit forwarding rule",
+        .focus = 1,
+        .rule = rule,
+        .profile_names = &names,
+        .profile_index = 1,
+    };
+    try std.testing.expectEqualStrings("CPU3  2/3", formFieldValue(&form, 1, &buf));
+}
+
+test "port_forwarding_renderer: orphan profile name is shown without a row index" {
+    var buf: [32]u8 = undefined;
+    const rule = rule_mod.defaultReverseProxy("missing");
+    const names = [_][]const u8{ "CPU2", "CPU3" };
+    const form = FormView{
+        .mode = "Edit forwarding rule",
+        .focus = 1,
+        .rule = rule,
+        .profile_names = &names,
+        .profile_index = 2,
+    };
+    try std.testing.expectEqualStrings("missing", formFieldValue(&form, 1, &buf));
+}
+
+test "port_forwarding_renderer: profile list scroll keeps the selected row visible" {
+    try std.testing.expectEqual(@as(usize, 2), profileListVisibleCapacity(44, 16));
+    try std.testing.expectEqual(@as(usize, 0), profileListVisibleCapacity(10, 16));
+    try std.testing.expectEqual(@as(usize, 3), scrollToSelection(5, 0, 8, 3));
 }
 
 test "port_forwarding_renderer: clamp scroll keeps selected row visible" {
@@ -898,4 +1018,68 @@ test "port_forwarding_renderer: narrow form stays within non-negative draw bound
     }, 48, 80, 0, 0, 48);
 
     try std.testing.expect(!InstrumentedDraw.bad_width);
+}
+
+test "port_forwarding_renderer: form draws the highlighted SSH profile row" {
+    const Probe = struct {
+        var saw_cpu2: bool = false;
+        var saw_cpu3: bool = false;
+        var saw_title: bool = false;
+
+        fn fillQuad(_: f32, _: f32, _: f32, _: f32, _: [3]f32) void {}
+        fn fillQuadAlpha(_: f32, _: f32, _: f32, _: f32, _: [3]f32, _: f32) void {}
+        fn renderTextLimited(text: []const u8, x: f32, _: f32, _: [3]f32, _: f32) f32 {
+            if (std.mem.eql(u8, text, "CPU2")) saw_cpu2 = true;
+            if (std.mem.eql(u8, text, "CPU3") or std.mem.eql(u8, text, "CPU3  2/3")) saw_cpu3 = true;
+            if (std.mem.eql(u8, text, "SSH profiles")) saw_title = true;
+            return x + @as(f32, @floatFromInt(text.len)) * 8.0;
+        }
+        fn glyphAdvance(_: u32) f32 {
+            return 8;
+        }
+    };
+
+    const Rows = struct {
+        fn rowAt(_: *anyopaque, index: usize) RowView {
+            _ = index;
+            return .{ .rule = rule_mod.defaultReverseProxy("CPU3"), .status = .stopped, .auto_start = true };
+        }
+    };
+
+    Probe.saw_cpu2 = false;
+    Probe.saw_cpu3 = false;
+    Probe.saw_title = false;
+    const draw = DrawContext{
+        .bg = .{ 0.02, 0.02, 0.02 },
+        .fg = .{ 0.95, 0.95, 0.95 },
+        .accent = .{ 0.2, 0.6, 1.0 },
+        .cell_h = 16,
+        .fillQuad = Probe.fillQuad,
+        .fillQuadAlpha = Probe.fillQuadAlpha,
+        .renderTextLimited = Probe.renderTextLimited,
+        .glyphAdvance = Probe.glyphAdvance,
+    };
+    var rows = Rows{};
+    const names = [_][]const u8{ "CPU2", "CPU3" };
+
+    render(draw, .{
+        .title = "Port Forwarding",
+        .legend = "x",
+        .count = 1,
+        .selected = 0,
+        .scroll = 0,
+        .ctx = &rows,
+        .rowAt = Rows.rowAt,
+        .form = .{
+            .mode = "Edit forwarding rule",
+            .focus = 1,
+            .rule = rule_mod.defaultReverseProxy("CPU3"),
+            .profile_names = &names,
+            .profile_index = 1,
+        },
+    }, 900, 600, 40, 0, 760);
+
+    try std.testing.expect(Probe.saw_title);
+    try std.testing.expect(Probe.saw_cpu2);
+    try std.testing.expect(Probe.saw_cpu3);
 }
