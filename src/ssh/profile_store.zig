@@ -180,6 +180,30 @@ pub fn cycleProfileName(content: []const u8, current: []const u8, delta: isize, 
     return out[0..0];
 }
 
+/// Destination buffer size for `listProfileNames`. Matches the port-forward
+/// rule profile-name cap so the form can snapshot names without truncation.
+pub const LIST_NAME_MAX: usize = 128;
+
+/// Copy decodable SSH profile names from `content` into `names`/`lens` in file
+/// order. Returns the number of names written, capped by the shorter of the
+/// two destination slices.
+pub fn listProfileNames(content: []const u8, names: [][LIST_NAME_MAX]u8, lens: []usize) usize {
+    const cap = @min(names.len, lens.len);
+    var count: usize = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line_raw| {
+        if (count >= cap) break;
+        const line = std.mem.trimRight(u8, line_raw, "\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        const profile = profile_codec.decodeSshProfileLine(line) orelse continue;
+        const name = profile_codec.profileField(&profile, .name);
+        if (name.len == 0) continue;
+        lens[count] = copyBounded(names[count][0..], name);
+        count += 1;
+    }
+    return count;
+}
+
 fn isSshTokenSafe(value: []const u8) bool {
     if (value.len == 0) return false;
     for (value) |ch| {
@@ -346,4 +370,32 @@ test "ssh_profile_store: cycleProfileName returns empty without profiles" {
     var buf: [128]u8 = undefined;
     try std.testing.expectEqualStrings("", cycleProfileName("# only comments\n", "devbox", 1, &buf));
     try std.testing.expectEqualStrings("", cycleProfileName("", "", -1, &buf));
+}
+
+test "ssh_profile_store: listProfileNames copies names in file order" {
+    var content: std.ArrayListUnmanaged(u8) = .empty;
+    defer content.deinit(std.testing.allocator);
+    try appendEncodedProfileForTest(std.testing.allocator, &content, &.{ "CPU2", "10.0.0.1", "a", "", "22", "" });
+    try content.appendSlice(std.testing.allocator, "# skip\n");
+    try appendEncodedProfileForTest(std.testing.allocator, &content, &.{ "CPU3", "10.0.0.2", "a", "", "22", "" });
+
+    var names: [4][LIST_NAME_MAX]u8 = undefined;
+    var lens: [4]usize = undefined;
+    const count = listProfileNames(content.items, names[0..], lens[0..]);
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expectEqualStrings("CPU2", names[0][0..lens[0]]);
+    try std.testing.expectEqualStrings("CPU3", names[1][0..lens[1]]);
+}
+
+test "ssh_profile_store: listProfileNames respects destination cap and skips empty content" {
+    var names: [1][LIST_NAME_MAX]u8 = undefined;
+    var lens: [1]usize = undefined;
+    try std.testing.expectEqual(@as(usize, 0), listProfileNames("# only comments\n", names[0..], lens[0..]));
+
+    var content: std.ArrayListUnmanaged(u8) = .empty;
+    defer content.deinit(std.testing.allocator);
+    try appendEncodedProfileForTest(std.testing.allocator, &content, &.{ "a", "10.0.0.1", "u", "", "22", "" });
+    try appendEncodedProfileForTest(std.testing.allocator, &content, &.{ "b", "10.0.0.2", "u", "", "22", "" });
+    try std.testing.expectEqual(@as(usize, 1), listProfileNames(content.items, names[0..], lens[0..]));
+    try std.testing.expectEqualStrings("a", names[0][0..lens[0]]);
 }

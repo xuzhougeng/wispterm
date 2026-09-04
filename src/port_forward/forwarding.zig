@@ -15,6 +15,7 @@ pub const FIELD_REMOTE_HOST: usize = 5;
 pub const FIELD_REMOTE_PORT: usize = 6;
 pub const FIELD_AUTO_START: usize = 7;
 pub const FORM_FIELD_COUNT: usize = 8;
+pub const PROFILE_LIST_MAX: usize = 32;
 
 comptime {
     std.debug.assert(FIELD_AUTO_START + 1 == FORM_FIELD_COUNT);
@@ -25,6 +26,10 @@ pub const FormState = struct {
     edit_index: ?usize,
     focus: usize = 0,
     rule: rule_mod.Rule,
+    profile_bufs: [PROFILE_LIST_MAX][rule_mod.PROFILE_MAX]u8 = undefined,
+    profile_lens: [PROFILE_LIST_MAX]usize = .{0} ** PROFILE_LIST_MAX,
+    profile_count: usize = 0,
+    profile_index: usize = 0,
 
     pub fn new(profile_name: []const u8) FormState {
         return .{
@@ -40,6 +45,49 @@ pub const FormState = struct {
             .edit_index = index,
             .rule = rule,
         };
+    }
+
+    pub fn profileNameAt(self: *const FormState, index: usize) []const u8 {
+        if (index >= self.profile_count) return "";
+        return self.profile_bufs[index][0..self.profile_lens[index]];
+    }
+
+    /// Snapshot the SSH profile names the Profile selector can cycle through.
+    /// `profile_index` lands on the rule's current name when it is in the list;
+    /// otherwise it is set past the last row so the list shows no selection.
+    pub fn setProfileChoices(self: *FormState, names: []const []const u8) void {
+        self.profile_count = 0;
+        for (names) |name| {
+            if (self.profile_count >= PROFILE_LIST_MAX) break;
+            if (name.len == 0) continue;
+            const i = self.profile_count;
+            self.profile_lens[i] = copyBounded(self.profile_bufs[i][0..], name);
+            self.profile_count += 1;
+        }
+        self.syncProfileIndex();
+    }
+
+    pub fn cycleProfile(self: *FormState, delta: isize) bool {
+        if (self.profile_count == 0) return false;
+        const span: isize = @intCast(self.profile_count);
+        const base: isize = if (self.profile_index < self.profile_count)
+            @intCast(self.profile_index)
+        else if (delta < 0) span else -1;
+        self.profile_index = @intCast(@mod(base + delta, span));
+        self.rule.setProfileName(self.profileNameAt(self.profile_index));
+        return true;
+    }
+
+    fn syncProfileIndex(self: *FormState) void {
+        const current = self.rule.profileName();
+        var i: usize = 0;
+        while (i < self.profile_count) : (i += 1) {
+            if (std.ascii.eqlIgnoreCase(current, self.profileNameAt(i))) {
+                self.profile_index = i;
+                return;
+            }
+        }
+        self.profile_index = self.profile_count;
     }
 
     pub fn moveFocus(self: *FormState, delta: isize) void {
@@ -244,6 +292,12 @@ fn isPrintableAscii(ch: u8) bool {
     return ch >= 0x20 and ch <= 0x7e;
 }
 
+fn copyBounded(dest: []u8, text: []const u8) usize {
+    const n = @min(dest.len, text.len);
+    @memcpy(dest[0..n], text[0..n]);
+    return n;
+}
+
 test "port_forwarding: selection clamps to row count" {
     var session = try Session.create(std.testing.allocator);
     defer session.destroy();
@@ -321,6 +375,43 @@ test "port_forwarding: profile field ignores typed input (it is a selector)" {
     form_state.insertChar('x');
     try std.testing.expectEqualStrings("devbox", form_state.rule.profileName());
     form_state.backspace();
+    try std.testing.expectEqualStrings("devbox", form_state.rule.profileName());
+}
+
+test "port_forwarding: profile selector highlights and wraps through named rows" {
+    var session = try Session.create(std.testing.allocator);
+    defer session.destroy();
+    try session.model.openNewForm("CPU3");
+    const form_state = session.model.form() orelse return error.ExpectedForm;
+    form_state.setProfileChoices(&.{ "CPU2", "CPU3", "lab" });
+
+    try std.testing.expectEqual(@as(usize, 3), form_state.profile_count);
+    try std.testing.expectEqual(@as(usize, 1), form_state.profile_index);
+    try std.testing.expectEqualStrings("CPU3", form_state.profileNameAt(form_state.profile_index));
+
+    try std.testing.expect(form_state.cycleProfile(1));
+    try std.testing.expectEqualStrings("lab", form_state.rule.profileName());
+    try std.testing.expectEqual(@as(usize, 2), form_state.profile_index);
+    try std.testing.expect(form_state.cycleProfile(1));
+    try std.testing.expectEqualStrings("CPU2", form_state.rule.profileName());
+    try std.testing.expectEqual(@as(usize, 0), form_state.profile_index);
+    try std.testing.expect(form_state.cycleProfile(-1));
+    try std.testing.expectEqualStrings("lab", form_state.rule.profileName());
+}
+
+test "port_forwarding: unknown profile leaves the list unselected until cycled" {
+    var form_state = FormState.new("missing");
+    form_state.setProfileChoices(&.{ "CPU2", "CPU3" });
+    try std.testing.expectEqual(@as(usize, 2), form_state.profile_index);
+    try std.testing.expectEqualStrings("missing", form_state.rule.profileName());
+    try std.testing.expect(form_state.cycleProfile(1));
+    try std.testing.expectEqualStrings("CPU2", form_state.rule.profileName());
+    try std.testing.expectEqual(@as(usize, 0), form_state.profile_index);
+}
+
+test "port_forwarding: cycleProfile is a no-op without profiles" {
+    var form_state = FormState.new("devbox");
+    try std.testing.expect(!form_state.cycleProfile(1));
     try std.testing.expectEqualStrings("devbox", form_state.rule.profileName());
 }
 

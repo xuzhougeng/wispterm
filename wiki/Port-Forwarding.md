@@ -33,7 +33,8 @@ Press **n** to add a rule — it defaults to exactly this shape, named
 Reverse: server 127.0.0.1:7890  ->  local 127.0.0.1:7890
 ```
 
-Pick the SSH profile of the server, leave the ports at `7890` (or match your
+Pick the SSH profile of the server from the list in the form (left/right or
+Space moves the highlighted row), leave the ports at `7890` (or match your
 proxy's port), and save. A reverse (`-R`) forward makes the server's loopback
 `127.0.0.1:7890` reach the proxy on your machine.
 
@@ -65,7 +66,7 @@ automatically — see [[SSH-Remote-Development]].)
 
 Each rule has:
 
-- **Profile** — which saved SSH profile carries the tunnel. Any `ProxyJump` set on that profile is honored.
+- **Profile** — which saved SSH profile carries the tunnel. The form lists saved profiles and highlights the current row; left/right or Space moves the selection. Any `ProxyJump` set on that profile is honored.
 - **Direction** — **reverse** (`-R`, server uses your local port) or **local** (`-L`, you use the server's port).
 - **Local / remote host & port** — both ends of the tunnel. Hosts must be loopback (see below).
 - **Enabled** — whether the rule is active.
