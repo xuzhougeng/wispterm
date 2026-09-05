@@ -38,6 +38,7 @@ const BACKFILL_SCAN_LIMIT: usize = BACKFILL_LIMIT * 8;
 pub const RemoteSource = struct {
     source_id: []const u8,
     host: remote.ExecHost,
+    providers: ?@import("source_selection.zig").Providers = null,
 };
 
 pub const Options = struct {
@@ -272,9 +273,10 @@ fn collectAllSources(
     });
 
     for (opts.remote_sources) |rs| {
-        if (!opts.providers.claude and !opts.providers.codex and !opts.providers.kimi and !opts.providers.grok) continue;
+        const providers = rs.providers orelse opts.providers;
+        if (!providers.claude and !providers.codex and !providers.kimi and !providers.grok) continue;
         const before = out.items.len;
-        if (remote.collectRemote(gpa, arena, out, rs.source_id, rs.host, cur, min_mtime_ns, .{ .claude = opts.providers.claude, .codex = opts.providers.codex, .kimi = opts.providers.kimi, .grok = opts.providers.grok })) |r| {
+        if (remote.collectRemote(gpa, arena, out, rs.source_id, rs.host, cur, min_mtime_ns, .{ .claude = providers.claude, .codex = providers.codex, .kimi = providers.kimi, .grok = providers.grok })) |r| {
             const detail = if (r.oversize_skipped > 0)
                 try std.fmt.allocPrint(arena, "{s}; oversize_skipped={d}", .{ r.detail, r.oversize_skipped })
             else
@@ -2356,4 +2358,41 @@ test "Grok selection and appended streaming chunks preserve incremental collecti
     opts.completer = stub.completer();
     _ = try runOnce(a, opts);
     try std.testing.expectEqual(@as(usize, 0), stub.map_calls);
+}
+
+test "remote sources apply each server's providers independently of local providers" {
+    const Fake = struct {
+        claude_scans: usize = 0,
+        codex_scans: usize = 0,
+        fn exec(ctx: *anyopaque, a: std.mem.Allocator, command: []const u8) ![]u8 {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (std.mem.startsWith(u8, command, "printf")) return a.dupe(u8, "/home/test");
+            if (std.mem.indexOf(u8, command, ".claude/projects") != null) self.claude_scans += 1;
+            if (std.mem.indexOf(u8, command, ".codex/sessions") != null) self.codex_scans += 1;
+            return a.dupe(u8, "");
+        }
+    };
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    var cpu = Fake{};
+    var gpu = Fake{};
+    var cur = cursors_mod.Set.init(a);
+    defer cur.deinit();
+    var out: std.ArrayListUnmanaged(types.CollectedSession) = .empty;
+    var result = try collectAllSources(a, arena.allocator(), .{
+        .roots = .{},
+        .memory_root = "",
+        .now_ms = 0,
+        .providers = .{ .codex = false, .claude = false },
+        .remote_sources = &.{
+            .{ .source_id = "ssh:CPU", .host = .{ .ctx = &cpu, .exec = Fake.exec }, .providers = .{ .codex = false } },
+            .{ .source_id = "ssh:GPU", .host = .{ .ctx = &gpu, .exec = Fake.exec }, .providers = .{ .claude = false } },
+        },
+    }, &out, &cur, 0);
+    defer result.local.deinit();
+    try std.testing.expectEqual(@as(usize, 1), cpu.claude_scans);
+    try std.testing.expectEqual(@as(usize, 0), cpu.codex_scans);
+    try std.testing.expectEqual(@as(usize, 0), gpu.claude_scans);
+    try std.testing.expectEqual(@as(usize, 1), gpu.codex_scans);
 }

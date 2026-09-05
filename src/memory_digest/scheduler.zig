@@ -381,7 +381,7 @@ fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
         if (params.manual) setProgress(.failed, true, .{ .detail = "Could not load memory source settings" });
         return;
     };
-    if (selection.locations != null or params.scan_remote) {
+    if (selection.sources != null or selection.locations != null or params.scan_remote) {
         const ssh_sources = sources_mod.loadSshSources(gpa, arena) catch |err| blk: {
             std.log.warn("memory_digest: scheduler failed to load ssh sources: {s}", .{@errorName(err)});
             break :blk &.{};
@@ -395,7 +395,11 @@ fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
 
     var selected_sources: std.ArrayListUnmanaged(run_mod.RemoteSource) = .empty;
     for (remote_sources) |source| {
-        if (selection.includes(source.source_id, params.scan_remote)) selected_sources.append(arena, source) catch return;
+        if (selection.includes(source.source_id, params.scan_remote)) {
+            var selected = source;
+            selected.providers = selection.providersFor(source.source_id);
+            selected_sources.append(arena, selected) catch return;
+        }
     }
     const run_kind = if (params.manual) "manual" else "scheduler";
     const progress_sink: ?run_mod.ProgressSink = if (params.manual)
@@ -414,7 +418,7 @@ fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
         .completer = client.completer(),
         .model_label = cfg.model,
         .remote_sources = selected_sources.items,
-        .providers = selection.providers,
+        .providers = selection.providersFor("local"),
         .local_enabled = selection.includes("local", params.scan_remote),
         .llm_usage = &client.total_usage,
         .progress_sink = progress_sink,

@@ -18,13 +18,33 @@ pub const Providers = struct {
     }
 };
 
+pub const Location = struct {
+    id: []const u8,
+    enabled: bool = true,
+    providers: Providers = .{},
+};
+
 pub const Selection = struct {
+    // Null reads the original flat format; an explicit list is authoritative.
+    sources: ?[]const Location = null,
     providers: Providers = .{},
     // null inherits the legacy local + scan-remote behavior. An empty list
     // explicitly disables all locations; new servers aren't silently opted in.
     locations: ?[]const []const u8 = null,
 
+    pub fn providersFor(self: Selection, id: []const u8) Providers {
+        if (self.sources) |sources| {
+            for (sources) |source| if (std.mem.eql(u8, source.id, id)) return source.providers;
+            return .{};
+        }
+        return self.providers;
+    }
+
     pub fn includes(self: Selection, id: []const u8, legacy_remote: bool) bool {
+        if (self.sources) |sources| {
+            for (sources) |source| if (std.mem.eql(u8, source.id, id)) return source.enabled;
+            return false;
+        }
         const selected = self.locations orelse return std.mem.eql(u8, id, "local") or legacy_remote;
         for (selected) |location| if (std.mem.eql(u8, id, location)) return true;
         return false;
