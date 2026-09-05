@@ -32,6 +32,21 @@ pub const Rect = struct {
 
 pub const FontControl = enum { minus, plus };
 
+pub const HorizontalSlot = struct {
+    x: f32,
+    w: f32,
+
+    pub fn contains(self: HorizontalSlot, x: f32) bool {
+        return x >= self.x and x < self.x + self.w;
+    }
+};
+
+pub const FontAdjuster = struct {
+    minus: HorizontalSlot,
+    value: HorizontalSlot,
+    plus: HorizontalSlot,
+};
+
 pub const VisibleRow = struct {
     visible_index: usize,
     top_px: f32,
@@ -56,6 +71,7 @@ pub const Layout = struct {
     visible_rows: usize,
     scroll: usize,
     row_count: usize,
+    font_adjuster: FontAdjuster,
 
     pub fn categoryAt(self: Layout, x: f32, y: f32) ?usize {
         const rect = Rect{
@@ -92,10 +108,8 @@ pub const Layout = struct {
     }
 
     pub fn fontControlAt(self: Layout, x: f32) ?FontControl {
-        const plus_x = self.content_x + self.content_w - 48;
-        const minus_x = plus_x - 42;
-        if (x >= minus_x and x < minus_x + 30) return .minus;
-        if (x >= plus_x and x < plus_x + 30) return .plus;
+        if (self.font_adjuster.minus.contains(x)) return .minus;
+        if (self.font_adjuster.plus.contains(x)) return .plus;
         return null;
     }
 
@@ -127,6 +141,34 @@ pub fn firstVisibleRow(focus_index: usize, visible_rows: usize, row_count: usize
     const focus = @min(focus_index, row_count - 1);
     if (focus < visible_rows) return 0;
     return @min(focus - visible_rows + 1, row_count - visible_rows);
+}
+
+/// Strip the decorative symbols from the legacy settings-row value. Rendering
+/// owns the minus/value/plus slots independently so a width limit can never
+/// clip one of the two controls (issue #616).
+pub fn fontAdjusterValue(value: []const u8) []const u8 {
+    return std.mem.trim(u8, value, "-+ \t");
+}
+
+fn computeFontAdjuster(content_x: f32, content_w: f32, cell_height: f32) FontAdjuster {
+    const side_margin = @min(18.0, @max(0.0, content_w * 0.08));
+    const available_w = @max(1.0, content_w - side_margin * 2.0);
+    const preferred_button_w = @round(@max(30.0, cell_height + 8.0));
+    const preferred_value_w = @round(@max(44.0, cell_height * 2.25));
+    const preferred_gap = @round(@max(8.0, cell_height * 0.35));
+    const preferred_w = preferred_button_w * 2.0 + preferred_value_w + preferred_gap * 2.0;
+    const scale = @min(1.0, available_w / preferred_w);
+    const button_w = @max(1.0, @floor(preferred_button_w * scale));
+    const value_w = @max(1.0, @floor(preferred_value_w * scale));
+    const gap = @max(0.0, @floor(preferred_gap * scale));
+    const group_w = button_w * 2.0 + value_w + gap * 2.0;
+    const group_x = @round(content_x + content_w - side_margin - group_w);
+
+    return .{
+        .minus = .{ .x = group_x, .w = button_w },
+        .value = .{ .x = group_x + button_w + gap, .w = value_w },
+        .plus = .{ .x = group_x + button_w + gap + value_w + gap, .w = button_w },
+    };
 }
 
 pub fn compute(input: Input) Layout {
@@ -174,6 +216,7 @@ pub fn compute(input: Input) Layout {
         .visible_rows = visible_rows,
         .scroll = scroll,
         .row_count = input.row_count,
+        .font_adjuster = computeFontAdjuster(content_x, content_w, input.cell_height),
     };
 }
 
@@ -227,8 +270,29 @@ test "settings tab hit testing maps content rows and font buttons" {
     });
 
     try std.testing.expectEqual(@as(?usize, 0), layout.rowAt(layout.content_x + 8, layout.row_top_px + 2));
-    const plus_x = layout.content_x + layout.content_w - 46;
-    try std.testing.expectEqual(FontControl.plus, layout.fontControlAt(plus_x).?);
+    try std.testing.expectEqual(FontControl.minus, layout.fontControlAt(layout.font_adjuster.minus.x + layout.font_adjuster.minus.w / 2).?);
+    try std.testing.expectEqual(FontControl.plus, layout.fontControlAt(layout.font_adjuster.plus.x + layout.font_adjuster.plus.w / 2).?);
+    try std.testing.expectEqual(@as(?FontControl, null), layout.fontControlAt(layout.font_adjuster.value.x + layout.font_adjuster.value.w / 2));
+}
+
+test "settings font adjuster keeps both controls visible at Retina UI scale" {
+    const layout = compute(.{
+        .window_height = 1166,
+        .top_offset = 52,
+        .content_x = 212,
+        .content_width = 1910,
+        .cell_height = 28,
+        .focus_index = 1,
+        .row_count = 6,
+        .category_count = 3,
+    });
+
+    const control = layout.font_adjuster;
+    try std.testing.expect(control.minus.x >= layout.content_x);
+    try std.testing.expect(control.minus.x + control.minus.w <= control.value.x);
+    try std.testing.expect(control.value.x + control.value.w <= control.plus.x);
+    try std.testing.expect(control.plus.x + control.plus.w <= layout.content_x + layout.content_w);
+    try std.testing.expectEqualStrings("12", fontAdjusterValue("-  12  +"));
 }
 
 test "settings category rail grows with large UI text" {

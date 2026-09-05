@@ -97,42 +97,58 @@ fn renderRow(draw: DrawContext, category: settings_page.Category, layout: settin
     if (selected) draw.fillQuadAlpha(x + 2, visible.gl_y + 8, 3, layout.row_h - 16, draw.accent, 0.82);
     if (row.value.len > 0) {
         const kind = controlKind(row.id);
-        const max_value_w: f32 = switch (kind) {
-            .toggle => 96,
-            .adjuster => 152,
-            .choice => 360,
-            .action => 180,
-        };
-        const min_value_w: f32 = switch (kind) {
-            .toggle => 76,
-            .adjuster => 118,
-            .choice => 132,
-            .action => 96,
-        };
-        const trailing_w: f32 = switch (kind) {
-            .choice, .action => 26,
-            .adjuster, .toggle => 12,
-        };
-        const value_w = if (kind == .toggle) 46.0 else @min(max_value_w, @max(min_value_w, draw.measureText(row.value) + 24 + trailing_w));
-        const value_x = @round(right_edge - value_w);
         const control_h = if (kind == .toggle) 24.0 else @round(@max(32.0, draw.cell_h + 10.0));
         const pill_y = visible.gl_y + @round((layout.row_h - control_h) / 2);
-        const is_on = std.mem.eql(u8, row.value, i18n.s().settings_value_on);
-        if (kind == .toggle) {
-            draw.roundedQuadAlpha(value_x, pill_y, value_w, control_h, control_h / 2, if (is_on) mixColor(draw.bg, draw.accent, 0.40) else mixColor(draw.bg, draw.fg, 0.18), 0.96);
-            const knob_d = control_h - 6;
-            const knob_x = if (is_on) value_x + value_w - knob_d - 3 else value_x + 3;
-            draw.roundedQuadAlpha(knob_x, pill_y + 3, knob_d, knob_d, knob_d / 2, if (is_on) draw.accent else mixColor(draw.bg, draw.fg, 0.42), 0.96);
+        const value_color = if (selected) draw.accent else mixColor(draw.bg, draw.fg, 0.82);
+        if (kind == .adjuster) {
+            const adjuster = layout.font_adjuster;
+            renderCentered(draw, "-", adjuster.minus, pill_y, control_h, value_color);
+            renderCentered(draw, settings_page_layout.fontAdjusterValue(row.value), adjuster.value, pill_y, control_h, value_color);
+            renderCentered(draw, "+", adjuster.plus, pill_y, control_h, value_color);
+            title_max_w = @max(1.0, adjuster.minus.x - title_x - 18);
         } else {
-            _ = draw.renderTextLimited(row.value, value_x, rowTextY(draw, pill_y, control_h), if (selected) draw.accent else mixColor(draw.bg, draw.fg, 0.82), value_w - trailing_w);
-            if (kind == .choice or kind == .action) _ = draw.renderTextLimited(">", value_x + value_w - 12, rowTextY(draw, pill_y, control_h), mixColor(draw.bg, draw.fg, 0.60), 12);
+            const max_value_w: f32 = switch (kind) {
+                .toggle => 96,
+                .choice => 360,
+                .action => 180,
+                .adjuster => unreachable,
+            };
+            const min_value_w: f32 = switch (kind) {
+                .toggle => 76,
+                .choice => 132,
+                .action => 96,
+                .adjuster => unreachable,
+            };
+            const trailing_w: f32 = switch (kind) {
+                .choice, .action => 26,
+                .toggle => 12,
+                .adjuster => unreachable,
+            };
+            const value_w = if (kind == .toggle) 46.0 else @min(max_value_w, @max(min_value_w, draw.measureText(row.value) + 24 + trailing_w));
+            const value_x = @round(right_edge - value_w);
+            const is_on = std.mem.eql(u8, row.value, i18n.s().settings_value_on);
+            if (kind == .toggle) {
+                draw.roundedQuadAlpha(value_x, pill_y, value_w, control_h, control_h / 2, if (is_on) mixColor(draw.bg, draw.accent, 0.40) else mixColor(draw.bg, draw.fg, 0.18), 0.96);
+                const knob_d = control_h - 6;
+                const knob_x = if (is_on) value_x + value_w - knob_d - 3 else value_x + 3;
+                draw.roundedQuadAlpha(knob_x, pill_y + 3, knob_d, knob_d, knob_d / 2, if (is_on) draw.accent else mixColor(draw.bg, draw.fg, 0.42), 0.96);
+            } else {
+                _ = draw.renderTextLimited(row.value, value_x, rowTextY(draw, pill_y, control_h), value_color, value_w - trailing_w);
+                if (kind == .choice or kind == .action) _ = draw.renderTextLimited(">", value_x + value_w - 12, rowTextY(draw, pill_y, control_h), mixColor(draw.bg, draw.fg, 0.60), 12);
+            }
+            title_max_w = @max(1.0, value_x - title_x - 18);
         }
-        title_max_w = @max(1.0, value_x - title_x - 18);
     }
 
     if (visible.visible_index > 0) draw.fillQuadAlpha(x + 18, visible.gl_y + layout.row_h - 1, w - 36, 1, mixColor(draw.bg, draw.fg, 0.14), 0.62);
     _ = draw.renderTextLimited(rowTitle(row.id), title_x, title_y, if (selected) mixColor(draw.fg, draw.accent, 0.16) else draw.fg, title_max_w);
     _ = draw.renderTextLimited(rowDescription(category, row.id), title_x, detail_y, mixColor(draw.bg, draw.fg, 0.56), title_max_w);
+}
+
+fn renderCentered(draw: DrawContext, text: []const u8, slot: settings_page_layout.HorizontalSlot, y: f32, h: f32, color: [3]f32) void {
+    const text_w = draw.measureText(text);
+    const text_x = @round(slot.x + @max(0.0, (slot.w - text_w) / 2.0));
+    _ = draw.renderTextLimited(text, text_x, rowTextY(draw, y, h), color, slot.w);
 }
 
 fn renderPickerRow(draw: DrawContext, layout: settings_page_layout.Layout, window_height: f32, row_index: usize, label: []const u8, selected: bool, current: bool) void {
