@@ -7,8 +7,8 @@ name: Publish macOS Release (x86_64)
 # Triggers:
 #   - Automatically after "Publish macOS Release" finishes successfully for a
 #     tag push (workflow_run) — no manual step needed for a normal release. By
-#     the time it runs, the aarch64 job has already created the GitHub release,
-#     so the Intel DMG is just uploaded to it.
+#     the time it runs, the aarch64 job has already created the release draft. The shared
+#     publisher makes it public once all platform assets and benchmarks exist.
 #   - Manually (workflow_dispatch) with an explicit tag, e.g. to (re)build the
 #     Intel DMG for an existing release.
 #
@@ -192,6 +192,10 @@ jobs:
           cp "$src" "$dst"
           echo "ASSET_PATH=${dst}" >> "${GITHUB_ENV}"
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Upload x86_64 DMG to the GitHub release
         shell: bash
         env:
@@ -199,12 +203,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          tag="${{ env.RELEASE_TAG }}"
-          if ! gh release view "${tag}" --repo "${GH_REPO}" >/dev/null 2>&1; then
-            echo "::error::Release ${tag} does not exist yet. Create it first via the tag-triggered (aarch64) release, then re-run this workflow." >&2
-            exit 1
-          fi
-          gh release upload "${tag}" "${ASSET_PATH}" --clobber --repo "${GH_REPO}"
+          python packaging/publish_release.py --publish --tag "$RELEASE_TAG" --repo "$GH_REPO" "$ASSET_PATH"
 
       - name: Also upload as workflow artifact
         uses: actions/upload-artifact@v4

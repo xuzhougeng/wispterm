@@ -163,6 +163,19 @@ jobs:
             }
           }
 
+      - name: Record release performance baseline
+        shell: pwsh
+        run: ./packaging/windows/benchmark-release.ps1 -Tag "${{ github.ref_name }}"
+
+      - name: Upload performance baseline artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-windows-${{ github.ref_name }}
+          path: |
+            zig-out/release-benchmark/benchmark-windows-${{ github.ref_name }}.md
+            zig-out/release-benchmark/benchmark-windows-${{ github.ref_name }}.json
+          if-no-files-found: error
+
       - name: Build diagnostic (debug-console) bundle
         shell: pwsh
         run: |
@@ -226,60 +239,21 @@ jobs:
           path: wispterm-windows-debug-${{ github.ref_name }}.zip
           if-no-files-found: error
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Publish GitHub release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "${{ github.ref_name }}"
-          $portableAsset = "wispterm-windows-portable-$tag.zip"
-          $portableCompatAsset = "wispterm-windows-portable-compat-$tag.zip"
-          $portableOpenGLAsset = "wispterm-windows-portable-opengl-$tag.zip"
-          $debugAsset = "wispterm-windows-debug-$tag.zip"
-
-          if (!(Test-Path $portableAsset)) {
-            throw "Portable release asset not found: $portableAsset"
-          }
-          if (!(Test-Path $portableCompatAsset)) {
-            throw "Portable compat release asset not found: $portableCompatAsset"
-          }
-          if (!(Test-Path $portableOpenGLAsset)) {
-            throw "Portable OpenGL fallback release asset not found: $portableOpenGLAsset"
-          }
-          if (!(Test-Path $debugAsset)) {
-            throw "Diagnostic release asset not found: $debugAsset"
-          }
-
-          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag $portableAsset $portableCompatAsset $portableOpenGLAsset $debugAsset --repo $env:GITHUB_REPOSITORY --clobber
-          } else {
-            $assetNotes = @(
-              "Windows assets included in this release:",
-              "",
-              "- Portable: default native Direct3D 11 zip archive containing wispterm.exe",
-              "- Portable compat: native Direct3D 11 zip archive for older Windows 10 machines - bundles WebView2Loader.dll for the embedded browser plus a modern ConPTY (conpty.dll + OpenConsole.exe) so TUI apps like Codex and Claude Code get mouse scrolling and scrollbars",
-              "- Portable OpenGL fallback: compatibility zip archive for systems where the native D3D11 renderer cannot start or render correctly",
-              "- Diagnostic (debug): console build with on-disk logging + crash reports for troubleshooting (ReleaseSafe). See docs/windows-debug-build.md.",
-              "",
-              "Portable builds can add or remove WispTerm from Windows Search and enable or disable startup from Settings."
-            ) -join "`n"
-
-            $releaseNotesPath = Join-Path "release-notes" "$tag.md"
-            if (Test-Path $releaseNotesPath) {
-              $curatedNotes = (Get-Content $releaseNotesPath -Raw).Trim()
-              if (![string]::IsNullOrWhiteSpace($curatedNotes)) {
-                $notes = @($curatedNotes, "", $assetNotes) -join "`n"
-              } else {
-                $notes = $assetNotes
-              }
-            } else {
-              $notes = $assetNotes
-            }
-
-            gh release create $tag $portableAsset $portableCompatAsset $portableOpenGLAsset $debugAsset `
-              --repo $env:GITHUB_REPOSITORY `
-              --verify-tag `
-              --generate-notes `
-              --notes $notes
-          }
+          python packaging/publish_release.py --publish --tag $tag --repo $env:GITHUB_REPOSITORY `
+            "wispterm-windows-portable-$tag.zip" `
+            "wispterm-windows-portable-compat-$tag.zip" `
+            "wispterm-windows-portable-opengl-$tag.zip" `
+            "wispterm-windows-debug-$tag.zip" `
+            "zig-out/release-benchmark/benchmark-windows-$tag.md" `
+            "zig-out/release-benchmark/benchmark-windows-$tag.json"
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }

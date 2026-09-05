@@ -178,9 +178,15 @@ prints the Markdown to stdout; diff the two reports' `scroll-flood` /
 GPU adapter name + PCI ids, window/DPI/grid size, and `runner: in-app` so it is
 distinguishable from a CLI report.
 
-When publishing a desktop release, run `wispterm-bench --case terminal-stream
---duration 1000` on the release machine and attach the Markdown report to the
-release notes as a regression baseline for that version.
+The Windows release workflow runs
+`packaging/windows/benchmark-release.ps1 -Tag vX.Y.Z` automatically. It builds
+only the benchmark CLI in ReleaseFast mode, runs `terminal-stream` for 1000ms
+with an isolated configuration directory, validates the version and result,
+and uploads `benchmark-windows-vX.Y.Z.md` plus `.json`. Missing or invalid
+reports fail the Windows job and prevent the release from leaving draft state.
+The baseline measures CPU parser throughput; GitHub-hosted runner hardware can
+vary, so compare results on equivalent hardware rather than treating every
+change as a performance regression.
 
 ## Windows UI Automation
 
@@ -593,6 +599,30 @@ Several GitHub Actions workflows publish release assets whenever a tag matching
 - `.github/workflows/linux-release.yml` — experimental Linux x86_64 AppImage
 - `.github/workflows/wisptermctl-release.yml` — standalone `wisptermctl` CLI bundle for all desktop platforms
 
+All five workflows use `packaging/publish_release.py`. The first creates a
+draft; each uploads its own assets and writes the same release body. The last
+upload publishes the release only after all eight application/CLI packages and
+both benchmark reports are present, nonempty, and uploaded. A failed platform
+or benchmark job leaves a draft; rerun that failed job to finish it. Rerunning
+an already published release does not change its latest-release designation.
+
+The body combines `release-notes/vX.Y.Z.md` with a bilingual performance
+baseline section and a versioned **Downloads / 下载** table. Curated notes are
+required; their absence fails publication. Do not copy the generated footer
+into each new notes file or replace it with platform-specific summaries.
+Preview the body without touching GitHub:
+
+```powershell
+python packaging/publish_release.py --tag vX.Y.Z --repo xuzhougeng/wispterm --output release-preview.md
+python -m unittest discover -s packaging -p test_publish_release.py
+```
+
+This follows Ghostty's separation of building release artifacts from exposing
+them to users: its [tag build](https://github.com/ghostty-org/ghostty/blob/main/.github/workflows/release-tag.yml)
+stages artifacts, and [tag publication](https://github.com/ghostty-org/ghostty/blob/main/.github/workflows/publish-tag.yml)
+validates release files before updating the public release entry. WispTerm
+uses a GitHub Release draft and a shared asset checklist for the same purpose.
+
 **Windows assets** (per tagged release):
 
 - `wispterm-windows-portable-vX.Y.Z.zip`
@@ -634,7 +664,7 @@ by Apple. Open the DMG and drag `WispTerm.app` to Applications to install.
 - `wisptermctl-vX.Y.Z.zip` — standalone agent terminal-control CLI builds for
   Linux x86_64/aarch64, macOS Intel/Apple Silicon, and Windows x86_64.
 
-Release notes are checked in under `release-notes/vX.Y.Z.md` when a release
-needs curated notes. If a matching file is present, the workflow prepends it to
-the GitHub release body; otherwise GitHub generated notes are used with the
-asset summary.
+Release notes are checked in under `release-notes/vX.Y.Z.md` before tagging.
+The Linux fast-test CI job also runs the publisher's regression tests, covering
+versioned links, missing benchmark reports, incomplete uploads, retries, and
+concurrent draft creation.

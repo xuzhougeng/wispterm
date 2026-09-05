@@ -2,8 +2,7 @@ name: Publish Linux Release
 
 # Builds and publishes the Linux AppImage. Mirrors the macOS/Windows release
 # workflows: on a version tag it builds the AppImage and attaches it to the
-# GitHub release for that tag, adding a "Linux asset included in this release"
-# notes section. SDL3 is built from source (not yet in distro repos);
+# GitHub release draft for that tag using the shared release notes publisher. SDL3 is built from source (not yet in distro repos);
 # fontconfig/freetype come from apt. See packaging/linux/build-appimage.sh.
 #
 # Built on ubuntu-22.04 on purpose: the older glibc keeps the AppImage runnable
@@ -77,6 +76,10 @@ jobs:
           path: zig-out/WispTerm-*-x86_64.AppImage
           if-no-files-found: error
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Publish AppImage to the GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
@@ -85,50 +88,9 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          tag="${{ github.ref_name }}"
-
           asset="$(find zig-out -maxdepth 1 -type f -name 'WispTerm-*-x86_64.AppImage' | head -1)"
-          if [[ -z "${asset}" ]]; then
-            echo "No AppImage asset found in zig-out" >&2
+          if [[ -z "$asset" ]]; then
+            echo "No AppImage asset found" >&2
             exit 1
           fi
-
-          asset_notes=$(printf '%s\n' \
-            'Linux asset included in this release:' \
-            '' \
-            '- AppImage: portable, self-contained x86_64 build (bundles SDL3). Run `chmod +x WispTerm-*-x86_64.AppImage && ./WispTerm-*-x86_64.AppImage`; on hosts without FUSE add `--appimage-extract-and-run`.' \
-            '' \
-            '> ⚠️ The Linux build is **experimental and not yet stable**. The maintainer has no Linux desktop environment to test it on, so community testing is very welcome. If you hit a problem, please ask an AI assistant to help analyze it first, then open an issue with the details: https://github.com/${{ github.repository }}/issues/new' \
-            '>' \
-            '> ⚠️ Linux 版本目前为**实验性质，尚不稳定**，且作者没有 Linux 桌面环境进行测试，欢迎社区参与测试。如遇到问题，请先用 AI 协助分析，然后到这里提交 issue：https://github.com/${{ github.repository }}/issues/new')
-
-          # The Linux job is the slowest (it builds SDL3 from source), so the
-          # release was almost certainly already created by the macOS/Windows
-          # workflow. In that case just upload the asset and make sure the Linux
-          # notes section is appended to the body (idempotent via the grep gate).
-          if gh release view "${tag}" --repo "${GH_REPO}" >/dev/null 2>&1; then
-            gh release upload "${tag}" "${asset}" --clobber --repo "${GH_REPO}"
-            body="$(gh release view "${tag}" --repo "${GH_REPO}" --json body --jq '.body')"
-            if ! printf '%s' "${body}" | grep -qF 'Linux asset included in this release:'; then
-              gh release edit "${tag}" --repo "${GH_REPO}" \
-                --notes "$(printf '%s\n\n%s\n' "${body}" "${asset_notes}")"
-            fi
-          else
-            release_notes_path="release-notes/${tag}.md"
-            if [[ -f "${release_notes_path}" ]]; then
-              curated="$(cat "${release_notes_path}")"
-              curated_trimmed="$(printf '%s' "${curated}" | awk 'NF {found=1} found')"
-              if [[ -n "${curated_trimmed}" ]]; then
-                notes="$(printf '%s\n\n%s\n' "${curated}" "${asset_notes}")"
-              else
-                notes="${asset_notes}"
-              fi
-            else
-              notes="${asset_notes}"
-            fi
-            gh release create "${tag}" "${asset}" \
-              --repo "${GH_REPO}" \
-              --verify-tag \
-              --generate-notes \
-              --notes "${notes}"
-          fi
+          python packaging/publish_release.py --publish --tag "${{ github.ref_name }}" --repo "$GH_REPO" "$asset"

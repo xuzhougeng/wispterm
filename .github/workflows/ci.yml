@@ -54,6 +54,9 @@ jobs:
         with:
           version: 0.15.2
 
+      - name: Release publishing tests
+        run: python3 -m unittest discover -s packaging -p 'test_publish_release.py'
+
       - name: Format check
         run: zig fmt --check build.zig src
 
