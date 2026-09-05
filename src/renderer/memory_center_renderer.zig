@@ -163,7 +163,8 @@ pub fn render(
     if (session.source == .settings) {
         var help_buf: [2048]u8 = undefined;
         const label = if (session.settings) |settings| if (session.selected < settings.items.len) settings.items[session.selected].label else "" else "";
-        const help = std.fmt.bufPrint(&help_buf, "{s}\n\n{s}", .{ label, i18n.s().memory_settings_help }) catch i18n.s().memory_settings_help;
+        const location = if (session.settings) |settings| if (session.selected < settings.items.len) settings.items[session.selected].id else "" else "";
+        const help = std.fmt.bufPrint(&help_buf, "{s} / {s}\n\n{s}", .{ location, label, i18n.s().memory_settings_help }) catch i18n.s().memory_settings_help;
         const body_top = top + headerHeight(draw.cell_h) + 18;
         const total = wrappedLineCount(help, @max(1, layout.detail_w - PAD_X * 2), draw.glyphAdvance);
         const visible: usize = @intFromFloat(@max(0, @floor((content_bottom - body_top) / (draw.cell_h + 4))));
@@ -308,9 +309,9 @@ fn renderList(
         if (session.source == .settings) {
             const item = session.settings.?.items[i];
             var label_buf: [512]u8 = undefined;
-            const label = std.fmt.bufPrint(&label_buf, "[{s}] {s}", .{ if (item.checked) "x" else " ", item.label }) catch item.label;
-            _ = draw.renderTextLimited(label, layout.list_x + PAD_X, yTextFromTop(draw, window_height, row_top_px + 8), fg, layout.list_w - PAD_X * 2);
-            _ = draw.renderTextLimited(if (item.provider) i18n.s().memory_settings_provider else i18n.s().memory_settings_location, layout.list_x + PAD_X, yTextFromTop(draw, window_height, row_top_px + row_h - 9 - draw.cell_h), muted, layout.list_w - PAD_X * 2);
+            const label = std.fmt.bufPrint(&label_buf, "{s}[{s}] {s}", .{ if (item.tool != null) "    " else "", if (item.checked) "x" else " ", item.label }) catch item.label;
+            _ = draw.renderTextLimited(label, layout.list_x + PAD_X, yTextFromTop(draw, window_height, row_top_px + 8), if (item.tool != null and !item.location_enabled) muted else fg, layout.list_w - PAD_X * 2);
+            _ = draw.renderTextLimited(if (item.tool != null) (if (item.location_enabled) item.id else i18n.s().memory_location_disabled) else i18n.s().memory_settings_location, layout.list_x + PAD_X, yTextFromTop(draw, window_height, row_top_px + row_h - 9 - draw.cell_h), muted, layout.list_w - PAD_X * 2);
             continue;
         }
         const row = session.snapshot.?.rowAt(session.source, i) orelse continue;

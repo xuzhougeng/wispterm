@@ -273,21 +273,27 @@ snippet is already there.
 
 ### Memory digest source selection
 
-Open **Memory Center → Source settings** to select chat history tools (Codex,
-Claude Code, Kimi, Grok Build, WispTerm) and collection locations (local computer, Windows
-WSL, and individual saved SSH profiles). Click a checkbox or use Up/Down and
-Space. Selections are saved immediately to `memory/sources.json` in WispTerm's
-configuration directory and apply to the next manual or scheduled digest.
-Provider selection applies across all selected locations; WispTerm history is
-local only. Kimi reads `~/.kimi-code/sessions/**/agents/main/wire.jsonl`.
+Open **Memory Center → Source settings** to configure a hierarchy of locations
+(local computer, Windows WSL, and individual saved SSH profiles), each followed
+by its own indented Codex, Claude Code, Kimi and Grok Build checkboxes. WispTerm
+assistant history is available under the local computer only. A server can use
+Codex while another uses Claude Code; their choices are independent.
 
-Before the first saved selection, existing behavior is preserved: Codex,
-Claude Code and WispTerm are enabled; local history is scanned and
-`memory-digest-scan-remote` controls remote history. After saving, the explicit
-location checklist takes precedence over that legacy remote switch. Newly
-added servers are unchecked. Unchecking everything disables collection;
-existing summaries are retained. `memory-digest-enabled` and
-`memory-digest-profile` still control scheduling and the summarization model.
+Click a checkbox or use Up/Down and Space. The parent checkbox enables or pauses
+collection at that location without discarding its child tool choices. Tools
+under a paused location appear dimmed. Changes are saved immediately to
+`memory/sources.json` in WispTerm's configuration directory and apply to the
+next manual or scheduled digest. Existing summaries are retained.
+
+The saved `sources` array records each location's `id`, `enabled` state and
+`providers`. Older flat `locations`/`providers` settings are read compatibly:
+each location inherits the old global tool choices, and the first edit saves
+the per-location form. Before any saved selection, the existing
+`memory-digest-scan-remote` switch determines remote inclusion. Explicit saved
+locations take precedence; newly added servers are unchecked.
+`memory-digest-enabled` and `memory-digest-profile` still control scheduling
+and the summarization model. Kimi reads
+`~/.kimi-code/sessions/**/agents/main/wire.jsonl`.
 
 Grok Build reads `~/.grok/sessions/**/updates.jsonl` with sibling
 `summary.json` metadata on each selected location. Subagent sessions are
