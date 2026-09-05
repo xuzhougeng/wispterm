@@ -5,6 +5,7 @@
 const std = @import("std");
 const ai_types = @import("../terminal_agents/sessions/types.zig");
 const provider_claude = @import("../terminal_agents/sessions/provider_claude.zig");
+const provider_kimi = @import("../terminal_agents/sessions/provider_kimi.zig");
 const provider_codex = @import("../terminal_agents/sessions/provider_codex.zig");
 const provider_wispterm = @import("provider_wispterm.zig");
 const cursors_mod = @import("cursors.zig");
@@ -14,6 +15,7 @@ pub const SOURCE_LOCAL = "local";
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
 
 pub const LocalRoots = struct {
+    kimi_sessions_dir: ?[]const u8 = null,
     /// e.g. <home>/.claude/projects
     claude_projects_dir: ?[]const u8 = null,
     /// e.g. <home>/.codex/sessions
@@ -59,7 +61,8 @@ pub fn collectLocal(gpa: std.mem.Allocator, roots: LocalRoots, cur: *cursors_mod
     };
 
     if (roots.claude_projects_dir) |root| try collectClaude(&ctx, root);
-    if (roots.codex_sessions_dir) |root| try collectCodex(&ctx, root);
+    if (roots.codex_sessions_dir) |root| try collectTree(&ctx, root, .codex);
+    if (roots.kimi_sessions_dir) |root| try collectTree(&ctx, root, .kimi);
     if (roots.wispterm_sessions_dir) |root| try collectWispterm(&ctx, root);
 
     result.sessions = try list.toOwnedSlice(ctx.alloc);
@@ -84,7 +87,7 @@ fn collectClaude(ctx: *Ctx, root: []const u8) !void {
     }
 }
 
-fn collectCodex(ctx: *Ctx, root: []const u8) !void {
+fn collectTree(ctx: *Ctx, root: []const u8, provider: types.DigestProvider) !void {
     var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch return;
     defer dir.close();
     var walker = try dir.walk(ctx.gpa);
@@ -93,7 +96,8 @@ fn collectCodex(ctx: *Ctx, root: []const u8) !void {
         const ent = (walker.next() catch break) orelse break;
         if (ent.kind != .file or !std.mem.endsWith(u8, ent.basename, ".jsonl")) continue;
         const path = try std.fs.path.join(ctx.alloc, &.{ root, ent.path });
-        try collectJsonlFile(ctx, .codex, path, ent.dir, ent.basename);
+        if (provider == .kimi and !std.mem.endsWith(u8, path, "agents/main/wire.jsonl") and !std.mem.endsWith(u8, path, "agents\\main\\wire.jsonl")) continue;
+        try collectJsonlFile(ctx, provider, path, ent.dir, ent.basename);
     }
 }
 
@@ -116,7 +120,9 @@ fn collectJsonlFile(ctx: *Ctx, provider: types.DigestProvider, path: []const u8,
     };
     defer ctx.gpa.free(bytes);
 
-    try ingestJsonlBytes(ctx.gpa, ctx.alloc, ctx.list, ctx.cur, provider, SOURCE_LOCAL, path, stat.size, stat.mtime, bytes, start);
+    const state = if (provider == .kimi) try kimiSidecar(ctx.alloc, path, false) else "";
+    const index = if (provider == .kimi) try kimiSidecar(ctx.alloc, path, true) else "";
+    try ingestJsonlBytes(ctx.gpa, ctx.alloc, ctx.list, ctx.cur, provider, SOURCE_LOCAL, path, stat.size, stat.mtime, bytes, start, state, index);
 }
 
 /// Shared "bytes -> CollectedSession" pipeline for claude/codex jsonl
@@ -139,15 +145,19 @@ pub fn ingestJsonlBytes(
     mtime_ns: i128,
     bytes: []const u8,
     start: u32,
+    kimi_state: []const u8,
+    kimi_index: []const u8,
 ) !void {
     const meta = switch (provider) {
         .claude => try provider_claude.parseMetadata(gpa, path, bytes),
         .codex => try provider_codex.parseMetadata(gpa, path, bytes),
+        .kimi => try provider_kimi.parseMetadata(gpa, path, bytes, kimi_state, kimi_index),
         else => unreachable,
     };
     defer switch (provider) {
         .claude => provider_claude.freeMetadata(gpa, meta),
         .codex => provider_codex.freeMetadata(gpa, meta),
+        .kimi => provider_kimi.freeMetadata(gpa, meta),
         else => unreachable,
     };
     if (ai_types.isSubagentSession(meta)) {
@@ -158,11 +168,13 @@ pub fn ingestJsonlBytes(
     const transcript = switch (provider) {
         .claude => try provider_claude.parseTranscript(gpa, bytes),
         .codex => try provider_codex.parseTranscript(gpa, bytes),
+        .kimi => try provider_kimi.parseTranscript(gpa, bytes),
         else => unreachable,
     };
     defer switch (provider) {
         .claude => provider_claude.freeTranscript(gpa, transcript),
         .codex => provider_codex.freeTranscript(gpa, transcript),
+        .kimi => provider_kimi.freeTranscript(gpa, transcript),
         else => unreachable,
     };
 
@@ -204,6 +216,11 @@ fn collectWispterm(ctx: *Ctx, root: []const u8) !void {
             .ended_at_ms = sess.updated_at_ms,
         }, sess.messages, start);
     }
+}
+
+fn kimiSidecar(arena: std.mem.Allocator, wire_path: []const u8, index: bool) ![]const u8 {
+    const filename = (if (index) try provider_kimi.kimiIndexPath(arena, wire_path) else try provider_kimi.kimiStatePath(arena, wire_path)) orelse return "";
+    return std.fs.cwd().readFileAlloc(arena, filename, 2 * 1024 * 1024) catch "";
 }
 
 const EmitMeta = struct {
@@ -278,6 +295,7 @@ pub fn locateSessionFile(
     const root = switch (provider) {
         .claude => roots.claude_projects_dir,
         .codex => roots.codex_sessions_dir,
+        .kimi => roots.kimi_sessions_dir,
         .wispterm => roots.wispterm_sessions_dir,
     } orelse return null;
     var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch return null;
@@ -287,7 +305,8 @@ pub fn locateSessionFile(
     while (true) {
         const ent = (walker.next() catch break) orelse break;
         if (ent.kind != .file) continue;
-        if (std.mem.indexOf(u8, ent.basename, session_id) == null) continue;
+        if (std.mem.indexOf(u8, if (provider == .kimi) ent.path else ent.basename, session_id) == null) continue;
+        if (provider == .kimi and !std.mem.eql(u8, ent.basename, "wire.jsonl")) continue;
         return try std.fs.path.join(alloc, &.{ root, ent.path });
     }
     return null;
@@ -311,7 +330,7 @@ pub fn loadFullSessionByPath(
     defer list.deinit(alloc);
 
     switch (provider) {
-        .claude, .codex => ingestJsonlBytes(gpa, alloc, &list, &scratch, provider, SOURCE_LOCAL, path, stat.size, stat.mtime, bytes, 0) catch return null,
+        .claude, .codex, .kimi => ingestJsonlBytes(gpa, alloc, &list, &scratch, provider, SOURCE_LOCAL, path, stat.size, stat.mtime, bytes, 0, if (provider == .kimi) try kimiSidecar(alloc, path, false) else "", if (provider == .kimi) try kimiSidecar(alloc, path, true) else "") catch return null,
         .wispterm => {
             var parse_arena = std.heap.ArenaAllocator.init(gpa);
             defer parse_arena.deinit();

@@ -2951,6 +2951,10 @@ pub fn memoryCenterHandleMousePress(xpos: f64, ypos: f64) bool {
     );
     switch (hit) {
         .source => |source| session.setSource(source),
+        .setting => |idx| {
+            session.selectIndex(idx);
+            if (g_allocator) |allocator| applyUiEffect(session.toggleSetting(allocator));
+        },
         .row => |idx| session.selectIndex(idx),
         .run_digest => _ = runMemoryDigestFromCenter(),
         .detail => {},
@@ -2979,7 +2983,7 @@ pub fn memoryCenterHandleMouseWheel(xpos: i32, ypos: i32, delta: i32) bool {
     const direction: isize = if (delta > 0) -1 else 1;
     switch (hit) {
         .detail => session.scrollDetailBy(direction * 3),
-        .source, .row, .run_digest, .none => session.moveSelection(direction),
+        .source, .row, .setting, .run_digest, .none => session.moveSelection(direction),
     }
     markUiDirty();
     return true;
@@ -5642,7 +5646,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
 
     // --- Theme, cursor, debug ---
     g_theme = cfg.resolved_theme;
-    g_force_rebuild = true;
+    applyUiEffect(.{ .needs_rebuild = true });
     g_cursor_style = cfg.@"cursor-style";
     g_cursor_blink = cfg.@"cursor-style-blink";
     overlays.g_debug_fps = cfg.@"wispterm-debug-fps";

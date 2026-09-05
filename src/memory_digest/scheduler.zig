@@ -102,6 +102,12 @@ var g_progress_ctx: u8 = 0;
 
 /// Loads a copy of `s`, duping the borrowed strings into the module's own
 /// arena. Config reloads may arrive from any window thread.
+pub fn remoteScanEnabled() bool {
+    g_state_mutex.lock();
+    defer g_state_mutex.unlock();
+    return g_settings.scan_remote;
+}
+
 pub fn updateSettings(s: Settings) void {
     g_state_mutex.lock();
     defer g_state_mutex.unlock();
@@ -370,7 +376,12 @@ fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
     defer gpa.free(memory_root);
 
     var remote_sources: []const run_mod.RemoteSource = &.{};
-    if (params.scan_remote) {
+    const selection = @import("source_selection.zig").load(arena) catch |err| {
+        std.log.warn("memory_digest: invalid source selection: {s}", .{@errorName(err)});
+        if (params.manual) setProgress(.failed, true, .{ .detail = "Could not load memory source settings" });
+        return;
+    };
+    if (selection.locations != null or params.scan_remote) {
         const ssh_sources = sources_mod.loadSshSources(gpa, arena) catch |err| blk: {
             std.log.warn("memory_digest: scheduler failed to load ssh sources: {s}", .{@errorName(err)});
             break :blk &.{};
@@ -382,6 +393,10 @@ fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
         remote_sources = std.mem.concat(arena, run_mod.RemoteSource, &.{ ssh_sources, wsl_sources }) catch &.{};
     }
 
+    var selected_sources: std.ArrayListUnmanaged(run_mod.RemoteSource) = .empty;
+    for (remote_sources) |source| {
+        if (selection.includes(source.source_id, params.scan_remote)) selected_sources.append(arena, source) catch return;
+    }
     const run_kind = if (params.manual) "manual" else "scheduler";
     const progress_sink: ?run_mod.ProgressSink = if (params.manual)
         .{ .ctx = @ptrCast(&g_progress_ctx), .onProgressFn = onRunProgress }
@@ -398,7 +413,9 @@ fn runThreadMain(gpa: std.mem.Allocator, params: ThreadParams) void {
         .input_budget_chars = @intCast(params.input_budget_chars),
         .completer = client.completer(),
         .model_label = cfg.model,
-        .remote_sources = remote_sources,
+        .remote_sources = selected_sources.items,
+        .providers = selection.providers,
+        .local_enabled = selection.includes("local", params.scan_remote),
         .llm_usage = &client.total_usage,
         .progress_sink = progress_sink,
     }) catch |err| {

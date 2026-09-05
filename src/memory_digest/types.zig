@@ -8,6 +8,7 @@ pub const DigestProvider = enum {
     wispterm,
     claude,
     codex,
+    kimi,
 };
 
 /// One session carrying only the messages that are new since the last run.

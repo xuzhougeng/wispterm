@@ -2,6 +2,10 @@ const std = @import("std");
 const memory_digest_scheduler = @import("../memory_digest/scheduler.zig");
 const memory_viewer = @import("../memory_viewer.zig");
 
+const source_settings = @import("source_settings.zig");
+const i18n = @import("../i18n.zig");
+const UiEffect = @import("../appwindow/ui_effect.zig").UiEffect;
+
 pub const Source = memory_viewer.Source;
 
 pub const DigestStatus = enum { in_progress, success, failed, skipped };
@@ -13,6 +17,8 @@ pub const DigestNotification = struct {
 
 pub const Session = struct {
     source: Source = .remembered,
+    settings: ?source_settings.Settings = null,
+    settings_message: []const u8 = "",
     selected: usize = 0,
     detail_scroll: usize = 0,
     snapshot: ?memory_viewer.Snapshot = null,
@@ -31,6 +37,8 @@ pub const Session = struct {
 
     pub fn deinit(self: *Session) void {
         self.clearSnapshot();
+        if (self.settings) |*settings| settings.deinit();
+        self.settings = null;
         self.status_len = 0;
         self.digest_status_len = 0;
         self.selected = 0;
@@ -38,6 +46,9 @@ pub const Session = struct {
     }
 
     pub fn reload(self: *Session, allocator: std.mem.Allocator) void {
+        if (self.settings) |*settings| settings.deinit();
+        self.settings = source_settings.Settings.load(allocator, memory_digest_scheduler.remoteScanEnabled()) catch null;
+        self.settings_message = if (self.settings == null) i18n.s().memory_settings_failed else "";
         self.clearSnapshot();
         self.selected = 0;
         self.detail_scroll = 0;
@@ -96,7 +107,20 @@ pub const Session = struct {
         return .{ .status = self.digest_status, .message = self.digest_status_buf[0..self.digest_status_len] };
     }
 
+    pub fn toggleSetting(self: *Session, allocator: std.mem.Allocator) UiEffect {
+        if (self.source != .settings) return .{};
+        if (self.settings) |*settings| {
+            settings.toggle(allocator, self.selected) catch {
+                self.settings_message = i18n.s().memory_settings_failed;
+                return .{ .consumed = true, .needs_rebuild = true };
+            };
+            self.settings_message = i18n.s().memory_settings_saved;
+        }
+        return .{ .consumed = true, .needs_rebuild = true };
+    }
+
     pub fn count(self: *const Session) usize {
+        if (self.source == .settings) return if (self.settings) |settings| settings.items.len else 0;
         const snapshot = self.snapshot orelse return 0;
         return snapshot.count(self.source);
     }
@@ -116,10 +140,8 @@ pub const Session = struct {
 
     pub fn cycleSource(self: *Session, delta: isize) void {
         if (delta == 0) return;
-        self.setSource(switch (self.source) {
-            .remembered => .digest,
-            .digest => .remembered,
-        });
+        const index: isize = @intCast(@intFromEnum(self.source));
+        self.setSource(@enumFromInt(@as(usize, @intCast(@mod(index + delta, 3)))));
     }
 
     pub fn moveSelection(self: *Session, delta: isize) void {

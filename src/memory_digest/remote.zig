@@ -30,6 +30,7 @@ pub const ExecHost = struct {
 };
 
 pub const RemoteRootsSpec = struct {
+    kimi: bool = false,
     claude: bool = true,
     codex: bool = true,
 };
@@ -80,6 +81,14 @@ pub fn collectRemote(
         result.count += r.count;
         result.oversize_skipped += r.oversize_skipped;
         try appendProviderDetail(arena, &detail_parts, "codex", r);
+    }
+    if (roots.kimi) {
+        const root = try std.fmt.allocPrint(gpa, "{s}/.kimi-code/sessions", .{home});
+        defer gpa.free(root);
+        const r = try collectProvider(gpa, arena, out, source_id, host, cur, min_mtime_ns, .kimi, root);
+        result.count += r.count;
+        result.oversize_skipped += r.oversize_skipped;
+        try appendProviderDetail(arena, &detail_parts, "kimi", r);
     }
     result.detail = detail_parts.items;
     return result;
@@ -154,6 +163,7 @@ fn collectProvider(
             }
             continue;
         };
+        if (provider == .kimi and !std.mem.endsWith(u8, cand.path, "/agents/main/wire.jsonl")) continue;
         result.files_seen += 1;
         // find_out (and thus cand.path, which borrows from it) is freed when
         // this function returns; CollectedSession.source_file must outlive
@@ -178,7 +188,9 @@ fn collectProvider(
         defer gpa.free(bytes);
 
         const before = out.items.len;
-        try collector.ingestJsonlBytes(gpa, arena, out, cur, provider, source_id, cand.path, cand.size, cand.mtime_ns, bytes, start);
+        const state = if (provider == .kimi) try kimiSidecar(gpa, arena, host, cand.path, false) else "";
+        const index = if (provider == .kimi) try kimiSidecar(gpa, arena, host, cand.path, true) else "";
+        try collector.ingestJsonlBytes(gpa, arena, out, cur, provider, source_id, cand.path, cand.size, cand.mtime_ns, bytes, start, state, index);
         result.count += @intCast(out.items.len - before);
     }
     return result;
@@ -516,4 +528,14 @@ test "memory_digest_remote: oversize file (>REMOTE_CAT_LIMIT) is skipped, not ca
     try std.testing.expectEqual(@as(usize, 1), cur.entries.items.len);
     try std.testing.expectEqual(@as(u32, 0), cur.entries.items[0].processed_messages);
     try std.testing.expectEqual(oversize, cur.entries.items[0].size);
+}
+
+fn kimiSidecar(gpa: std.mem.Allocator, arena: std.mem.Allocator, host: ExecHost, wire_path: []const u8, index: bool) ![]const u8 {
+    const kimi = @import("../terminal_agents/sessions/provider_kimi.zig");
+    const path = (if (index) try kimi.kimiIndexPath(arena, wire_path) else try kimi.kimiStatePath(arena, wire_path)) orelse return "";
+    var cmd_buf: [4096]u8 = undefined;
+    const command = try ai_session.remoteCatCommand(path, &cmd_buf);
+    const bytes = host.exec(host.ctx, gpa, command) catch return "";
+    defer gpa.free(bytes);
+    return arena.dupe(u8, bytes);
 }

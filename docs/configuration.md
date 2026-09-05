@@ -270,3 +270,21 @@ You do not have to hand-write the file. Because the AI Copilot already has a
 
 The Copilot writes the `.md` file for you; open the command center and the new
 snippet is already there.
+
+### Memory digest source selection
+
+Open **Memory Center → Source settings** to select chat history tools (Codex,
+Claude Code, Kimi, WispTerm) and collection locations (local computer, Windows
+WSL, and individual saved SSH profiles). Click a checkbox or use Up/Down and
+Space. Selections are saved immediately to `memory/sources.json` in WispTerm's
+configuration directory and apply to the next manual or scheduled digest.
+Provider selection applies across all selected locations; WispTerm history is
+local only. Kimi reads `~/.kimi-code/sessions/**/agents/main/wire.jsonl`.
+
+Before the first saved selection, existing behavior is preserved: Codex,
+Claude Code and WispTerm are enabled; local history is scanned and
+`memory-digest-scan-remote` controls remote history. After saving, the explicit
+location checklist takes precedence over that legacy remote switch. Newly
+added servers are unchecked. Unchecking everything disables collection;
+existing summaries are retained. `memory-digest-enabled` and
+`memory-digest-profile` still control scheduling and the summarization model.

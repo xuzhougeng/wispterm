@@ -20,6 +20,16 @@ pub fn findGaps(
     memory_root: []const u8,
     limit: usize,
 ) ![]const Gap {
+    return findSelectedGaps(gpa, arena, memory_root, limit, .{ .kimi = true });
+}
+
+pub fn findSelectedGaps(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    memory_root: []const u8,
+    limit: usize,
+    providers: @import("source_selection.zig").Providers,
+) ![]const Gap {
     if (limit == 0) return &.{};
     var gaps: std.ArrayListUnmanaged(Gap) = .empty;
     const daily_dir = try std.fs.path.join(gpa, &.{ memory_root, "daily" });
@@ -52,6 +62,7 @@ pub fn findGaps(
             if (s.summary.len != 0) continue;
             if (!std.mem.eql(u8, s.source_id, "local")) continue;
             const provider = std.meta.stringToEnum(types.DigestProvider, s.provider) orelse continue;
+            if (!providers.enabled(provider)) continue;
             try gaps.append(arena, .{
                 .date = try arena.dupe(u8, daily.date),
                 .provider = provider,
@@ -96,6 +107,9 @@ test "backfill: findGaps returns local empty-summary sessions oldest-first with 
     try std.testing.expectEqualStrings("gap-2", gaps[1].session_id);
     try std.testing.expectEqualStrings("/tmp/x.jsonl", gaps[1].source_file);
     try std.testing.expectEqualStrings("gap-3", gaps[2].session_id);
+
+    const selected = try findSelectedGaps(a, arena, root, 1, .{ .codex = false });
+    try std.testing.expectEqualStrings("gap-3", selected[0].session_id);
 
     const limited = try findGaps(a, arena, root, 2);
     try std.testing.expectEqual(@as(usize, 2), limited.len);

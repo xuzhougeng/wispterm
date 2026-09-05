@@ -19,12 +19,12 @@ const Frozen = struct {
     ceiling: usize,
 };
 
-// Ratchet ceilings for watched files (AppWindow 44, input 81, overlays 0,
+// Ratchet ceilings for watched files (AppWindow 43, input 79, overlays 0,
 // assistant/conversation/session.zig 0). Lower a ceiling only when direct
 // writes are removed.
 const monoliths = [_]Frozen{
-    .{ .name = "AppWindow.zig", .source = @embedFile("../AppWindow.zig"), .ceiling = 44 },
-    .{ .name = "input.zig", .source = @embedFile("../input.zig"), .ceiling = 81 },
+    .{ .name = "AppWindow.zig", .source = @embedFile("../AppWindow.zig"), .ceiling = 43 },
+    .{ .name = "input.zig", .source = @embedFile("../input.zig"), .ceiling = 79 },
     .{ .name = "renderer/overlays.zig", .source = @embedFile("../renderer/overlays.zig"), .ceiling = 0 },
     .{ .name = "assistant/conversation/session.zig", .source = @embedFile("../assistant/conversation/session.zig"), .ceiling = 0 },
 };
