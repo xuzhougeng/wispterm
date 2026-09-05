@@ -274,7 +274,7 @@ snippet is already there.
 ### Memory digest source selection
 
 Open **Memory Center → Source settings** to select chat history tools (Codex,
-Claude Code, Kimi, WispTerm) and collection locations (local computer, Windows
+Claude Code, Kimi, Grok Build, WispTerm) and collection locations (local computer, Windows
 WSL, and individual saved SSH profiles). Click a checkbox or use Up/Down and
 Space. Selections are saved immediately to `memory/sources.json` in WispTerm's
 configuration directory and apply to the next manual or scheduled digest.
@@ -288,3 +288,9 @@ location checklist takes precedence over that legacy remote switch. Newly
 added servers are unchecked. Unchecking everything disables collection;
 existing summaries are retained. `memory-digest-enabled` and
 `memory-digest-profile` still control scheduling and the summarization model.
+
+Grok Build reads `~/.grok/sessions/**/updates.jsonl` with sibling
+`summary.json` metadata on each selected location. Subagent sessions are
+excluded. Grok Build and Kimi are initially unchecked; enable them in Source
+settings to include their history. Grok streaming text chunks remain separate
+cursor units so resuming an in-progress reply does not lose appended text.

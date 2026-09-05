@@ -152,6 +152,7 @@ const MapProgressBridge = struct {
 /// together via `deinit`.
 pub const OwnedLocalRoots = struct {
     kimi_sessions_dir: []const u8,
+    grok_sessions_dir: []const u8,
     claude_projects_dir: []const u8,
     codex_sessions_dir: []const u8,
     wispterm_sessions_dir: []const u8,
@@ -161,6 +162,7 @@ pub const OwnedLocalRoots = struct {
             .claude_projects_dir = self.claude_projects_dir,
             .codex_sessions_dir = self.codex_sessions_dir,
             .kimi_sessions_dir = self.kimi_sessions_dir,
+            .grok_sessions_dir = self.grok_sessions_dir,
             .wispterm_sessions_dir = self.wispterm_sessions_dir,
         };
     }
@@ -169,6 +171,7 @@ pub const OwnedLocalRoots = struct {
         gpa.free(self.claude_projects_dir);
         gpa.free(self.codex_sessions_dir);
         gpa.free(self.kimi_sessions_dir);
+        gpa.free(self.grok_sessions_dir);
         gpa.free(self.wispterm_sessions_dir);
     }
 };
@@ -182,6 +185,8 @@ pub fn defaultLocalRoots(gpa: std.mem.Allocator) !OwnedLocalRoots {
     const home = try dirs.homeDir(gpa);
     defer gpa.free(home);
 
+    const grok_dir = try std.fs.path.join(gpa, &.{ home, ".grok", "sessions" });
+    errdefer gpa.free(grok_dir);
     const kimi_dir = try std.fs.path.join(gpa, &.{ home, ".kimi-code", "sessions" });
     errdefer gpa.free(kimi_dir);
     const claude_dir = try std.fs.path.join(gpa, &.{ home, ".claude", "projects" });
@@ -197,6 +202,7 @@ pub fn defaultLocalRoots(gpa: std.mem.Allocator) !OwnedLocalRoots {
         .claude_projects_dir = claude_dir,
         .codex_sessions_dir = codex_dir,
         .kimi_sessions_dir = kimi_dir,
+        .grok_sessions_dir = grok_dir,
         .wispterm_sessions_dir = wispterm_dir,
     };
 }
@@ -253,7 +259,7 @@ fn collectAllSources(
     var sources: std.ArrayListUnmanaged(store.SourceStatus) = .empty;
 
     var roots = opts.roots;
-    inline for (.{ .{ "claude", "claude_projects_dir" }, .{ "codex", "codex_sessions_dir" }, .{ "kimi", "kimi_sessions_dir" }, .{ "wispterm", "wispterm_sessions_dir" } }) |pair| {
+    inline for (.{ .{ "claude", "claude_projects_dir" }, .{ "codex", "codex_sessions_dir" }, .{ "kimi", "kimi_sessions_dir" }, .{ "grok", "grok_sessions_dir" }, .{ "wispterm", "wispterm_sessions_dir" } }) |pair| {
         if (!opts.local_enabled or !@field(opts.providers, pair[0])) @field(roots, pair[1]) = null;
     }
     const local = try collector.collectLocal(gpa, roots, cur, min_mtime_ns);
@@ -266,9 +272,9 @@ fn collectAllSources(
     });
 
     for (opts.remote_sources) |rs| {
-        if (!opts.providers.claude and !opts.providers.codex and !opts.providers.kimi) continue;
+        if (!opts.providers.claude and !opts.providers.codex and !opts.providers.kimi and !opts.providers.grok) continue;
         const before = out.items.len;
-        if (remote.collectRemote(gpa, arena, out, rs.source_id, rs.host, cur, min_mtime_ns, .{ .claude = opts.providers.claude, .codex = opts.providers.codex, .kimi = opts.providers.kimi })) |r| {
+        if (remote.collectRemote(gpa, arena, out, rs.source_id, rs.host, cur, min_mtime_ns, .{ .claude = opts.providers.claude, .codex = opts.providers.codex, .kimi = opts.providers.kimi, .grok = opts.providers.grok })) |r| {
             const detail = if (r.oversize_skipped > 0)
                 try std.fmt.allocPrint(arena, "{s}; oversize_skipped={d}", .{ r.detail, r.oversize_skipped })
             else
@@ -2314,4 +2320,40 @@ test "memory source selection gates Kimi collection and historical backfill" {
     _ = try runOnce(a, opts);
     try std.testing.expectEqual(@as(usize, 0), stub.map_calls);
     try std.testing.expectEqual(@as(usize, 0), stub.reduce_calls);
+}
+
+test "Grok selection and appended streaming chunks preserve incremental collection" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("grok/project/g1");
+    const first =
+        \\{"timestamp":1788449851,"params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hello"}}}}
+        \\
+    ;
+    const next =
+        \\{"timestamp":1788449852,"params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"world"}}}}
+        \\
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "grok/project/g1/updates.jsonl", .data = first });
+    try tmp.dir.writeFile(.{ .sub_path = "grok/project/g1/summary.json", .data = "{\"info\":{\"id\":\"g1\",\"cwd\":\"/project\"},\"generated_title\":\"Grok test\"}" });
+    const root = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(root);
+    const input_root = try std.fs.path.join(a, &.{ root, "grok" });
+    defer a.free(input_root);
+    const output_root = try std.fs.path.join(a, &.{ root, "memory" });
+    defer a.free(output_root);
+    var opts = Options{ .roots = .{ .grok_sessions_dir = input_root }, .memory_root = output_root, .now_ms = 1788449852000, .backfill_days = 0 };
+    try std.testing.expectEqual(@as(usize, 0), (try runOnce(a, opts)).sessions_collected);
+    opts.providers.grok = true;
+    try std.testing.expectEqual(@as(usize, 1), (try runOnce(a, opts)).sessions_collected);
+    try std.testing.expectEqual(@as(usize, 0), (try runOnce(a, opts)).sessions_collected);
+    try tmp.dir.writeFile(.{ .sub_path = "grok/project/g1/updates.jsonl", .data = first ++ next });
+    try std.testing.expectEqual(@as(usize, 1), (try runOnce(a, opts)).sessions_collected);
+    try std.testing.expectEqual(@as(usize, 0), (try runOnce(a, opts)).sessions_collected);
+    var stub = RoutingStub{ .map_response = "{}", .reduce_response = "{}" };
+    opts.providers.grok = false;
+    opts.completer = stub.completer();
+    _ = try runOnce(a, opts);
+    try std.testing.expectEqual(@as(usize, 0), stub.map_calls);
 }

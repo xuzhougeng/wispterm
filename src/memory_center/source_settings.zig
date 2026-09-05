@@ -22,7 +22,7 @@ pub const Settings = struct {
         const a = arena.allocator();
         const selection = try selection_mod.load(a);
         var items: std.ArrayListUnmanaged(Item) = .empty;
-        inline for (.{ .{ "codex", "Codex" }, .{ "claude", "Claude Code" }, .{ "kimi", "Kimi" }, .{ "wispterm", "WispTerm" } }) |pair| {
+        inline for (.{ .{ "codex", "Codex" }, .{ "claude", "Claude Code" }, .{ "kimi", "Kimi" }, .{ "grok", "Grok Build" }, .{ "wispterm", "WispTerm" } }) |pair| {
             try items.append(a, .{ .id = pair[0], .label = pair[1], .provider = true, .checked = @field(selection.providers, pair[0]) });
         }
         try items.append(a, .{ .id = "local", .label = i18n.s().memory_location_local, .checked = selection.includes("local", legacy_remote) });

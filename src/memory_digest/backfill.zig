@@ -20,7 +20,7 @@ pub fn findGaps(
     memory_root: []const u8,
     limit: usize,
 ) ![]const Gap {
-    return findSelectedGaps(gpa, arena, memory_root, limit, .{ .kimi = true });
+    return findSelectedGaps(gpa, arena, memory_root, limit, .{ .kimi = true, .grok = true });
 }
 
 pub fn findSelectedGaps(

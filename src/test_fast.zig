@@ -225,6 +225,7 @@ test {
     _ = @import("renderer/overlays/settings_page.zig");
     _ = @import("renderer/overlays/settings_picker.zig");
     _ = @import("memory_digest/source_selection.zig");
+    _ = @import("memory_digest/provider_grok.zig");
     _ = @import("memory_center/session.zig");
     _ = @import("renderer/memory_center_renderer.zig");
     _ = @import("renderer/overlays/toasts.zig");

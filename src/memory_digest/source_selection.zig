@@ -8,6 +8,7 @@ pub const Providers = struct {
     codex: bool = true,
     claude: bool = true,
     kimi: bool = false,
+    grok: bool = false,
     wispterm: bool = true,
 
     pub fn enabled(self: Providers, provider: types.DigestProvider) bool {
