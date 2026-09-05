@@ -1246,7 +1246,9 @@ fn createAppModuleWithRootAndTestShard(
         app_mod.addIncludePath(dep.path("src/stb"));
         app_mod.addCSourceFile(.{
             .file = dep.path("src/stb/stb.c"),
-            .flags = &.{},
+            // Ghostty enables PNG for Kitty graphics; WispTerm's preview
+            // panel and background images also use this decoder for JPEG.
+            .flags = &.{"-DSTBI_ONLY_JPEG"},
         });
     }
 
@@ -1439,7 +1441,7 @@ fn createBenchModule(
         bench_mod.addIncludePath(dep.path("src/stb"));
         bench_mod.addCSourceFile(.{
             .file = dep.path("src/stb/stb.c"),
-            .flags = &.{},
+            .flags = &.{"-DSTBI_ONLY_JPEG"},
         });
     }
     return bench_mod;

@@ -1111,6 +1111,30 @@ fn appendSlice(buf: *[1024]u8, pos: usize, text: []const u8) usize {
     return pos + len;
 }
 
+test "preview decoder loads JPEG and PNG as RGBA" {
+    // The same 2x1 white RGB image encoded as JPEG and PNG. Exercise the
+    // linked decoder: recognizing a .jpg suffix does not enable JPEG in stb.
+    const fixtures = [_][]const u8{
+        "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAIDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AL+AD//Z",
+        "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAD0lEQVR42mP8//8/AwMDAA7/Av8BviLeAAAAAElFTkSuQmCC",
+    };
+    for (fixtures) |encoded| {
+        var source: [512]u8 = undefined;
+        const len = try std.base64.standard.Decoder.calcSizeForSlice(encoded);
+        try std.base64.standard.Decoder.decode(source[0..len], encoded);
+        var width: c_int = 0;
+        var height: c_int = 0;
+        var channels: c_int = 0;
+        const data = c.stbi_load_from_memory(&source, @intCast(len), &width, &height, &channels, 4);
+        try std.testing.expect(data != null);
+        defer c.stbi_image_free(data);
+        try std.testing.expectEqual(@as(c_int, 2), width);
+        try std.testing.expectEqual(@as(c_int, 1), height);
+        try std.testing.expectEqual(@as(c_int, 3), channels);
+        try std.testing.expectEqualSlices(u8, &.{ 255, 255, 255, 255, 255, 255, 255, 255 }, data[0..8]);
+    }
+}
+
 test "countNonBlankLines ignores blank and whitespace-only lines" {
     try std.testing.expectEqual(@as(usize, 3), countNonBlankLines("a,b\n\nc,d\n   \ne,f\n"));
     try std.testing.expectEqual(@as(usize, 1), countNonBlankLines("only"));
