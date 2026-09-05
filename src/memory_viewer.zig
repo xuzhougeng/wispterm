@@ -9,11 +9,13 @@ const MAX_DAILY_BYTES = 16 * 1024 * 1024;
 pub const Source = enum {
     remembered,
     digest,
+    settings,
 
     pub fn label(self: Source) []const u8 {
         return switch (self) {
             .remembered => "AI Remembered",
             .digest => "Memory Digest",
+            .settings => "Source settings",
         };
     }
 };

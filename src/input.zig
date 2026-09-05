@@ -252,8 +252,7 @@ test "input: preview gallery neighbor opens next raster sibling" {
     defer pane.unref(gpa);
     pane.open(.pdf, "b.pdf", current_path, "current");
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     try std.testing.expect(openPreviewGalleryNeighbor(pane, true));
     try std.testing.expectEqualStrings("c.jpg", pane.title());
     try std.testing.expectEqualStrings(next_path, pane.path());
@@ -294,8 +293,7 @@ test "input: focused preview ignores shift-modified navigation keys" {
         AppWindow.g_cells_valid = previous_cells_valid;
     }
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{
         .key_code = platform_input.key_right,
         .ctrl = false,
@@ -2166,6 +2164,11 @@ fn syncPanelGridFromWindowSize(width: i32, height: i32) void {
     syncGridFromWindowSizeWithUrgency(width, height, panelToggleResizeUrgency());
 }
 
+fn resetInputRepaintForTest() void {
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+}
+
 fn applyInputEffect(effect: ui_effect.UiEffect) void {
     AppWindow.applyUiEffect(effect);
 }
@@ -3491,9 +3494,13 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
         return .none;
     }
 
-    if (AppWindow.activeMemoryCenter() != null) {
+    if (AppWindow.activeMemoryCenter()) |memory_session| {
         const plain = !ev.ctrl and !ev.alt and !ev.super;
         switch (ev.key_code) {
+            platform_input.key_space => if (plain) {
+                if (AppWindow.g_allocator) |allocator| applyInputEffect(memory_session.toggleSetting(allocator));
+                return .none;
+            },
             platform_input.key_up => {
                 _ = AppWindow.memoryCenterMoveSelection(-1);
                 return .none;

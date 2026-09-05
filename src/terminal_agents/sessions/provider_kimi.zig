@@ -532,3 +532,27 @@ test "ai_history_provider_kimi: transcript reads current and migrated records wi
     try std.testing.expectEqual(types.MessageKind.tool_result, messages[6].kind);
     try std.testing.expectEqualStrings("first result\nsecond result", messages[6].content);
 }
+
+pub fn kimiStatePath(allocator: std.mem.Allocator, source_path: []const u8) !?[]u8 {
+    const posix_marker = "/agents/main/wire.jsonl";
+    if (std.mem.lastIndexOf(u8, source_path, posix_marker)) |index| {
+        return try std.fmt.allocPrint(allocator, "{s}/state.json", .{source_path[0..index]});
+    }
+    const windows_marker = "\\agents\\main\\wire.jsonl";
+    if (std.mem.lastIndexOf(u8, source_path, windows_marker)) |index| {
+        return try std.fmt.allocPrint(allocator, "{s}\\state.json", .{source_path[0..index]});
+    }
+    return null;
+}
+
+pub fn kimiIndexPath(allocator: std.mem.Allocator, source_path: []const u8) !?[]u8 {
+    const posix_marker = "/sessions/";
+    if (std.mem.lastIndexOf(u8, source_path, posix_marker)) |index| {
+        return try std.fmt.allocPrint(allocator, "{s}/session_index.jsonl", .{source_path[0..index]});
+    }
+    const windows_marker = "\\sessions\\";
+    if (std.mem.lastIndexOf(u8, source_path, windows_marker)) |index| {
+        return try std.fmt.allocPrint(allocator, "{s}\\session_index.jsonl", .{source_path[0..index]});
+    }
+    return null;
+}

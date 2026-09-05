@@ -30,6 +30,8 @@ pub const ExecHost = struct {
 };
 
 pub const RemoteRootsSpec = struct {
+    kimi: bool = false,
+    grok: bool = false,
     claude: bool = true,
     codex: bool = true,
 };
@@ -81,6 +83,22 @@ pub fn collectRemote(
         result.oversize_skipped += r.oversize_skipped;
         try appendProviderDetail(arena, &detail_parts, "codex", r);
     }
+    if (roots.kimi) {
+        const root = try std.fmt.allocPrint(gpa, "{s}/.kimi-code/sessions", .{home});
+        defer gpa.free(root);
+        const r = try collectProvider(gpa, arena, out, source_id, host, cur, min_mtime_ns, .kimi, root);
+        result.count += r.count;
+        result.oversize_skipped += r.oversize_skipped;
+        try appendProviderDetail(arena, &detail_parts, "kimi", r);
+    }
+    if (roots.grok) {
+        const root = try std.fmt.allocPrint(gpa, "{s}/.grok/sessions", .{home});
+        defer gpa.free(root);
+        const r = try collectProvider(gpa, arena, out, source_id, host, cur, min_mtime_ns, .grok, root);
+        result.count += r.count;
+        result.oversize_skipped += r.oversize_skipped;
+        try appendProviderDetail(arena, &detail_parts, "grok", r);
+    }
     result.detail = detail_parts.items;
     return result;
 }
@@ -129,7 +147,7 @@ fn collectProvider(
 ) !ProviderResult {
     // 4096: the dir-existence guard makes the quoted root appear twice.
     var cmd_buf: [4096]u8 = undefined;
-    const find_cmd = try findCommandNoSizeFilter(root, &cmd_buf);
+    const find_cmd = try findCommandForProvider(root, provider, &cmd_buf);
     const find_out = try host.exec(host.ctx, gpa, find_cmd);
     defer gpa.free(find_out);
 
@@ -154,6 +172,8 @@ fn collectProvider(
             }
             continue;
         };
+        if (provider == .kimi and !std.mem.endsWith(u8, cand.path, "/agents/main/wire.jsonl")) continue;
+        if (provider == .grok and !std.mem.endsWith(u8, cand.path, "/updates.jsonl")) continue;
         result.files_seen += 1;
         // find_out (and thus cand.path, which borrows from it) is freed when
         // this function returns; CollectedSession.source_file must outlive
@@ -178,7 +198,20 @@ fn collectProvider(
         defer gpa.free(bytes);
 
         const before = out.items.len;
-        try collector.ingestJsonlBytes(gpa, arena, out, cur, provider, source_id, cand.path, cand.size, cand.mtime_ns, bytes, start);
+        if (provider == .grok) {
+            const slash = std.mem.lastIndexOfScalar(u8, cand.path, '/') orelse continue;
+            const summary_path = try std.fmt.allocPrint(arena, "{s}/summary.json", .{cand.path[0..slash]});
+            var summary_cmd: [4096]u8 = undefined;
+            const command = try ai_session.remoteCatCommand(summary_path, &summary_cmd);
+            const summary = host.exec(host.ctx, gpa, command) catch continue;
+            defer gpa.free(summary);
+            try collector.ingestGrok(arena, out, cur, source_id, cand.path, cand.size, cand.mtime_ns, bytes, start, summary);
+            result.count += @intCast(out.items.len - before);
+            continue;
+        }
+        const state = if (provider == .kimi) try kimiSidecar(gpa, arena, host, cand.path, false) else "";
+        const index = if (provider == .kimi) try kimiSidecar(gpa, arena, host, cand.path, true) else "";
+        try collector.ingestJsonlBytes(gpa, arena, out, cur, provider, source_id, cand.path, cand.size, cand.mtime_ns, bytes, start, state, index);
         result.count += @intCast(out.items.len - before);
     }
     return result;
@@ -187,8 +220,8 @@ fn collectProvider(
 /// Same shape as session.zig's providerFindCommand ("mtime<TAB>size<TAB>path",
 /// newest first, capped at 500) but WITHOUT the `-size -2048k` filter: this
 /// module needs to see oversize candidates (to count and skip them) rather
-/// than have `find` drop them silently. This is only used for Claude/Codex
-/// roots, so no provider-specific name filter is needed here.
+/// than have `find` drop them silently. Grok selects updates.jsonl before
+/// the limit so events and raw chat history cannot crowd out sessions.
 ///
 /// `| sort | head` would swallow find's own exit code (BSD find rejects
 /// `-printf` outright), making "find failed" indistinguishable from "0
@@ -197,9 +230,13 @@ fn collectProvider(
 /// and survives `head`). A missing root dir stays plain empty output ("0
 /// files" is honest there), guarded by the leading `[ ! -d ... ]`.
 fn findCommandNoSizeFilter(root: []const u8, out: []u8) ![]const u8 {
+    return findCommandForProvider(root, .claude, out);
+}
+
+fn findCommandForProvider(root: []const u8, provider: types.DigestProvider, out: []u8) ![]const u8 {
     var quoted_buf: [1024]u8 = undefined;
     const quoted = remote_file.shellQuote(&quoted_buf, root) orelse return error.CommandTooLong;
-    return std.fmt.bufPrint(out, "[ ! -d {s} ] || (find {s} -type f -name '*.jsonl' -printf '%T@\\t%s\\t%p\\n' 2>/dev/null || echo FINDFAIL:$?) | sort -rn | head -500", .{ quoted, quoted }) catch error.CommandTooLong;
+    return std.fmt.bufPrint(out, "[ ! -d {s} ] || (find {s} -type f -name '{s}' -printf '%T@\\t%s\\t%p\\n' 2>/dev/null || echo FINDFAIL:$?) | sort -rn | head -500", .{ quoted, quoted, if (provider == .grok) "updates.jsonl" else "*.jsonl" }) catch error.CommandTooLong;
 }
 
 const FindCandidate = struct {
@@ -516,4 +553,47 @@ test "memory_digest_remote: oversize file (>REMOTE_CAT_LIMIT) is skipped, not ca
     try std.testing.expectEqual(@as(usize, 1), cur.entries.items.len);
     try std.testing.expectEqual(@as(u32, 0), cur.entries.items[0].processed_messages);
     try std.testing.expectEqual(oversize, cur.entries.items[0].size);
+}
+
+fn kimiSidecar(gpa: std.mem.Allocator, arena: std.mem.Allocator, host: ExecHost, wire_path: []const u8, index: bool) ![]const u8 {
+    const kimi = @import("../terminal_agents/sessions/provider_kimi.zig");
+    const path = (if (index) try kimi.kimiIndexPath(arena, wire_path) else try kimi.kimiStatePath(arena, wire_path)) orelse return "";
+    var cmd_buf: [4096]u8 = undefined;
+    const command = try ai_session.remoteCatCommand(path, &cmd_buf);
+    const bytes = host.exec(host.ctx, gpa, command) catch return "";
+    defer gpa.free(bytes);
+    return arena.dupe(u8, bytes);
+}
+
+test "remote Grok scans only authoritative updates and loads summary metadata" {
+    const Fake = struct {
+        calls: usize = 0,
+        fn exec(ctx: *anyopaque, a: std.mem.Allocator, command: []const u8) ![]u8 {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.calls += 1;
+            if (std.mem.startsWith(u8, command, "printf")) return a.dupe(u8, "/home/test");
+            if (std.mem.indexOf(u8, command, "find ") != null) {
+                try std.testing.expect(std.mem.indexOf(u8, command, "-name 'updates.jsonl'") != null);
+                return a.dupe(u8, "1788449851\t100\t/home/test/.grok/sessions/project/g1/updates.jsonl\n");
+            }
+            if (std.mem.indexOf(u8, command, "/summary.json") != null) return a.dupe(u8, "{\"info\":{\"id\":\"g1\",\"cwd\":\"/project\"},\"generated_title\":\"Remote Grok\"}");
+            if (std.mem.indexOf(u8, command, "/updates.jsonl") != null) return a.dupe(u8,
+                \\{"timestamp":1788449851,"params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hello"}}}}
+            );
+            return error.UnexpectedCommand;
+        }
+    };
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    var cur = cursors_mod.Set.init(a);
+    defer cur.deinit();
+    var sessions: std.ArrayListUnmanaged(types.CollectedSession) = .empty;
+    var fake = Fake{};
+    const result = try collectRemote(a, arena.allocator(), &sessions, "ssh:GPU", .{ .ctx = &fake, .exec = Fake.exec }, &cur, 0, .{ .claude = false, .codex = false, .grok = true });
+    try std.testing.expectEqual(@as(usize, 4), fake.calls);
+    try std.testing.expectEqual(@as(u32, 1), result.count);
+    try std.testing.expectEqualStrings("Remote Grok", sessions.items[0].title);
+    try std.testing.expectEqualStrings("ssh:GPU", sessions.items[0].source_id);
+    try std.testing.expectEqual(types.DigestProvider.grok, sessions.items[0].provider);
 }

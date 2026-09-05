@@ -25,6 +25,7 @@ pub const Hit = union(enum) {
     none,
     source: memory_center.Source,
     row: usize,
+    setting: usize,
     run_digest,
     detail,
 };
@@ -86,11 +87,12 @@ pub fn hitTest(
 ) Hit {
     const mx: f32 = @floatCast(mouse_x);
     const my: f32 = @floatCast(mouse_y);
+    if (my < titlebar_offset or my >= ui_patterns.workbenchFooterTop(window_height, titlebar_offset, ui_patterns.workbenchFooterHeight(cell_h))) return .none;
     const layout = computeLayout(@round(x), @round(@max(1.0, width)));
     const top = @round(titlebar_offset);
     const src_top = sourceRowsTop(top, cell_h);
     const source_row_h = sourceRowHeight(cell_h);
-    const sources = [_]memory_center.Source{ .remembered, .digest };
+    const sources = [_]memory_center.Source{ .remembered, .digest, .settings };
     for (sources, 0..) |source, i| {
         const row_top = src_top + @as(f32, @floatFromInt(i)) * source_row_h;
         if (rectContains(mx, my, layout.left_x, row_top, layout.left_w, source_row_h)) return .{ .source = source };
@@ -98,7 +100,7 @@ pub fn hitTest(
 
     // While a digest run reports progress the list renders a status line, not
     // the empty-state action. Keep hit testing aligned with that visible UI.
-    if (session.count() == 0 and session.status().len == 0) {
+    if (session.source != .settings and session.count() == 0 and session.status().len == 0) {
         const action = emptyActionRect(layout, top, cell_h);
         if (rectContains(mx, my, action.x, action.top, action.w, action.h)) return .run_digest;
     }
@@ -112,7 +114,7 @@ pub fn hitTest(
             const max_rows = listVisibleCapacity(window_height, top, cell_h);
             const start = session.listWindowStart(max_rows);
             const absolute = start + idx;
-            if (idx < max_rows and absolute < session.count()) return .{ .row = absolute };
+            if (idx < max_rows and absolute < session.count()) return if (session.source == .settings) .{ .setting = absolute } else .{ .row = absolute };
         }
     }
 
@@ -158,9 +160,19 @@ pub fn render(
 
     renderSources(draw, session, layout, window_height, top, fg, muted, accent, panel_strong, line, selected_bg);
     renderList(draw, session, layout, window_height, top, fg, muted, accent, selected_bg, line);
-    renderDetail(draw, session, layout, window_height, content_bottom, top, fg, muted, accent, panel_strong, line);
+    if (session.source == .settings) {
+        var help_buf: [2048]u8 = undefined;
+        const label = if (session.settings) |settings| if (session.selected < settings.items.len) settings.items[session.selected].label else "" else "";
+        const help = std.fmt.bufPrint(&help_buf, "{s}\n\n{s}", .{ label, i18n.s().memory_settings_help }) catch i18n.s().memory_settings_help;
+        const body_top = top + headerHeight(draw.cell_h) + 18;
+        const total = wrappedLineCount(help, @max(1, layout.detail_w - PAD_X * 2), draw.glyphAdvance);
+        const visible: usize = @intFromFloat(@max(0, @floor((content_bottom - body_top) / (draw.cell_h + 4))));
+        session.detail_scroll = clampScroll(session.detail_scroll, total, visible);
+        _ = draw.renderTextLimited(i18n.s().memory_source_settings, layout.detail_x + PAD_X, yTextFromTop(draw, window_height, top + 11), accent, layout.detail_w - PAD_X * 2);
+        renderBody(draw, help, layout, window_height, content_bottom, body_top, fg, muted, session.detail_scroll);
+    } else renderDetail(draw, session, layout, window_height, content_bottom, top, fg, muted, accent, panel_strong, line);
     renderDigestNotification(draw, session, layout, window_height, content_bottom, top);
-    renderWorkbenchFooter(draw, content_x, content_w, window_height, content_bottom, footer_h, muted, line);
+    renderWorkbenchFooter(draw, session, content_x, content_w, window_height, content_bottom, footer_h, muted, line);
 }
 
 fn renderSources(
@@ -184,7 +196,7 @@ fn renderSources(
     const src_top = sourceRowsTop(top, draw.cell_h);
     const source_row_h = sourceRowHeight(draw.cell_h);
     _ = draw.renderTextLimited(i18n.s().memory_center_source, layout.left_x + PAD_X, yTextFromTop(draw, window_height, src_top - draw.cell_h - 8), muted, layout.left_w - PAD_X * 2);
-    const sources = [_]memory_center.Source{ .remembered, .digest };
+    const sources = [_]memory_center.Source{ .remembered, .digest, .settings };
     for (sources, 0..) |source, i| {
         const row_top = src_top + @as(f32, @floatFromInt(i)) * source_row_h;
         const active = session.source == source;
@@ -193,7 +205,7 @@ fn renderSources(
             draw.fillQuad(layout.left_x, yFromTop(window_height, row_top, source_row_h), 4, source_row_h, accent);
         }
         var count_buf: [16]u8 = undefined;
-        const count_text = std.fmt.bufPrint(&count_buf, "{d}", .{if (session.snapshot) |snap| snap.count(source) else 0}) catch "";
+        const count_text = if (source == .settings) "" else std.fmt.bufPrint(&count_buf, "{d}", .{if (session.snapshot) |snap| snap.count(source) else 0}) catch "";
         const count_w = countColumnWidth(count_text, draw.glyphAdvance);
         const count_x = layout.left_x + layout.left_w - PAD_X - count_w;
         const label_x = layout.left_x + PAD_X + 6;
@@ -204,10 +216,10 @@ fn renderSources(
     }
 }
 
-fn renderWorkbenchFooter(draw: DrawContext, content_x: f32, content_w: f32, window_height: f32, footer_top: f32, footer_h: f32, muted: [3]f32, line: [3]f32) void {
+fn renderWorkbenchFooter(draw: DrawContext, session: *const memory_center.Session, content_x: f32, content_w: f32, window_height: f32, footer_top: f32, footer_h: f32, muted: [3]f32, line: [3]f32) void {
     draw.fillQuadAlpha(content_x, yFromTop(window_height, footer_top, footer_h), content_w, footer_h, mixColor(draw.bg, draw.fg, 0.035), 0.98);
     draw.fillQuad(content_x, yFromTop(window_height, footer_top, 1), content_w, 1, line);
-    _ = draw.renderTextLimited(i18n.s().memory_footer, content_x + PAD_X, yTextFromTop(draw, window_height, footer_top + (footer_h - draw.cell_h) / 2), muted, content_w - PAD_X * 2);
+    _ = draw.renderTextLimited(if (session.source == .settings and session.settings_message.len != 0) session.settings_message else i18n.s().memory_footer, content_x + PAD_X, yTextFromTop(draw, window_height, footer_top + (footer_h - draw.cell_h) / 2), muted, content_w - PAD_X * 2);
 }
 
 fn renderDigestNotification(draw: DrawContext, session: *const memory_center.Session, layout: Layout, window_height: f32, content_bottom: f32, top: f32) void {
@@ -263,12 +275,12 @@ fn renderList(
     _ = draw.renderTextLimited(header, layout.list_x + PAD_X, yTextFromTop(draw, window_height, top + 11), fg, layout.list_w - PAD_X * 2);
 
     const status = session.status();
-    if (status.len != 0) {
+    if (status.len != 0 and session.source != .settings) {
         _ = draw.renderTextLimited(status, layout.list_x + PAD_X, yTextFromTop(draw, window_height, top + header_h + 24), accent, layout.list_w - PAD_X * 2);
         return;
     }
 
-    if (count == 0) {
+    if (count == 0 and session.source != .settings) {
         _ = draw.renderTextLimited(i18n.s().memory_empty_title, layout.list_x + PAD_X, yTextFromTop(draw, window_height, top + header_h + 24), fg, layout.list_w - PAD_X * 2);
         renderEmptyAction(draw, layout, window_height, top, accent);
         return;
@@ -284,7 +296,6 @@ fn renderList(
         i += 1;
         rendered += 1;
     }) {
-        const row = session.snapshot.?.rowAt(session.source, i) orelse continue;
         const row_top_px = row_top + @as(f32, @floatFromInt(rendered)) * row_h;
         const row_y = yFromTop(window_height, row_top_px, row_h);
         const selected = i == session.selected;
@@ -294,6 +305,15 @@ fn renderList(
         }
         draw.fillQuadAlpha(layout.list_x, row_y, layout.list_w, 1, line, 0.55);
 
+        if (session.source == .settings) {
+            const item = session.settings.?.items[i];
+            var label_buf: [512]u8 = undefined;
+            const label = std.fmt.bufPrint(&label_buf, "[{s}] {s}", .{ if (item.checked) "x" else " ", item.label }) catch item.label;
+            _ = draw.renderTextLimited(label, layout.list_x + PAD_X, yTextFromTop(draw, window_height, row_top_px + 8), fg, layout.list_w - PAD_X * 2);
+            _ = draw.renderTextLimited(if (item.provider) i18n.s().memory_settings_provider else i18n.s().memory_settings_location, layout.list_x + PAD_X, yTextFromTop(draw, window_height, row_top_px + row_h - 9 - draw.cell_h), muted, layout.list_w - PAD_X * 2);
+            continue;
+        }
+        const row = session.snapshot.?.rowAt(session.source, i) orelse continue;
         _ = draw.renderTextLimited(row.title, layout.list_x + PAD_X, yTextFromTop(draw, window_height, row_top_px + 8), if (selected) fg else mixColor(fg, accent, 0.05), layout.list_w - PAD_X * 2);
         _ = draw.renderTextLimited(row.detail, layout.list_x + PAD_X, yTextFromTop(draw, window_height, row_top_px + row_h - 9 - draw.cell_h), muted, layout.list_w - PAD_X * 2);
     }
@@ -332,6 +352,7 @@ fn sourceLabel(source: memory_center.Source) []const u8 {
     return switch (source) {
         .remembered => i18n.s().memory_source_remembered,
         .digest => i18n.s().memory_source_digest,
+        .settings => i18n.s().memory_source_settings,
     };
 }
 
@@ -542,4 +563,22 @@ test "memory center source rows grow with large UI text" {
         try std.testing.expect(text_top >= 0);
         try std.testing.expect(text_top + cell_h <= row_h);
     }
+}
+
+test "memory source checklist shares selection geometry and excludes footer clicks" {
+    const a = std.testing.allocator;
+    var session = memory_center.Session{ .source = .settings };
+    defer session.deinit();
+    var arena = std.heap.ArenaAllocator.init(a);
+    const items = try arena.allocator().alloc(@import("../memory_center/source_settings.zig").Item, 1);
+    items[0] = .{ .id = "local", .label = "Local", .checked = true };
+    session.settings = .{ .arena = arena, .items = items };
+    const layout = computeLayout(0, 1200);
+    const hit = hitTest(&session, 800, 40, 0, 1200, 20, layout.list_x + 20, 40 + headerHeight(20) + 10);
+    try std.testing.expectEqual(@as(usize, 0), hit.setting);
+    try std.testing.expectEqual(Hit.none, hitTest(&session, 800, 40, 0, 1200, 20, layout.list_x + 20, 799));
+    session.moveSelection(100);
+    try std.testing.expectEqual(@as(usize, 0), session.selected);
+    session.cycleSource(-1);
+    try std.testing.expectEqual(memory_center.Source.digest, session.source);
 }
