@@ -4413,7 +4413,18 @@ pub fn scheduleSshPasswordForSurface(surface: *Surface) void {
 /// the profile by host/user/port and copied into the live `ssh_connection`.
 /// No-op if the surface is not SSH, no profile matches, or the match is key-auth.
 pub fn armSshPasswordFromProfileForSurface(surface: *Surface) void {
-    const conn = surface.ssh_connection orelse return;
+    var conn = surface.ssh_connection orelse return;
+    if (!fillSshPasswordFromProfile(&conn)) return;
+    // Copy the password into the live ssh_connection so this connect (and any
+    // later Enter-reconnect of the same pane) can autofill it.
+    surface.setSshConnectionValue(conn);
+    scheduleSshPasswordForSurface(surface);
+}
+
+/// Match `conn` to a saved password profile by host/user/port and copy its
+/// password in. Returns false (conn untouched) when none matches or the match
+/// is key-auth. Also used for restored SSH preview panes.
+pub fn fillSshPasswordFromProfile(conn: *Surface.SshConnection) bool {
     loadSshProfiles();
     var idx: usize = 0;
     while (idx < sshState().profile_count) : (idx += 1) {
@@ -4426,15 +4437,22 @@ pub fn armSshPasswordFromProfileForSurface(surface: *Surface) void {
             (p_port.len == 0 and std.mem.eql(u8, c_port, "22")) or
             (c_port.len == 0 and std.mem.eql(u8, p_port, "22"));
         if (!ports_match) continue;
-        if ((sshProfileAuthMethod(profile) orelse return) != .password) return;
+        if ((sshProfileAuthMethod(profile) orelse return false) != .password) return false;
         const password = profileField(profile, .password);
-        if (password.len == 0) return;
-        // Copy the password into the live ssh_connection so this connect (and any
-        // later Enter-reconnect of the same pane) can autofill it.
-        surface.setSshConnection(conn.user(), conn.host(), conn.port(), password, conn.proxyJump(), true, AppWindow.g_ssh_legacy_algorithms);
-        scheduleSshPasswordForSurface(surface);
-        return;
+        if (password.len == 0) return false;
+        var filled = Surface.SshConnection.fromParts(.{
+            .user = conn.user(),
+            .host = conn.host(),
+            .port = conn.port(),
+            .password = password,
+            .proxy_jump = conn.proxyJump(),
+            .auth_method = .password,
+        });
+        filled.legacy_algorithms = AppWindow.g_ssh_legacy_algorithms;
+        conn.* = filled;
+        return true;
     }
+    return false;
 }
 
 pub fn tickSessionLauncher() void {

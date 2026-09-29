@@ -281,6 +281,9 @@ pub threadlocal var g_tmux_restore_hook: ?*const fn (profile_name: []const u8) b
 /// Re-supply a restored SSH surface's password from its saved profile and arm
 /// autofill (the snapshot carries no password). Registered by AppWindow.
 pub threadlocal var g_ssh_restore_arm_hook: ?*const fn (*Surface) void = null;
+/// Copy the saved profile's password into a restored SSH preview connection.
+/// Registered by AppWindow; returns false when no password profile matches.
+pub threadlocal var g_ssh_restore_password_hook: ?*const fn (*Surface.SshConnection) bool = null;
 
 // Forced title from config (overrides all tab titles)
 pub threadlocal var g_forced_title: ?[]const u8 = null;
@@ -1838,7 +1841,15 @@ fn snapshotNode(
             // (best-effort) on the next launch.
             .preview => |p| .{ .leaf = .{
                 .kind = .preview,
-                .preview = .{ .kind = p.kind, .path = try arena.dupe(u8, p.path()) },
+                .preview = .{
+                    .kind = p.kind,
+                    .path = try arena.dupe(u8, p.path()),
+                    .source = switch (p.currentSourceKind()) {
+                        .local => .local,
+                        .wsl => .wsl,
+                        .remote => |conn| .{ .ssh = try sshSnapFromConn(arena, &conn, null) },
+                    },
+                },
             } },
         },
         .split => |sp| blk: {
@@ -1865,22 +1876,23 @@ fn snapshotSurface(arena: std.mem.Allocator, surface: *const Surface) !session_p
             .cwd = try snapshotOptionalCwd(arena, surface.getCwd() orelse surface.getInitialCwd()),
             .command = null,
         } },
-        .ssh => blk: {
-            // surfaceKind() returned .ssh, so ssh_connection is non-null.
-            const conn = &surface.ssh_connection.?;
-            const port_str = conn.port();
-            const port_num: u16 = if (port_str.len == 0)
-                22
-            else
-                std.fmt.parseInt(u16, port_str, 10) catch 22;
-            break :blk .{ .ssh = .{
-                .cwd = try snapshotOptionalCwd(arena, surface.getCwd()),
-                .user = try arena.dupe(u8, conn.user()),
-                .host = try arena.dupe(u8, conn.host()),
-                .port = port_num,
-                .proxy_jump = try arena.dupe(u8, conn.proxyJump()),
-            } };
-        },
+        // surfaceKind() returned .ssh, so ssh_connection is non-null.
+        .ssh => .{ .ssh = try sshSnapFromConn(arena, &surface.ssh_connection.?, surface.getCwd()) },
+    };
+}
+
+fn sshSnapFromConn(arena: std.mem.Allocator, conn: *const Surface.SshConnection, cwd: ?[]const u8) !session_persist.SurfaceSnap.SshSnap {
+    const port_str = conn.port();
+    const port_num: u16 = if (port_str.len == 0)
+        22
+    else
+        std.fmt.parseInt(u16, port_str, 10) catch 22;
+    return .{
+        .cwd = try snapshotOptionalCwd(arena, cwd),
+        .user = try arena.dupe(u8, conn.user()),
+        .host = try arena.dupe(u8, conn.host()),
+        .port = port_num,
+        .proxy_jump = try arena.dupe(u8, conn.proxyJump()),
     };
 }
 
@@ -1990,6 +2002,27 @@ fn surfaceFromSnapImpl(
     }
 }
 
+/// Where a restored preview pane reads from. SSH previews get their endpoint
+/// back from the snapshot and the password (never persisted) from the profile.
+fn previewSourceFromSnap(ps: *const session_persist.PreviewSnap) PreviewPane.PreviewSourceKind {
+    return switch (ps.source) {
+        .local => .local,
+        .wsl => .wsl,
+        .ssh => |s| blk: {
+            var port_buf: [8]u8 = undefined;
+            var conn = Surface.SshConnection.fromParts(.{
+                .user = s.user,
+                .host = s.host,
+                .port = std.fmt.bufPrint(&port_buf, "{}", .{s.port}) catch "22",
+                .proxy_jump = s.proxy_jump,
+            });
+            conn.legacy_algorithms = g_ssh_legacy_algorithms;
+            if (g_ssh_restore_password_hook) |hook| _ = hook(&conn);
+            break :blk .{ .remote = conn };
+        },
+    };
+}
+
 fn buildSshRestoreCommand(
     allocator: std.mem.Allocator,
     buf: []u8,
@@ -2056,7 +2089,7 @@ pub fn restoreTab(
     g_restore_cursor_style = cursor_style;
     g_restore_cursor_blink = cursor_blink;
 
-    var tree = SplitTree.fromSnapshot(allocator, &snap.tree, &surfaceFromSnap) catch |err| {
+    var tree = SplitTree.fromSnapshot(allocator, &snap.tree, &surfaceFromSnap, &previewSourceFromSnap) catch |err| {
         std.debug.print("restoreTab: fromSnapshot failed: {}\n", .{err});
         return false;
     };
@@ -2353,6 +2386,34 @@ test "tab: restoreTab routes ai_session_id through the restore hook" {
     try std.testing.expectEqualStrings("sess-xyz", Captured.session_id);
     // The hook owns tab creation; restoreTab must not also build a terminal tab.
     try std.testing.expectEqual(@as(usize, 0), g_tab_count);
+}
+
+test "tab: restored previews read from their persisted source, SSH password from the profile" {
+    const previous_hook = g_ssh_restore_password_hook;
+    defer g_ssh_restore_password_hook = previous_hook;
+    const Profile = struct {
+        fn fill(conn: *Surface.SshConnection) bool {
+            conn.* = Surface.SshConnection.fromParts(.{ .user = conn.user(), .host = conn.host(), .port = conn.port(), .password = "pw" });
+            return true;
+        }
+    };
+    g_ssh_restore_password_hook = Profile.fill;
+
+    try std.testing.expect(previewSourceFromSnap(&.{ .path = "a.md" }) == .local);
+    try std.testing.expect(previewSourceFromSnap(&.{ .path = "/home/me/a.png", .source = .wsl }) == .wsl);
+
+    const ssh = previewSourceFromSnap(&.{ .path = "/data/b.png", .source = .{ .ssh = .{
+        .user = "me",
+        .host = "10.0.0.2",
+        .port = 2222,
+        .proxy_jump = "jump",
+    } } });
+    const conn = ssh.remote;
+    try std.testing.expectEqualStrings("me", conn.user());
+    try std.testing.expectEqualStrings("10.0.0.2", conn.host());
+    try std.testing.expectEqualStrings("2222", conn.port());
+    try std.testing.expectEqualStrings("pw", conn.password());
+    try std.testing.expect(conn.usesPasswordAuth());
 }
 
 test "tab: restoreTab skips an ai tab when no restore hook is installed" {
@@ -2984,7 +3045,7 @@ test "focusPanelByIndex focuses panels in screen reading order" {
 
     var ts = TabState{
         .kind = .terminal,
-        .tree = try SplitTree.fromSnapshot(std.testing.allocator, &root, Stub.make),
+        .tree = try SplitTree.fromSnapshot(std.testing.allocator, &root, Stub.make, null),
         .focused = .root,
     };
     // Sentinel surfaces can't be unref'd, so free the arena directly (no TabState.deinit).

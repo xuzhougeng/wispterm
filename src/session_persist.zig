@@ -39,6 +39,15 @@ pub const SurfaceSnap = union(enum) {
 pub const PreviewSnap = struct {
     kind: @import("preview/markdown.zig").Kind = .markdown,
     path: []const u8 = "",
+    // Where `path` lives. A WSL/SSH preview reloaded as local can never open
+    // (`/home/...` is not a Windows path). Absent in older files → local.
+    source: Source = .local,
+
+    pub const Source = union(enum) {
+        local,
+        wsl,
+        ssh: SurfaceSnap.SshSnap, // endpoint only; no password (invariant I1)
+    };
 };
 
 pub const NodeSnap = union(enum) {
@@ -298,6 +307,43 @@ test "session_persist: preview leaf round-trips through JSON" {
     try std.testing.expect(leaf.preview != null);
     try std.testing.expectEqualStrings("README.md", leaf.preview.?.path);
     try std.testing.expectEqual(@import("preview/markdown.zig").Kind.markdown, leaf.preview.?.kind);
+    try std.testing.expect(leaf.preview.?.source == .local);
+}
+
+test "session_persist: preview source (wsl/ssh) round-trips; old previews default to local" {
+    const gpa = std.testing.allocator;
+    var wsl_leaf = NodeSnap{ .leaf = .{
+        .kind = .preview,
+        .preview = .{ .kind = .image, .path = "/home/me/a.png", .source = .wsl },
+    } };
+    var ssh_leaf = NodeSnap{ .leaf = .{
+        .kind = .preview,
+        .preview = .{ .kind = .image, .path = "/data/b.png", .source = .{ .ssh = .{
+            .user = "me",
+            .host = "10.0.0.2",
+            .port = 2222,
+            .proxy_jump = "jump",
+        } } },
+    } };
+    var tabs = [_]TabSnap{.{ .tree = .{ .split = .{ .layout = .horizontal, .ratio = 0.5, .left = &wsl_leaf, .right = &ssh_leaf } } }};
+    const json = try dumpSessionToString(gpa, .{ .tabs = &tabs });
+    defer gpa.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "password") == null);
+
+    var parsed = try loadSessionFromString(gpa, json);
+    defer parsed.deinit();
+    const sp = parsed.value.tabs[0].tree.split;
+    try std.testing.expect(sp.left.leaf.preview.?.source == .wsl);
+    const ssh = sp.right.leaf.preview.?.source.ssh;
+    try std.testing.expectEqualStrings("me", ssh.user);
+    try std.testing.expectEqualStrings("10.0.0.2", ssh.host);
+    try std.testing.expectEqual(@as(u16, 2222), ssh.port);
+    try std.testing.expectEqualStrings("jump", ssh.proxy_jump);
+
+    const old = "{\"tabs\":[{\"tree\":{\"leaf\":{\"kind\":\"preview\",\"preview\":{\"kind\":\"image\",\"path\":\"/x.png\"}}}}]}";
+    var old_parsed = try loadSessionFromString(gpa, old);
+    defer old_parsed.deinit();
+    try std.testing.expect(old_parsed.value.tabs[0].tree.leaf.preview.?.source == .local);
 }
 
 test "session_persist: old terminal leaf JSON (no kind field) still parses as terminal" {

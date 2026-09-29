@@ -4674,6 +4674,7 @@ fn installSessionRestoreHooks() void {
     tab.g_tmux_active_profiles_hook = tmux_controller.activeProfileNames;
     tab.g_tmux_restore_hook = overlays.connectProfileByNameTmux;
     tab.g_ssh_restore_arm_hook = overlays.armSshPasswordFromProfileForSurface;
+    tab.g_ssh_restore_password_hook = overlays.fillSshPasswordFromProfile;
 }
 
 fn deinitGlobalAgentHistoryStore(allocator: std.mem.Allocator) void {
@@ -9056,7 +9057,7 @@ test "appwindow: agent terminal focus activates the owning tab and split" {
     Stub.idx = 0;
     Stub.surfaces = .{ &surface_b, &surface_c };
     var tab1_v = tab.TabState{
-        .tree = try SplitTree.fromSnapshot(allocator, &root, Stub.make),
+        .tree = try SplitTree.fromSnapshot(allocator, &root, Stub.make, null),
         .focused = @enumFromInt(1),
     };
     defer tab1_v.tree.arena.deinit();
