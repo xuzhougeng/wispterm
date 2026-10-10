@@ -9,6 +9,7 @@ const composer_layout = @import("../../assistant/conversation/composer_layout.zi
 const scrollbar_model = @import("../../assistant/conversation/scrollbar_model.zig");
 const md = @import("../../markdown_text.zig");
 const table_hscroll = @import("../../assistant/conversation/table_hscroll.zig");
+const question_hscroll = @import("../../assistant/conversation/question_hscroll.zig");
 const detail_wrap = @import("../../composer_detail_wrap.zig");
 
 // Transcript scrollbar interaction state (one mouse). Set by input.zig,
@@ -101,6 +102,7 @@ pub const HitTarget = union(enum) {
     toggle_reasoning: usize,
     /// Click on the Nth (zero-based) visible option of a pending ask_user card.
     question_option: usize,
+    question_scrollbar: QuestionScrollbarHit,
 };
 
 pub const CopySpan = struct {
@@ -379,7 +381,7 @@ pub fn render(
     // A pending question shares the footer slot with approval; they are mutually
     // exclusive (the worker blocks on one tool at a time), so at most one is set.
     const question = if (approval == null) session.questionView() else null;
-    const question_h: f32 = if (question) |view| questionCardHeight(view) + APPROVAL_GAP else 0;
+    const question_h: f32 = if (question) |view| questionCardHeight(view, w - LINE_PAD_X * 2) + APPROVAL_GAP else 0;
     const card_footer_h = approval_h + question_h;
 
     const transcript_viewport = ai_chat_layout.transcriptViewport(frame, window_height, input_h, card_footer_h, LINE_PAD_X, 18);
@@ -473,7 +475,7 @@ pub fn render(
     if (approval) |view| {
         renderApprovalCard(view, x + LINE_PAD_X, input_h + APPROVAL_GAP, w - LINE_PAD_X * 2, approvalCardHeight(view));
     } else if (question) |view| {
-        renderQuestionCard(view, x + LINE_PAD_X, input_h + APPROVAL_GAP, w - LINE_PAD_X * 2, questionCardHeight(view));
+        renderQuestionCard(session, view, x + LINE_PAD_X, input_h + APPROVAL_GAP, w - LINE_PAD_X * 2, questionCardHeight(view, w - LINE_PAD_X * 2));
     }
     if (session.queue_open) {
         renderPromptQueuePanel(session, layout);
@@ -505,7 +507,7 @@ pub fn interactionHitTest(
     const approval = session.approvalView();
     const approval_h: f32 = if (approval) |view| approvalCardHeight(view) + APPROVAL_GAP else 0;
     const question = if (approval == null) session.questionView() else null;
-    const question_h: f32 = if (question) |view| questionCardHeight(view) + APPROVAL_GAP else 0;
+    const question_h: f32 = if (question) |view| questionCardHeight(view, w - LINE_PAD_X * 2) + APPROVAL_GAP else 0;
     const input_h = inputLayout(x, w, session.input()).input_h;
     const transcript_top = titlebar_offset + HEADER_H + 18;
     const transcript_bottom = input_h + approval_h + question_h + 18;
@@ -521,7 +523,13 @@ pub fn interactionHitTest(
     if (question) |qv| {
         const cell_h = font.g_titlebar_cell_height;
         const card_y = input_h + APPROVAL_GAP; // y-up bottom edge, matches the renderer
-        const lay = ai_chat_layout.questionLayout(cell_h, qv.options.len, MAX_VISIBLE_QUESTION_OPTIONS);
+        const lay = questionCardLayout(qv, content_w);
+        if (questionScrollbarGeometry(qv, content_x, card_y, content_w, window_height)) |geo| {
+            if (geo.hit(px, py)) |grab_offset| return .{ .question_scrollbar = .{
+                .drag_offset_px = grab_offset,
+                .generation = qv.generation,
+            } };
+        }
         var k: usize = 0;
         while (k < lay.visible_options) : (k += 1) {
             const baseline = card_y + lay.first_option_y - @as(f32, @floatFromInt(k)) * lay.option_pitch;
@@ -618,7 +626,7 @@ pub fn transcriptTextHitTest(
 
     const approval = session.approvalView();
     const approval_h: f32 = if (approval) |view| approvalCardHeight(view) + APPROVAL_GAP else 0;
-    const question_h: f32 = if (approval == null) (if (session.questionView()) |view| questionCardHeight(view) + APPROVAL_GAP else 0) else 0;
+    const question_h: f32 = if (approval == null) (if (session.questionView()) |view| questionCardHeight(view, w - LINE_PAD_X * 2) + APPROVAL_GAP else 0) else 0;
     const input_h = inputLayout(x, w, session.input()).input_h;
     const transcript_top = titlebar_offset + HEADER_H + 18;
     const transcript_bottom = input_h + approval_h + question_h + 18;
@@ -695,7 +703,7 @@ pub fn wideTableAtPoint(
     const approval = session.approvalView();
     const approval_h: f32 = if (approval) |view| approvalCardHeight(view) + APPROVAL_GAP else 0;
     const question = if (approval == null) session.questionView() else null;
-    const question_h: f32 = if (question) |view| questionCardHeight(view) + APPROVAL_GAP else 0;
+    const question_h: f32 = if (question) |view| questionCardHeight(view, w - LINE_PAD_X * 2) + APPROVAL_GAP else 0;
     const input_h = inputLayout(x, w, session.input()).input_h;
     const frame = ai_chat_layout.panelFrame(window_height, titlebar_offset, x, w, HEADER_H) orelse return null;
     const transcript_viewport = ai_chat_layout.transcriptViewport(frame, window_height, input_h, approval_h + question_h, LINE_PAD_X, 18);
@@ -995,7 +1003,7 @@ fn transcriptLayoutLocked(
 
     const approval = session.approvalView();
     const approval_h: f32 = if (approval) |view| approvalCardHeight(view) + APPROVAL_GAP else 0;
-    const question_h: f32 = if (approval == null) (if (session.questionView()) |view| questionCardHeight(view) + APPROVAL_GAP else 0) else 0;
+    const question_h: f32 = if (approval == null) (if (session.questionView()) |view| questionCardHeight(view, w - LINE_PAD_X * 2) + APPROVAL_GAP else 0) else 0;
     const input_h = inputLayout(x, w, session.input()).input_h;
     const transcript_viewport = ai_chat_layout.transcriptViewport(frame, window_height, input_h, approval_h + question_h, LINE_PAD_X, 18);
     const content_w = transcript_viewport.content_w;
@@ -1928,11 +1936,81 @@ fn approvalCardHeight(view: ai_chat.ApprovalView) f32 {
     return ai_chat_layout.approvalLayout(font.g_titlebar_cell_height, view.reason.len > 0).height;
 }
 
-fn questionCardHeight(view: ai_chat.QuestionView) f32 {
-    return ai_chat_layout.questionLayout(font.g_titlebar_cell_height, view.options.len, MAX_VISIBLE_QUESTION_OPTIONS).height;
+pub const QuestionScrollbarHit = struct {
+    drag_offset_px: f32,
+    generation: u64,
+};
+
+pub const QuestionScrollbarDrag = struct {
+    offset: f32,
+    content_w: f32,
+    clip_w: f32,
+};
+
+fn questionContentWidth(view: ai_chat.QuestionView) f32 {
+    var width = titlebarTextWidth("❓ ") + titlebarTextWidth(view.question);
+    for (view.options[0..@min(view.options.len, MAX_VISIBLE_QUESTION_OPTIONS)], 0..) |opt, k| {
+        var number_buf: [32]u8 = undefined;
+        const number = std.fmt.bufPrint(&number_buf, "{d}. ", .{k + 1}) catch unreachable;
+        var row_w = titlebarTextWidth(number) + titlebarTextWidth(opt.label);
+        if (opt.description.len > 0) row_w += titlebarTextWidth(" — ") + titlebarTextWidth(opt.description);
+        width = @max(width, row_w);
+    }
+    return width;
 }
 
-fn renderQuestionCard(view: ai_chat.QuestionView, x: f32, y: f32, w: f32, h: f32) void {
+fn questionCardLayout(view: ai_chat.QuestionView, w: f32) ai_chat_layout.QuestionLayout {
+    const overflow = questionContentWidth(view) > @max(0, w - question_hscroll.TEXT_PAD * 2);
+    return ai_chat_layout.questionLayoutScrollable(
+        font.g_titlebar_cell_height,
+        view.options.len,
+        MAX_VISIBLE_QUESTION_OPTIONS,
+        if (overflow) question_hscroll.TRACK_BAND_H else 0,
+    );
+}
+
+fn questionCardHeight(view: ai_chat.QuestionView, w: f32) f32 {
+    return questionCardLayout(view, w).height;
+}
+
+fn questionScrollbarGeometry(view: ai_chat.QuestionView, x: f32, y: f32, w: f32, window_h: f32) ?question_hscroll.Geometry {
+    const lay = questionCardLayout(view, w);
+    const scrollbar_y = lay.scrollbar_y orelse return null;
+    return question_hscroll.geometry(
+        x + question_hscroll.TEXT_PAD,
+        w - question_hscroll.TEXT_PAD * 2,
+        questionContentWidth(view),
+        view.scroll_offset,
+        window_h - y - scrollbar_y - question_hscroll.TRACK_H,
+    );
+}
+
+/// Recompute geometry on each move so resizing during a drag stays clamped.
+pub fn questionScrollbarDragAt(session: *ai_chat.Session, xpos: f64, window_h: f32, chat_x: f32, chat_w: f32, hit: QuestionScrollbarHit) ?QuestionScrollbarDrag {
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    if (session.approvalView() != null) return null;
+    const view = session.questionView() orelse return null;
+    if (view.generation != hit.generation) return null;
+    const x = @round(chat_x);
+    const w = @round(@max(1, chat_w));
+    const input_h = inputLayout(x, w, session.input()).input_h;
+    const card_w = w - LINE_PAD_X * 2;
+    const geo = questionScrollbarGeometry(view, x + LINE_PAD_X, input_h + APPROVAL_GAP, card_w, window_h) orelse return null;
+    return .{
+        .offset = geo.offsetAt(@floatCast(xpos), hit.drag_offset_px),
+        .content_w = questionContentWidth(view),
+        .clip_w = card_w - question_hscroll.TEXT_PAD * 2,
+    };
+}
+
+/// Render original text in pieces under a clip instead of truncating into a
+/// fixed buffer. Long descriptions remain available at every pan position.
+fn renderQuestionText(text: []const u8, x: f32, y: f32, color: [3]f32) f32 {
+    return titlebar.renderTextLimited(text, x, y, color, titlebarTextWidth(text) + 1);
+}
+
+fn renderQuestionCard(session: *ai_chat.Session, view: ai_chat.QuestionView, x: f32, y: f32, w: f32, h: f32) void {
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
     const accent = AppWindow.g_theme.cursor_color;
@@ -1943,26 +2021,41 @@ fn renderQuestionCard(view: ai_chat.QuestionView, x: f32, y: f32, w: f32, h: f32
     ui_pipeline.fillQuadAlpha(x, y, 4, h, accent, 0.85);
 
     const cell_h = font.g_titlebar_cell_height;
-    const lay = ai_chat_layout.questionLayout(cell_h, view.options.len, MAX_VISIBLE_QUESTION_OPTIONS);
-
-    var title_buf: [320]u8 = undefined;
-    const title = std.fmt.bufPrint(&title_buf, "❓ {s}", .{view.question}) catch view.question;
-    _ = titlebar.renderTextLimited(title, x + 16, y + lay.title_y, mixColor(fg, accent, 0.20), w - 32);
-
-    var k: usize = 0;
-    while (k < lay.visible_options) : (k += 1) {
-        const opt = view.options[k];
+    const lay = questionCardLayout(view, w);
+    for (0..lay.visible_options) |k| {
         const row_y = y + lay.first_option_y - @as(f32, @floatFromInt(k)) * lay.option_pitch;
-        // Subtle row background so each option reads as a clickable target.
-        ui_pipeline.fillQuadAlpha(x + 12, row_y - 2, w - 24, cell_h + 4, mixColor(bg, fg, 0.06), 0.9);
-        var row_buf: [320]u8 = undefined;
-        const line = if (opt.description.len != 0)
-            std.fmt.bufPrint(&row_buf, "{d}. {s} — {s}", .{ k + 1, opt.label, opt.description }) catch opt.label
-        else
-            std.fmt.bufPrint(&row_buf, "{d}. {s}", .{ k + 1, opt.label }) catch opt.label;
-        _ = titlebar.renderTextLimited(line, x + 20, row_y, fg, w - 40);
+        ui_pipeline.fillQuadAlpha(x + 12, row_y - 2, @max(0, w - 24), cell_h + 4, mixColor(bg, fg, 0.06), 0.9);
     }
 
+    const clip_w = w - question_hscroll.TEXT_PAD * 2;
+    if (clip_w > 0) {
+        const offset = table_hscroll.clampOffset(view.scroll_offset, questionContentWidth(view), clip_w);
+        _ = session.scrollQuestionTo(view.generation, offset, questionContentWidth(view), clip_w);
+        const text_x = x + question_hscroll.TEXT_PAD - offset;
+        // Limit both edges, including negative glyph positions while panning.
+        ui_pipeline.beginClip(.{ .x = x + question_hscroll.TEXT_PAD, .y = y, .w = clip_w, .h = h });
+        const question_x = renderQuestionText("❓ ", text_x, y + lay.title_y, mixColor(fg, accent, 0.20));
+        _ = renderQuestionText(view.question, question_x, y + lay.title_y, mixColor(fg, accent, 0.20));
+        for (view.options[0..lay.visible_options], 0..) |opt, k| {
+            const row_y = y + lay.first_option_y - @as(f32, @floatFromInt(k)) * lay.option_pitch;
+            var number_buf: [32]u8 = undefined;
+            const number = std.fmt.bufPrint(&number_buf, "{d}. ", .{k + 1}) catch unreachable;
+            var row_x = renderQuestionText(number, text_x, row_y, fg);
+            row_x = renderQuestionText(opt.label, row_x, row_y, fg);
+            if (opt.description.len > 0) {
+                row_x = renderQuestionText(" — ", row_x, row_y, fg);
+                _ = renderQuestionText(opt.description, row_x, row_y, fg);
+            }
+        }
+        ui_pipeline.endClip();
+    }
+
+    if (lay.scrollbar_y) |scrollbar_y| {
+        if (question_hscroll.geometry(x + question_hscroll.TEXT_PAD, clip_w, questionContentWidth(view), view.scroll_offset, 0)) |geo| {
+            ui_pipeline.fillQuadAlpha(geo.track_x, y + scrollbar_y, geo.track_w, geo.track_h, mixColor(bg, fg, 0.20), 0.75);
+            ui_pipeline.fillQuadAlpha(geo.thumb_x, y + scrollbar_y, geo.thumb_w, geo.track_h, accent, 0.85);
+        }
+    }
     const hint = if (view.options.len > lay.visible_options)
         "点选项，或在下方输入序号/你的答案"
     else
@@ -3001,6 +3094,48 @@ fn mixColor(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
         a[1] + (b[1] - a[1]) * clamped,
         a[2] + (b[2] - a[2]) * clamped,
     };
+}
+
+test "question card measures descriptions beyond the old 320-byte row buffer" {
+    const long_description = "很长的选项描述 " ** 80;
+    const view = ai_chat.QuestionView{ .question = "Choose", .options = &.{.{ .label = "A", .description = long_description }} };
+    const short = ai_chat.QuestionView{ .question = "Choose", .options = &.{.{ .label = "A" }} };
+    try std.testing.expect(long_description.len > 320);
+    try std.testing.expect(questionContentWidth(view) > questionContentWidth(short) * 10);
+    try std.testing.expect(questionCardLayout(view, 400).scrollbar_y != null);
+    try std.testing.expect(questionCardLayout(view, questionContentWidth(view) + 40).scrollbar_y == null);
+    const long_question = ai_chat.QuestionView{ .question = long_description, .options = &.{} };
+    try std.testing.expect(questionCardLayout(long_question, 400).scrollbar_y != null);
+}
+
+test "question scrollbar hit does not select an option and panned rows remain clickable" {
+    var session = try ai_chat.Session.init(std.testing.allocator, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer session.deinit();
+    session.question_text = try std.testing.allocator.dupe(u8, "Choose");
+    session.question_options = try std.testing.allocator.alloc(ai_chat.QuestionOption, 1);
+    session.question_options[0] = .{
+        .label = try std.testing.allocator.dupe(u8, "A"),
+        .description = try std.testing.allocator.dupe(u8, "long description " ** 80),
+    };
+    session.question_pending = true;
+    const view = session.questionView().?;
+    const chat_x: f32 = 20;
+    const chat_w: f32 = 440;
+    const card_x = chat_x + LINE_PAD_X;
+    const card_w = chat_w - LINE_PAD_X * 2;
+    const card_y = inputLayout(chat_x, chat_w, session.input()).input_h + APPROVAL_GAP;
+    const geo = questionScrollbarGeometry(view, card_x, card_y, card_w, 900).?;
+    const hit = interactionHitTest(session, geo.thumb_x + 2, geo.track_top_px + 1, 500, 900, 40, chat_x, chat_w).?;
+    try std.testing.expect(hit == .question_scrollbar);
+    try std.testing.expectEqual(view.generation, hit.question_scrollbar.generation);
+    const drag = questionScrollbarDragAt(session, 2000, 900, chat_x, chat_w, hit.question_scrollbar).?;
+    try std.testing.expect(session.scrollQuestionTo(view.generation, drag.offset, drag.content_w, drag.clip_w));
+    try std.testing.expect(session.questionView() != null);
+    const lay = questionCardLayout(view, card_w);
+    const option_y = 900 - card_y - lay.first_option_y - font.g_titlebar_cell_height / 2;
+    const option = interactionHitTest(session, card_x + 30, option_y, 500, 900, 40, chat_x, chat_w).?;
+    try std.testing.expect(option == .question_option);
+    try std.testing.expectEqual(@as(usize, 0), option.question_option);
 }
 
 test "markdown table wrapping height and selection share cell geometry" {

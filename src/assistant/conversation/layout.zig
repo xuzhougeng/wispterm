@@ -311,9 +311,15 @@ pub const QuestionLayout = struct {
     option_pitch: f32,
     hint_y: f32,
     visible_options: usize,
+    scrollbar_y: ?f32 = null,
 };
 
 pub fn questionLayout(cell_h: f32, n_options: usize, max_visible_options: usize) QuestionLayout {
+    return questionLayoutScrollable(cell_h, n_options, max_visible_options, 0);
+}
+
+/// Reserve a separate band between the answer hint and selectable rows.
+pub fn questionLayoutScrollable(cell_h: f32, n_options: usize, max_visible_options: usize, scrollbar_band_h: f32) QuestionLayout {
     const pad_top: f32 = 12;
     const pad_bottom: f32 = 10;
     const line_gap: f32 = 8; // vertical gap between consecutive rows
@@ -324,7 +330,7 @@ pub fn questionLayout(cell_h: f32, n_options: usize, max_visible_options: usize)
 
     const hint_y: f32 = pad_bottom;
     // Options stack upward from just above the hint; option 0 is the topmost.
-    const first_option_y: f32 = hint_y + visible_f * line_pitch;
+    const first_option_y: f32 = hint_y + visible_f * line_pitch + scrollbar_band_h;
     const title_y: f32 = first_option_y + line_pitch;
     const height: f32 = title_y + cell_h + pad_top;
 
@@ -335,6 +341,7 @@ pub fn questionLayout(cell_h: f32, n_options: usize, max_visible_options: usize)
         .option_pitch = line_pitch,
         .hint_y = hint_y,
         .visible_options = visible_options,
+        .scrollbar_y = if (scrollbar_band_h > 0) hint_y + cell_h + 6 else null,
     };
 }
 
@@ -579,6 +586,22 @@ test "questionLayout clamps visible options to the row cap (rest scroll)" {
     const exact5 = questionLayout(18, 5, 5);
     try std.testing.expectApproxEqAbs(exact5.height, capped.height, 0.001);
     try std.testing.expect(few.height < capped.height);
+}
+
+test "question scrollbar band stays between hint and option hit boxes at every font size" {
+    for ([_]f32{ 12, 18, 32, 64 }) |cell_h| {
+        for ([_]usize{ 0, 1, 3, 6 }) |count| {
+            const l = questionLayoutScrollable(cell_h, count, 6, 12);
+            const track_y = l.scrollbar_y.?;
+            try std.testing.expect(track_y - 4 >= l.hint_y + cell_h);
+            const lowest_row = if (l.visible_options > 0)
+                l.first_option_y - @as(f32, @floatFromInt(l.visible_options - 1)) * l.option_pitch
+            else
+                l.title_y;
+            try std.testing.expect(track_y + 4 + 4 < lowest_row - 2);
+            try std.testing.expectApproxEqAbs(questionLayout(cell_h, count, 6).height + 12, l.height, 0.001);
+        }
+    }
 }
 
 test "composerSuggestionWindow shows everything when it fits" {

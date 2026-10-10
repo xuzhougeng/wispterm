@@ -361,6 +361,8 @@ pub const QuestionOption = struct {
 pub const QuestionView = struct {
     question: []const u8,
     options: []const QuestionOption,
+    scroll_offset: f32 = 0,
+    generation: u64 = 0,
 };
 
 /// Outcome of a blocking `askUser` call.

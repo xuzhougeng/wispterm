@@ -132,6 +132,18 @@ download the provider's raw history file, `M` to export the parsed transcript as
 Markdown, or `A` to attach the transcript as a collapsed Copilot context card
 for a follow-up question.
 
+## Answering Agent Questions
+
+When an agent calls `ask_user`, a question card appears above the composer in
+AI Chat or the Copilot sidebar. Click an option to answer immediately, or type
+an option number or your own answer in the composer and submit it.
+
+If the question or a visible option is wider than the card, a horizontal
+scrollbar appears below the options. Drag its thumb or click its track to read
+the full question, labels, and descriptions. The answer hint stays in place;
+using the scrollbar does not choose an option. Each conversation keeps its own
+scroll position, and each new question starts at the left edge.
+
 ## In-context Copilot Sidebar
 
 Press `Ctrl+Shift+A` (`Cmd+Shift+A` on macOS) on a terminal tab to toggle a
