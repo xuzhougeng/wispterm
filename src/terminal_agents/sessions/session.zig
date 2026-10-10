@@ -5,6 +5,7 @@ const session_persist = @import("../../session_persist.zig");
 const codex_provider = @import("provider_codex.zig");
 const claude_provider = @import("provider_claude.zig");
 const kimi_provider = @import("provider_kimi.zig");
+const pi_provider = @import("provider_pi.zig");
 const opencode_provider = @import("provider_opencode.zig");
 const process_runner = @import("../../process_runner.zig");
 const remote_file = @import("../../platform/remote_file.zig");
@@ -769,6 +770,7 @@ pub const Session = struct {
                 .claude => counts.claude += 1,
                 .kimi => counts.kimi += 1,
                 .opencode => counts.opencode += 1,
+                .pi => counts.pi += 1,
             }
         }
         return counts;
@@ -1053,6 +1055,18 @@ pub fn scanLocalFilesystemWithCacheSink(
     if (source.providers.opencode) {
         try scanner.scanOpencodeCli();
     }
+    if (source.providers.pi) {
+        if (source.pi_root_override) |root| {
+            try scanner.scanProviderRoot(.pi, root);
+        } else {
+            var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+            if (source_mod.defaultRoot(.pi, home, &root_buf)) |root| {
+                try scanner.scanProviderRoot(.pi, root);
+            } else {
+                scanner.warning_count += 1;
+            }
+        }
+    }
     for (source.extra_roots) |root| {
         if (!providerEnabled(source, root.provider)) continue;
         try scanner.scanProviderRoot(root.provider, root.path);
@@ -1111,6 +1125,7 @@ fn parseTranscriptBytes(allocator: std.mem.Allocator, provider: types.ProviderId
         .claude => try claude_provider.parseTranscript(allocator, bytes),
         .kimi => try kimi_provider.parseTranscript(allocator, bytes),
         .opencode => try opencode_provider.parseTranscript(allocator, bytes),
+        .pi => try pi_provider.parseTranscript(allocator, bytes),
     };
 }
 
@@ -1140,7 +1155,7 @@ fn providerFindRoot(provider: types.ProviderId, root: []const u8, out: []u8) ![]
     const trimmed = std.mem.trimRight(u8, root, "/\\");
     return switch (provider) {
         .codex, .claude, .opencode => root,
-        .kimi => if (pathEndsWithSegment(trimmed, "sessions"))
+        .kimi, .pi => if (pathEndsWithSegment(trimmed, "sessions"))
             trimmed
         else
             std.fmt.bufPrint(out, "{s}/sessions", .{trimmed}) catch error.CommandTooLong,
@@ -1270,6 +1285,18 @@ pub fn scanRemoteFilesystemSink(allocator: std.mem.Allocator, source: source_mod
             }
         }
     }
+    if (source.providers.pi) {
+        if (source.pi_root_override) |root| {
+            try scanner.scanProviderRoot(.pi, root);
+        } else {
+            var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+            if (source_mod.defaultRoot(.pi, home, &root_buf)) |root| {
+                try scanner.scanProviderRoot(.pi, root);
+            } else {
+                scanner.warning_count += 1;
+            }
+        }
+    }
     if (source.providers.opencode) {
         try scanner.scanOpencodeCli();
     }
@@ -1326,6 +1353,7 @@ pub fn freeTranscript(allocator: std.mem.Allocator, provider: types.ProviderId, 
         .claude => claude_provider.freeTranscript(allocator, messages),
         .kimi => kimi_provider.freeTranscript(allocator, messages),
         .opencode => opencode_provider.freeTranscript(allocator, messages),
+        .pi => pi_provider.freeTranscript(allocator, messages),
     }
 }
 
@@ -1633,6 +1661,7 @@ const LocalScan = struct {
             .codex => codex_provider.parseMetadata(self.allocator, candidate.path, bytes),
             .claude => claude_provider.parseMetadata(self.allocator, candidate.path, bytes),
             .kimi => self.parseKimiMetadata(candidate, bytes),
+            .pi => pi_provider.parseMetadata(self.allocator, candidate.path, bytes),
             // OpenCode rows come from scanOpencodeCli; file candidates never carry it.
             .opencode => unreachable,
         }) catch |err| switch (err) {
@@ -1723,6 +1752,7 @@ fn providerRootForPath(source: source_mod.Source, provider: types.ProviderId, so
         .claude => source.claude_root_override,
         .kimi => source.kimi_root_override,
         .opencode => source.opencode_root_override,
+        .pi => source.pi_root_override,
     };
     if (explicit) |root| return root;
     for (source.extra_roots) |root| {
@@ -1849,6 +1879,7 @@ const RemoteScan = struct {
             .codex => codex_provider.parseMetadata(self.allocator, path, bytes),
             .claude => claude_provider.parseMetadata(self.allocator, path, bytes),
             .kimi => self.parseKimiMetadata(path, bytes),
+            .pi => pi_provider.parseMetadata(self.allocator, path, bytes),
             // OpenCode rows come from scanOpencodeCli; remote paths never carry it.
             .opencode => unreachable,
         }) catch |err| switch (err) {
@@ -1931,13 +1962,14 @@ fn providerEnabled(source: source_mod.Source, provider: types.ProviderId) bool {
         .claude => source.providers.claude,
         .kimi => source.providers.kimi,
         .opencode => source.providers.opencode,
+        .pi => source.providers.pi,
     };
 }
 
 fn providerAcceptsJsonl(provider: types.ProviderId, abs_dir: []const u8, name: []const u8) bool {
     if (!std.mem.endsWith(u8, name, ".jsonl")) return false;
     return switch (provider) {
-        .codex, .claude => true,
+        .codex, .claude, .pi => true,
         .opencode => false,
         .kimi => std.mem.eql(u8, name, "wire.jsonl") and
             std.mem.eql(u8, std.fs.path.basename(abs_dir), "main") and
@@ -3017,8 +3049,7 @@ test "ai_history_session: scanLocalFilesystem reads codex and claude jsonl files
         switch (row.provider) {
             .codex => codex_count += 1,
             .claude => claude_count += 1,
-            .kimi => {},
-            .opencode => {},
+            .kimi, .opencode, .pi => {},
         }
     }
     try std.testing.expectEqual(@as(usize, 1), codex_count);
@@ -3375,6 +3406,8 @@ test "ai_history_session: cycleCategory wraps forward and backward" {
     session.cycleCategory(1);
     try std.testing.expectEqual(types.CategoryFilter.opencode, session.category);
     session.cycleCategory(1);
+    try std.testing.expectEqual(types.CategoryFilter.pi, session.category);
+    session.cycleCategory(1);
     try std.testing.expectEqual(types.CategoryFilter.subagent, session.category);
     session.cycleCategory(1);
     try std.testing.expectEqual(types.CategoryFilter.all, session.category);
@@ -3699,8 +3732,8 @@ test "ai_history_session: moveFilterCursor walks categories then dates, applying
     };
     try session.replaceRows(&rows);
 
-    // Combined list: All, Codex, Claude, Kimi, OpenCode, Subagent, All dates, 20260602, 20260601 => 9 rows.
-    try std.testing.expectEqual(@as(usize, 9), session.filterRowCount());
+    // Combined list: All, Codex, Claude, Kimi, OpenCode, Pi, Subagent, All dates, 20260602, 20260601 => 10 rows.
+    try std.testing.expectEqual(@as(usize, 10), session.filterRowCount());
     try std.testing.expectEqual(types.CategoryFilter.all, session.category);
 
     session.moveFilterCursor(1); // -> Codex
@@ -3711,6 +3744,8 @@ test "ai_history_session: moveFilterCursor walks categories then dates, applying
     try std.testing.expectEqual(types.CategoryFilter.kimi, session.category);
     session.moveFilterCursor(1); // -> OpenCode
     try std.testing.expectEqual(types.CategoryFilter.opencode, session.category);
+    session.moveFilterCursor(1); // -> Pi
+    try std.testing.expectEqual(types.CategoryFilter.pi, session.category);
     session.moveFilterCursor(1); // -> Subagent
     try std.testing.expectEqual(types.CategoryFilter.subagent, session.category);
     session.moveFilterCursor(1); // -> All dates (date filter cleared, category kept)

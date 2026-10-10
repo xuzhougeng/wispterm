@@ -183,8 +183,7 @@ fn agentAppReplName(app: agent_detector.App) []const u8 {
         .none => "plain",
         .codex => "codex",
         .claude_code => "claude_code",
-        // Pi currently uses the generic raw-input route; its status remains authoritative via OSC 7748.
-        .pi => "plain",
+        .pi => "pi",
         .assistant => "assistant",
     };
 }
@@ -304,6 +303,7 @@ pub const ReplKind = enum {
     python,
     codex,
     claude_code,
+    pi,
     plain,
 
     pub fn parse(value: []const u8) ?ReplKind {
@@ -316,6 +316,7 @@ pub const ReplKind = enum {
         {
             return .claude_code;
         }
+        if (std.ascii.eqlIgnoreCase(value, "pi")) return .pi;
         if (std.ascii.eqlIgnoreCase(value, "plain") or std.ascii.eqlIgnoreCase(value, "text")) return .plain;
         return null;
     }
@@ -326,6 +327,7 @@ pub const ReplKind = enum {
             .python => "Python",
             .codex => "Codex",
             .claude_code => "Claude Code",
+            .pi => "Pi",
             .plain => "plain",
         };
     }
@@ -374,7 +376,7 @@ fn sendControlKey(ctx: *const ToolContext, host: ToolHost, surface: ToolSurface,
 }
 
 pub fn terminalReplExec(ctx: *ToolContext, surface_id: []const u8, repl_name: []const u8, code: []const u8, timeout_ms: u32) ![]u8 {
-    const repl = ReplKind.parse(repl_name) orelse return std.fmt.allocPrint(ctx.allocator, "Unsupported repl \"{s}\". Use r, python, codex, claude_code, or plain.", .{repl_name});
+    const repl = ReplKind.parse(repl_name) orelse return std.fmt.allocPrint(ctx.allocator, "Unsupported repl \"{s}\". Use r, python, codex, claude_code, pi, or plain.", .{repl_name});
     if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
     const control = controlKeyByte(code);
     const gate = accessGate(ctx, code, null);
@@ -405,7 +407,7 @@ pub fn terminalReplExec(ctx: *ToolContext, surface_id: []const u8, repl_name: []
 
     return switch (repl) {
         .r, .python, .plain => lineReplEvalTool(ctx, host, surface, repl, code, timeout_ms),
-        .codex, .claude_code => plainReplInputTool(ctx, host, surface, repl, code, timeout_ms),
+        .codex, .claude_code, .pi => plainReplInputTool(ctx, host, surface, repl, code, timeout_ms),
     };
 }
 
@@ -460,7 +462,11 @@ pub fn terminalAnswerPrompt(ctx: *ToolContext, surface_id: ?[]const u8, answer: 
 
     var options_buf: [12]agent_prompt_answer.Option = undefined;
     const n = agent_prompt_answer.parsePromptOptions(screen, &options_buf);
-    const keystroke = agent_prompt_answer.resolveAnswer(options_buf[0..n], screen, intent, option_number) orelse {
+    var arrow_bytes: [40]u8 = undefined;
+    const keystroke = (if (agent_prompt_answer.optionsAreArrowStyle(options_buf[0..n]))
+        agent_prompt_answer.resolveArrowAnswer(options_buf[0..n], intent, option_number, &arrow_bytes)
+    else
+        agent_prompt_answer.resolveAnswer(options_buf[0..n], screen, intent, option_number)) orelse {
         const out = try allocPromptOptionsHint(ctx.allocator, options_buf[0..n], screen);
         return tool_output.truncateTailOwned(ctx.allocator, ctx.settings, out);
     };
@@ -523,8 +529,8 @@ pub fn allocPlainReplInput(allocator: std.mem.Allocator, repl: ReplKind, surface
 
 pub fn plainReplInputTool(ctx: *const ToolContext, host: ToolHost, surface: ToolSurface, repl: ReplKind, text: []const u8, timeout_ms: u32) ![]u8 {
     // Line REPLs (.r/.python/.plain) go through lineReplEvalTool instead; this
-    // tool is only for the agent TUIs, whose completion is judged by busy markers.
-    std.debug.assert(repl == .codex or repl == .claude_code);
+    // tool is for the agent TUIs, whose completion is judged by busy markers.
+    std.debug.assert(repl == .codex or repl == .claude_code or repl == .pi);
     if (repl == .codex) {
         // Codex's TUI treats a fast input burst as a paste and folds a trailing
         // Enter into the pasted text, leaving a literal newline that never
@@ -546,9 +552,15 @@ pub fn plainReplInputTool(ctx: *const ToolContext, host: ToolHost, surface: Tool
         }
     }
 
-    // Only Codex / Claude Code reach this tool now (line REPLs use
-    // lineReplEvalTool); both settle on the busy-marker-aware waiter.
+    // Only Codex / Claude Code / Pi reach this tool now (line REPLs use
+    // lineReplEvalTool); all settle on the busy-marker-aware waiter.
     return waitForAgentAppReplResult(ctx, host, surface, repl, timeout_ms);
+}
+
+test "replSnapshotLooksBusy matches the Pi working indicator" {
+    try std.testing.expect(replSnapshotLooksBusy(.pi, "Working (esc to interrupt)"));
+    try std.testing.expect(replSnapshotLooksBusy(.pi, "Custom (esc to interrupt)"));
+    try std.testing.expect(!replSnapshotLooksBusy(.pi, "? for shortcuts"));
 }
 
 fn replSnapshotLooksBusy(repl: ReplKind, snapshot: []const u8) bool {
@@ -569,6 +581,8 @@ fn replSnapshotLooksBusy(repl: ReplKind, snapshot: []const u8) bool {
             std.ascii.indexOfIgnoreCase(snapshot, "Task(") != null or
             std.ascii.indexOfIgnoreCase(snapshot, "TodoWrite(") != null or
             std.ascii.indexOfIgnoreCase(snapshot, "WebFetch(") != null,
+        .pi => std.ascii.indexOfIgnoreCase(snapshot, "Working (") != null or
+            std.ascii.indexOfIgnoreCase(snapshot, "esc to interrupt") != null,
         .r, .python, .plain => false,
     };
 }
@@ -1767,6 +1781,11 @@ test "accessGate: no working dir leaves behavior unchanged" {
     try std.testing.expect(!g.skip);
     try std.testing.expect(!g.force);
 }
+test "ReplKind parses and labels the Pi agent kind" {
+    try std.testing.expectEqual(ReplKind.pi, ReplKind.parse("pi").?);
+    try std.testing.expectEqualStrings("Pi", ReplKind.pi.label());
+}
+
 test "terminal_answer_prompt sends the Yes digit for an approve answer" {
     const a = std.testing.allocator;
     const screen =

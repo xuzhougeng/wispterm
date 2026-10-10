@@ -18,6 +18,19 @@
 const build_options = @import("build_options");
 const std = @import("std");
 const app_metadata = @import("app_metadata.zig");
+const frame_damage = @import("renderer/frame_damage.zig");
+
+test "frame timing aggregate is included in the fast suite" {
+    var aggregate: @import("appwindow/frame_timing.zig").Aggregate = .{};
+    aggregate.add(.{ .present_block_ns = 1 });
+    try std.testing.expectEqual(@as(u64, 1), aggregate.frames);
+}
+
+test "frame damage collector is included in the fast suite" {
+    var damage: frame_damage.Collector = .{};
+    damage.includeRows(0, 0, 10, 10, 1, 2, 100, 100);
+    try std.testing.expect(damage.finish() != null);
+}
 
 test "App joinAllWindowThreads pumps the macOS main queue (issue 611)" {
     const source = @embedFile("App.zig");
@@ -40,10 +53,8 @@ test "input routes AI History selected action shortcuts through AppWindow action
     try std.testing.expect(std.mem.indexOf(u8, source, "aiHistoryExportSelectedMarkdown") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "aiHistoryAttachSelectedToCopilot") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "!search_focused") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "command_char_suppressors.ai_history") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "command_char_suppressors.ai_history = 'd'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "command_char_suppressors.ai_history = 'm'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "command_char_suppressors.ai_history = 'a'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "fn suppressCommandCharForKey") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "suppressCommandCharForKey(&command_char_suppressors.ai_history, ev)") != null);
     const dispatch_char = source[std.mem.indexOf(u8, source, "fn dispatchChar") orelse return error.MissingDispatchChar ..];
     const suppress_index = std.mem.indexOf(u8, dispatch_char, "if (command_char_suppressors.ai_history)") orelse return error.MissingAiHistorySuppressor;
     const assistant_index = std.mem.indexOf(u8, dispatch_char, "if (assistant_conversation.current(aiCopilotFocused()))") orelse return error.MissingAssistantCharRoute;
@@ -528,6 +539,8 @@ test {
     _ = @import("platform/local_path.zig");
     _ = @import("platform/process_group.zig");
     _ = @import("terminal_agents/detector.zig");
+    _ = @import("terminal_agents/pi_shutdown.zig");
+    _ = @import("session_persist.zig");
     _ = @import("terminal_agents/integration_prompt.zig");
     _ = @import("jupyter/detect.zig");
     _ = @import("jupyter/picker.zig");

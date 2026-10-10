@@ -498,6 +498,7 @@ fn renderList(
             .claude => "No Claude Code sessions",
             .kimi => "No Kimi sessions",
             .opencode => "No OpenCode sessions",
+            .pi => "No Pi sessions",
             .subagent => "No Subagent sessions",
         };
         _ = draw.renderTextLimited(empty, layout.list_x + PAD_X, yTextFromTop(draw, window_height, row_top + 24), muted, layout.list_w - PAD_X * 2);
@@ -1251,7 +1252,13 @@ test "terminal agent sessions renderer: interaction hit test maps category rows"
         interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, 10, layout.left_x + 10, opencode_y),
     );
 
-    const subagent_y = lc.category_rows_top + lc.category_row_h * 5.5;
+    const pi_y = lc.category_rows_top + lc.category_row_h * 5.5;
+    try std.testing.expectEqual(
+        Hit{ .category = .pi },
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, 10, layout.left_x + 10, pi_y),
+    );
+
+    const subagent_y = lc.category_rows_top + lc.category_row_h * 6.5;
     try std.testing.expectEqual(
         Hit{ .category = .subagent },
         interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, 10, layout.left_x + 10, subagent_y),

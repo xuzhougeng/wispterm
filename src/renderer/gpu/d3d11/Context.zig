@@ -11,6 +11,7 @@ const core = @import("../../../platform/dxgi_core.zig");
 const fallback_marker = @import("fallback_marker.zig");
 const present_policy = @import("present_policy.zig");
 const render_diagnostics = @import("../../../render_diagnostics.zig");
+const frame_damage = @import("../../frame_damage.zig");
 const shaders = @import("shaders.zig");
 const types = @import("../types.zig");
 
@@ -148,6 +149,11 @@ const State = struct {
     device: *anyopaque,
     context: *anyopaque,
     swapchain: *anyopaque,
+    present1_swapchain: ?*anyopaque = null,
+    present1_enabled: bool = true,
+    swapchain_flags: u32 = 0,
+    buffer_count: u32 = 2,
+    frame_latency_waitable: ?windows.HANDLE = null,
     backbuffer: ?*anyopaque = null,
     rtv: ?*anyopaque = null,
     current_rtv: ?*anyopaque = null,
@@ -181,6 +187,46 @@ const State = struct {
         self.current_height = 0;
     }
 
+    fn configureFrameLatency(self: *State) void {
+        if ((self.swapchain_flags & core.DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) == 0) {
+            render_diagnostics.log("gpu-backend=d3d11 frame-latency waitable-object=false fallback=legacy-swapchain", .{});
+            return;
+        }
+
+        const swapchain2 = core.comQueryInterface(self.swapchain, &core.IID_IDXGISwapChain2) orelse {
+            render_diagnostics.log("gpu-backend=d3d11 frame-latency waitable-object=false reason=IDXGISwapChain2-unavailable", .{});
+            return;
+        };
+        defer core.comRelease(swapchain2);
+
+        const set_max_latency = core.comCall(
+            swapchain2,
+            core.slot.DXGISwapChain2_SetMaximumFrameLatency,
+            *const fn (*anyopaque, u32) callconv(.winapi) HRESULT,
+        );
+        const set_hr = set_max_latency(swapchain2, 1);
+        if (set_hr < 0) {
+            render_diagnostics.log("gpu-backend=d3d11 frame-latency waitable-object=false reason=set-max-latency hr=0x{x:0>8}", .{core.hresultBits(set_hr)});
+            return;
+        }
+
+        const get_waitable = core.comCall(
+            swapchain2,
+            core.slot.DXGISwapChain2_GetFrameLatencyWaitableObject,
+            *const fn (*anyopaque) callconv(.winapi) windows.HANDLE,
+        );
+        const handle = get_waitable(swapchain2);
+        if (@intFromPtr(handle) == 0 or handle == windows.INVALID_HANDLE_VALUE) {
+            render_diagnostics.log("gpu-backend=d3d11 frame-latency waitable-object=false reason=invalid-handle", .{});
+            return;
+        }
+
+        // The handle is owned by the swapchain; it is invalidated with the
+        // swapchain and must not be closed independently.
+        self.frame_latency_waitable = handle;
+        render_diagnostics.log("gpu-backend=d3d11 frame-latency waitable-object=true max-latency=1 buffers={}", .{self.buffer_count});
+    }
+
     fn releaseSized(self: *State) void {
         self.unbindRenderTargets();
         self.clearAndFlushContext();
@@ -208,6 +254,10 @@ const State = struct {
     fn deinit(self: *State) void {
         self.releaseSized();
         self.releaseShaders();
+        if (self.present1_swapchain) |swapchain1| {
+            core.comRelease(swapchain1);
+            self.present1_swapchain = null;
+        }
         core.comRelease(self.context);
         core.comRelease(self.swapchain);
         core.comRelease(self.device);
@@ -247,6 +297,8 @@ const AdapterInfo = struct {
 const SwapchainCreateResult = struct {
     swapchain: *anyopaque,
     adapter: AdapterInfo,
+    swapchain_flags: u32,
+    buffer_count: u32,
 };
 
 pub fn init(_: anytype) !void {
@@ -297,13 +349,14 @@ fn createStateForWindow(hwnd: HWND, width: i32, height: i32) InitError!State {
     }
 
     const swapchain_result = try createSwapchain(device.?, hwnd, width, height);
-    errdefer core.comRelease(swapchain_result.swapchain);
 
     var next = State{
         .hwnd = hwnd,
         .device = device.?,
         .context = context.?,
         .swapchain = swapchain_result.swapchain,
+        .swapchain_flags = swapchain_result.swapchain_flags,
+        .buffer_count = swapchain_result.buffer_count,
         .adapter = swapchain_result.adapter,
         .feature_level = feature_level,
         .policy = present_policy.Policy.init(width, height),
@@ -312,6 +365,9 @@ fn createStateForWindow(hwnd: HWND, width: i32, height: i32) InitError!State {
     };
     errdefer next.deinit();
 
+    next.present1_swapchain = core.comQueryInterface(next.swapchain, &core.IID_IDXGISwapChain1);
+    render_diagnostics.log("gpu-backend=d3d11 present1-capable={}", .{next.present1_swapchain != null});
+    next.configureFrameLatency();
     try createRenderTarget(&next, width, height);
     try createPhase2Pipeline(&next);
 
@@ -335,18 +391,18 @@ fn createSwapchain(device: *anyopaque, hwnd: HWND, width: i32, height: i32) Init
         return error.FactoryUnavailable;
     defer core.comRelease(factory.?);
 
-    const desc = core.DXGI_SWAP_CHAIN_DESC1{
+    var desc = core.DXGI_SWAP_CHAIN_DESC1{
         .width = @intCast(width),
         .height = @intCast(height),
         .format = core.DXGI_FORMAT_B8G8R8A8_UNORM,
         .stereo = 0,
         .sample_desc = .{ .count = 1, .quality = 0 },
         .buffer_usage = core.DXGI_USAGE_RENDER_TARGET_OUTPUT,
-        .buffer_count = 2,
+        .buffer_count = 3,
         .scaling = core.DXGI_SCALING_NONE,
         .swap_effect = core.DXGI_SWAP_EFFECT_FLIP_DISCARD,
         .alpha_mode = core.DXGI_ALPHA_MODE_IGNORE,
-        .flags = 0,
+        .flags = core.DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
     };
     const create_for_hwnd = core.comCall(factory.?, core.slot.DXGIFactory2_CreateSwapChainForHwnd, *const fn (
         *anyopaque,
@@ -358,7 +414,20 @@ fn createSwapchain(device: *anyopaque, hwnd: HWND, width: i32, height: i32) Init
         *?*anyopaque,
     ) callconv(.winapi) HRESULT);
     var swapchain: ?*anyopaque = null;
-    const hr = create_for_hwnd(factory.?, device, hwnd, &desc, null, null, &swapchain);
+    var swapchain_flags: u32 = desc.flags;
+    var buffer_count: u32 = desc.buffer_count;
+    var hr = create_for_hwnd(factory.?, device, hwnd, &desc, null, null, &swapchain);
+    if (hr < 0 or swapchain == null) {
+        // Some older drivers reject the frame-latency flag even though the
+        // base flip model is available. Keep the native D3D11 path usable and
+        // make the pacing feature an opt-in capability of the swapchain.
+        desc.buffer_count = 2;
+        desc.flags = 0;
+        swapchain_flags = 0;
+        buffer_count = 2;
+        swapchain = null;
+        hr = create_for_hwnd(factory.?, device, hwnd, &desc, null, null, &swapchain);
+    }
     if (hr < 0 or swapchain == null) {
         render_diagnostics.log(
             "gpu-backend=d3d11 create swapchain failed hr=0x{x:0>8} kind={s} swapchain={}x{}",
@@ -370,7 +439,12 @@ fn createSwapchain(device: *anyopaque, hwnd: HWND, width: i32, height: i32) Init
     const make_assoc = core.comCall(factory.?, core.slot.DXGIFactory_MakeWindowAssociation, *const fn (*anyopaque, HWND, u32) callconv(.winapi) HRESULT);
     _ = make_assoc(factory.?, hwnd, DXGI_MWA_NO_ALT_ENTER);
 
-    return .{ .swapchain = swapchain.?, .adapter = adapter_info };
+    return .{
+        .swapchain = swapchain.?,
+        .adapter = adapter_info,
+        .swapchain_flags = swapchain_flags,
+        .buffer_count = buffer_count,
+    };
 }
 
 fn queryAdapterInfo(adapter: *anyopaque) AdapterInfo {
@@ -412,6 +486,11 @@ fn countAdapterOutputs(adapter1: *anyopaque) u32 {
 }
 
 fn logBackendInit(self: *const State) void {
+    render_diagnostics.log("gpu-backend=d3d11 frame-latency waitable-active={} buffers={} flags=0x{x}", .{
+        self.frame_latency_waitable != null,
+        self.buffer_count,
+        self.swapchain_flags,
+    });
     if (self.adapter.available) {
         var desc_buf: [256]u8 = undefined;
         const adapter_description = self.adapter.descriptionUtf8(&desc_buf);
@@ -619,6 +698,16 @@ pub fn beginFrame() void {
     }
 }
 
+pub fn waitForFrameSlot() void {
+    if (state) |*self| {
+        const handle = self.frame_latency_waitable orelse return;
+        windows.WaitForSingleObject(handle, 1000) catch |err| switch (err) {
+            error.WaitTimeOut => {},
+            else => render_diagnostics.log("gpu-backend=d3d11 frame-latency wait failed error={s}", .{@errorName(err)}),
+        };
+    }
+}
+
 pub fn noteFeatureDraw() void {
     if (state) |*self| self.feature_draws_this_frame = true;
 }
@@ -643,7 +732,7 @@ pub fn resize(width: i32, height: i32) bool {
 
     self.releaseSized();
     const resize_buffers = core.comCall(self.swapchain, core.slot.DXGISwapChain_ResizeBuffers, *const fn (*anyopaque, u32, u32, u32, u32, u32) callconv(.winapi) HRESULT);
-    const hr = resize_buffers(self.swapchain, 0, @intCast(width), @intCast(height), 0, 0);
+    const hr = resize_buffers(self.swapchain, 0, @intCast(width), @intCast(height), 0, self.swapchain_flags);
     if (hr < 0) {
         const status = self.policy.noteDxgiFailure(.resize, hr);
         logDxgiFailure(self, "resize", hr, status);
@@ -693,13 +782,7 @@ pub fn drawPhase2Quad() void {
     draw(self.context, 6, 0);
 }
 
-pub fn present() PresentError!void {
-    if (state == null) return;
-    const self = &state.?;
-    switch (self.policy.frameAction(self.width, self.height)) {
-        .present => {},
-        .skip, .resize_then_present, .wait_for_recreate, .fallback_candidate => return,
-    }
+fn presentLegacy(self: *State) PresentError!void {
     const present_fn = core.comCall(self.swapchain, core.slot.DXGISwapChain_Present, *const fn (*anyopaque, u32, u32) callconv(.winapi) HRESULT);
     const hr = present_fn(self.swapchain, present_interval, 0);
     if (hr < 0) {
@@ -707,6 +790,58 @@ pub fn present() PresentError!void {
         logDxgiFailure(self, "present", hr, status);
         return presentErrorFromHRESULT(hr);
     }
+}
+
+pub fn present(damage: ?frame_damage.Rect) PresentError!void {
+    if (state == null) return;
+    const self = &state.?;
+    switch (self.policy.frameAction(self.width, self.height)) {
+        .present => {},
+        .skip, .resize_then_present, .wait_for_recreate, .fallback_candidate => return,
+    }
+
+    if (damage) |candidate| {
+        if (self.present1_enabled) {
+            if (self.present1_swapchain) |swapchain1| {
+                var dirty_rect = core.RECT{
+                    .left = candidate.left,
+                    .top = candidate.top,
+                    .right = candidate.right,
+                    .bottom = candidate.bottom,
+                };
+                const params = core.DXGI_PRESENT_PARAMETERS{
+                    .dirty_rects_count = 1,
+                    .dirty_rects = &dirty_rect,
+                    .scroll_rect = null,
+                    .scroll_offset = null,
+                };
+                const present1_fn = core.comCall(
+                    swapchain1,
+                    core.slot.DXGISwapChain1_Present1,
+                    *const fn (*anyopaque, u32, u32, *const core.DXGI_PRESENT_PARAMETERS) callconv(.winapi) HRESULT,
+                );
+                const hr = present1_fn(swapchain1, present_interval, 0, &params);
+                if (hr >= 0) {
+                    render_diagnostics.log("gpu-backend=d3d11 present1 dirty-rect=({},{})->({},{})", .{
+                        candidate.left,
+                        candidate.top,
+                        candidate.right,
+                        candidate.bottom,
+                    });
+                    return;
+                }
+                if (hr != core.DXGI_ERROR_INVALID_CALL) {
+                    const status = self.policy.noteDxgiFailure(.present, hr);
+                    logDxgiFailure(self, "present1", hr, status);
+                    return presentErrorFromHRESULT(hr);
+                }
+                self.present1_enabled = false;
+                render_diagnostics.log("gpu-backend=d3d11 present1 disabled reason=invalid-call fallback=present", .{});
+            }
+        }
+    }
+
+    return presentLegacy(self);
 }
 
 fn presentErrorFromHRESULT(hr: HRESULT) PresentError {

@@ -2964,6 +2964,17 @@ fn configuredAction(ev: platform_input.KeyEvent) ?keybind.Action {
     return AppWindow.g_keybinds.lookupApp(triggerFromKeyEvent(ev));
 }
 
+fn configuredScopedAction(ev: platform_input.KeyEvent, scope: keybind.Scope) ?keybind.Action {
+    return AppWindow.g_keybinds.lookupScoped(scope, triggerFromKeyEvent(ev));
+}
+
+fn suppressCommandCharForKey(slot: *?u21, ev: platform_input.KeyEvent) void {
+    if (ev.ctrl or ev.alt or ev.super) return;
+    if (ev.key_code >= 'A' and ev.key_code <= 'Z') {
+        slot.* = @as(u21, @intCast(if (ev.shift) ev.key_code else ev.key_code + ('a' - 'A')));
+    }
+}
+
 fn logicalKeyEvent(ev: platform_input.KeyEvent) input_key.KeyEvent {
     return .{
         .key = logicalKeyFromCode(ev.key_code),
@@ -3241,6 +3252,18 @@ fn terminalFunctionKeySeq(surface: *Surface, ev: platform_input.KeyEvent, buf: [
     return input_shortcuts.terminalFunctionKeyEncode(opts, ev.key_code, mods, buf);
 }
 
+fn terminalNavigationKeySeq(surface: *Surface, ev: platform_input.KeyEvent, buf: []u8, key_code: platform_input.KeyCode, legacy: []const u8) []const u8 {
+    const ghostty_vt = @import("ghostty-vt");
+    const opts = ghostty_vt.input.KeyEncodeOptions.fromTerminal(&surface.terminal);
+    const mods: ghostty_vt.input.KeyMods = .{
+        .shift = ev.shift,
+        .ctrl = ev.ctrl,
+        .alt = ev.alt,
+        .super = ev.super,
+    };
+    return input_shortcuts.terminalNavigationKeyEncode(opts, key_code, mods, buf) orelse legacy;
+}
+
 fn handleKey(ev: platform_input.KeyEvent) void {
     applyInputEffect(dispatchKey(ev));
 }
@@ -3453,11 +3476,35 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
     }
 
     if (AppWindow.activeAiHistory() != null) {
-        const plain = !ev.ctrl and !ev.alt and !ev.super;
-        // The Search box owns plain typing while focused, so Backspace edits the
-        // query there and the single-key Scan/Preview shortcuts stand down — letting
-        // their characters fall through to the filter instead.
+        // Search text keeps ownership while focused. Operation actions are scoped
+        // so the same keys can mean something else in other workbench pages.
         const search_focused = AppWindow.aiHistorySearchFocused();
+        const scoped_action = configuredScopedAction(ev, .ai_history);
+        if (actionIs(scoped_action, .ai_history_preview) and AppWindow.aiHistorySpacePreviews()) {
+            _ = AppWindow.aiHistoryPreviewSelectedTranscript();
+            return .none;
+        }
+        if (!search_focused) {
+            if (actionIs(scoped_action, .ai_history_scan)) {
+                _ = AppWindow.aiHistoryScanLocalNow();
+                return .none;
+            }
+            if (actionIs(scoped_action, .ai_history_download)) {
+                _ = AppWindow.aiHistoryDownloadSelectedRaw();
+                suppressCommandCharForKey(&command_char_suppressors.ai_history, ev);
+                return .none;
+            }
+            if (actionIs(scoped_action, .ai_history_export)) {
+                _ = AppWindow.aiHistoryExportSelectedMarkdown();
+                suppressCommandCharForKey(&command_char_suppressors.ai_history, ev);
+                return .none;
+            }
+            if (actionIs(scoped_action, .ai_history_attach)) {
+                _ = AppWindow.aiHistoryAttachSelectedToCopilot();
+                suppressCommandCharForKey(&command_char_suppressors.ai_history, ev);
+                return .none;
+            }
+        }
         switch (ev.key_code) {
             platform_input.key_backspace => {
                 if (search_focused) _ = AppWindow.aiHistoryBackspaceFilter();
@@ -3499,41 +3546,26 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
                 _ = AppWindow.aiHistoryScrollTranscript(1 << 30);
                 return .none;
             },
-            0x20 => if (plain and AppWindow.aiHistorySpacePreviews()) {
-                _ = AppWindow.aiHistoryPreviewSelectedTranscript();
-                return .none;
-            },
-            0x52 => if (plain and !ev.shift and !search_focused) {
-                _ = AppWindow.aiHistoryScanLocalNow();
-                return .none;
-            },
-            0x44 => if (plain and !ev.shift and !search_focused) {
-                _ = AppWindow.aiHistoryDownloadSelectedRaw();
-                command_char_suppressors.ai_history = 'd';
-                return .none;
-            },
-            0x4D => if (plain and !ev.shift and !search_focused) {
-                _ = AppWindow.aiHistoryExportSelectedMarkdown();
-                command_char_suppressors.ai_history = 'm';
-                return .none;
-            },
-            0x41 => if (plain and !ev.shift and !search_focused) {
-                _ = AppWindow.aiHistoryAttachSelectedToCopilot();
-                command_char_suppressors.ai_history = 'a';
-                return .none;
-            },
             else => {},
         }
         return .none;
     }
 
     if (AppWindow.activeMemoryCenter()) |memory_session| {
-        const plain = !ev.ctrl and !ev.alt and !ev.super;
+        const scoped_action = configuredScopedAction(ev, .memory_center);
+        if (actionIs(scoped_action, .memory_center_toggle_setting)) {
+            if (AppWindow.g_allocator) |allocator| applyInputEffect(memory_session.toggleSetting(allocator));
+            return .none;
+        }
+        if (actionIs(scoped_action, .memory_center_reload)) {
+            _ = AppWindow.memoryCenterReload();
+            return .none;
+        }
+        if (actionIs(scoped_action, .memory_center_run_digest)) {
+            _ = AppWindow.runMemoryDigestFromCenter();
+            return .none;
+        }
         switch (ev.key_code) {
-            platform_input.key_space => if (plain) {
-                if (AppWindow.g_allocator) |allocator| applyInputEffect(memory_session.toggleSetting(allocator));
-                return .none;
-            },
             platform_input.key_up => {
                 _ = AppWindow.memoryCenterMoveSelection(-1);
                 return .none;
@@ -3566,20 +3598,20 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
                 _ = AppWindow.memoryCenterScrollDetail(1 << 30);
                 return .none;
             },
-            0x52 => if (plain and !ev.shift) {
-                _ = AppWindow.memoryCenterReload();
-                return .none;
-            },
-            0x44 => if (plain and !ev.shift) {
-                _ = AppWindow.runMemoryDigestFromCenter();
-                return .none;
-            },
             else => {},
         }
         return .none;
     }
 
     if (AppWindow.activeConversationCenter()) |center| {
+        if (actionIs(configuredScopedAction(ev, .conversation_center), .conversation_center_resume)) {
+            _ = AppWindow.resumeConversationCenterSelection();
+            return .none;
+        }
+        if (actionIs(configuredScopedAction(ev, .conversation_center), .conversation_center_delete)) {
+            _ = AppWindow.deleteConversationCenterSelection();
+            return .none;
+        }
         switch (ev.key_code) {
             platform_input.key_up => {
                 if (center.focus == .filters) {
@@ -3609,14 +3641,6 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
                 _ = AppWindow.conversationCenterCycleFocus(1);
                 return .none;
             },
-            platform_input.key_enter => {
-                _ = AppWindow.resumeConversationCenterSelection();
-                return .none;
-            },
-            platform_input.key_delete => {
-                _ = AppWindow.deleteConversationCenterSelection();
-                return .none;
-            },
             platform_input.key_backspace => {
                 _ = AppWindow.conversationCenterBackspaceQuery();
                 return .none;
@@ -3635,10 +3659,38 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
     }
 
     if (AppWindow.activePortForwarding() != null) {
-        const plain = !ev.ctrl and !ev.alt and !ev.super;
         const overlay_kind = AppWindow.portForwardingOverlayKind() orelse .none;
         const form_active = overlay_kind == .form;
         const overlay_active = overlay_kind != .none;
+        if (configuredScopedAction(ev, .port_forwarding)) |port_action| {
+            switch (port_action) {
+                .port_forwarding_toggle_selected => {
+                    if (form_active) _ = AppWindow.portForwardingFormAdjust(1) else if (!overlay_active) _ = AppWindow.portForwardingToggleSelected();
+                    return .none;
+                },
+                .port_forwarding_new => {
+                    if (!overlay_active and AppWindow.portForwardingOpenNew()) suppressCommandCharForKey(&command_char_suppressors.port_forwarding, ev);
+                    return .none;
+                },
+                .port_forwarding_edit => {
+                    if (!overlay_active and AppWindow.portForwardingOpenEdit()) suppressCommandCharForKey(&command_char_suppressors.port_forwarding, ev);
+                    return .none;
+                },
+                .port_forwarding_delete => {
+                    if (!overlay_active) _ = AppWindow.portForwardingOpenDeleteConfirm();
+                    return .none;
+                },
+                .port_forwarding_restart => {
+                    if (!overlay_active) _ = AppWindow.portForwardingRestartSelected();
+                    return .none;
+                },
+                .port_forwarding_toggle_autostart => {
+                    if (!overlay_active) _ = AppWindow.portForwardingToggleAutoStart();
+                    return .none;
+                },
+                else => {},
+            }
+        }
         switch (ev.key_code) {
             platform_input.key_up => {
                 if (form_active) {
@@ -3680,46 +3732,14 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
                 if (form_active) _ = AppWindow.portForwardingBackspace();
                 return .none;
             },
-            platform_input.key_space => if (plain and !ev.shift) {
-                if (form_active) {
-                    _ = AppWindow.portForwardingFormAdjust(1);
-                } else if (!overlay_active) {
-                    _ = AppWindow.portForwardingToggleSelected();
-                }
-                return .none;
-            },
-            0x4E => if (plain and !ev.shift) {
-                if (!overlay_active and AppWindow.portForwardingOpenNew()) {
-                    command_char_suppressors.port_forwarding = 'n';
-                }
-                return .none;
-            },
-            0x45 => if (plain and !ev.shift) {
-                if (!overlay_active and AppWindow.portForwardingOpenEdit()) {
-                    command_char_suppressors.port_forwarding = 'e';
-                }
-                return .none;
-            },
-            0x44 => if (plain and !ev.shift) {
-                if (!overlay_active) _ = AppWindow.portForwardingOpenDeleteConfirm();
-                return .none;
-            },
-            0x52 => if (plain and !ev.shift) {
-                if (!overlay_active) _ = AppWindow.portForwardingRestartSelected();
-                return .none;
-            },
-            0x41 => if (plain and !ev.shift) {
-                if (!overlay_active) _ = AppWindow.portForwardingToggleAutoStart();
-                return .none;
-            },
             else => {},
         }
         return .none;
     }
 
-    // Skill Center: ↑/↓ move, space preview/toggle, ⏎ confirm, esc cancel,
-    // d deploy, i import, t import tool, e toggle, g get-from-GitHub, r rescan.
-    // The URL-input overlay captures text; the checklist captures space + 'a'.
+    // Skill Center navigation and editor controls stay local to the page;
+    // operation keys (preview, rescan, deploy, import, toggle, URL, select-all)
+    // are configured with the skill-center: scoped keybind prefix.
     if (AppWindow.activeSkillCenter() != null) {
         switch (AppWindow.skillCenterPreviewKind()) {
             .text => {
@@ -3765,13 +3785,48 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
             },
             .none => {},
         }
-        const plain = !ev.ctrl and !ev.alt and !ev.super;
         const text_capture = AppWindow.skillCenterUrlInputActive();
         const picking = AppWindow.skillCenterPickActive();
         const overlay_active = AppWindow.skillCenterOverlayActive();
         // Ctrl/Cmd+V paste into the URL field.
         if (text_capture and (ev.ctrl or ev.super) and ev.key_code == 0x56) { // 'V'
             if (AppWindow.skillCenterUrlPaste()) markSkillCenterInputDirty();
+            return .none;
+        }
+        const scoped_action = configuredScopedAction(ev, .skill_center);
+        if (actionIs(scoped_action, .skill_center_preview) and !text_capture) {
+            if (AppWindow.skillCenterSpacePreview()) markSkillCenterInputDirty();
+            return .none;
+        }
+        if (actionIs(scoped_action, .skill_center_rescan) and !text_capture) {
+            if (AppWindow.skillCenterRescan()) markSkillCenterInputDirty();
+            return .none;
+        }
+        if (!text_capture and !picking and !overlay_active) {
+            if (actionIs(scoped_action, .skill_center_deploy)) {
+                if (AppWindow.skillCenterDeploy()) markSkillCenterInputDirty();
+                return .none;
+            }
+            if (actionIs(scoped_action, .skill_center_import)) {
+                if (AppWindow.skillCenterImport()) markSkillCenterInputDirty();
+                return .none;
+            }
+            if (actionIs(scoped_action, .skill_center_import_tool)) {
+                if (AppWindow.skillCenterImportTool()) markSkillCenterInputDirty();
+                return .none;
+            }
+            if (actionIs(scoped_action, .skill_center_toggle)) {
+                if (AppWindow.skillCenterToggleToolEnabled()) markSkillCenterInputDirty();
+                return .none;
+            }
+        }
+        if (!text_capture and !picking and actionIs(scoped_action, .skill_center_open_url)) {
+            if (AppWindow.skillCenterOpenUrlInput()) markSkillCenterInputDirty();
+            suppressCommandCharForKey(&command_char_suppressors.skill_center, ev);
+            return .none;
+        }
+        if (picking and actionIs(scoped_action, .skill_center_select_all)) {
+            if (AppWindow.skillCenterPickSelectAll()) markSkillCenterInputDirty();
             return .none;
         }
         switch (ev.key_code) {
@@ -3809,42 +3864,6 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
                     if (AppWindow.skillCenterUrlBackspace()) markSkillCenterInputDirty();
                     return .none;
                 }
-            },
-            0x52 => if (plain and !ev.shift and !text_capture) { // 'R'
-                if (AppWindow.skillCenterRescan()) markSkillCenterInputDirty();
-                return .none;
-            },
-            0x44 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'D'
-                if (AppWindow.skillCenterDeploy()) markSkillCenterInputDirty();
-                return .none;
-            },
-            0x49 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'I'
-                if (AppWindow.skillCenterImport()) markSkillCenterInputDirty();
-                return .none;
-            },
-            0x54 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'T'
-                if (AppWindow.skillCenterImportTool()) markSkillCenterInputDirty();
-                return .none;
-            },
-            0x45 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'E'
-                if (AppWindow.skillCenterToggleToolEnabled()) markSkillCenterInputDirty();
-                return .none;
-            },
-            0x47 => if (plain and !ev.shift and !text_capture and !picking) { // 'G'
-                if (AppWindow.skillCenterOpenUrlInput()) markSkillCenterInputDirty();
-                // SDL text-input mode also fires a 'g' CHAR event after this
-                // key-down; suppress it so it doesn't land in the now-active
-                // URL field. (Only 'G' opens a text field, so only it suppresses.)
-                command_char_suppressors.skill_center = 'g';
-                return .none;
-            },
-            0x41 => if (plain and !ev.shift and picking) { // 'A' select-all
-                if (AppWindow.skillCenterPickSelectAll()) markSkillCenterInputDirty();
-                return .none;
-            },
-            platform_input.key_space => if (plain and !ev.shift and !text_capture) {
-                if (AppWindow.skillCenterSpacePreview()) markSkillCenterInputDirty(); // toggles when picking
-                return .none;
             },
             else => {},
         }
@@ -3931,39 +3950,64 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
         platform_input.key_enter => terminalSpecialKeySeq(surface, ev, .enter, &kitty_buf, "\r"),
         platform_input.key_backspace => terminalSpecialKeySeq(surface, ev, .backspace, &kitty_buf, "\x7f"),
         platform_input.key_tab => terminalSpecialKeySeq(surface, ev, .tab, &kitty_buf, if (ev.shift) "\x1b[Z" else "\t"),
-        platform_input.key_escape => "\x1b",
+        platform_input.key_escape => terminalNavigationKeySeq(surface, ev, &kitty_buf, platform_input.key_escape, "\x1b"),
         platform_input.key_up, platform_input.key_down, platform_input.key_right, platform_input.key_left => input_shortcuts.terminalArrowSequence(key_event, surface.terminal.modes.get(.cursor_keys)),
-        platform_input.key_home => "\x1b[H",
-        platform_input.key_end => "\x1b[F",
+        platform_input.key_home => terminalNavigationKeySeq(surface, ev, &kitty_buf, platform_input.key_home, "\x1b[H"),
+        platform_input.key_end => terminalNavigationKeySeq(surface, ev, &kitty_buf, platform_input.key_end, "\x1b[F"),
         platform_input.key_page_up => blk: { // Page Up
-            if (ev.shift) {
+            if (ev.shift and surface.terminal.screens.active_key != .alternate) {
                 surface.render_state.mutex.lock();
                 surface.terminal.scrollViewport(.{ .delta = -@as(isize, AppWindow.term_rows / 2) });
                 surface.render_state.mutex.unlock();
                 overlays.scrollbarShow();
                 break :blk null;
             }
-            break :blk "\x1b[5~";
+            break :blk terminalNavigationKeySeq(surface, ev, &kitty_buf, platform_input.key_page_up, "\x1b[5~");
         },
         platform_input.key_page_down => blk: { // Page Down
-            if (ev.shift) {
+            if (ev.shift and surface.terminal.screens.active_key != .alternate) {
                 surface.render_state.mutex.lock();
                 surface.terminal.scrollViewport(.{ .delta = @as(isize, AppWindow.term_rows / 2) });
                 surface.render_state.mutex.unlock();
                 overlays.scrollbarShow();
                 break :blk null;
             }
-            break :blk "\x1b[6~";
+            break :blk terminalNavigationKeySeq(surface, ev, &kitty_buf, platform_input.key_page_down, "\x1b[6~");
         },
-        platform_input.key_insert => "\x1b[2~",
-        platform_input.key_delete => "\x1b[3~",
+        platform_input.key_insert => terminalNavigationKeySeq(surface, ev, &kitty_buf, platform_input.key_insert, "\x1b[2~"),
+        platform_input.key_delete => terminalNavigationKeySeq(surface, ev, &kitty_buf, platform_input.key_delete, "\x1b[3~"),
         else => blk: {
-            // Ctrl+A through Ctrl+Z
-            if (ev.ctrl and ev.key_code >= 0x41 and ev.key_code <= 0x5A) {
-                // Shifted Ctrl+letter chords are application shortcuts above.
-                if (!ev.shift) {
-                    const ctrl_char: u8 = @intCast(ev.key_code - 0x41 + 1);
-                    writeToPty(surface, &[_]u8{ctrl_char});
+            const ascii_code = input_shortcuts.asciiKeyCode(ev.key_code);
+            const is_ascii_key = ascii_code != null;
+            const is_ascii_letter = ev.key_code >= 0x41 and ev.key_code <= 0x5A;
+            const ghostty_vt = @import("ghostty-vt");
+            const opts = ghostty_vt.input.KeyEncodeOptions.fromTerminal(&surface.terminal);
+            const mods: ghostty_vt.input.KeyMods = .{
+                .ctrl = ev.ctrl,
+                .shift = ev.shift,
+                .alt = ev.alt,
+                .super = ev.super,
+            };
+            // Preserve the established Ctrl+A..Z control-byte path.
+            if (ev.ctrl and !ev.shift and !ev.alt and !ev.super and is_ascii_letter) {
+                const ctrl_char: u8 = @intCast(ev.key_code - 0x41 + 1);
+                writeToPty(surface, &[_]u8{ctrl_char});
+                wrote_to_pty = true;
+            } else if (ev.ctrl and !ev.alt and is_ascii_key) {
+                // Kitty/modify-other-keys lets Pi distinguish Ctrl+Shift and
+                // Ctrl+punctuation chords; protocol-off returns null safely.
+                if (input_shortcuts.terminalAsciiKeyEncode(opts, ev.key_code, mods, &kitty_buf)) |s| {
+                    writeToPty(surface, s);
+                    wrote_to_pty = true;
+                }
+            } else if (ev.alt and !ev.ctrl and !ev.super and is_ascii_key) {
+                if (input_shortcuts.terminalAsciiKeyEncode(opts, ev.key_code, mods, &kitty_buf)) |s| {
+                    writeToPty(surface, s);
+                    wrote_to_pty = true;
+                } else if (ascii_code) |code| {
+                    // Legacy fallback for terminals without Kitty/modify-other-keys.
+                    const ch: u8 = if (ev.shift and code >= 'a' and code <= 'z') code - 32 else code;
+                    writeToPty(surface, &[_]u8{ 0x1b, ch });
                     wrote_to_pty = true;
                 }
             }
@@ -4407,7 +4451,9 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
     const key_up = platform_input.key_up;
     const key_down = platform_input.key_down;
 
-    // In input mode (rename/new file/new dir)
+    // In input mode (rename/new file/new dir), only editing controls are owned
+    // here. Scoped workbench actions intentionally stand down until the edit is
+    // committed or cancelled.
     if (file_explorer.hasActiveOp()) {
         switch (ev.key_code) {
             key_escape => {
@@ -4426,57 +4472,72 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
         }
     }
 
-    // Normal navigation mode
+    if (configuredScopedAction(ev, .file_explorer)) |action| {
+        switch (action) {
+            .file_explorer_download => {
+                if (!file_explorer.isRemoteMode()) return false;
+                var dl_buf: [260]u8 = undefined;
+                const dl_path = getDownloadsFolder(&dl_buf);
+                if (dl_path.len > 0) file_explorer.downloadSelected(dl_path);
+                return true;
+            },
+            .file_explorer_upload_file => {
+                if (!file_explorer.isRemoteMode()) return false;
+                openFileDialogAndUpload();
+                return true;
+            },
+            .file_explorer_upload_folder => {
+                if (!file_explorer.isRemoteMode()) return false;
+                openFolderDialogAndUpload();
+                return true;
+            },
+            .file_explorer_rename => {
+                file_explorer.handleAction(.rename_selected);
+                return true;
+            },
+            .file_explorer_new_file => {
+                file_explorer.handleAction(.create_file);
+                return true;
+            },
+            .file_explorer_new_folder => {
+                file_explorer.handleAction(.create_directory);
+                return true;
+            },
+            .file_explorer_delete => {
+                file_explorer.handleAction(.delete_selected);
+                return true;
+            },
+            .file_explorer_refresh => {
+                file_explorer.handleAction(.refresh);
+                return true;
+            },
+            else => {},
+        }
+    }
+
+    // Normal navigation mode. Navigation remains owned by the panel; operation
+    // keys above are configurable and no longer have a hardcoded fallback.
     switch (ev.key_code) {
         key_escape => {
             file_explorer.blur();
             return true;
         },
         key_up, key_down, key_enter => {
-            // Navigation keys route through a domain-owned action so this branch
-            // asks file_explorer to perform the intent instead of calling its
-            // internals directly. fromNavigationKey owns exactly these keys.
             if (file_explorer_keymap.fromNavigationKey(ev.key_code)) |action| {
                 file_explorer.handleAction(action);
             }
             return true;
         },
-        0x53 => { // 'S' key: Ctrl/Cmd+S = download selected file
-            if ((ev.ctrl or ev.super) and !ev.alt and !ev.shift) {
-                if (file_explorer.isRemoteMode()) {
-                    // Download to user's Downloads folder
-                    var dl_buf: [260]u8 = undefined;
-                    const dl_path = getDownloadsFolder(&dl_buf);
-                    if (dl_path.len > 0) {
-                        file_explorer.downloadSelected(dl_path);
-                    }
-                    return true;
-                }
-            }
-            return false;
-        },
-        0x55 => { // 'U' = upload file; Shift+U = upload folder
-            if (file_explorer.isRemoteMode() and !ev.ctrl and !ev.alt and !ev.super) {
-                if (ev.shift) {
-                    openFolderDialogAndUpload();
-                } else {
-                    openFileDialogAndUpload();
-                }
-                return true;
-            }
-            return false;
-        },
-        else => {
-            if (file_explorer_keymap.fromOperationKey(ev)) |action| {
-                file_explorer.handleAction(action);
-                return true;
-            }
-            return false;
-        },
+        else => return false,
     }
 }
 
 fn handleAgentHistoryKey(ev: platform_input.KeyEvent) bool {
+    if (actionIs(configuredScopedAction(ev, .agent_history), .agent_history_delete)) {
+        deleteSelectedAgentHistoryRow();
+        return true;
+    }
+
     switch (ev.key_code) {
         platform_input.key_escape => {
             file_explorer.blur();
@@ -4493,17 +4554,6 @@ fn handleAgentHistoryKey(ev: platform_input.KeyEvent) bool {
         platform_input.key_enter => {
             activateSelectedAgentHistoryRow();
             return true;
-        },
-        platform_input.key_delete => {
-            deleteSelectedAgentHistoryRow();
-            return true;
-        },
-        0x44 => { // 'D' key = delete history row
-            if (!ev.ctrl and !ev.alt and !ev.shift and !ev.super) {
-                deleteSelectedAgentHistoryRow();
-                return true;
-            }
-            return false;
         },
         else => return false,
     }

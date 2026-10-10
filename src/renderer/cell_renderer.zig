@@ -18,6 +18,7 @@ const cell_pipeline = @import("cell_pipeline.zig");
 const underline_span = @import("../input/underline_span.zig");
 const image_renderer = @import("image_renderer.zig");
 const cell_geometry = @import("cell_geometry.zig");
+const frame_timing = @import("../appwindow/frame_timing.zig");
 
 const Character = font.Character;
 const Selection = Surface.Selection;
@@ -65,6 +66,22 @@ pub fn renderChar(codepoint: u32, x: f32, y: f32, color: [3]f32) void {
 /// is_focused controls cursor appearance (unfocused shows block_hollow).
 /// A focus transition forces a rebuild: the cursor cell's background color is
 /// baked into the bg buffer and depends on the effective style (block/hollow).
+pub const Damage = struct {
+    valid: bool,
+    full: bool,
+    row_start: usize,
+    row_end: usize,
+};
+
+pub fn damageForRenderer(rend: *const Renderer) Damage {
+    return .{
+        .valid = rend.last_damage_valid,
+        .full = rend.last_damage_full,
+        .row_start = rend.last_damage_row_start,
+        .row_end = rend.last_damage_row_end,
+    };
+}
+
 pub fn updateTerminalCellsForSurface(rend: *Renderer, terminal: *ghostty_vt.Terminal, is_focused: bool) bool {
     if (rend.is_focused != is_focused) rend.force_rebuild = true;
     rend.is_focused = is_focused;
@@ -85,6 +102,7 @@ pub fn currentRenderSelection() *Selection {
 /// after releasing the lock). Modeled after Ghostty's split:
 ///   lock → RenderState.update() (snapshot) → unlock → rebuildCells()
 pub fn updateTerminalCells(rend: *Renderer, terminal: *ghostty_vt.Terminal) bool {
+    rend.last_damage_valid = false;
     // If the application has enabled synchronized output (Mode 2026),
     // skip rendering entirely until the batch ends. This prevents
     // mid-update artifacts (e.g. fzf drawing its UI). Matches Ghostty's
@@ -109,6 +127,9 @@ pub fn updateTerminalCells(rend: *Renderer, terminal: *ghostty_vt.Terminal) bool
     const cur_atlas_size: u32 = if (font.g_atlas) |a| a.size else 512;
     const cur_color_atlas_size: u32 = if (font.g_color_atlas) |a| a.size else 512;
 
+    var snapshot_rows_only = false;
+    var dirty_row_start: usize = 0;
+    var dirty_row_end: usize = 0;
     const needs_rebuild = blk: {
         if (rend.force_rebuild) {
             rend.force_rebuild = false;
@@ -155,10 +176,16 @@ pub fn updateTerminalCells(rend: *Renderer, terminal: *ghostty_vt.Terminal) bool
         }
         // Per-row/page dirty flags (set by VT parser on cell changes)
         var dirty_it = screen.pages.rowIterator(.right_down, .{ .viewport = .{} }, null);
-        while (dirty_it.next()) |row_pin| {
+        var dirty_row_idx: usize = 0;
+        while (dirty_it.next()) |row_pin| : (dirty_row_idx += 1) {
             const rac = row_pin.rowAndCell();
-            if (rac.row.dirty or row_pin.node.data.dirty) break :blk true;
+            if (rac.row.dirty or row_pin.node.data.dirty) {
+                if (!snapshot_rows_only) dirty_row_start = dirty_row_idx;
+                snapshot_rows_only = true;
+                dirty_row_end = dirty_row_idx + 1;
+            }
         }
+        if (snapshot_rows_only) break :blk true;
         break :blk false;
     };
 
@@ -186,11 +213,17 @@ pub fn updateTerminalCells(rend: *Renderer, terminal: *ghostty_vt.Terminal) bool
         rend.cached_cursor_style = eff;
     }
 
+    rend.rebuild_rows_only = needs_rebuild and snapshot_rows_only;
+    rend.rebuild_row_start = if (rend.rebuild_rows_only) dirty_row_start else 0;
+    rend.rebuild_row_end = if (rend.rebuild_rows_only) dirty_row_end else terminal.rows;
+
     if (needs_rebuild) {
         // Snapshot cell data under the lock — fast memcpy of resolved colors
         // and codepoints. Like Ghostty's RenderState.update() fastmem.copy.
-        snapshotCells(rend, terminal);
+        const snapshot_stage = frame_timing.beginStage();
+        snapshotCells(rend, terminal, !snapshot_rows_only);
         image_renderer.snapshot(rend, terminal);
+        frame_timing.endStage(.snapshot, snapshot_stage);
 
         // Debug: check for cursor/content mismatch
         if (rend.cached_cursor_in_viewport and rend.cached_cursor_y >= rend.snap_rows and rend.snap_rows > 0) {
@@ -239,23 +272,57 @@ pub fn updateTerminalCells(rend: *Renderer, terminal: *ghostty_vt.Terminal) bool
 /// Build GPU cell buffers from the snapshot. Does NOT require the terminal
 /// mutex — reads from rend.snap which was filled by snapshotCells.
 pub fn rebuildCells(rend: *Renderer) void {
-    rend.rebuild_generation +%= 1;
+    const rebuilt_rows_only = rend.rebuild_rows_only;
+    const rebuilt_row_start = rend.rebuild_row_start;
+    const rebuilt_row_end = rend.rebuild_row_end;
+    const rebuild_stage = frame_timing.beginStage();
     const render_rows = rend.snap_rows;
     const render_cols = rend.snap_cols;
     const atlas_size = if (font.g_atlas) |a| @as(f32, @floatFromInt(a.size)) else 512.0;
     const color_atlas_size = if (font.g_color_atlas) |a| @as(f32, @floatFromInt(a.size)) else 512.0;
     const g_theme = AppWindow.g_theme;
+    const allocator = rend.surface.allocator;
 
-    rend.bg_cell_count = 0;
-    rend.fg_cell_count = 0;
-    rend.color_fg_cell_count = 0;
+    rend.ensureRowCacheCapacity(render_rows) catch {
+        rend.force_rebuild = true;
+        rend.last_damage_valid = true;
+        rend.last_damage_full = true;
+        rend.last_damage_row_start = 0;
+        rend.last_damage_row_end = render_rows;
+        frame_timing.endStage(.rebuild, rebuild_stage);
+        return;
+    };
+
+    const row_start: usize = if (rend.rebuild_rows_only) rend.rebuild_row_start else 0;
+    const row_end: usize = @min(render_rows, if (rend.rebuild_rows_only) rend.rebuild_row_end else render_rows);
     image_renderer.uploadPending(rend);
     const normal_bg_alpha: f32 = if (AppWindow.background_image.g_enabled) gpu.background_opacity else 1.0;
+    var allocation_failed = false;
 
-    for (0..render_rows) |row_idx| {
+    for (row_start..row_end) |row_idx| {
+        var row_cache = &rend.row_cache.items[row_idx];
+        row_cache.clear();
+        row_cache.bg.ensureTotalCapacity(allocator, render_cols) catch {
+            allocation_failed = true;
+            break;
+        };
+        row_cache.fg.ensureTotalCapacity(allocator, render_cols) catch {
+            allocation_failed = true;
+            break;
+        };
+        row_cache.color_fg.ensureTotalCapacity(allocator, render_cols) catch {
+            allocation_failed = true;
+            break;
+        };
+        row_cache.bg.items.len = render_cols;
+        row_cache.fg.items.len = render_cols;
+        row_cache.color_fg.items.len = render_cols;
+
         const row_f: f32 = @floatFromInt(row_idx);
         const row_base = row_idx * render_cols;
-
+        var bg_count: usize = 0;
+        var fg_count: usize = 0;
+        var color_fg_count: usize = 0;
         var skip_next_ri = false;
         for (0..render_cols) |col_idx| {
             const snap_idx = row_base + col_idx;
@@ -265,7 +332,6 @@ pub fn rebuildCells(rend: *Renderer) void {
             const is_cursor = rend.cached_cursor_in_viewport and (col_idx == rend.cached_cursor_x and row_idx == rend.cached_cursor_y);
             const is_selected = isCellSelected(rend, col_idx, row_idx);
             const col_f: f32 = @floatFromInt(col_idx);
-
             const cursor_is_block = if (rend.cached_cursor_effective) |s| s == .block else false;
             const decision = cell_geometry.backgroundFor(
                 sc.bg,
@@ -286,9 +352,9 @@ pub fn rebuildCells(rend: *Renderer) void {
                 sc.fg,
             );
             if (decision.bg) |bg_inst| {
-                if (rend.bg_cell_count < rend.bg_cells.items.len) {
-                    rend.bg_cells.items[rend.bg_cell_count] = bg_inst;
-                    rend.bg_cell_count += 1;
+                if (bg_count < row_cache.bg.items.len) {
+                    row_cache.bg.items[bg_count] = bg_inst;
+                    bg_count += 1;
                 }
             }
             const fg_color = decision.fg;
@@ -297,7 +363,7 @@ pub fn rebuildCells(rend: *Renderer) void {
             // across both cells (like Ghostty).
             if (sc.wide == .spacer_tail or sc.wide == .spacer_head) continue;
 
-            // Skip the second regional indicator in a composed pair
+            // Skip the second regional indicator in a composed pair.
             if (skip_next_ri) {
                 skip_next_ri = false;
                 continue;
@@ -306,18 +372,10 @@ pub fn rebuildCells(rend: *Renderer) void {
             const char = sc.codepoint;
             if (char == ghostty_vt.kitty.graphics.unicode.placeholder) continue;
             if (char != 0 and char != ' ') {
-                // Track if we composed a regional indicator pair (for 2-cell width)
                 var composed_ri_pair = false;
-
-                // Use HarfBuzz shaping for grapheme clusters (multi-codepoint emoji),
-                // fall back to single-codepoint lookup for regular characters.
                 const maybe_ch: ?Character = if (sc.grapheme_len > 0)
                     font.loadGraphemeGlyph(char, sc.grapheme[0..sc.grapheme_len])
                 else if (font.isRegionalIndicator(char)) ri: {
-                    // Regional indicator without grapheme data — check if a following cell
-                    // is also an RI and compose them into a flag pair for shaping.
-                    // This handles the case where grapheme_cluster mode isn't active.
-                    // Check +1 (narrow RI) and +2 (wide RI with spacer_tail at +1).
                     const offsets = [_]usize{ 1, 2 };
                     for (offsets) |off| {
                         const next_snap_idx = row_base + col_idx + off;
@@ -338,26 +396,18 @@ pub fn rebuildCells(rend: *Renderer) void {
                 } else font.loadGlyph(char);
                 if (maybe_ch) |ch| {
                     if (ch.region.width > 0 and ch.region.height > 0) {
-                        // Wide characters (emoji) span 2 cells; narrow = 1 cell.
-                        // Composed RI pairs also span 2 cells.
                         const grid_width: f32 = if (sc.wide == .wide or composed_ri_pair) 2.0 else 1.0;
                         if (ch.is_color) {
-                            // Color emoji — route to separate color cell buffer.
-                            // Scale the emoji bitmap to fit within grid_width cells, preserving aspect ratio.
                             const rect = cell_geometry.colorEmojiRect(ch.size_x, ch.size_y, grid_width, font.cell_width, font.cell_height);
-                            const gx = rect.gx;
-                            const gy = rect.gy;
-                            const gw = rect.gw;
-                            const gh = rect.gh;
                             const uv_val = font.glyphUV(ch.region, color_atlas_size);
-                            if (rend.color_fg_cell_count < rend.color_fg_cells.items.len) {
-                                rend.color_fg_cells.items[rend.color_fg_cell_count] = .{
+                            if (color_fg_count < row_cache.color_fg.items.len) {
+                                row_cache.color_fg.items[color_fg_count] = .{
                                     .grid_col = col_f,
                                     .grid_row = row_f,
-                                    .glyph_x = gx,
-                                    .glyph_y = gy,
-                                    .glyph_w = gw,
-                                    .glyph_h = gh,
+                                    .glyph_x = rect.gx,
+                                    .glyph_y = rect.gy,
+                                    .glyph_w = rect.gw,
+                                    .glyph_h = rect.gh,
                                     .uv_left = uv_val.u0,
                                     .uv_top = uv_val.v0,
                                     .uv_right = uv_val.u1,
@@ -366,24 +416,19 @@ pub fn rebuildCells(rend: *Renderer) void {
                                     .g = fg_color[1],
                                     .b = fg_color[2],
                                 };
-                                rend.color_fg_cell_count += 1;
+                                color_fg_count += 1;
                             }
                         } else {
-                            // Grayscale text glyph
                             const uv_val = font.glyphUV(ch.region, atlas_size);
                             const rect = cell_geometry.grayscaleGlyphRect(ch.bearing_x, ch.bearing_y, ch.size_x, ch.size_y, font.cell_baseline);
-                            const gx = rect.gx;
-                            const gy = rect.gy;
-                            const gw = rect.gw;
-                            const gh = rect.gh;
-                            if (rend.fg_cell_count < rend.fg_cells.items.len) {
-                                rend.fg_cells.items[rend.fg_cell_count] = .{
+                            if (fg_count < row_cache.fg.items.len) {
+                                row_cache.fg.items[fg_count] = .{
                                     .grid_col = col_f,
                                     .grid_row = row_f,
-                                    .glyph_x = gx,
-                                    .glyph_y = gy,
-                                    .glyph_w = gw,
-                                    .glyph_h = gh,
+                                    .glyph_x = rect.gx,
+                                    .glyph_y = rect.gy,
+                                    .glyph_w = rect.gw,
+                                    .glyph_h = rect.gh,
                                     .uv_left = uv_val.u0,
                                     .uv_top = uv_val.v0,
                                     .uv_right = uv_val.u1,
@@ -392,14 +437,59 @@ pub fn rebuildCells(rend: *Renderer) void {
                                     .g = fg_color[1],
                                     .b = fg_color[2],
                                 };
-                                rend.fg_cell_count += 1;
+                                fg_count += 1;
                             }
                         }
                     }
                 }
             }
         }
+        row_cache.bg.items.len = bg_count;
+        row_cache.fg.items.len = fg_count;
+        row_cache.color_fg.items.len = color_fg_count;
     }
+
+    if (allocation_failed) {
+        rend.force_rebuild = true;
+        rend.last_damage_valid = true;
+        rend.last_damage_full = true;
+        rend.last_damage_row_start = 0;
+        rend.last_damage_row_end = render_rows;
+        frame_timing.endStage(.rebuild, rebuild_stage);
+        return;
+    }
+
+    // Flatten row caches in screen order into the existing compact GPU buffers.
+    rend.bg_cell_count = 0;
+    rend.fg_cell_count = 0;
+    rend.color_fg_cell_count = 0;
+    for (rend.row_cache.items[0..render_rows]) |row_cache| {
+        for (row_cache.bg.items) |instance| {
+            if (rend.bg_cell_count >= rend.bg_cells.items.len) break;
+            rend.bg_cells.items[rend.bg_cell_count] = instance;
+            rend.bg_cell_count += 1;
+        }
+        for (row_cache.fg.items) |instance| {
+            if (rend.fg_cell_count >= rend.fg_cells.items.len) break;
+            rend.fg_cells.items[rend.fg_cell_count] = instance;
+            rend.fg_cell_count += 1;
+        }
+        for (row_cache.color_fg.items) |instance| {
+            if (rend.color_fg_cell_count >= rend.color_fg_cells.items.len) break;
+            rend.color_fg_cells.items[rend.color_fg_cell_count] = instance;
+            rend.color_fg_cell_count += 1;
+        }
+    }
+
+    rend.last_damage_valid = true;
+    rend.last_damage_full = !rebuilt_rows_only;
+    rend.last_damage_row_start = if (rebuilt_rows_only) rebuilt_row_start else 0;
+    rend.last_damage_row_end = if (rebuilt_rows_only) rebuilt_row_end else render_rows;
+    rend.rebuild_rows_only = false;
+    rend.rebuild_row_start = 0;
+    rend.rebuild_row_end = 0;
+    rend.rebuild_generation +%= 1;
+    frame_timing.endStage(.rebuild, rebuild_stage);
 }
 
 /// Draw terminal grid from CPU cell buffers. Does NOT require the terminal
@@ -575,7 +665,7 @@ fn cursorEffectiveStyleForRenderer(rend: *const Renderer, terminal_style: Render
 /// into a flat buffer so rebuildCells can run outside the lock.
 /// Modeled after Ghostty's RenderState.update() which copies row data via
 /// fastmem.copy under the lock, then releases it for the renderer.
-fn snapshotCells(rend: *Renderer, terminal: *ghostty_vt.Terminal) void {
+fn snapshotCells(rend: *Renderer, terminal: *ghostty_vt.Terminal, snapshot_all: bool) void {
     const g_theme = AppWindow.g_theme;
     const screen = terminal.screens.active;
     const render_cols = terminal.cols;
@@ -598,6 +688,10 @@ fn snapshotCells(rend: *Renderer, terminal: *ghostty_vt.Terminal) void {
     while (row_it.next()) |row_pin| {
         const p = &row_pin.node.data;
         const rac = row_pin.rowAndCell();
+        if (!snapshot_all and !rac.row.dirty and !row_pin.node.data.dirty) {
+            row_idx += 1;
+            continue;
+        }
         const page_cells = p.getCells(rac.row);
         const num_cols = @min(page_cells.len, render_cols);
         const row_base = row_idx * render_cols;

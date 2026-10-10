@@ -15,15 +15,17 @@ pub fn resumeCommand(meta: types.SessionMeta, out: []u8) ResumeError![]const u8 
         .claude_resume => .{ .prefix = "claude --resume ", .suffix = "" },
         .kimi_resume => .{ .prefix = "kimi --session ", .suffix = "" },
         .opencode_resume => .{ .prefix = "opencode -s ", .suffix = "" },
+        .pi_resume => .{ .prefix = "pi --session ", .suffix = "" },
         .unavailable => return error.UnsupportedProvider,
     };
 
     var pos: usize = 0;
     try append(out, &pos, parts.prefix);
-    if (isShellSafeBareWord(meta.session_id)) {
-        try append(out, &pos, meta.session_id);
+    const resume_value = piResumeValue(meta);
+    if (isShellSafeBareWord(resume_value)) {
+        try append(out, &pos, resume_value);
     } else {
-        try appendShellSingleQuote(out, &pos, meta.session_id);
+        try appendShellSingleQuote(out, &pos, resume_value);
     }
     try append(out, &pos, parts.suffix);
     return out[0..pos];
@@ -87,9 +89,10 @@ pub fn checkedPowerShellResume(meta: types.SessionMeta, out: []u8) ResumeError![
         .claude_resume => try append(out, &pos, "claude --resume "),
         .kimi_resume => try append(out, &pos, "kimi --session "),
         .opencode_resume => try append(out, &pos, "opencode -s "),
+        .pi_resume => try append(out, &pos, "pi --session "),
         .unavailable => return error.UnsupportedProvider,
     }
-    try appendPowerShellSingleQuote(out, &pos, meta.session_id);
+    try appendPowerShellSingleQuote(out, &pos, piResumeValue(meta));
     try append(out, &pos, " } else { Write-Error ");
     try appendPowerShellProjectNotFound(out, &pos, meta.project_dir);
     try append(out, &pos, " }");
@@ -104,6 +107,22 @@ pub fn failureMessage(err: ResumeError, meta: types.SessionMeta, out: []u8) []co
         error.UnsupportedProvider => "Cannot resume: provider does not support resume",
         error.CommandTooLong => "Cannot resume: command is too long",
     };
+}
+
+fn piResumeValue(meta: types.SessionMeta) []const u8 {
+    if (meta.resume_kind == .pi_resume and isAbsoluteSessionPath(meta.source_path)) {
+        return meta.source_path;
+    }
+    return meta.session_id;
+}
+
+/// Session paths can come from a remote POSIX host while WispTerm itself runs
+/// on Windows, so do not use only the build target's native path rules.
+fn isAbsoluteSessionPath(path: []const u8) bool {
+    if (path.len == 0) return false;
+    if (path[0] == '/' or path[0] == '\\') return true;
+    return path.len >= 3 and std.ascii.isAlphabetic(path[0]) and path[1] == ':' and
+        (path[2] == '/' or path[2] == '\\');
 }
 
 fn append(out: []u8, pos: *usize, value: []const u8) ResumeError!void {
@@ -228,6 +247,26 @@ test "ai_history_resume: builds provider resume commands" {
         .resume_kind = .opencode_resume,
     };
     try std.testing.expectEqualStrings("opencode -s ses_03282e836ffeRuTJVdTjunUnUs", try resumeCommand(opencode, &out));
+
+    const pi_session: types.SessionMeta = .{
+        .provider = .pi,
+        .session_id = "01a10509-test",
+        .title = "E",
+        .project_dir = "/home/me/project",
+        .source_path = "/home/me/.pi/agent/sessions/--home-me-project--/session.jsonl",
+        .resume_kind = .pi_resume,
+    };
+    try std.testing.expectEqualStrings(
+        "pi --session /home/me/.pi/agent/sessions/--home-me-project--/session.jsonl",
+        try resumeCommand(pi_session, &out),
+    );
+
+    var remote_posix = pi_session;
+    remote_posix.source_path = "/home/remote/.pi/agent/sessions/session.jsonl";
+    try std.testing.expectEqualStrings(
+        "pi --session /home/remote/.pi/agent/sessions/session.jsonl",
+        try resumeCommand(remote_posix, &out),
+    );
 }
 
 test "ai_history_resume: quotes unsafe session ids" {
@@ -397,6 +436,19 @@ test "ai_history_resume: checked PowerShell resume checks directory before resum
     try std.testing.expectEqualStrings(
         "if (Test-Path -LiteralPath 'C:\\Users\\me\\it''s project' -PathType Container) { Set-Location -LiteralPath 'C:\\Users\\me\\it''s project'; codex resume 'abc def' } else { Write-Error 'Cannot resume: project folder not found: C:\\Users\\me\\it''s project' }",
         try checkedPowerShellResume(meta, &out),
+    );
+
+    const pi_session: types.SessionMeta = .{
+        .provider = .pi,
+        .session_id = "01a10509-test",
+        .title = "P",
+        .project_dir = "C:\\Project",
+        .source_path = "C:\\Users\\me\\.pi\\agent\\sessions\\session.jsonl",
+        .resume_kind = .pi_resume,
+    };
+    try std.testing.expectEqualStrings(
+        "if (Test-Path -LiteralPath 'C:\\Project' -PathType Container) { Set-Location -LiteralPath 'C:\\Project'; pi --session 'C:\\Users\\me\\.pi\\agent\\sessions\\session.jsonl' } else { Write-Error 'Cannot resume: project folder not found: C:\\Project' }",
+        try checkedPowerShellResume(pi_session, &out),
     );
 
     const kimi: types.SessionMeta = .{

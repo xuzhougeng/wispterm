@@ -684,7 +684,7 @@ pub fn windowCloseConfirmClose() void {
 fn executeCloseKeyAction(action: confirm_modals.CloseKeyAction) void {
     switch (action) {
         .none => {},
-        .close_window => AppWindow.g_should_close = true,
+        .close_window => AppWindow.requestGracefulClose(),
         .close_focused_split => AppWindow.closeFocusedSplit(),
         .close_tab => |idx| AppWindow.closeTab(idx),
     }

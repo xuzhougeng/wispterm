@@ -251,26 +251,88 @@ pub fn appFromCommand(cmd: []const u8) App {
     return .none;
 }
 
+pub const AgentCapabilities = packed struct {
+    graceful_exit: bool = false,
+    session_path: bool = false,
+};
+
+pub const MarkerInfo = struct {
+    detection: Detection,
+    capabilities: AgentCapabilities = .{},
+    session_path: []const u8 = "",
+};
+
+fn hexValue(byte: u8) ?u8 {
+    return switch (byte) {
+        '0'...'9' => byte - '0',
+        'a'...'f' => byte - 'a' + 10,
+        'A'...'F' => byte - 'A' + 10,
+        else => null,
+    };
+}
+
+fn decodeSessionPath(encoded: []const u8, out: ?[]u8) ?[]const u8 {
+    const buffer = out orelse return "";
+    var pos: usize = 0;
+    var i: usize = 0;
+    while (i < encoded.len) : (i += 1) {
+        const byte = if (encoded[i] == '%') blk: {
+            if (i + 2 >= encoded.len) return null;
+            const hi = hexValue(encoded[i + 1]) orelse return null;
+            const lo = hexValue(encoded[i + 2]) orelse return null;
+            i += 2;
+            break :blk (hi << 4) | lo;
+        } else encoded[i];
+        if (pos >= buffer.len) return null;
+        buffer[pos] = byte;
+        pos += 1;
+    }
+    return buffer[0..pos];
+}
+
 /// Parse the OSC 7748 payload (after `OSC 7748;`, terminator stripped):
-/// `wispterm-agent;state=running;app=pi`. Returns an authoritative
-/// Detection (confidence 100). Requires a recognized `state=`; `app=` optional
-/// (defaults .none). Returns null if the tag is missing or state is absent/unknown.
-pub fn parseMarker(payload: []const u8) ?Detection {
+/// `wispterm-agent;state=running;app=pi;capabilities=graceful_exit,session_path;session_path=%2F...`.
+/// `session_path` is percent-decoded into `path_buf` when supplied. Returns
+/// authoritative detection plus capability metadata; malformed encoded paths
+/// are rejected rather than persisted as an unsafe restore command.
+pub fn parseMarkerInfo(payload: []const u8, path_buf: ?[]u8) ?MarkerInfo {
     var it = std.mem.splitScalar(u8, payload, ';');
     const first = it.next() orelse return null;
     if (!std.mem.eql(u8, std.mem.trim(u8, first, " "), TAG)) return null;
+
     var st: ?State = null;
     var app: App = .none;
+    var capabilities: AgentCapabilities = .{};
+    var session_path: []const u8 = "";
+
     while (it.next()) |field| {
         const f = std.mem.trim(u8, field, " ");
         if (std.mem.startsWith(u8, f, "state=")) {
             st = stateFromLabel(f["state=".len..]);
         } else if (std.mem.startsWith(u8, f, "app=")) {
             if (appFromLabel(f["app=".len..])) |a| app = a;
+        } else if (std.mem.startsWith(u8, f, "capabilities=")) {
+            var caps = std.mem.splitScalar(u8, f["capabilities=".len..], ',');
+            while (caps.next()) |cap| {
+                if (std.mem.eql(u8, cap, "graceful_exit")) capabilities.graceful_exit = true;
+                if (std.mem.eql(u8, cap, "session_path")) capabilities.session_path = true;
+            }
+        } else if (std.mem.startsWith(u8, f, "session_path=")) {
+            session_path = decodeSessionPath(f["session_path=".len..], path_buf) orelse return null;
         }
     }
+
     const state = st orelse return null;
-    return .{ .app = app, .state = state, .confidence = 100 };
+    return .{
+        .detection = .{ .app = app, .state = state, .confidence = 100 },
+        .capabilities = capabilities,
+        .session_path = session_path,
+    };
+}
+
+/// Backward-compatible detection-only parser for existing callers.
+pub fn parseMarker(payload: []const u8) ?Detection {
+    return if (parseMarkerInfo(payload, null)) |info| info.detection else null;
 }
 
 /// Aggregate pane states into one tab-level indicator by attention priority.
@@ -306,6 +368,27 @@ test "parseMarker maps Pi as an authoritative app" {
     const d = parseMarker("wispterm-agent;state=running;app=pi").?;
     try std.testing.expectEqual(App.pi, d.app);
     try std.testing.expectEqual(State.running, d.state);
+}
+
+test "parseMarkerInfo decodes Pi restore metadata and capabilities" {
+    var path_buf: [256]u8 = undefined;
+    const info = parseMarkerInfo("wispterm-agent;state=running;app=pi;capabilities=graceful_exit,session_path;session_path=%2Fhome%2Fpi%2F.pi%2Fagent%2Fsessions%2Fa%3Bb.jsonl", &path_buf).?;
+    try std.testing.expectEqual(App.pi, info.detection.app);
+    try std.testing.expect(info.capabilities.graceful_exit);
+    try std.testing.expect(info.capabilities.session_path);
+    try std.testing.expectEqualStrings("/home/pi/.pi/agent/sessions/a;b.jsonl", info.session_path);
+}
+
+test "parseMarker remains compatible with metadata markers" {
+    const detection = parseMarker("wispterm-agent;state=done;app=pi;capabilities=graceful_exit;session_path=%2Ftmp%2Fpi.jsonl").?;
+    try std.testing.expectEqual(App.pi, detection.app);
+    try std.testing.expectEqual(State.done, detection.state);
+}
+
+test "parseMarkerInfo rejects malformed session paths" {
+    var path_buf: [64]u8 = undefined;
+    try std.testing.expect(parseMarkerInfo("wispterm-agent;state=running;app=pi;session_path=%ZZ", &path_buf) == null);
+    try std.testing.expect(parseMarkerInfo("wispterm-agent;state=running;app=pi;session_path=%2", &path_buf) == null);
 }
 
 test "parseMarker maps waiting_approval and done" {

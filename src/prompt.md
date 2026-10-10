@@ -10,7 +10,7 @@ Terminal tools:
 - Use `ssh_session_exec` only for commands at an already-open SSH shell prompt.
 - Use `ssh_profile_save` to create/update a saved WispTerm SSH profile when the user gives SSH details; use `ssh_profile_connect` to open it.
 - Use `wsl_session_exec` only for commands at an already-open WSL shell prompt.
-- If the target terminal is Codex, Claude Code, Pi, Python, R, or another app/REPL, use `terminal_repl_exec`.
+- If the target terminal is Codex, Claude Code, Pi, Python, R, or another app/REPL, use `terminal_repl_exec`. Launch Codex/Claude Code/Pi with `repl=codex|claude_code|pi`; they settle-wait on busy markers.
 - In a line REPL (Python/R/Node), type code as a human would: the last expression auto-displays, so send `1+1`, not `print("result", 1+1)`. Give one direct answer (no print wrappers, no alternative versions); no blank lines inside an indented block.
 - Do not paste shell commands into Codex, Claude Code, or Pi; send user-facing text there.
 - Open a new local terminal with `tab_new` only when no suitable terminal exists.

@@ -472,8 +472,9 @@ language: i18n.LanguageSetting = .auto,
 /// When true, moving the mouse into a split pane focuses it.
 @"focus-follows-mouse": bool = false,
 
-/// When true, persist tab/split layout to the platform config directory on
-/// close, and restore it on next launch (unless CLI args specify otherwise).
+/// When true, persist tab/split layout and replayable Pi session paths to the
+/// platform config directory on close, then restore them on next launch (unless
+/// CLI args specify otherwise).
 /// Default false: the file is neither written nor read when this is off.
 @"restore-tabs-on-startup": bool = false,
 
@@ -585,8 +586,9 @@ fullscreen: bool = false,
 /// from the `toggle_quake` keybind, which is global by default.
 @"quake-mode": bool = false,
 
-/// Application-level keyboard shortcuts. Values use Ghostty-style
-/// `keybind = trigger=action` syntax; `global:` registers a native hotkey.
+/// Application and workbench keyboard shortcuts. Values use Ghostty-style
+/// `keybind = trigger=action` syntax; `global:` registers a native hotkey and
+/// a page prefix such as `file-explorer:` scopes an operation to that page.
 keybinds: keybind.Set = keybind.Set.defaults(),
 
 // ============================================================================
@@ -1907,7 +1909,7 @@ const default_config_template =
     \\# restore-tabs-on-startup = false
     \\
     \\# Keyboard shortcuts
-    \\# Syntax: keybind = [global:]modifier+key=action
+    \\# Syntax: keybind = [scope:]modifier+key=action (or global:modifier+key=action)
     \\# keybind = ctrl+shift+p=toggle_command_palette
     \\# keybind = global:ctrl+backquote=toggle_quake
     \\# keybind = alt+f10=toggle_command_palette

@@ -72,10 +72,10 @@ feishu-app-secret = your-app-secret
 | `quake-mode`                | `false`    | Start as a Quake-style drop-down terminal. The `toggle_quake` keybind hides or shows the same window while preserving terminal state, and the Quake window's size and position are remembered across restarts.            |
 | `shell`                     | OS default | Shell command for new local sessions. Windows aliases: `cmd`, `powershell`, `pwsh`, `wsl`; POSIX examples: `sh`, `zsh`, `fish`. You can also use a custom command line such as `"C:\Program Files\Git\bin\bash.exe" --login -i`. |
 | `working-directory`         | *(none)*   | Working directory for the first terminal surface. Can also be set with `--working-directory <path>`; empty/unset inherits WispTerm's process cwd.                            |
-| `keybind`                   | defaults   | Configure an app-level shortcut. Can be repeated. Syntax: `keybind = [global:]modifier+key=action`; use `keybind = clear` before custom bindings to remove all defaults.                                                 |
+| `keybind`                   | defaults   | Configure an application or scoped workbench shortcut. Repeat it as needed. Syntax: `keybind = [scope:]modifier+key=action` or `keybind = global:modifier+key=action`; use `keybind = clear` before custom bindings to remove all defaults. |
 | `scrollback-limit`          | `10000000` | Scrollback buffer limit in bytes                                                                                                                                                                                        |
 | `url-open-mode`             | `embedded` | Where web URLs open: `embedded` uses the right-side browser panel when available (WebView2 on Windows, WKWebView on macOS), while `system-browser` always opens the system default browser. SSH loopback URLs keep local port forwards alive for either mode. |
-| `restore-tabs-on-startup`   | `false`    | Persist tab/split layout to the platform config directory (`session.json`) on close and rebuild it on next launch. SSH passwords are never persisted; reconnects re-prompt. CLI overrides (`--working-directory`) take precedence and skip restore. |
+| `restore-tabs-on-startup`   | `false`    | Persist tab/split layout and replayable Pi JSONL session paths to the platform config directory (`session.json`) on close and rebuild them on next launch. SSH passwords are never persisted; reconnects re-prompt. CLI overrides (`--working-directory`) take precedence and skip restore. |
 | `auto-update-check`         | `true`     | Check GitHub Releases after startup and show a clickable prompt when a newer version is available. Set to `false` to disable startup checks.                                                                             |
 | `config-file`               | *(none)*   | Include another config file (prefix with `?` to make optional)                                                                                                                                                          |
 | `ai-default-profile`        | *(none)*   | Saved AI profile name used by New Agent, startup auto-open, remote auto-open, and Copilot defaults. Empty falls back to the first saved profile. `/model` changes only the current session and does not rewrite this key. |
@@ -200,29 +200,53 @@ platform credential providers remain in charge of authentication.
 
 ## Keyboard Shortcuts
 
-WispTerm follows Ghostty's `keybind = trigger=action` style for app-level
-shortcuts. Prefix a binding with `global:` when the shortcut should be
-registered system-wide (Win32 hotkey on Windows, CGEventTap on macOS); the
-first global use case is Quake mode.
+WispTerm follows Ghostty's `keybind = trigger=action` style for application
+shortcuts. Prefix a binding with `global:` when it should be registered as a
+native system-wide hotkey (Win32 on Windows, CGEventTap on macOS).
+
+Workbench operation bindings can be scoped to the focused page with
+`scope:trigger=action`. This keeps the same key available for different pages;
+for example, `R` can rename a file, restart a port forward, or rescan skills.
 
 ```text
 keybind = alt+f10=toggle_command_palette
 keybind = ctrl+shift+t=new_session
 keybind = global:ctrl+backquote=toggle_quake
+keybind = file-explorer:r=file_explorer_rename
+keybind = port-forwarding:r=port_forwarding_restart
+keybind = skill-center:r=skill_center_rescan
 ```
 
-Supported modifiers are `ctrl`, `shift`, `alt`, and `win` (Windows) / `cmd` (macOS). Common key names
-include letters, digits, `f1`-`f24`, `backquote`, `comma`, `plus`, `minus`,
-`bracket_left`, `bracket_right`, `enter`, `tab`, `escape`, and arrow keys.
+Supported scopes are `file-explorer`, `agent-history`, `ai-history`,
+`memory-center`, `conversation-center`, `port-forwarding`, and `skill-center`.
+Supported modifiers are `ctrl`, `shift`, `alt`, and `win` (Windows) / `cmd`
+(macOS). Common key names include letters, digits, `f1`-`f24`, `backquote`,
+`comma`, `plus`, `minus`, `bracket_left`, `bracket_right`, `enter`, `tab`,
+`escape`, `delete`, `space`, and arrow keys.
 
-Current app-level actions include `toggle_command_palette`, `toggle_quake`,
-`new_session`, `new_window`, `split_right`, `toggle_file_explorer`,
-`toggle_sidebar`, `toggle_ai_copilot`, `close_panel_or_tab`, `toggle_maximize`,
-`font_size_increase`, `font_size_decrease`, `copy`, `paste`, `paste_image`,
+Application actions include `toggle_command_palette`, `toggle_quake`,
+`new_session`, `new_window`, `split_right`, `split_down`,
+`toggle_file_explorer`, `toggle_sidebar`, `toggle_ai_copilot`,
+`close_panel_or_tab`, `toggle_maximize`, `font_size_increase`,
+`font_size_decrease`, `copy`, `paste`, `paste_image`, `send_to_copilot`,
 `focus_left`, `focus_right`, `focus_up`, `focus_down`, `focus_previous`,
-`focus_next`, `equalize_splits`, `transpose_split`, `next_tab`, `previous_tab`, `switch_tab_1`
-through `switch_tab_9`, `focus_panel_1` through `focus_panel_9`, and
-`open_config`.
+`focus_next`, `equalize_splits`, `transpose_split`, `next_tab`,
+`previous_tab`, `switch_tab_1` through `switch_tab_9`, `focus_panel_1` through
+`focus_panel_9`, `open_settings`, and `open_config`.
+
+Scoped workbench actions are:
+
+- `file_explorer_download`, `file_explorer_upload_file`, `file_explorer_upload_folder`, `file_explorer_rename`, `file_explorer_new_file`, `file_explorer_new_folder`, `file_explorer_delete`, `file_explorer_refresh`
+- `agent_history_delete`
+- `ai_history_preview`, `ai_history_scan`, `ai_history_download`, `ai_history_export`, `ai_history_attach`
+- `memory_center_toggle_setting`, `memory_center_reload`, `memory_center_run_digest`
+- `conversation_center_resume`, `conversation_center_delete`
+- `port_forwarding_toggle_selected`, `port_forwarding_new`, `port_forwarding_edit`, `port_forwarding_delete`, `port_forwarding_restart`, `port_forwarding_toggle_autostart`
+- `skill_center_preview`, `skill_center_rescan`, `skill_center_deploy`, `skill_center_import`, `skill_center_import_tool`, `skill_center_toggle`, `skill_center_open_url`, `skill_center_select_all`
+
+`keybind = clear` removes all defaults, including scoped workbench defaults,
+before subsequent bindings are added. Navigation, text-entry, and terminal-local
+keys remain owned by the focused editor or terminal.
 
 ## Command Snippets
 

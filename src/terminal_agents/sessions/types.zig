@@ -6,6 +6,7 @@ pub const ProviderId = enum {
     claude,
     kimi,
     opencode,
+    pi,
 
     pub fn label(self: ProviderId) []const u8 {
         return switch (self) {
@@ -13,6 +14,7 @@ pub const ProviderId = enum {
             .claude => "Claude Code",
             .kimi => "Kimi",
             .opencode => "OpenCode",
+            .pi => "Pi",
         };
     }
 };
@@ -23,10 +25,11 @@ pub const CategoryFilter = enum {
     claude,
     kimi,
     opencode,
+    pi,
     subagent,
 };
 
-pub const CATEGORY_ORDER = [_]CategoryFilter{ .all, .codex, .claude, .kimi, .opencode, .subagent };
+pub const CATEGORY_ORDER = [_]CategoryFilter{ .all, .codex, .claude, .kimi, .opencode, .pi, .subagent };
 
 pub const CategoryCounts = struct {
     all: usize = 0,
@@ -34,6 +37,7 @@ pub const CategoryCounts = struct {
     claude: usize = 0,
     kimi: usize = 0,
     opencode: usize = 0,
+    pi: usize = 0,
     subagent: usize = 0,
 };
 
@@ -51,6 +55,7 @@ pub fn categoryMatchesMeta(category: CategoryFilter, meta: SessionMeta) bool {
         .claude => meta.provider == .claude and !subagent,
         .kimi => meta.provider == .kimi and !subagent,
         .opencode => meta.provider == .opencode and !subagent,
+        .pi => meta.provider == .pi and !subagent,
         .subagent => subagent,
     };
 }
@@ -62,6 +67,7 @@ pub fn categoryLabel(category: CategoryFilter) []const u8 {
         .claude => "Claude Code",
         .kimi => "Kimi",
         .opencode => "OpenCode",
+        .pi => "Pi",
         .subagent => "Subagent",
     };
 }
@@ -73,6 +79,7 @@ pub fn categoryCount(counts: CategoryCounts, category: CategoryFilter) usize {
         .claude => counts.claude,
         .kimi => counts.kimi,
         .opencode => counts.opencode,
+        .pi => counts.pi,
         .subagent => counts.subagent,
     };
 }
@@ -119,7 +126,7 @@ pub fn formatDateKey(key: DateKey, buf: []u8) []const u8 {
 pub const MessageRole = enum { user, assistant, system, tool };
 pub const MessageKind = enum { normal, tool_call, tool_result, meta };
 pub const ScanStatus = enum { ok, partial, not_found, invalid };
-pub const ResumeKind = enum { codex_resume, claude_resume, kimi_resume, opencode_resume, unavailable };
+pub const ResumeKind = enum { codex_resume, claude_resume, kimi_resume, opencode_resume, pi_resume, unavailable };
 
 pub const SessionMeta = struct {
     provider: ProviderId,
@@ -165,6 +172,7 @@ test "ai_history_types: provider labels are stable" {
     try std.testing.expectEqualStrings("Claude Code", ProviderId.claude.label());
     try std.testing.expectEqualStrings("Kimi", ProviderId.kimi.label());
     try std.testing.expectEqualStrings("OpenCode", ProviderId.opencode.label());
+    try std.testing.expectEqualStrings("Pi", ProviderId.pi.label());
 }
 
 test "ai_history_types: metadata search covers title summary project session and path" {

@@ -126,16 +126,26 @@ Windows builds include an optional **Open in WispTerm** Explorer context menu fo
 
 ## Keyboard shortcuts
 
-Default app-level chords are defined in [`src/keybind.zig`](src/keybind.zig) and can be remapped with repeated `keybind = ...` lines in the config file. Some modal/editor-local keys are still handled by the focused overlay first (command center navigation, session launcher editing, AI Chat input, and similar).
+Default application chords are defined in [`src/keybind.zig`](src/keybind.zig)
+and can be remapped with repeated `keybind = ...` lines. Workbench operation
+keys support a page scope, so the same key can be configured independently for
+File Explorer, Agent History, AI History, Memory Center, Conversation Center,
+Port Forwarding, and Skill Center. Modal/editor-local keys remain owned by the
+focused overlay or editor.
 
 Example remaps:
 
 ```text
 keybind = alt+f10=toggle_command_palette
 keybind = global:ctrl+backquote=toggle_quake
+keybind = file-explorer:r=file_explorer_rename
+keybind = port-forwarding:r=port_forwarding_restart
 ```
 
-Use `keybind = clear` before custom bindings if you want to remove all defaults and rebuild the table from scratch. To confirm the running desktop version, open the command center (`Ctrl+Shift+P` on Windows, `Cmd+Shift+P` on macOS), type `version`, and press Enter.
+Use `keybind = clear` before custom bindings if you want to remove every default,
+including scoped workbench bindings, and rebuild the table from scratch. To
+confirm the running desktop version, open the command center (`Ctrl+Shift+P` on
+Windows, `Cmd+Shift+P` on macOS), type `version`, and press Enter.
 
 Choose **Toggle SSH Latency** in the command center to show the current SSH
 host's Ping round-trip time in the titlebar, refreshed every 5 seconds. The

@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub const MAX_BINDINGS: usize = 64;
+pub const MAX_BINDINGS: usize = 128;
 
 pub const Key = struct {
     pub const backspace: u32 = 0x08;
@@ -55,6 +55,28 @@ pub const Trigger = struct {
     }
 };
 
+pub const Scope = enum {
+    app,
+    file_explorer,
+    agent_history,
+    ai_history,
+    memory_center,
+    conversation_center,
+    port_forwarding,
+    skill_center,
+
+    pub fn parse(value: []const u8) ?Scope {
+        inline for (std.meta.fields(Scope)) |field| {
+            if (nameEql(value, field.name)) return @enumFromInt(field.value);
+        }
+        return null;
+    }
+
+    pub fn name(self: Scope) []const u8 {
+        return @tagName(self);
+    }
+};
+
 pub const Action = enum {
     toggle_quake,
     toggle_command_palette,
@@ -105,6 +127,40 @@ pub const Action = enum {
     open_config,
     send_to_copilot,
 
+    file_explorer_download,
+    file_explorer_upload_file,
+    file_explorer_upload_folder,
+    file_explorer_rename,
+    file_explorer_new_file,
+    file_explorer_new_folder,
+    file_explorer_delete,
+    file_explorer_refresh,
+    agent_history_delete,
+    ai_history_preview,
+    ai_history_scan,
+    ai_history_download,
+    ai_history_export,
+    ai_history_attach,
+    memory_center_toggle_setting,
+    memory_center_reload,
+    memory_center_run_digest,
+    conversation_center_resume,
+    conversation_center_delete,
+    port_forwarding_toggle_selected,
+    port_forwarding_new,
+    port_forwarding_edit,
+    port_forwarding_delete,
+    port_forwarding_restart,
+    port_forwarding_toggle_autostart,
+    skill_center_preview,
+    skill_center_rescan,
+    skill_center_deploy,
+    skill_center_import,
+    skill_center_import_tool,
+    skill_center_toggle,
+    skill_center_open_url,
+    skill_center_select_all,
+
     pub fn parse(value: []const u8) ?Action {
         inline for (std.meta.fields(Action)) |field| {
             if (nameEql(value, field.name)) return @enumFromInt(field.value);
@@ -121,6 +177,7 @@ pub const Binding = struct {
     trigger: Trigger,
     action: Action,
     global: bool = false,
+    scope: Scope = .app,
 };
 
 pub const Set = struct {
@@ -193,7 +250,9 @@ pub const Set = struct {
         var i: usize = 0;
         while (i < self.len) {
             const existing = self.items[i];
-            if (existing.action == binding.action or existing.trigger.eql(binding.trigger)) {
+            if (existing.action == binding.action or
+                (existing.scope == binding.scope and existing.global == binding.global and existing.trigger.eql(binding.trigger)))
+            {
                 var j = i + 1;
                 while (j < self.len) : (j += 1) {
                     self.items[j - 1] = self.items[j];
@@ -209,15 +268,19 @@ pub const Set = struct {
     }
 
     pub fn lookupApp(self: *const Set, trigger: Trigger) ?Action {
+        return self.lookupScoped(.app, trigger);
+    }
+
+    pub fn lookupScoped(self: *const Set, scope: Scope, trigger: Trigger) ?Action {
         for (self.items[0..self.len]) |binding| {
-            if (!binding.global and binding.trigger.eql(trigger)) return binding.action;
+            if (!binding.global and binding.scope == scope and binding.trigger.eql(trigger)) return binding.action;
         }
         return null;
     }
 
     pub fn lookupGlobal(self: *const Set, trigger: Trigger) ?Action {
         for (self.items[0..self.len]) |binding| {
-            if (binding.global and binding.trigger.eql(trigger)) return binding.action;
+            if (binding.global and binding.scope == .app and binding.trigger.eql(trigger)) return binding.action;
         }
         return null;
     }
@@ -233,14 +296,23 @@ pub const Set = struct {
 pub fn parseBinding(value: []const u8) !Binding {
     var rest = std.mem.trim(u8, value, " \t\r\n");
     var global = false;
+    var scope: Scope = .app;
+    var scope_prefix_seen = false;
 
     while (true) {
         if (prefixEql(rest, "global:")) {
+            if (scope_prefix_seen) return error.InvalidKeybind;
             global = true;
             rest = std.mem.trim(u8, rest["global:".len..], " \t\r\n");
             continue;
         }
-        break;
+        const colon = std.mem.indexOfScalar(u8, rest, ':') orelse break;
+        const scope_name = std.mem.trim(u8, rest[0..colon], " \t");
+        const parsed_scope = Scope.parse(scope_name) orelse break;
+        if (global or scope_prefix_seen or parsed_scope == .app) return error.InvalidKeybind;
+        scope = parsed_scope;
+        scope_prefix_seen = true;
+        rest = std.mem.trim(u8, rest[colon + 1 ..], " \t\r\n");
     }
 
     const eq = std.mem.indexOfScalar(u8, rest, '=') orelse return error.InvalidKeybind;
@@ -253,6 +325,7 @@ pub fn parseBinding(value: []const u8) !Binding {
         .trigger = try parseTrigger(trigger_text),
         .action = action,
         .global = global,
+        .scope = scope,
     };
 }
 
@@ -469,7 +542,61 @@ pub const default_bindings = [_]Binding{
     .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = '8' }, .action = .focus_panel_8 },
     .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = '9' }, .action = .focus_panel_9 },
     .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = Key.comma }, .action = .open_settings },
+
+    // Workbench operation keys are scoped so the same letter can have a
+    // different meaning in each focused page without affecting terminal input.
+    .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = 'S' }, .action = .file_explorer_download, .scope = .file_explorer },
+    .{ .trigger = .{ .key_code = 'U' }, .action = .file_explorer_upload_file, .scope = .file_explorer },
+    .{ .trigger = .{ .mods = .{ .shift = true }, .key_code = 'U' }, .action = .file_explorer_upload_folder, .scope = .file_explorer },
+    .{ .trigger = .{ .key_code = 'R' }, .action = .file_explorer_rename, .scope = .file_explorer },
+    .{ .trigger = .{ .key_code = 'N' }, .action = .file_explorer_new_file, .scope = .file_explorer },
+    .{ .trigger = .{ .mods = .{ .shift = true }, .key_code = 'N' }, .action = .file_explorer_new_folder, .scope = .file_explorer },
+    .{ .trigger = .{ .key_code = 'D' }, .action = .file_explorer_delete, .scope = .file_explorer },
+    .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = 'R' }, .action = .file_explorer_refresh, .scope = .file_explorer },
+    .{ .trigger = .{ .key_code = 0x74 }, .action = .file_explorer_refresh, .scope = .file_explorer },
+    .{ .trigger = .{ .key_code = Key.delete }, .action = .agent_history_delete, .scope = .agent_history },
+    .{ .trigger = .{ .key_code = 'D' }, .action = .agent_history_delete, .scope = .agent_history },
+    .{ .trigger = .{ .key_code = Key.space }, .action = .ai_history_preview, .scope = .ai_history },
+    .{ .trigger = .{ .key_code = 'R' }, .action = .ai_history_scan, .scope = .ai_history },
+    .{ .trigger = .{ .key_code = 'D' }, .action = .ai_history_download, .scope = .ai_history },
+    .{ .trigger = .{ .key_code = 'M' }, .action = .ai_history_export, .scope = .ai_history },
+    .{ .trigger = .{ .key_code = 'A' }, .action = .ai_history_attach, .scope = .ai_history },
+    .{ .trigger = .{ .key_code = Key.space }, .action = .memory_center_toggle_setting, .scope = .memory_center },
+    .{ .trigger = .{ .key_code = 'R' }, .action = .memory_center_reload, .scope = .memory_center },
+    .{ .trigger = .{ .key_code = 'D' }, .action = .memory_center_run_digest, .scope = .memory_center },
+    .{ .trigger = .{ .key_code = Key.enter }, .action = .conversation_center_resume, .scope = .conversation_center },
+    .{ .trigger = .{ .key_code = Key.delete }, .action = .conversation_center_delete, .scope = .conversation_center },
+    .{ .trigger = .{ .key_code = Key.space }, .action = .port_forwarding_toggle_selected, .scope = .port_forwarding },
+    .{ .trigger = .{ .key_code = 'N' }, .action = .port_forwarding_new, .scope = .port_forwarding },
+    .{ .trigger = .{ .key_code = 'E' }, .action = .port_forwarding_edit, .scope = .port_forwarding },
+    .{ .trigger = .{ .key_code = 'D' }, .action = .port_forwarding_delete, .scope = .port_forwarding },
+    .{ .trigger = .{ .key_code = 'R' }, .action = .port_forwarding_restart, .scope = .port_forwarding },
+    .{ .trigger = .{ .key_code = 'A' }, .action = .port_forwarding_toggle_autostart, .scope = .port_forwarding },
+    .{ .trigger = .{ .key_code = Key.space }, .action = .skill_center_preview, .scope = .skill_center },
+    .{ .trigger = .{ .key_code = 'R' }, .action = .skill_center_rescan, .scope = .skill_center },
+    .{ .trigger = .{ .key_code = 'D' }, .action = .skill_center_deploy, .scope = .skill_center },
+    .{ .trigger = .{ .key_code = 'I' }, .action = .skill_center_import, .scope = .skill_center },
+    .{ .trigger = .{ .key_code = 'T' }, .action = .skill_center_import_tool, .scope = .skill_center },
+    .{ .trigger = .{ .key_code = 'E' }, .action = .skill_center_toggle, .scope = .skill_center },
+    .{ .trigger = .{ .key_code = 'G' }, .action = .skill_center_open_url, .scope = .skill_center },
+    .{ .trigger = .{ .key_code = 'A' }, .action = .skill_center_select_all, .scope = .skill_center },
 };
+
+test "keybind parses scoped trigger and action" {
+    const binding = try parseBinding("file-explorer:ctrl+s=file_explorer_download");
+
+    try std.testing.expect(!binding.global);
+    try std.testing.expectEqual(Scope.file_explorer, binding.scope);
+    try std.testing.expectEqual(Action.file_explorer_download, binding.action);
+    try std.testing.expect(binding.trigger.eql(.{
+        .mods = .{ .ctrl = true },
+        .key_code = 'S',
+    }));
+}
+
+test "keybind rejects global and scoped prefixes together" {
+    try std.testing.expectError(error.InvalidKeybind, parseBinding("global:file-explorer:r=file_explorer_rename"));
+}
 
 test "keybind parses ghostty-style global trigger and action" {
     const binding = try parseBinding("global:ctrl+backquote=toggle_quake");
@@ -480,6 +607,14 @@ test "keybind parses ghostty-style global trigger and action" {
         .mods = .{ .ctrl = true },
         .key_code = Key.backquote,
     }));
+}
+
+test "scoped defaults remain isolated by page" {
+    const set = Set.defaults();
+    try std.testing.expectEqual(Action.file_explorer_rename, set.lookupScoped(.file_explorer, .{ .key_code = 'R' }).?);
+    try std.testing.expectEqual(Action.port_forwarding_restart, set.lookupScoped(.port_forwarding, .{ .key_code = 'R' }).?);
+    try std.testing.expectEqual(Action.skill_center_rescan, set.lookupScoped(.skill_center, .{ .key_code = 'R' }).?);
+    try std.testing.expectEqual(@as(?Action, null), set.lookupApp(.{ .key_code = 'R' }));
 }
 
 test "keybind defaults include global quake and command palette" {

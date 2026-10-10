@@ -20,6 +20,7 @@ const Renderer = @import("renderer/Renderer.zig");
 const remote = @import("remote_client.zig");
 const threading = @import("platform/threading.zig");
 const agent_detector = @import("terminal_agents/detector.zig");
+const session_persist = @import("session_persist.zig");
 const window_backend = @import("platform/window_backend.zig");
 const sync_output = @import("sync_output.zig");
 const notification = @import("notification.zig");
@@ -123,7 +124,8 @@ const WISPTERM_IMAGE_OSC_MAX = 16 * 1024;
 const WISPTERM_PRIVATE_OSC_SHARED = "774";
 /// Maximum agent marker payload size (bytes after "7748;"); sequences longer
 /// than this are silently discarded via the overflow states.
-const WISPTERM_AGENT_OSC_MAX = 256;
+const WISPTERM_AGENT_OSC_MAX = 4096;
+const WISPTERM_AGENT_SESSION_PATH_MAX = 4096;
 
 /// Coarse launch environment for terminal-side integrations such as path paste.
 pub const LaunchKind = platform_pty_command.LaunchKind;
@@ -393,6 +395,9 @@ wispterm_image_osc_buf: std.ArrayListUnmanaged(u8) = .empty,
 /// WISPTERM_AGENT_OSC_MAX; no heap allocation needed for these small sequences.
 wispterm_agent_osc_buf: [WISPTERM_AGENT_OSC_MAX]u8 = undefined,
 wispterm_agent_osc_buf_len: usize = 0,
+agent_session_path_buf: [WISPTERM_AGENT_SESSION_PATH_MAX]u8 = undefined,
+agent_session_path_len: usize = 0,
+agent_capabilities: agent_detector.AgentCapabilities = .{},
 
 /// True once this surface has received an authoritative OSC 7748 agent-state
 /// marker. Reset when the foreground command is no longer a known agent.
@@ -568,6 +573,8 @@ fn finishInit(
     surface.wispterm_image_osc_state = .ground;
     surface.wispterm_image_osc_buf = .empty;
     surface.wispterm_agent_osc_buf_len = 0;
+    surface.agent_session_path_len = 0;
+    surface.agent_capabilities = .{};
     surface.agent_osc_active = false;
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
@@ -1299,11 +1306,53 @@ pub fn setCwdPath(self: *Surface, path: []const u8) void {
 pub fn noteAgentCommand(self: *Surface, app: agent_detector.App) void {
     if (app == .none) {
         if (self.agent_osc_active) self.agent_osc_active = false;
+        self.agent_session_path_len = 0;
+        self.agent_capabilities = .{};
         return;
+    }
+    if (app != .pi) {
+        self.agent_session_path_len = 0;
+        self.agent_capabilities = .{};
     }
     if (!self.agent_osc_active and self.agent_detection.app == .none) {
         self.agent_detection.app = app;
     }
+}
+
+/// Queue a command into the existing PTY mailbox. This is used only during
+/// startup restore, before the shell/remote login is ready to read it.
+pub fn queueInput(self: *Surface, data: []const u8) bool {
+    const msg = termio.Message.writeReq(self.allocator, data) catch return false;
+    if (self.mailbox.sendWrite(msg) == .full) {
+        msg.deinit();
+        return false;
+    }
+    self.mailbox.notify();
+    return true;
+}
+
+/// Start Pi from a restored local/WSL shell using a shell-neutral quoted path.
+/// Paths containing shell interpolation/quote characters are rejected rather
+/// than turned into an unsafe startup command.
+pub fn queuePiSessionResume(self: *Surface, path: []const u8) bool {
+    var buf: [8192]u8 = undefined;
+    const command = session_persist.formatPiSessionResumeCommand(&buf, path) orelse return false;
+    return self.queueInput(command);
+}
+
+/// Return the launch context of this surface.
+pub fn launchKind(self: *const Surface) platform_pty_command.LaunchKind {
+    return self.launch_kind;
+}
+
+/// Return the current Pi JSONL session path reported by the companion, if any.
+pub fn piSessionPath(self: *const Surface) ?[]const u8 {
+    if (self.agent_detection.app != .pi or self.agent_session_path_len == 0) return null;
+    return self.agent_session_path_buf[0..self.agent_session_path_len];
+}
+
+pub fn piSupportsGracefulExit(self: *const Surface) bool {
+    return self.agent_detection.app == .pi and self.agent_capabilities.graceful_exit;
 }
 
 /// Get the current working directory path (from OSC 7), or null if not set.
@@ -1740,8 +1789,10 @@ fn replayNonImageOscPrefix(self: *Surface) void {
 fn handleWispTermAgentOsc(self: *Surface) void {
     const payload = self.wispterm_agent_osc_buf[0..self.wispterm_agent_osc_buf_len];
     self.wispterm_agent_osc_buf_len = 0;
-    if (agent_detector.parseMarker(payload)) |det| {
-        self.agent_detection = det;
+    if (agent_detector.parseMarkerInfo(payload, self.agent_session_path_buf[0..])) |info| {
+        self.agent_detection = info.detection;
+        self.agent_capabilities = info.capabilities;
+        self.agent_session_path_len = @min(info.session_path.len, self.agent_session_path_buf.len);
         self.agent_osc_active = true;
     }
 }

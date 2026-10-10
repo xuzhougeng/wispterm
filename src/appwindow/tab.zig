@@ -1851,7 +1851,7 @@ fn snapshotNode(
                     .source = switch (p.currentSourceKind()) {
                         .local => .local,
                         .wsl => .wsl,
-                        .remote => |conn| .{ .ssh = try sshSnapFromConn(arena, &conn, null) },
+                        .remote => |conn| .{ .ssh = try sshSnapFromConn(arena, &conn, null, null) },
                     },
                 },
             } },
@@ -1874,18 +1874,56 @@ fn snapshotNode(
     };
 }
 
+/// Request Pi companions to exit through their public deferred shutdown command.
+/// Returns the number of commands successfully queued; non-capable Pi/shell
+/// surfaces are intentionally left alone and will be closed by the normal path.
+pub fn requestPiGracefulShutdown() usize {
+    var requested: usize = 0;
+    for (g_tabs[0..g_tab_count]) |maybe_tab| {
+        const t = maybe_tab orelse continue;
+        var surfaces = t.tree.surfaces();
+        while (surfaces.next()) |entry| {
+            const surface = entry.surface;
+            if (!surface.piSupportsGracefulExit() or !surface.acceptsInput()) continue;
+            if (surface.queueInput("/wispterm-shutdown\r")) requested += 1;
+        }
+    }
+    return requested;
+}
+
+/// True when every Pi surface that advertised graceful exit has terminated.
+pub fn piGracefulShutdownComplete() bool {
+    var capable: usize = 0;
+    for (g_tabs[0..g_tab_count]) |maybe_tab| {
+        const t = maybe_tab orelse continue;
+        var surfaces = t.tree.surfaces();
+        while (surfaces.next()) |entry| {
+            const surface = entry.surface;
+            if (!surface.piSupportsGracefulExit()) continue;
+            capable += 1;
+            if (!surface.isExited()) return false;
+        }
+    }
+    return capable > 0;
+}
+
 fn snapshotSurface(arena: std.mem.Allocator, surface: *const Surface) !session_persist.SurfaceSnap {
     return switch (surface.surfaceKind()) {
         .local_shell => .{ .local_shell = .{
             .cwd = try snapshotOptionalCwd(arena, surface.getCwd() orelse surface.getInitialCwd()),
             .command = null,
+            .pi_session_path = if (surface.piSessionPath()) |p| try arena.dupe(u8, p) else null,
+            .pi_launch_kind = switch (surface.launchKind()) {
+                .wsl => .wsl,
+                else => .local,
+            },
         } },
         // surfaceKind() returned .ssh, so ssh_connection is non-null.
-        .ssh => .{ .ssh = try sshSnapFromConn(arena, &surface.ssh_connection.?, surface.getCwd()) },
+        .ssh => .{ .ssh = try sshSnapFromConn(arena, &surface.ssh_connection.?, surface.getCwd(), surface.piSessionPath()) },
     };
 }
 
-fn sshSnapFromConn(arena: std.mem.Allocator, conn: *const Surface.SshConnection, cwd: ?[]const u8) !session_persist.SurfaceSnap.SshSnap {
+fn sshSnapFromConn(arena: std.mem.Allocator, conn: *const Surface.SshConnection, cwd: ?[]const u8, pi_session_path: ?[]const u8) !session_persist.SurfaceSnap.SshSnap {
     const port_str = conn.port();
     const port_num: u16 = if (port_str.len == 0)
         22
@@ -1897,6 +1935,7 @@ fn sshSnapFromConn(arena: std.mem.Allocator, conn: *const Surface.SshConnection,
         .host = try arena.dupe(u8, conn.host()),
         .port = port_num,
         .proxy_jump = try arena.dupe(u8, conn.proxyJump()),
+        .pi_session_path = if (pi_session_path) |p| try arena.dupe(u8, p) else null,
     };
 }
 
@@ -1980,9 +2019,21 @@ fn surfaceFromSnapImpl(
                 break :blk platform_pty_command.cwdFromOwned(cwd_owned.?);
             } else null;
 
-            const command = getShellCmd();
-            const surface = try Surface.init(gpa, cols, rows, command, g_scrollback_limit, cursor_style, cursor_blink, cwd_w, g_ssh_terminal_capabilities);
+            const surface = if (sh.pi_launch_kind == .wsl) blk: {
+                var wsl_buf: [512]u8 = undefined;
+                const wsl_text = platform_pty_command.wslInteractiveCommand(&wsl_buf, sh.cwd) orelse return error.CommandTooLong;
+                const owned = try platform_pty_command.allocCommandLineFromUtf8(gpa, wsl_text);
+                defer platform_pty_command.freeCommandLine(gpa, owned);
+                break :blk try Surface.init(gpa, cols, rows, platform_pty_command.commandLineFromOwned(owned), g_scrollback_limit, cursor_style, cursor_blink, null, g_ssh_terminal_capabilities);
+            } else blk: {
+                break :blk try Surface.init(gpa, cols, rows, getShellCmd(), g_scrollback_limit, cursor_style, cursor_blink, cwd_w, g_ssh_terminal_capabilities);
+            };
             surface.attachRemoteClient(g_remote_client);
+            if (sh.pi_session_path) |pi_path| {
+                if (session_persist.shouldRestorePiSession(pi_path, sh.pi_launch_kind)) {
+                    _ = surface.queuePiSessionResume(pi_path);
+                }
+            }
             return surface;
         },
         .ssh => |s| {
@@ -2047,7 +2098,10 @@ fn buildSshRestoreCommand(
     }) orelse return error.CommandTooLong;
     var final_len: usize = base.len;
 
-    if (s.cwd) |cwd_str| {
+    if (s.pi_session_path) |pi_path| {
+        const trail = session_persist.formatPiRemoteSessionCommand(allocator, buf[final_len..], s.cwd, pi_path) catch return error.CommandTooLong;
+        final_len += trail.len;
+    } else if (s.cwd) |cwd_str| {
         const escaped = try session_persist.shellSingleQuoteEscape(allocator, cwd_str);
         defer allocator.free(escaped);
         const trail = std.fmt.bufPrint(buf[final_len..], " \"cd '{s}' 2>/dev/null; exec $SHELL -l\"", .{escaped}) catch return error.CommandTooLong;

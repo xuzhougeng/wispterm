@@ -247,9 +247,19 @@ revision, memory sizes, output count, feature level, and swap effect, a Win32
 environment line for remote session, session id, monitor count, mixed-DPI state,
 primary DPI, and system DPI, a
 successful `d3d11-ui-smoke` probe, an offscreen round-trip marker, and no D3D11
-recovery request in the healthy path. It is a Phase IV and Phase V
-diagnostics/policy/recovery-coordination evidence tool only; it does not change
-the Windows default renderer.
+recovery request in the healthy path. With diagnostics enabled, the log also
+records whether the D3D11 frame-latency waitable object was configured (or why
+the swapchain fell back) and emits one-second `frame-timing` aggregates for
+frame-gate wait, atlas sync, snapshot, rebuild, draw, and Present blocking.
+On a native D3D11 swapchain that exposes `IDXGISwapChain1`, terminal-only frames
+with proven dirty-row damage may additionally log `present1-capable=true` and
+`present1 dirty-rect=...`; frames involving cursor/atlas/layout/overlay uncertainty
+fall back to legacy full-frame `Present`. Scroll metadata is intentionally not
+claimed yet. A capability log line alone is not proof that a frame used Present1;
+look for the dirty-rect line in the same diagnostic session.
+These are performance evidence, not a claim of visual equivalence with Windows
+Terminal. It is a Phase IV and Phase V diagnostics/policy/recovery-coordination
+evidence tool only; it does not change the Windows default renderer.
 
 Use `debug\test-d3d11-environment-smoke.ps1` after a D3D11 build to wrap the
 normal-session smoke into a matrix evidence package:
