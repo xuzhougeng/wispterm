@@ -38,6 +38,7 @@ const session_identity = @import("identity.zig");
 const prompt_queue = @import("prompt_queue.zig");
 const session_queue = @import("session_queue.zig");
 const table_hscroll = @import("table_hscroll.zig");
+const question_hscroll = @import("question_hscroll.zig");
 
 pub const AgentSettings = ai_chat_types.AgentSettings;
 pub const AgentPermission = ai_chat_types.AgentPermission;
@@ -459,8 +460,11 @@ var g_agent_mutex: std.Thread.Mutex = .{};
 var g_agent_settings: AgentSettings = .{};
 var g_access_rules_storage: ?ai_agent_access.AccessRules = null;
 var g_access_rules: ?*const ai_agent_access.AccessRules = null;
-var g_default_working_dir_buf: [WORKING_DIR_MAX_BYTES]u8 = undefined;
-var g_default_working_dir_len: usize = 0;
+const DefaultWorkingDirectory = struct {
+    buf: [WORKING_DIR_MAX_BYTES]u8 = undefined,
+    len: usize = 0,
+};
+var default_working_directory: DefaultWorkingDirectory = .{};
 const UiTriggers = struct {
     session_resume: ?*const fn () void = null,
     copilot_picker: ?*const fn () void = null,
@@ -874,16 +878,16 @@ pub fn deinitAccessRules() void {
 pub fn setDefaultWorkingDir(path: []const u8) void {
     g_agent_mutex.lock();
     defer g_agent_mutex.unlock();
-    const n = @min(path.len, g_default_working_dir_buf.len);
-    @memcpy(g_default_working_dir_buf[0..n], path[0..n]);
-    g_default_working_dir_len = n;
+    const n = @min(path.len, default_working_directory.buf.len);
+    @memcpy(default_working_directory.buf[0..n], path[0..n]);
+    default_working_directory.len = n;
 }
 
 pub fn defaultWorkingDir() ?[]const u8 {
     g_agent_mutex.lock();
     defer g_agent_mutex.unlock();
-    if (g_default_working_dir_len == 0) return null;
-    return g_default_working_dir_buf[0..g_default_working_dir_len];
+    if (default_working_directory.len == 0) return null;
+    return default_working_directory.buf[0..default_working_directory.len];
 }
 
 fn resolveHomeDir(allocator: std.mem.Allocator) ?[]u8 {
@@ -918,7 +922,7 @@ pub fn currentAgentSettings() AgentSettings {
     defer g_agent_mutex.unlock();
     var s = g_agent_settings;
     s.access_rules = g_access_rules;
-    if (g_default_working_dir_len > 0) s.working_dir = g_default_working_dir_buf[0..g_default_working_dir_len];
+    if (default_working_directory.len > 0) s.working_dir = default_working_directory.buf[0..default_working_directory.len];
     s.dynamic_tools = g_dynamic_tool_specs;
     s.dynamic_binary_tools = g_dynamic_binary_tools;
     s.mcp_tools = mcp_registry.cachedTools();
@@ -1151,6 +1155,7 @@ pub const Session = struct {
     question_answer: ?[]u8 = null, // owned; valid until the next askUser/deinit
     question_answer_is_custom: bool = false,
     question_selected_index: usize = 0,
+    question_scroll: question_hscroll.State = .{}, // protected by question_mutex
     /// Copilot mode: when true, requests pre-target the bound surface and exec
     /// tools fall back to it when the model omits surface_id (Issue #98).
     copilot: bool = false,
@@ -2496,7 +2501,20 @@ pub const Session = struct {
         self.question_mutex.lock();
         defer self.question_mutex.unlock();
         if (!self.question_pending or self.question_resolved) return null;
-        return .{ .question = self.question_text, .options = self.question_options };
+        return .{
+            .question = self.question_text,
+            .options = self.question_options,
+            .scroll_offset = self.question_scroll.offset,
+            .generation = self.question_scroll.generation,
+        };
+    }
+
+    /// A drag belongs to one pending question; stale drags cannot move its successor.
+    pub fn scrollQuestionTo(self: *Session, generation: u64, offset: f32, content_w: f32, clip_w: f32) bool {
+        self.question_mutex.lock();
+        defer self.question_mutex.unlock();
+        if (!self.question_pending or self.question_resolved) return false;
+        return self.question_scroll.setOffset(generation, offset, content_w, clip_w);
     }
 
     /// Resolve a pending question by option index. Out-of-range index is a no-op
@@ -2548,6 +2566,7 @@ pub const Session = struct {
         self.question_resolved = false;
         self.question_cancelled = false;
         self.question_answer_is_custom = false;
+        self.question_scroll.reset();
         self.question_mutex.unlock();
 
         self.setStatus("Waiting for your answer");
@@ -9726,6 +9745,34 @@ test "askUser returns a free-text custom answer" {
 
     try std.testing.expect(runner.result == .custom);
     try std.testing.expectEqualStrings("用 DuckDB", runner.result.custom);
+}
+
+test "question scrolling keeps the answer pending and resets for the next question" {
+    var session = try Session.init(std.testing.allocator, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer session.deinit();
+    var runner = AskRunner{ .session = session, .question = "Pick one", .options = &.{.{ .label = "A" }} };
+    var thread = try std.Thread.spawn(.{}, AskRunner.run, .{&runner});
+    waitForQuestion(session);
+    const first = session.questionView().?;
+    try std.testing.expect(session.scrollQuestionTo(first.generation, 100, 500, 200));
+    try std.testing.expectEqual(@as(f32, 100), session.questionView().?.scroll_offset);
+    try std.testing.expect(session.question_pending);
+    try std.testing.expect(!session.question_resolved);
+    try std.testing.expect(session.scrollQuestionTo(first.generation, 100, 500, 480));
+    try std.testing.expectEqual(@as(f32, 20), session.questionView().?.scroll_offset);
+    try std.testing.expect(session.resolveQuestionOption(0));
+    thread.join();
+    try std.testing.expect(!session.scrollQuestionTo(first.generation, 50, 500, 200));
+    thread = try std.Thread.spawn(.{}, AskRunner.run, .{&runner});
+    waitForQuestion(session);
+    const second = session.questionView().?;
+    try std.testing.expect(second.generation != first.generation);
+    try std.testing.expectEqual(@as(f32, 0), second.scroll_offset);
+    try std.testing.expect(!session.scrollQuestionTo(first.generation, 50, 500, 200));
+    try std.testing.expectEqual(@as(f32, 0), session.questionView().?.scroll_offset);
+    try std.testing.expect(session.resolveQuestionCustom("Custom answer"));
+    thread.join();
+    try std.testing.expectEqualStrings("Custom answer", runner.result.custom);
 }
 
 test "askUser returns cancelled when the request is stopped" {
