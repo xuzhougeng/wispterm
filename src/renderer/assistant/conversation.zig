@@ -953,6 +953,40 @@ pub fn inputFieldMetricsAt(
     };
 }
 
+/// Composer byte offset under a click, or null when it misses the input field.
+/// Mirrors the paint path's wrap and scroll so the caret lands where clicked.
+pub fn inputTextOffsetAt(
+    session: *ai_chat.Session,
+    xpos: f64,
+    ypos: f64,
+    window_height: f32,
+    chat_x: f32,
+    chat_w: f32,
+) ?usize {
+    const x = @round(chat_x);
+    const w = @round(@max(1.0, chat_w));
+    if (w <= 1) return null;
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    const text = session.input();
+    const layout = inputLayout(x, w, text);
+
+    const px: f32 = @floatCast(xpos);
+    const py: f32 = @floatCast(ypos);
+    const field_top_px = window_height - layout.field_y - layout.field_h;
+    if (px < layout.field_x or px > layout.field_x + layout.field_w) return null;
+    if (py < field_top_px or py > field_top_px + layout.field_h) return null;
+
+    const visible_rows = inputVisibleRowsForField(layout.field_h);
+    const total_rows = countWrappedLines(text, layout.text_w);
+    const max_first_row = if (total_rows > visible_rows) total_rows - visible_rows else 0;
+    const first_row = @min(session.input_scroll_row, max_first_row);
+    const rel_y = @max(0.0, py - field_top_px - composer_layout.Field.pad_top);
+    const view_row = @min(@as(usize, @intFromFloat(rel_y / lineHeight())), visible_rows - 1);
+    return transcript_wrap.offsetAt(text, layout.text_w, &glyphAdvance, first_row + view_row, px - layout.text_x);
+}
+
 pub fn inputScrollbarHitTest(
     session: *ai_chat.Session,
     xpos: f64,

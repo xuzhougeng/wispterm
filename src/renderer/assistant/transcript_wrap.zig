@@ -83,6 +83,25 @@ pub fn countLines(text: []const u8, max_w: f32, advance: AdvanceFn) usize {
     return n;
 }
 
+/// Caret byte offset for a click at `x` (px from the line's left edge) on
+/// wrapped line `row`; rows past the end clamp to the last line, and a click
+/// past a glyph's midpoint lands after it.
+pub fn offsetAt(text: []const u8, max_w: f32, advance: AdvanceFn, row: usize, x: f32) usize {
+    var lines = Lines.init(text, max_w, advance);
+    var line = lines.next().?;
+    var r: usize = 0;
+    while (r < row) : (r += 1) line = lines.next() orelse break;
+    var width: f32 = 0;
+    var i = line.start;
+    while (i < line.end) {
+        const item = nextCodepoint(text, i, advance);
+        if (x < width + item.advance / 2) break;
+        width += item.advance;
+        i += item.len;
+    }
+    return i;
+}
+
 /// Wrapped lines between consecutive `Index` anchors.
 pub const anchor_stride: usize = 64;
 
@@ -355,6 +374,19 @@ test "Lines reproduces the transcript wrap loop" {
     try expectMatchesReference("中文输出测试 行号", 5);
     try expectMatchesReference("x", 0.5); // narrower than one glyph: one per line
     try expectMatchesReference("bad \xff utf8 \xe4\xb8", 4);
+}
+
+test "offsetAt maps a click to the nearest caret on its wrapped line" {
+    // "abcdef\n中x" at width 4 → lines "abcd", "ef", "中x".
+    const s = "abcdef\n\u{4e2d}x";
+    try std.testing.expectEqual(@as(usize, 0), offsetAt(s, 4, &testAdvance, 0, -3));
+    try std.testing.expectEqual(@as(usize, 1), offsetAt(s, 4, &testAdvance, 0, 0.6));
+    try std.testing.expectEqual(@as(usize, 4), offsetAt(s, 4, &testAdvance, 0, 99));
+    try std.testing.expectEqual(@as(usize, 6), offsetAt(s, 4, &testAdvance, 1, 99));
+    try std.testing.expectEqual(@as(usize, 7), offsetAt(s, 4, &testAdvance, 2, 0.9));
+    try std.testing.expectEqual(@as(usize, 10), offsetAt(s, 4, &testAdvance, 2, 1.1));
+    try std.testing.expectEqual(@as(usize, 11), offsetAt(s, 4, &testAdvance, 9, 99));
+    try std.testing.expectEqual(@as(usize, 0), offsetAt("", 4, &testAdvance, 3, 5));
 }
 
 test "Index anchors resume wrapping at the same lines" {

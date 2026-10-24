@@ -6316,6 +6316,18 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                                 return;
                             }
                         }
+                        if (AppWindow.assistant_conversation_renderer.inputTextOffsetAt(
+                            chat,
+                            xpos,
+                            ypos,
+                            @floatFromInt(fb.height),
+                            chat_x,
+                            chat_w,
+                        )) |offset| {
+                            chat.setInputCursor(offset);
+                            requestInputRepaint();
+                            return;
+                        }
                         // Click landed in the panel but not on an interactive
                         // element: keep focus, clear any selection, consume it.
                         chat.clearSelection();
@@ -6471,6 +6483,18 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     g_ai_input_scroll_chat = chat;
                     g_ai_input_scroll_drag_offset = hit.drag_offset_px;
                     applyAiInputScrollbarDrag(chat, ypos);
+                    requestInputRepaint();
+                    return;
+                }
+                if (AppWindow.assistant_conversation_renderer.inputTextOffsetAt(
+                    chat,
+                    xpos,
+                    ypos,
+                    @floatFromInt(fb.height),
+                    AppWindow.leftPanelsWidth(),
+                    @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
+                )) |offset| {
+                    chat.setInputCursor(offset);
                     requestInputRepaint();
                     return;
                 }

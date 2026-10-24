@@ -3878,6 +3878,18 @@ pub const Session = struct {
         self.suggestion_selected = 0;
     }
 
+    /// Place the caret at `offset` (clamped to a UTF-8 boundary), e.g. from a
+    /// mouse click in the composer.
+    pub fn setInputCursor(self: *Session, offset: usize) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.clearSelectionLocked();
+        self.composer.cursor = offset;
+        self.clampInputCursorLocked();
+        self.input_scroll_follow_cursor = true;
+        self.suggestion_selected = 0;
+    }
+
     fn moveInputCursorVertical(self: *Session, max_cols_raw: usize, delta: i32) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -6383,15 +6395,17 @@ test "/resume defers to copilot picker for copilot sessions, external resume oth
 
 test "ai chat dollar skill suggestions filter and enter completes with trailing space" {
     const allocator = std.testing.allocator;
-    const root = ".zig-cache/skill-suggestion-test";
-    std.fs.cwd().deleteTree(root) catch {};
-    defer std.fs.cwd().deleteTree(root) catch {};
-
-    try std.fs.cwd().makePath(root ++ "/skills/pdf");
-    try std.fs.cwd().writeFile(.{
-        .sub_path = root ++ "/skills/pdf/SKILL.md",
+    // Per-run tmp dir: this file's tests run in several app-test shards at once,
+    // so a fixed path raced with another shard's deleteTree.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("skills/pdf");
+    try tmp.dir.writeFile(.{
+        .sub_path = "skills/pdf/SKILL.md",
         .data = "---\nname: pdf\ndescription: Work with PDF files.\n---\n# PDF\n",
     });
+    const skills_root = try tmp.dir.realpathAlloc(allocator, "skills");
+    defer allocator.free(skills_root);
 
     const session = try Session.init(
         allocator,
@@ -6407,7 +6421,7 @@ test "ai chat dollar skill suggestions filter and enter completes with trailing 
     );
     defer session.deinit();
 
-    try session.loadSkillSuggestionsFromRoots(&.{root ++ "/skills"});
+    try session.loadSkillSuggestionsFromRoots(&.{skills_root});
     session.appendInputText("$p");
 
     // "$p" matches both the reserved "$pubmed" command and the installed "pdf" skill.
