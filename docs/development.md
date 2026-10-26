@@ -576,6 +576,10 @@ Build the artifacts with:
 powershell -ExecutionPolicy Bypass -File .\packaging\windows\package.ps1
 ```
 
+Tag releases then Authenticode-sign the first-party binaries in those dist
+folders **before** the zip archives are created. See
+[Windows Authenticode (SSL.com eSigner)](#windows-authenticode-sslcom-esigner).
+
 Key outputs include:
 
 ```text
@@ -634,6 +638,83 @@ Several GitHub Actions workflows publish release assets whenever a tag matching
 - `wispterm-windows-portable-compat-vX.Y.Z.zip`
 - `wispterm-windows-portable-opengl-vX.Y.Z.zip`
 - `wispterm-windows-debug-vX.Y.Z.zip`
+
+The tag workflow (`.github/workflows/windows-release.yml`) signs
+`wispterm.exe`, `wispterm-ssh-askpass.exe`, and `wispterm-shell-extension.dll`
+in each of those folders with SSL.com eSigner, then zips the folders. The zip
+archives are not signed. A missing eSigner secret or a failed signature fails
+the tag release before any zip is uploaded. Manual debug builds
+(`windows-debug.yml`) and the Windows beta workflow do not sign.
+
+`wisptermctl.exe` is published from `wisptermctl-release.yml` in its own zip and
+is outside this Authenticode step.
+
+### Windows Authenticode (SSL.com eSigner)
+
+Ghostty's tagged releases codesign and notarize the macOS app and publish
+minisign signatures for source archives. Ghostty does not ship a Windows
+Authenticode step (Windows packaging is still tracked separately from the macOS
+`codesign` path). WispTerm's Windows tag releases sign the portable binaries
+with SSL.com eSigner instead.
+
+`packaging/windows/sign-esigner.ps1` downloads CodeSignTool 1.3.2 and runs
+`batch_sign`. CodeSignTool sends file hashes to eSigner and writes an
+Authenticode signature. One OTP covers the batch. The PE signer timestamps
+with `TSA_URL` as an RFC3161 (`SPC_RFC3161`) attribute. The script sets that
+to `http://ts.ssl.com/legacy`, SSL.com's RSA timestamp authority. The default
+`http://ts.ssl.com` endpoint issues ECDSA timestamps, and Windows rejects
+those timestamp certificates when the key is shorter than its minimum.
+Microsoft binaries that ship inside `portable-compat` (`WebView2Loader.dll`,
+`conpty.dll`, `OpenConsole.exe`) keep the signatures they already have.
+
+Configure these repository secrets. Store the values only in GitHub Actions
+secrets. Do not commit them, print them, or echo them in a workflow log:
+
+| Secret | Role |
+|---|---|
+| `ESIGNER_CREDENTIAL_ID` | eSigner signing credential id |
+| `ESIGNER_USERNAME` | SSL.com account username |
+| `ESIGNER_PASSWORD` | SSL.com account password |
+| `ESIGNER_TOTP_SECRET` | TOTP seed. CodeSignTool turns it into the signing OTP |
+| `ESIGNER_PIN` | 4-digit PIN created when the certificate was enrolled in eSigner |
+
+CodeSignTool 1.3.2 `batch_sign` has no PIN argument. The tag workflow still
+requires `ESIGNER_PIN` to be set so the credential set is complete. The script
+checks that it is non-empty, then leaves it off the CodeSignTool command line.
+
+`WINDOWS_SIGNING_PFX_BASE64` and `WINDOWS_SIGNING_PFX_PASSWORD` are deprecated.
+They only import a certificate so `build-package.ps1` can sign the context-menu
+identity package (`.msix`). They do not sign `wispterm.exe`. CodeSignTool 1.3.2
+does not sign `.msix`, and the package Publisher has to match the certificate
+subject, so the MSIX path is unchanged. See `docs/windows-context-menu.md`.
+
+A valid Authenticode signature does not by itself clear Microsoft SmartScreen.
+SmartScreen reputation is tied to the certificate and to how widely the signed
+files have been run. A new eSigner certificate can still show "Windows protected
+your PC" until that reputation exists. The RFC3161 timestamp lets Windows keep
+trusting the signature after the code-signing certificate expires; it does not
+add reputation.
+
+After a signed build, verify a binary (not the zip):
+
+```powershell
+Get-AuthenticodeSignature .\wispterm.exe | Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
+```
+
+`Status` is `Valid`, `SignerCertificate` is the eSigner certificate, and
+`TimeStamperCertificate` is present (the RFC3161 timestamp). The same check
+applies to `wispterm-ssh-askpass.exe` and `wispterm-shell-extension.dll`.
+With the Windows SDK installed:
+
+```powershell
+signtool verify /pa /v .\wispterm.exe
+```
+
+To list the files a dist tree would sign, without calling eSigner:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\packaging\windows\sign-esigner.ps1 -DistRoot .\zig-out\dist -ListOnly
+```
 
 When WispTerm detects a newer release on Windows, it downloads the matching
 portable zip to the Downloads folder and reveals it in Explorer. Unzip the

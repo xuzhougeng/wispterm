@@ -42,16 +42,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-zig-0.15.2-
 
-      - name: Configure optional Windows identity-package signing
+      # Deprecated. WINDOWS_SIGNING_PFX_* only signs the context-menu MSIX
+      # inside package.ps1. wispterm.exe and the other first-party exe/dll files
+      # are Authenticode-signed later with SSL.com eSigner, before the zips.
+      - name: Import deprecated context-menu identity certificate
         shell: pwsh
         env:
           SIGNING_PFX: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
           SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
         run: |
           if (!$env:SIGNING_PFX) {
-            Write-Warning 'Windows signing is not configured. Context menu identity packages will be unsigned and cannot be enabled on end-user PCs.'
+            Write-Warning 'WINDOWS_SIGNING_PFX_BASE64 / WINDOWS_SIGNING_PFX_PASSWORD are deprecated and unset. They only sign the context-menu identity package. This tag release still Authenticode-signs wispterm.exe and related first-party exe/dll files with SSL.com eSigner before zip packaging.'
             exit 0
           }
+          Write-Warning 'WINDOWS_SIGNING_PFX_* is deprecated. This import signs only the context-menu identity package. eSigner signs wispterm.exe and related first-party exe/dll files.'
           $pfx = Join-Path $env:RUNNER_TEMP 'wispterm-signing.pfx'
           try {
             [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_PFX))
@@ -199,6 +203,20 @@ jobs:
             throw "Debug bundle not found: zig-out\dist\portable-debug\wispterm.exe"
           }
 
+      # Formal tag release. Missing secrets or a CodeSignTool failure fails the
+      # job before any zip is created. The zip archives themselves are not signed.
+      - name: Sign Windows binaries with SSL.com eSigner
+        timeout-minutes: 30
+        shell: pwsh
+        env:
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+          ESIGNER_PIN: ${{ secrets.ESIGNER_PIN }}
+        run: |
+          powershell -ExecutionPolicy Bypass -File .\packaging\windows\sign-esigner.ps1 -DistRoot .\zig-out\dist -Require
+
       - name: Create release assets
         shell: pwsh
         run: |
@@ -219,6 +237,8 @@ jobs:
           }
           if (Test-Path $debugAsset) { Remove-Item $debugAsset -Force }
 
+          # Executables and DLLs inside these directories are already signed.
+          # Do not Authenticode-sign the zip archives.
           Compress-Archive -Path zig-out\dist\portable\* -DestinationPath $portableAsset -Force
           Compress-Archive -Path zig-out\dist\portable-compat\* -DestinationPath $portableCompatAsset -Force
           Compress-Archive -Path zig-out\dist\portable-opengl\* -DestinationPath $portableOpenGLAsset -Force
