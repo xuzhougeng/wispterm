@@ -14,11 +14,29 @@ pub fn main() !void {
     defer a.free(url);
     const auth = try std.fmt.allocPrint(a, "Bearer {s}", .{codec.aiProfileField(&profile, .api_key)});
     defer a.free(auth);
-    const body = try std.json.Stringify.valueAlloc(a, .{
+    const expected_vision = std.process.getEnvVarOwned(a, "MAGPIE_TEST_VISION") catch null;
+    defer if (expected_vision) |expected| a.free(expected);
+    if (expected_vision) |expected| {
+        if (!std.mem.eql(u8, expected, codec.aiProfileField(&profile, .vision))) return error.UnexpectedVisionSetting;
+    }
+    // A real one-pixel PNG, passed through the application's request builder.
+    var images = [_]protocol.ImageBlock{.{
+        .media_type = @constCast("image/png"),
+        .data_b64 = @constCast("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="),
+    }};
+    var messages = [_]protocol.RequestMessage{.{
+        .role = .user,
+        .content = @constCast("fixture"),
+        .images = if (expected_vision != null and std.mem.eql(u8, codec.aiProfileField(&profile, .vision), "on")) &images else null,
+    }};
+    const body = try protocol.buildRequestJson(a, .{
         .model = codec.aiProfileField(&profile, .model),
-        .messages = .{.{ .role = "user", .content = "fixture" }},
+        .system_prompt = "",
+        .protocol = .chat_completions,
+        .thinking_enabled = false,
+        .reasoning_effort = "",
         .stream = false,
-    }, .{});
+    }, &messages, false);
     defer a.free(body);
     var response = try http.fetch(a, .{
         .method = .POST,

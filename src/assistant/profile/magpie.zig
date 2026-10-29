@@ -4,7 +4,13 @@ const builtin = @import("builtin");
 const dirs = @import("../../platform/dirs.zig");
 const codec = @import("../../renderer/overlays/profile_codec.zig");
 
-const Connection = struct { baseURL: []const u8, apiKey: []const u8, model: []const u8 };
+const Connection = struct {
+    baseURL: []const u8,
+    apiKey: []const u8,
+    model: []const u8,
+    // User-owned override, preserved by Magpie when it rewrites connection keys.
+    vision: std.json.Value = .null,
+};
 pub const max_file_bytes = 64 * 1024;
 
 pub fn pathFromHome(allocator: std.mem.Allocator, home: []const u8) ![]u8 {
@@ -58,7 +64,19 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) ?codec.AiProfile
     codec.setProfileDefault(&profile, .stream, "true");
     codec.setProfileDefault(&profile, .agent, "true");
     codec.setProfileDefault(&profile, .max_tokens, "8192");
-    codec.setProfileDefault(&profile, .vision, "off");
+    // The gateway can route to image-capable models; a missing capability field
+    // must not disable image attachment for every Magpie profile.
+    const vision = switch (c.vision) {
+        .null => true,
+        .bool => |enabled| enabled,
+        .string => |value| enabled: {
+            if (std.mem.eql(u8, value, "on") or std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "enabled")) break :enabled true;
+            if (std.mem.eql(u8, value, "off") or std.mem.eql(u8, value, "false") or std.mem.eql(u8, value, "disabled")) break :enabled false;
+            return null;
+        },
+        else => return null,
+    };
+    codec.setProfileDefault(&profile, .vision, if (vision) "on" else "off");
     return profile;
 }
 
@@ -91,6 +109,7 @@ pub fn managedIndex(profiles: []const codec.AiProfile) ?usize {
 test "Magpie parses gateway fields without adding a model prefix or duplicating v1" {
     const p = parse(std.testing.allocator, "{\"baseURL\":\"http://127.0.0.1:3425/v1\",\"apiKey\":\"magpie-wispterm\",\"model\":\"provider/model\",\"future\":true}") orelse return error.ExpectedProfile;
     try std.testing.expect(p.managed_by_magpie);
+    try std.testing.expectEqualStrings("on", codec.aiProfileField(&p, .vision));
     try std.testing.expectEqualStrings("provider/model", codec.aiProfileField(&p, .model));
     const endpoint = try @import("../conversation/protocol.zig").apiEndpoint(std.testing.allocator, codec.aiProfileField(&p, .base_url), .chat_completions);
     defer std.testing.allocator.free(endpoint);
@@ -136,4 +155,33 @@ test "Magpie connect switch disconnect reads a file without changing personal pr
     try std.testing.expect(loadFromPath(a, path) == null);
     try std.testing.expect(managedIndex(profiles[0..1]) == null);
     try std.testing.expectEqual(@as(usize, 1), append(profiles[1], profiles[0..1], 1));
+}
+
+test "Magpie vision accepts explicit booleans and profile-style switches" {
+    const a = std.testing.allocator;
+    for ([_]struct { json: []const u8, expected: ?[]const u8 }{
+        .{ .json = "true", .expected = "on" },
+        .{ .json = "false", .expected = "off" },
+        .{ .json = "null", .expected = "on" },
+        .{ .json = "\"on\"", .expected = "on" },
+        .{ .json = "\"off\"", .expected = "off" },
+        .{ .json = "\"true\"", .expected = "on" },
+        .{ .json = "\"false\"", .expected = "off" },
+        .{ .json = "\"enabled\"", .expected = "on" },
+        .{ .json = "\"disabled\"", .expected = "off" },
+        .{ .json = "\"auto\"", .expected = null },
+        .{ .json = "0", .expected = null },
+        .{ .json = "{}", .expected = null },
+        .{ .json = "[]", .expected = null },
+    }) |case| {
+        const json = try std.fmt.allocPrint(a, "{{\"baseURL\":\"http://localhost/v1\",\"apiKey\":\"fixture\",\"model\":\"provider/opaque-model\",\"vision\":{s}}}", .{case.json});
+        defer a.free(json);
+        const profile = parse(a, json);
+        if (case.expected) |expected| {
+            const p = profile orelse return error.ExpectedProfile;
+            try std.testing.expectEqualStrings(expected, codec.aiProfileField(&p, .vision));
+        } else {
+            try std.testing.expect(profile == null);
+        }
+    }
 }
