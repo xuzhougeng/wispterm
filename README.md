@@ -77,7 +77,7 @@ and the [Remote guide](remote/README.md) for the web console and relay.
 ## Versions
 
 The desktop app version is the repository root version in `build.zig.zon`
-(currently `1.45.1`) and is what `wispterm --version`, release notes, desktop
+(currently `1.46.0`) and is what `wispterm --version`, release notes, desktop
 packages, and the command center `Version` entry use.
 
 The WispTerm Remote web console/relay under `remote/` has an independent npm/web
@@ -332,7 +332,7 @@ MIT
 
 ## Citation
 
-Xu, Z.-G. (2026). *WispTerm* (Version 1.45.1) [Computer software]. Zenodo.
+Xu, Z.-G. (2026). *WispTerm* (Version 1.46.0) [Computer software]. Zenodo.
 https://doi.org/10.5281/zenodo.20660541
 
 Copyable acknowledgment template:
@@ -342,6 +342,6 @@ We used WispTerm as part of our computational environment for life sciences data
 analysis, remote computing workflows, reproducible command-line processing, and
 the organization of related literature and analysis code.
 
-Xu, Z.-G. (2026). WispTerm (Version 1.45.1) [Computer software]. Zenodo.
+Xu, Z.-G. (2026). WispTerm (Version 1.46.0) [Computer software]. Zenodo.
 https://doi.org/10.5281/zenodo.20660541
 ```
