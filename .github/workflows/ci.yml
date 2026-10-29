@@ -198,6 +198,13 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          # No Zig cache here. setup-zig saves the global cache in its post
+          # step even when the run is cancelled, and a cache saved mid-build
+          # carries manifests whose objects were never written. Every later
+          # run then restores it and lld-link fails with "could not open
+          # .zig-cache\o\...\shell_extension.obj". This job compiles two
+          # small C++ files, so a cold libc++/compiler-rt build costs little.
+          use-cache: false
       - name: Build COM extension and test driver
         shell: pwsh
         run: |
