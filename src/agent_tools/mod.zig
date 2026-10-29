@@ -167,6 +167,9 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
             .password = tool_args.string(args.value, "password") orelse "",
             .port = tool_args.string(args.value, "port") orelse "",
             .proxy_jump = tool_args.string(args.value, "proxy_jump") orelse "",
+            .proxy_type = tool_args.string(args.value, "proxy_type") orelse "",
+            .proxy_host = tool_args.string(args.value, "proxy_host") orelse "",
+            .proxy_port = tool_args.string(args.value, "proxy_port") orelse "",
             .auth_method = tool_args.string(args.value, "auth_method") orelse "",
             .identity_file = tool_args.string(args.value, "identity_file") orelse "",
         });

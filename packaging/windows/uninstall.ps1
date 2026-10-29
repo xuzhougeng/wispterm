@@ -16,7 +16,7 @@ foreach ($folder in @('Microsoft\Windows\Start Menu\Programs','Microsoft\Windows
     $link = Join-Path $env:APPDATA "$folder\WispTerm.lnk"
     if ((Test-Path -LiteralPath $link) -and $shell.CreateShortcut($link).TargetPath -eq $exe) { Remove-Item -LiteralPath $link -Force }
 }
-foreach ($name in @('wispterm.exe','wispterm-ssh-askpass.exe','version.txt','WebView2Loader.dll','conpty.dll','OpenConsole.exe',
+foreach ($name in @('wispterm.exe','wispterm-ssh-askpass.exe', 'wispterm-ssh-proxy.exe','version.txt','WebView2Loader.dll','conpty.dll','OpenConsole.exe',
                    'Replace-WispTerm.cmd','replace-install.ps1','Add-Context-Menu.cmd','Remove-Context-Menu.cmd','context-menu.ps1')) {
     $path = Join-Path $root $name
     if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }

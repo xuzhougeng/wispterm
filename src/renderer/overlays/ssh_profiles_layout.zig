@@ -20,7 +20,7 @@ const ssh_profiles = @import("ssh_profiles.zig");
 
 pub const SshListMode = ssh_profiles.SshListMode;
 
-/// Form rows = 8 fields + 3 action rows (save+connect, save, cancel). Mirrors
+/// Form rows = SSH fields + 3 action rows (save+connect, save, cancel). Mirrors
 /// `SSH_FIELD_COUNT + 3` in overlays.zig and `ssh_profiles.SSH_FORM_ROW_COUNT`.
 pub const FORM_ROW_COUNT: usize = ssh_profiles.SSH_FORM_ROW_COUNT;
 

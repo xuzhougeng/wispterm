@@ -1192,6 +1192,12 @@ fn appendSshOptions(
         argv_buf[argc] = "Ciphers=+aes128-cbc,3des-cbc";
         argc += 1;
     }
+    if (conn.network_proxy.kind != .none) {
+        argv_buf[argc] = "-o";
+        argc += 1;
+        argv_buf[argc] = conn.network_proxy.option();
+        argc += 1;
+    }
     if (conn.port().len > 0) {
         argv_buf[argc] = switch (port_mode) {
             .ssh => "-p",
@@ -1662,4 +1668,17 @@ test "drainOutputPipesCapped reports stdout exceeded while stderr stays complete
     try std.testing.expectEqual(DrainResult.complete, result.stderr);
     try std.testing.expect(stdout_list.items.len <= 8);
     try std.testing.expectEqualStrings("err", stderr_list.items);
+}
+
+test "SCP and SSH helper argv carry the session network proxy without connection sharing" {
+    const route = @import("network_proxy.zig").Config.forHelper(.http, "127.0.0.1", "7897", "helper").?;
+    const conn = SshConnection.fromParts(.{ .user = "alice", .host = "host.test", .network_proxy = route });
+    var args: [40][]const u8 = undefined;
+    const n = appendSshOptions(&args, 0, &conn, .scp, null);
+    var found = false;
+    for (args[0..n]) |arg| {
+        if (std.mem.eql(u8, arg, conn.network_proxy.option())) found = true;
+        try std.testing.expect(!std.mem.startsWith(u8, arg, "ControlMaster="));
+    }
+    try std.testing.expect(found);
 }

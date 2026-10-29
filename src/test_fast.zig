@@ -350,6 +350,8 @@ test {
     _ = @import("agent/remote_filetool.zig");
     _ = @import("agent/file_copy.zig");
     _ = @import("ssh/connection.zig");
+    _ = @import("ssh/network_proxy.zig");
+    _ = @import("ssh/proxy_protocol.zig");
     _ = @import("tmux/control.zig");
     _ = @import("tmux/layout.zig");
     _ = @import("tmux/protocol_test.zig");

@@ -166,7 +166,7 @@ Assert-Contains ($missingRoot.StdOut + $missingRoot.StdErr) 'DistRoot is require
 
 $dist = Join-Path ([IO.Path]::GetTempPath()) ('wispterm-dist-' + [guid]::NewGuid().ToString('n'))
 $bundleNames = @('portable', 'portable-compat', 'portable-opengl', 'portable-debug')
-$signNames = @('wispterm.exe', 'wispterm-ssh-askpass.exe', 'wispterm-shell-extension.dll')
+$signNames = @('wispterm.exe', 'wispterm-ssh-askpass.exe', 'wispterm-ssh-proxy.exe', 'wispterm-shell-extension.dll')
 foreach ($bundle in $bundleNames) {
     $bundleRoot = Join-Path $dist $bundle
     New-Item -ItemType Directory -Path $bundleRoot -Force | Out-Null
@@ -382,6 +382,13 @@ Assert-True $script:usedSign 'signing uses the per-file sign command'
 
 foreach ($name in $script:SecretNames) {
     [Environment]::SetEnvironmentVariable($name, $savedSecrets[$name])
+}
+$cleanupBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+foreach ($cleanupPath in @($dist, $toolRoot)) {
+    $cleanupFull = [IO.Path]::GetFullPath($cleanupPath)
+    if (-not $cleanupFull.StartsWith($cleanupBase, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing cleanup outside the test temporary root: $cleanupFull"
+    }
 }
 Remove-Item -LiteralPath $dist, $toolRoot -Recurse -Force -ErrorAction SilentlyContinue
 

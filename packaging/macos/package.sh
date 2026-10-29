@@ -34,6 +34,12 @@ codesign_args=(--force --sign "$sign_identity" --options runtime --entitlements 
 if [[ "$sign_identity" != "-" ]]; then
   codesign_args+=(--timestamp)
 fi
+proxy_helper="$app_path/Contents/MacOS/wispterm-ssh-proxy"
+if [[ ! -f "$proxy_helper" ]]; then
+  echo "missing SSH proxy helper: $proxy_helper" >&2
+  exit 1
+fi
+codesign "${codesign_args[@]}" "$proxy_helper"
 codesign "${codesign_args[@]}" "$app_path"
 codesign --verify --strict --verbose=2 "$app_path"
 

@@ -8,7 +8,7 @@ const std = @import("std");
 const ai_chat_protocol = @import("../../assistant/conversation/protocol.zig");
 const ssh_connection = @import("../../ssh/connection.zig");
 
-pub const SSH_FIELD_COUNT = 8;
+pub const SSH_FIELD_COUNT = 11;
 pub const SSH_FIELD_MAX = ssh_connection.IDENTITY_FILE_MAX;
 pub const AI_FIELD_COUNT = 13;
 pub const AI_FIELD_MAX = 8192;
@@ -22,6 +22,9 @@ pub const SshField = enum(usize) {
     proxy_jump = 5,
     auth_method = 6,
     identity_file = 7,
+    proxy_type = 8,
+    proxy_host = 9,
+    proxy_port = 10,
 };
 
 pub const AiField = enum(usize) {
@@ -366,4 +369,15 @@ test "legacy 12-field ai profile line decodes with empty command" {
     try std.testing.expectEqualStrings("4096", aiProfileField(&profile, .max_tokens));
     try std.testing.expectEqualStrings("off", aiProfileField(&profile, .vision));
     try std.testing.expectEqual(@as(usize, 0), aiProfileField(&profile, .command).len);
+}
+
+test "SSH network proxy fields round trip and old profiles default to no proxy" {
+    var buf: [2048]u8 = undefined;
+    const encoded = testEncodeProfileLine(&buf, &.{ "ViaProxy", "host.test", "alice", "", "22", "", "credentials", "", "socks5", "127.0.0.1", "7897" });
+    const p = decodeSshProfileLine(encoded).?;
+    try std.testing.expectEqualStrings("socks5", profileField(&p, .proxy_type));
+    try std.testing.expectEqualStrings("127.0.0.1", profileField(&p, .proxy_host));
+    try std.testing.expectEqualStrings("7897", profileField(&p, .proxy_port));
+    const legacy = decodeSshProfileLine(testEncodeProfileLine(&buf, &.{ "Old", "host.test", "alice", "", "22", "", "credentials", "" })).?;
+    try std.testing.expectEqualStrings("", profileField(&legacy, .proxy_type));
 }

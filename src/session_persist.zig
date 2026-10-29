@@ -72,6 +72,9 @@ pub const SurfaceSnap = union(enum) {
         // multi-hop). Defaulted so older session files without it still load.
         // Not a secret, so persisting it does not violate invariant I1.
         proxy_jump: []const u8 = "",
+        network_proxy_type: []const u8 = "",
+        network_proxy_host: []const u8 = "",
+        network_proxy_port: []const u8 = "",
         /// Remote Pi JSONL session path for direct SSH restore.
         pi_session_path: ?[]const u8 = null,
         // SECURITY INVARIANT (I1): NO password field. Adding one would
@@ -837,4 +840,20 @@ test "old TabSnap without copilot fields parses to null/false" {
     defer parsed.deinit();
     try std.testing.expectEqual(@as(?[]const u8, null), parsed.value.copilot_session_id);
     try std.testing.expect(!parsed.value.copilot_visible);
+}
+
+test "session snapshot network proxy round-trips without persisting commands or secrets" {
+    const allocator = std.testing.allocator;
+    const snap = SurfaceSnap.SshSnap{ .user = "alice", .host = "host.test", .network_proxy_type = "socks5", .network_proxy_host = "127.0.0.1", .network_proxy_port = "7897" };
+    const json = try std.json.Stringify.valueAlloc(allocator, snap, .{});
+    defer allocator.free(json);
+    const parsed = try std.json.parseFromSlice(SurfaceSnap.SshSnap, allocator, json, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("socks5", parsed.value.network_proxy_type);
+    try std.testing.expectEqualStrings("127.0.0.1", parsed.value.network_proxy_host);
+    try std.testing.expectEqualStrings("7897", parsed.value.network_proxy_port);
+    try std.testing.expect(std.mem.indexOf(u8, json, "ProxyCommand") == null);
+    const old = try std.json.parseFromSlice(SurfaceSnap.SshSnap, allocator, "{\"user\":\"alice\",\"host\":\"host.test\"}", .{});
+    defer old.deinit();
+    try std.testing.expectEqualStrings("", old.value.network_proxy_type);
 }

@@ -191,6 +191,16 @@ shell = 'C:\\Program Files\\Git\\bin\\bash.exe'
 That wrong form can make Windows look for an executable whose path includes the
 quote characters, which shows up as `Failed to create Surface for new tab`.
 
+## SSH session network proxy
+
+SSH Server profiles support **No proxy**, **SOCKS5**, and **HTTP CONNECT**. These are per-session network routes, separate from the existing SSH **Jump host** and AI/research HTTP proxy settings. Choose the proxy type with the same left/right choice-row controls as the auth method, then enter the proxy host (without a URL scheme) and TCP port. For example, if a local Clash/Mihomo mixed listener is configured at `127.0.0.1:7897`, choose SOCKS5 or HTTP CONNECT and enter that host and port. Use the listener's actual configured port; keep the target SSH server and its port (usually 22) unchanged.
+
+The initial implementation supports proxies without authentication. A SOCKS authentication challenge or HTTP 407 is reported explicitly; SSH passwords/keys still authenticate the target, not the proxy. Network proxy plus ProxyJump is rejected rather than silently choosing one route.
+
+A bundled `wispterm-ssh-proxy` stdio bridge performs the CONNECT handshake, while OpenSSH retains SSH authentication and host-key verification. No `nc`/`corkscrew`, system-proxy changes, TUN, server changes, or disabled host-key checking are needed. Profiles, restored sessions, SCP/remote-file helpers, HTML/SSH tunnels, and port forwarding retain the same route. Keep the bridge beside the application binary when moving a portable build. Proxy failures do not fall back to a direct connection.
+
+This follows MobaXterm's session-level SOCKS proxy workflow and Ghostty's delegation to external OpenSSH, not a reimplementation of SSH. Existing profiles without the added proxy fields retain their previous direct/ProxyJump behavior.
+
 ## OpenSSH config import
 
 Open the command center and run **Load OpenSSH Config** to import compatible

@@ -4,6 +4,7 @@
 //! ghostty-vt / renderer graph that Surface pulls in.
 
 const std = @import("std");
+pub const network_proxy = @import("network_proxy.zig");
 
 pub const IDENTITY_FILE_MAX = 512;
 
@@ -47,6 +48,7 @@ pub const SshAuthMethod = enum {
 };
 
 pub const SshConnection = struct {
+    network_proxy: network_proxy.Config = .{},
     user_buf: [128]u8 = undefined,
     user_len: usize = 0,
     host_buf: [128]u8 = undefined,
@@ -62,6 +64,8 @@ pub const SshConnection = struct {
     auth_method: SshAuthMethod = .credentials,
     password_auth: bool = false,
     legacy_algorithms: bool = false,
+
+    pub const networkProxyFromFields = network_proxy.Config.fromFields;
 
     pub fn user(self: *const SshConnection) []const u8 {
         return self.user_buf[0..self.user_len];
@@ -103,13 +107,14 @@ pub const SshConnection = struct {
         password: []const u8 = "",
         auth_method: ?SshAuthMethod = null,
         identity_file: []const u8 = "",
+        network_proxy: network_proxy.Config = .{},
     };
 
     /// Build a connection from already-validated SSH params (the caller
     /// validates with isSshTokenSafe/isPortTokenSafe). Truncates to buffer
     /// capacity.
     pub fn fromParts(p: Parts) SshConnection {
-        var c: SshConnection = .{};
+        var c: SshConnection = .{ .network_proxy = p.network_proxy };
         c.user_len = copyInto(&c.user_buf, p.user);
         c.host_len = copyInto(&c.host_buf, p.host);
         c.port_len = copyInto(&c.port_buf, p.port);

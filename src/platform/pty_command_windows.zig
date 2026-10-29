@@ -29,6 +29,7 @@ pub const SshCommandOptions = struct {
     password_auth: bool = false,
     legacy_algorithms: bool = false,
     proxy_jump: []const u8 = "",
+    network_proxy: ssh_connection.network_proxy.Config = .{},
     remote_command: []const u8 = "",
     terminal_capabilities: bool = false,
 };
@@ -461,6 +462,12 @@ fn appendSshOptionString(buf: []u8, pos: *usize, options: SshCommandOptions, mod
     if (!appendAscii(buf, pos, "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20 ")) return false;
     if (options.terminal_capabilities) {
         if (!appendAscii(buf, pos, "-o SetEnv=TERM_PROGRAM=ghostty -o SetEnv=COLORTERM=truecolor ")) return false;
+    }
+    if (!options.network_proxy.allowsJump(options.proxy_jump)) return false;
+    if (options.network_proxy.kind != .none) {
+        if (!appendAscii(buf, pos, "-o ")) return false;
+        if (!appendCommandLineQuotedArg(buf, pos, options.network_proxy.option())) return false;
+        if (!appendAscii(buf, pos, " -o ConnectTimeout=10 ")) return false;
     }
     const auth_method = effectiveSshAuthMethod(options);
     switch (auth_method) {
@@ -998,4 +1005,13 @@ test "windows pty command exposes session launcher command details" {
     try std.testing.expectEqualStrings("wsl.exe ~", wslLauncherDetail());
     try std.testing.expectEqualStrings("ssh.exe", sshExecutableName());
     try std.testing.expectEqualStrings("scp.exe", scpExecutableName());
+}
+
+test "Windows session proxy option is quoted and cannot silently coexist with jump" {
+    const route = ssh_connection.network_proxy.Config.forHelper(.socks5, "127.0.0.1", "7897", "C:/Program Files/WispTerm/wispterm-ssh-proxy.exe").?;
+    var buf: [4096]u8 = undefined;
+    const cmd = sshInteractiveCommand(&buf, .{ .user = "alice", .host = "host.test", .network_proxy = route }).?;
+    try std.testing.expect(std.mem.indexOf(u8, cmd, "ProxyCommand=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cmd, "socks5 127.0.0.1 7897 %h %p") != null);
+    try std.testing.expect(sshInteractiveCommand(&buf, .{ .user = "alice", .host = "host.test", .network_proxy = route, .proxy_jump = "bastion" }) == null);
 }

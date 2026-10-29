@@ -2805,8 +2805,6 @@ const SessionLayout = struct {
 
 pub threadlocal var g_session_launcher_visible: bool = false;
 threadlocal var g_session_launcher_return_to_command_palette: bool = false;
-threadlocal var g_ssh_list_visible: bool = false;
-threadlocal var g_ssh_form_visible: bool = false;
 threadlocal var g_ai_list_visible: bool = false;
 threadlocal var g_ai_form_visible: bool = false;
 threadlocal var g_ai_history_source_visible: bool = false;
@@ -2901,8 +2899,8 @@ fn commandCenterStateSnapshot() command_center_state.State {
         .session_launcher_visible = g_session_launcher_visible,
         .session_launcher_selected = launcherState().selected,
         .session_launcher_return_to_command_palette = g_session_launcher_return_to_command_palette,
-        .ssh_list_visible = g_ssh_list_visible,
-        .ssh_form_visible = g_ssh_form_visible,
+        .ssh_list_visible = sshState().list_visible,
+        .ssh_form_visible = sshState().form_visible,
         .ai_list_visible = g_ai_list_visible,
         .ai_form_visible = g_ai_form_visible,
         .ai_history_source_visible = g_ai_history_source_visible,
@@ -2930,8 +2928,8 @@ fn commandCenterStateApply(state: command_center_state.State) void {
     g_session_launcher_visible = state.session_launcher_visible;
     launcherState().selected = state.session_launcher_selected;
     g_session_launcher_return_to_command_palette = state.session_launcher_return_to_command_palette;
-    g_ssh_list_visible = state.ssh_list_visible;
-    g_ssh_form_visible = state.ssh_form_visible;
+    sshState().list_visible = state.ssh_list_visible;
+    sshState().form_visible = state.ssh_form_visible;
     g_ai_list_visible = state.ai_list_visible;
     g_ai_form_visible = state.ai_form_visible;
     g_ai_history_source_visible = state.ai_history_source_visible;
@@ -3236,15 +3234,15 @@ pub fn sessionLauncherInsertChar(codepoint: u21) void {
         AppWindow.applyUiEffect(.{ .needs_rebuild = true });
         return;
     }
-    if (g_ssh_list_visible) {
+    if (sshState().list_visible) {
         appendSshListFilterCodepoint(codepoint);
         return;
     }
-    if (g_ssh_form_visible) {
+    if (sshState().form_visible) {
         if (codepoint > 0x7f) return;
         if (sshState().focus >= SSH_FIELD_COUNT) return;
         const field = sshState().focus;
-        if (field == @intFromEnum(SshField.auth_method)) return; // ←/→ toggle, not free text
+        if (field == @intFromEnum(SshField.auth_method) or field == @intFromEnum(SshField.proxy_type)) return; // ←/→ toggle, not free text
         if (sshState().lens[field] >= SSH_FIELD_MAX) return;
         sshState().bufs[field][sshState().lens[field]] = @intCast(codepoint);
         sshState().lens[field] += 1;
@@ -3273,7 +3271,7 @@ pub fn sessionLauncherPasteText(text: []const u8) bool {
         AppWindow.applyUiEffect(.{ .needs_rebuild = true });
         return true;
     }
-    if (g_ssh_list_visible) {
+    if (sshState().list_visible) {
         appendSshListFilterText(text);
         return true;
     }
@@ -3282,9 +3280,9 @@ pub fn sessionLauncherPasteText(text: []const u8) bool {
         appendAiFormText(assistantProfiles().focus, text);
         return true;
     }
-    if (g_ssh_form_visible) {
+    if (sshState().form_visible) {
         if (sshState().focus >= SSH_FIELD_COUNT) return false;
-        if (sshState().focus == @intFromEnum(SshField.auth_method)) return true; // toggle field, ignore paste
+        if (sshState().focus == @intFromEnum(SshField.auth_method) or sshState().focus == @intFromEnum(SshField.proxy_type)) return true; // toggle field, ignore paste
         appendSshFormText(sshState().focus, text);
         return true;
     }
@@ -3380,11 +3378,11 @@ fn sessionLauncherHandleKeyImpl(ev: input_key.KeyEvent) void {
         return;
     }
     if (ev.key == .escape) {
-        if (g_ssh_list_visible and sshState().list_filter_len > 0) {
+        if (sshState().list_visible and sshState().list_filter_len > 0) {
             clearSshListFilter();
             return;
         }
-        if (g_ssh_list_visible and sshState().list_mode == .ai_history_select) {
+        if (sshState().list_visible and sshState().list_mode == .ai_history_select) {
             openAiHistorySourcePicker();
             return;
         }
@@ -3392,12 +3390,12 @@ fn sessionLauncherHandleKeyImpl(ev: input_key.KeyEvent) void {
         return;
     }
 
-    if (!g_ssh_form_visible and !g_ai_form_visible) {
+    if (!sshState().form_visible and !g_ai_form_visible) {
         if (g_ai_history_source_visible) {
             handleAiHistorySourceKey(ev);
             return;
         }
-        if (g_ssh_list_visible) {
+        if (sshState().list_visible) {
             handleSshListKey(ev);
             return;
         }
@@ -3458,7 +3456,7 @@ fn sessionLauncherHandleKeyImpl(ev: input_key.KeyEvent) void {
         .arrow_left => _ = cycleFocusedSshFormChoice(false),
         .backspace => {
             // auth_method is a ←/→ toggle, not a text field — never backspace it.
-            if (sshState().focus < SSH_FIELD_COUNT and sshState().focus != @intFromEnum(SshField.auth_method) and sshState().lens[sshState().focus] > 0) sshState().lens[sshState().focus] -= 1;
+            if (sshState().focus < SSH_FIELD_COUNT and sshState().focus != @intFromEnum(SshField.auth_method) and sshState().focus != @intFromEnum(SshField.proxy_type) and sshState().lens[sshState().focus] > 0) sshState().lens[sshState().focus] -= 1;
         },
         .enter => runSshFormFocusAction(),
         else => {},
@@ -3543,8 +3541,8 @@ fn openWslSession() void {
 
 fn openAiHistorySourcePicker() void {
     g_session_launcher_visible = false;
-    g_ssh_list_visible = false;
-    g_ssh_form_visible = false;
+    sshState().list_visible = false;
+    sshState().form_visible = false;
     g_ai_list_visible = false;
     g_ai_form_visible = false;
     g_ai_history_source_visible = true;
@@ -3643,8 +3641,8 @@ fn openSshList() void {
     loadSshProfiles();
     g_session_launcher_visible = false;
     g_ai_history_source_visible = false;
-    g_ssh_list_visible = true;
-    g_ssh_form_visible = false;
+    sshState().list_visible = true;
+    sshState().form_visible = false;
     sshState().list_mode = .manage;
     clearSshDeleteSelection();
     clearSshListFilter();
@@ -3663,8 +3661,8 @@ fn openSshProfilePicker(mode: SshListMode) void {
     if (sshState().profile_count == 0 and mode != .ai_history_select and mode != .tmux_connect) return;
     g_session_launcher_visible = false;
     g_ai_history_source_visible = false;
-    g_ssh_list_visible = true;
-    g_ssh_form_visible = false;
+    sshState().list_visible = true;
+    sshState().form_visible = false;
     sshState().list_mode = mode;
     if (mode == .delete_select) clearSshDeleteSelection();
     clearSshListFilter();
@@ -3689,10 +3687,10 @@ fn openSshFormEdit(index: usize) void {
 }
 
 fn openSshForm() void {
-    g_ssh_list_visible = false;
+    sshState().list_visible = false;
     g_session_launcher_visible = false;
     g_ai_history_source_visible = false;
-    g_ssh_form_visible = true;
+    sshState().form_visible = true;
     sshState().focus = @intFromEnum(SshField.name);
     if (sshState().lens[@intFromEnum(SshField.port)] == 0) {
         sshState().bufs[@intFromEnum(SshField.port)][0] = '2';
@@ -3891,6 +3889,11 @@ fn cycleSshFormAuthMethod(forward: bool) void {
 /// Shared by the arrow keys and a mouse click on the row (click = forward).
 /// Returns whether the focused row was a choice row.
 fn cycleFocusedSshFormChoice(forward: bool) bool {
+    if (sshState().focus == @intFromEnum(SshField.proxy_type)) {
+        const kind = ssh_connection.network_proxy.Kind.parse(sshField(.proxy_type)) orelse .none;
+        sshState().setFormField(.proxy_type, kind.cycle(forward).fieldValue());
+        return true;
+    }
     if (sshState().focus != @intFromEnum(SshField.auth_method)) return false;
     cycleSshFormAuthMethod(forward);
     return true;
@@ -3903,6 +3906,16 @@ fn sshAuthMethodDisplay() []const u8 {
     };
     const m: ssh_connection.SshAuthMethod = sshFormAuthMethod() orelse .credentials;
     return std.fmt.bufPrint(&S.buf, "{s}   <-/->", .{m.fieldValue()}) catch m.fieldValue();
+}
+
+fn sshProxyTypeDisplay() []const u8 {
+    const kind = ssh_connection.network_proxy.Kind.parse(sshField(.proxy_type)) orelse .none;
+    const label = switch (kind) {
+        .none => i18n.s().sl_ssh_proxy_none,
+        .socks5 => "SOCKS5",
+        .http => "HTTP CONNECT",
+    };
+    return std.fmt.bufPrint(&sshState().proxy_display_buf, "{s}   <-/->", .{label}) catch label;
 }
 
 fn sshProfileAuthMethod(profile: *const SshProfile) ?ssh_connection.SshAuthMethod {
@@ -3943,6 +3956,12 @@ fn sshConnectionFromProfile(profile: *const SshProfile) ?ssh_connection.SshConne
         .auth_method = auth_method,
         .identity_file = identity_file,
     });
+    conn.network_proxy = ssh_connection.network_proxy.Config.fromFields(
+        profileField(profile, .proxy_type),
+        profileField(profile, .proxy_host),
+        profileField(profile, .proxy_port),
+    ) orelse return null;
+    if (!conn.network_proxy.allowsJump(proxy_jump)) return null;
     conn.legacy_algorithms = AppWindow.g_ssh_legacy_algorithms;
     return conn;
 }
@@ -4118,13 +4137,13 @@ pub fn agentSaveSshProfile(allocator: std.mem.Allocator, args: AppWindow.ai_chat
     const updated_existing = found_idx != null;
     const idx = found_idx orelse blk: {
         if (sshState().profile_count >= SSH_PROFILE_MAX) return error.ProfileLimit;
-        const next = sshState().profile_count;
-        sshState().profile_count += 1;
-        sshState().profiles[next] = .{};
-        break :blk next;
+        break :blk sshState().profile_count;
     };
 
-    const profile = &sshState().profiles[idx];
+    // Validate the complete candidate before changing the cached profile list.
+    // A malformed proxy must not leave an empty profile or half-update an old one.
+    var candidate: SshProfile = if (updated_existing) sshState().profiles[idx] else .{};
+    const profile = &candidate;
     const auth_method = if (auth_method_raw.len > 0)
         (parseSshAuthMethod(auth_method_raw) orelse return error.InvalidProfile)
     else if (args.password.len > 0)
@@ -4153,6 +4172,15 @@ pub fn agentSaveSshProfile(allocator: std.mem.Allocator, args: AppWindow.ai_chat
     else
         host;
 
+    const network_route = ssh_connection.network_proxy.Config.fromFields(
+        if (args.proxy_type.len > 0) args.proxy_type else profileField(profile, .proxy_type),
+        if (args.proxy_host.len > 0) args.proxy_host else profileField(profile, .proxy_host),
+        if (args.proxy_port.len > 0) args.proxy_port else profileField(profile, .proxy_port),
+    ) orelse return error.InvalidProfile;
+    if (network_route.kind == .none and args.proxy_type.len == 0 and (args.proxy_host.len > 0 or args.proxy_port.len > 0)) return error.InvalidProfile;
+    const effective_jump = if (proxy_jump.len > 0) proxy_jump else profileField(profile, .proxy_jump);
+    if (!network_route.allowsJump(effective_jump)) return error.InvalidProfile;
+
     copySshProfileField(profile, .name, final_name);
     copySshProfileField(profile, .ip, host);
     copySshProfileField(profile, .user, user);
@@ -4160,10 +4188,15 @@ pub fn agentSaveSshProfile(allocator: std.mem.Allocator, args: AppWindow.ai_chat
     if (proxy_jump.len > 0 or !updated_existing) {
         copySshProfileField(profile, .proxy_jump, proxy_jump);
     }
+    copySshProfileField(profile, .proxy_type, network_route.kind.fieldValue());
+    copySshProfileField(profile, .proxy_host, network_route.host());
+    copySshProfileField(profile, .proxy_port, network_route.port());
     copySshProfileField(profile, .port, port);
     copySshProfileField(profile, .auth_method, auth_method.fieldValue());
     copySshProfileField(profile, .identity_file, identity_to_save);
 
+    sshState().profiles[idx] = candidate;
+    if (!updated_existing) sshState().profile_count += 1;
     saveSshProfiles(allocator);
 
     const saved_name = profileField(profile, .name);
@@ -4299,6 +4332,15 @@ fn saveSshFormProfile() ?usize {
     if (auth_method == .password and sshField(.password).len == 0) return null;
     if (auth_method == .key and !isIdentityFileSafe(sshField(.identity_file))) return null;
 
+    const network_route = ssh_connection.network_proxy.Config.fromFields(sshField(.proxy_type), sshField(.proxy_host), sshField(.proxy_port)) orelse {
+        showStatusToast(i18n.s().sl_ssh_proxy_invalid);
+        return null;
+    };
+    if (!network_route.allowsJump(sshField(.proxy_jump))) {
+        showStatusToast(i18n.s().sl_ssh_proxy_jump_conflict);
+        return null;
+    }
+
     const idx = if (sshState().edit_index != SSH_PROFILE_NONE)
         sshState().edit_index
     else blk: {
@@ -4312,6 +4354,9 @@ fn saveSshFormProfile() ?usize {
         sshState().profiles[idx].lens[i] = sshState().lens[i];
         @memcpy(sshState().profiles[idx].fields[i][0..sshState().lens[i]], sshState().bufs[i][0..sshState().lens[i]]);
     }
+    copySshProfileField(&sshState().profiles[idx], .proxy_type, network_route.kind.fieldValue());
+    copySshProfileField(&sshState().profiles[idx], .proxy_host, network_route.host());
+    copySshProfileField(&sshState().profiles[idx], .proxy_port, network_route.port());
     copySshProfileField(&sshState().profiles[idx], .auth_method, auth_method.fieldValue());
     if (auth_method != .password) copySshProfileField(&sshState().profiles[idx], .password, "");
     if (auth_method != .key) copySshProfileField(&sshState().profiles[idx], .identity_file, "");
@@ -4379,6 +4424,7 @@ fn connectSshProfileTmux(idx: usize) void {
         .legacy_algorithms = AppWindow.g_ssh_legacy_algorithms,
         .terminal_capabilities = tab.g_ssh_terminal_capabilities,
         .proxy_jump = conn.proxyJump(),
+        .network_proxy = conn.network_proxy,
         .remote_command = remote,
     }) orelse return;
 
@@ -4436,6 +4482,7 @@ fn connectSshProfileReturningSurfaceWithCommand(idx: usize, remote_command: []co
         .legacy_algorithms = AppWindow.g_ssh_legacy_algorithms,
         .terminal_capabilities = tab.g_ssh_terminal_capabilities,
         .proxy_jump = conn.proxyJump(),
+        .network_proxy = conn.network_proxy,
         .remote_command = remote_command,
     }) orelse return null;
 
@@ -4523,6 +4570,7 @@ pub fn fillSshPasswordFromProfile(conn: *Surface.SshConnection) bool {
             .port = conn.port(),
             .password = password,
             .proxy_jump = conn.proxyJump(),
+            .network_proxy = conn.network_proxy,
             .auth_method = .password,
         });
         filled.legacy_algorithms = AppWindow.g_ssh_legacy_algorithms;
@@ -4627,8 +4675,8 @@ fn surfaceHasSshPasswordPrompt(surface: *Surface) bool {
 fn openAiList() void {
     loadAiProfiles();
     g_session_launcher_visible = false;
-    g_ssh_list_visible = false;
-    g_ssh_form_visible = false;
+    sshState().list_visible = false;
+    sshState().form_visible = false;
     g_ai_history_source_visible = false;
     g_ai_list_visible = true;
     g_ai_form_visible = false;
@@ -4717,8 +4765,8 @@ fn openAiDeletePicker() void {
 fn openAiProfilePicker(mode: AiListMode) void {
     if (assistantProfiles().profile_count == 0) return;
     g_session_launcher_visible = false;
-    g_ssh_list_visible = false;
-    g_ssh_form_visible = false;
+    sshState().list_visible = false;
+    sshState().form_visible = false;
     g_ai_list_visible = true;
     g_ai_form_visible = false;
     assistantProfiles().list_mode = mode;
@@ -4811,8 +4859,8 @@ fn findAiProfileForSession(name: []const u8, base_url: []const u8, model: []cons
 }
 
 fn openAiForm() void {
-    g_ssh_list_visible = false;
-    g_ssh_form_visible = false;
+    sshState().list_visible = false;
+    sshState().form_visible = false;
     g_ai_list_visible = false;
     g_session_launcher_visible = false;
     settingsState().visible = false;
@@ -4826,8 +4874,8 @@ fn openAiForm() void {
 // command_center_state) and short-circuits the launcher branches via feishuForm().visible.
 // NOTE: never log app_secret; app-id is prefilled but the secret is left blank on open.
 fn openFeishuConfigForm() void {
-    g_ssh_list_visible = false;
-    g_ssh_form_visible = false;
+    sshState().list_visible = false;
+    sshState().form_visible = false;
     g_ai_list_visible = false;
     g_ai_form_visible = false;
     g_ai_history_source_visible = false;
@@ -4858,8 +4906,8 @@ fn closeFeishuConfigForm() void {
 /// Quick Configure AI: guided overlay to paste + verify a DeepSeek key.
 /// Rides on the session-launcher plumbing like the Feishu form.
 pub fn openQuickAiForm() void {
-    g_ssh_list_visible = false;
-    g_ssh_form_visible = false;
+    sshState().list_visible = false;
+    sshState().form_visible = false;
     g_ai_list_visible = false;
     g_ai_form_visible = false;
     g_ai_history_source_visible = false;
@@ -4883,8 +4931,8 @@ fn closeQuickAiForm() void {
 // ============================================================================
 
 pub fn openRecipeForm() void {
-    g_ssh_list_visible = false;
-    g_ssh_form_visible = false;
+    sshState().list_visible = false;
+    sshState().form_visible = false;
     g_ai_list_visible = false;
     g_ai_form_visible = false;
     g_ai_history_source_visible = false;
@@ -5839,7 +5887,7 @@ fn loadSshProfiles() void {
 /// next use reloads it. Deferred (false) while a list or form that indexes
 /// into the cache is open; the caller retries.
 pub fn reloadProfileCachesAfterSync(ssh: bool, ai: bool) bool {
-    if (ssh and (g_ssh_list_visible or g_ssh_form_visible)) return false;
+    if (ssh and (sshState().list_visible or sshState().form_visible)) return false;
     if (ai and (g_ai_list_visible or g_ai_form_visible)) return false;
     if (ssh) sshState().profiles_loaded = false;
     if (ai) assistantProfiles().profiles_loaded = false;
@@ -5916,8 +5964,8 @@ fn sessionLauncherTitle() []const u8 {
             .switch_model => i18n.s().sl_switch_model_title,
         };
     }
-    if (g_ssh_form_visible) return i18n.s().sl_ssh_server;
-    if (g_ssh_list_visible) {
+    if (sshState().form_visible) return i18n.s().sl_ssh_server;
+    if (sshState().list_visible) {
         return switch (sshState().list_mode) {
             .manage => i18n.s().sl_ssh_servers,
             .edit_select => i18n.s().sl_edit_ssh_server,
@@ -5944,8 +5992,8 @@ fn sessionLauncherHint() []const u8 {
             .switch_model => i18n.s().sl_switch_model_hint,
         };
     }
-    if (g_ssh_form_visible) return i18n.s().sl_hint_ssh_form;
-    if (g_ssh_list_visible) {
+    if (sshState().form_visible) return i18n.s().sl_hint_ssh_form;
+    if (sshState().list_visible) {
         const has_filter = sshState().list_filter_len > 0;
         return switch (sshState().list_mode) {
             .manage => if (has_filter) i18n.s().sl_hint_ssh_filter_edits else i18n.s().sl_hint_ssh_filter_manage,
@@ -5962,7 +6010,7 @@ fn sessionDesiredBoxWidth() f32 {
     const title = sessionLauncherTitle();
     const hint = sessionLauncherHint();
     var desired = @max(measureTitlebarText(title), measureTitlebarText(hint)) + 48.0;
-    if (g_ssh_list_visible) {
+    if (sshState().list_visible) {
         desired = @max(desired, measureTitlebarText(i18n.s().sl_search_ssh_servers) + 96.0);
     }
 
@@ -5985,13 +6033,16 @@ fn sessionDesiredBoxWidth() f32 {
         return desired;
     }
 
-    if (g_ssh_form_visible) {
+    if (sshState().form_visible) {
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_server_name, sshField(.name)));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_ip_host, sshField(.ip)));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_user, sshField(.user)));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_password, sshField(.password)));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_port, sshField(.port)));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_jump_host, sshField(.proxy_jump)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_proxy_type, sshProxyTypeDisplay()));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_proxy_host, sshField(.proxy_host)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_proxy_port, sshField(.proxy_port)));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_auth_method, sshAuthMethodDisplay()));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_identity_file, sshField(.identity_file)));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_save_connect, platform_pty_command.sshLauncherDetail()));
@@ -6027,7 +6078,7 @@ fn sessionDesiredBoxWidth() f32 {
         return desired;
     }
 
-    if (g_ssh_list_visible) {
+    if (sshState().list_visible) {
         var profile_idx: usize = 0;
         while (profile_idx < sshState().profile_count) : (profile_idx += 1) {
             var target_buf: [SSH_FIELD_MAX * 2]u8 = undefined;
@@ -6103,9 +6154,9 @@ fn sessionActiveRowCount() usize {
         aiListRowCount()
     else if (g_ai_history_source_visible)
         aiHistorySourceRowCount()
-    else if (g_ssh_form_visible)
+    else if (sshState().form_visible)
         SSH_FIELD_COUNT + 3
-    else if (g_ssh_list_visible)
+    else if (sshState().list_visible)
         sshListRowCount()
     else
         platform_pty_command.sessionLauncherRowCount();
@@ -6125,9 +6176,9 @@ fn sessionActiveSelection() usize {
         assistantProfiles().list_selected
     else if (g_ai_history_source_visible)
         launcherState().ai_history_source_selected
-    else if (g_ssh_form_visible)
+    else if (sshState().form_visible)
         sshState().focus
-    else if (g_ssh_list_visible)
+    else if (sshState().list_visible)
         sshState().list_selected
     else
         launcherState().selected;
@@ -6147,9 +6198,9 @@ fn sessionActiveSelectionPtr() *usize {
         &assistantProfiles().list_selected
     else if (g_ai_history_source_visible)
         &launcherState().ai_history_source_selected
-    else if (g_ssh_form_visible)
+    else if (sshState().form_visible)
         &sshState().focus
-    else if (g_ssh_list_visible)
+    else if (sshState().list_visible)
         &sshState().list_selected
     else
         &launcherState().selected;
@@ -6163,7 +6214,7 @@ fn sessionRowCapacity(content_height: f32, base_h: f32, row_h: f32, row_count: u
     if (usable_h <= row_h) return 1;
     const fit: usize = @intFromFloat(@max(1.0, @floor(usable_h / row_h)));
     const capped = @min(row_count, fit);
-    return if (g_ssh_list_visible) @min(capped, SSH_LIST_MAX_VISIBLE_ROWS) else capped;
+    return if (sshState().list_visible) @min(capped, SSH_LIST_MAX_VISIBLE_ROWS) else capped;
 }
 
 /// First row to render so the selected row stays visible. Mirrors
@@ -6177,12 +6228,12 @@ fn sessionFirstVisibleRow(selection: usize, visible_rows: usize, row_count: usiz
 
 fn sessionLayout(window_width: f32, window_height: f32, top_offset: f32) SessionLayout {
     const content_height = @max(1, window_height - top_offset);
-    const min_box_w: f32 = if (g_ssh_form_visible or g_ssh_list_visible or g_ai_form_visible or g_ai_list_visible) 460 else 360;
+    const min_box_w: f32 = if (sshState().form_visible or sshState().list_visible or g_ai_form_visible or g_ai_list_visible) 460 else 360;
     const box_w = ui_patterns.modalWidth(window_width, min_box_w, sessionDesiredBoxWidth(), 760, 24);
     const row_h = overlayRowHeight(38);
     const header_h = @round(18 + overlayLineHeight() * 2 + 12);
-    const filter_h = if (g_ssh_list_visible) overlayControlHeight(42) else 0;
-    const filter_gap: f32 = if (g_ssh_list_visible) 12 else 0;
+    const filter_h = if (sshState().list_visible) overlayControlHeight(42) else 0;
+    const filter_gap: f32 = if (sshState().list_visible) 12 else 0;
     const bottom_pad = @round(@max(20.0, overlayTextHeight() * 0.55));
     const row_count = sessionActiveRowCount();
     const visible_rows = sessionRowCapacity(content_height, header_h + filter_h + filter_gap + bottom_pad, row_h, row_count);
@@ -6249,7 +6300,7 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
         };
     }
 
-    if (g_ssh_list_visible) {
+    if (sshState().list_visible) {
         if (row >= sshListRowCount()) return null;
         sshState().list_selected = row;
         if (row < sshVisibleProfileCount()) return .connect_selected;
@@ -6277,7 +6328,7 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
         };
     }
 
-    if (!g_ssh_form_visible and !g_ai_form_visible) {
+    if (!sshState().form_visible and !g_ai_form_visible) {
         const action = sessionLauncherActionForRow(row) orelse return null;
         launcherState().selected = row;
         return action;
@@ -6559,7 +6610,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
     renderTitlebarTextStrongLimited(title, layout.box_x + 24, title_y, title_color, layout.box_w - 48);
     renderTitlebarTextStrongLimited(hint, layout.box_x + 24, hint_y, muted_color, layout.box_w - 48);
 
-    if (g_ssh_list_visible and layout.filter_h > 0) {
+    if (sshState().list_visible and layout.filter_h > 0) {
         const filter_x = @round(layout.box_x + 18);
         const filter_box_y = @round(window_height - (layout.box_top_px + layout.header_h + layout.filter_h));
         const filter_w = layout.box_w - 36;
@@ -6587,7 +6638,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         return;
     }
 
-    if (!g_ssh_form_visible and !g_ai_form_visible) {
+    if (!sshState().form_visible and !g_ai_form_visible) {
         if (g_ai_history_source_visible) {
             var row: usize = 0;
             renderSessionRow(layout, window_height, row, "Local", "This computer", launcherState().ai_history_source_selected == row);
@@ -6622,7 +6673,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
             }
             return;
         }
-        if (g_ssh_list_visible) {
+        if (sshState().list_visible) {
             var row: usize = 0;
             var profile_idx: usize = 0;
             while (profile_idx < sshState().profile_count) : (profile_idx += 1) {
@@ -6715,6 +6766,9 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
     renderSessionField(layout, window_height, @intFromEnum(SshField.proxy_jump), i18n.s().sl_ssh_jump_host, sshField(.proxy_jump), false);
     renderSessionField(layout, window_height, @intFromEnum(SshField.auth_method), i18n.s().sl_ssh_auth_method, sshAuthMethodDisplay(), false);
     renderSessionField(layout, window_height, @intFromEnum(SshField.identity_file), i18n.s().sl_ssh_identity_file, sshField(.identity_file), false);
+    renderSessionField(layout, window_height, @intFromEnum(SshField.proxy_type), i18n.s().sl_ssh_proxy_type, sshProxyTypeDisplay(), false);
+    renderSessionField(layout, window_height, @intFromEnum(SshField.proxy_host), i18n.s().sl_ssh_proxy_host, sshField(.proxy_host), false);
+    renderSessionField(layout, window_height, @intFromEnum(SshField.proxy_port), i18n.s().sl_ssh_proxy_port, sshField(.proxy_port), false);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT, i18n.s().sl_save_connect, platform_pty_command.sshLauncherDetail(), sshState().focus == SSH_FIELD_COUNT);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 1, i18n.s().sl_save, i18n.s().sl_v_profile, sshState().focus == SSH_FIELD_COUNT + 1);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 2, sessionLauncherCancelLabel(), "Esc", sshState().focus == SSH_FIELD_COUNT + 2);
@@ -8085,7 +8139,7 @@ test "overlays: session launcher caps rows and scrolls to keep selection visible
 }
 
 test "overlays: SSH list caps visible rows to five when many profiles exist" {
-    const saved_ssh_list = g_ssh_list_visible;
+    const saved_ssh_list = sshState().list_visible;
     const saved_session = g_session_launcher_visible;
     const saved_count = sshState().profile_count;
     const saved_mode = sshState().list_mode;
@@ -8094,7 +8148,7 @@ test "overlays: SSH list caps visible rows to five when many profiles exist" {
     var saved_profiles: [SSH_PROFILE_MAX]SshProfile = undefined;
     if (saved_count > 0) @memcpy(saved_profiles[0..saved_count], sshState().profiles[0..saved_count]);
     defer {
-        g_ssh_list_visible = saved_ssh_list;
+        sshState().list_visible = saved_ssh_list;
         g_session_launcher_visible = saved_session;
         sshState().profile_count = saved_count;
         if (saved_count > 0) @memcpy(sshState().profiles[0..saved_count], saved_profiles[0..saved_count]);
@@ -8103,7 +8157,7 @@ test "overlays: SSH list caps visible rows to five when many profiles exist" {
         sshState().list_filter_len = saved_filter_len;
     }
 
-    g_ssh_list_visible = true;
+    sshState().list_visible = true;
     g_session_launcher_visible = false;
     sshState().list_mode = .manage;
     sshState().list_selected = 0;
@@ -8466,8 +8520,8 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     const saved_integration_prompt = integrationPromptState().visible;
     const saved_confirms = overlayState().confirms;
     const saved_session = g_session_launcher_visible;
-    const saved_ssh_list = g_ssh_list_visible;
-    const saved_ssh_form = g_ssh_form_visible;
+    const saved_ssh_list = sshState().list_visible;
+    const saved_ssh_form = sshState().form_visible;
     const saved_ai_list = g_ai_list_visible;
     const saved_ai_form = g_ai_form_visible;
     const saved_ai_history = g_ai_history_source_visible;
@@ -8478,8 +8532,8 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
         integrationPromptState().visible = saved_integration_prompt;
         overlayState().confirms = saved_confirms;
         g_session_launcher_visible = saved_session;
-        g_ssh_list_visible = saved_ssh_list;
-        g_ssh_form_visible = saved_ssh_form;
+        sshState().list_visible = saved_ssh_list;
+        sshState().form_visible = saved_ssh_form;
         g_ai_list_visible = saved_ai_list;
         g_ai_form_visible = saved_ai_form;
         g_ai_history_source_visible = saved_ai_history;
@@ -8492,8 +8546,8 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     integrationPromptState().visible = false;
     overlayState().confirms = .{};
     g_session_launcher_visible = false;
-    g_ssh_list_visible = false;
-    g_ssh_form_visible = false;
+    sshState().list_visible = false;
+    sshState().form_visible = false;
     g_ai_list_visible = false;
     g_ai_form_visible = false;
     g_ai_history_source_visible = false;
@@ -9685,4 +9739,50 @@ fn renderDebugLine(window_width: f32, y_pos: *f32, margin: f32, pad_h: f32, pad_
     const rect: DebugLineRect = .{ .x = bg_x, .y = bg_y, .w = bg_w, .h = line_h };
     y_pos.* += line_h + 2; // spacing between lines
     return rect;
+}
+
+test "overlays: network proxy choice cycles without changing the SSH endpoint" {
+    const saved = try std.testing.allocator.create(ssh_profiles.State);
+    defer std.testing.allocator.destroy(saved);
+    saved.* = sshState().*;
+    defer sshState().* = saved.*;
+    sshState().resetForm();
+    sshState().setFormField(.ip, "host.test");
+    sshState().setFormField(.port, "22");
+    sshState().focus = @intFromEnum(SshField.proxy_type);
+    try std.testing.expect(cycleFocusedSshFormChoice(true));
+    try std.testing.expectEqualStrings("socks5", sshField(.proxy_type));
+    try std.testing.expect(cycleFocusedSshFormChoice(true));
+    try std.testing.expectEqualStrings("http", sshField(.proxy_type));
+    try std.testing.expect(cycleFocusedSshFormChoice(true));
+    try std.testing.expectEqualStrings("none", sshField(.proxy_type));
+    try std.testing.expect(cycleFocusedSshFormChoice(false));
+    try std.testing.expectEqualStrings("http", sshField(.proxy_type));
+    try std.testing.expectEqualStrings("host.test", sshField(.ip));
+    try std.testing.expectEqualStrings("22", sshField(.port));
+}
+
+test "overlays: invalid proxy cannot allocate or partially change a saved SSH profile" {
+    const saved = try std.testing.allocator.create(ssh_profiles.State);
+    defer std.testing.allocator.destroy(saved);
+    saved.* = sshState().*;
+    defer sshState().* = saved.*;
+    sshState().profile_count = 0;
+    sshState().profiles_loaded = true; // invalid requests must never write or reload disk
+    const args: AppWindow.ai_chat.SshProfileSaveArgs = .{
+        .name = "proxy-test",
+        .host = "host.test",
+        .user = "alice",
+        .proxy_type = "socks5",
+        .proxy_host = "127.0.0.1",
+        .proxy_port = "0",
+    };
+    try std.testing.expectError(error.InvalidProfile, agentSaveSshProfile(std.testing.allocator, args));
+    try std.testing.expectEqual(@as(usize, 0), sshState().profile_count);
+    sshState().profiles[0] = profile_codec.makeSshProfile("proxy-test", "original.test", "original-user", "2222");
+    sshState().profile_count = 1;
+    try std.testing.expectError(error.InvalidProfile, agentSaveSshProfile(std.testing.allocator, args));
+    try std.testing.expectEqual(@as(usize, 1), sshState().profile_count);
+    try std.testing.expectEqualStrings("original.test", profileField(&sshState().profiles[0], .ip));
+    try std.testing.expectEqualStrings("original-user", profileField(&sshState().profiles[0], .user));
 }

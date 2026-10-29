@@ -682,6 +682,7 @@ fn buildSshArgv(allocator: std.mem.Allocator, rule: *const rule_mod.Rule, conn: 
         try argv.append(allocator, "-i");
         try argv.append(allocator, try allocator.dupe(u8, conn.identityFile()));
     }
+    if (conn.network_proxy.kind != .none) try appendSshOption(allocator, &argv, conn.network_proxy.option());
     if (conn.proxyJump().len > 0) {
         try appendSshOption(allocator, &argv, try std.fmt.allocPrint(allocator, "ProxyJump={s}", .{conn.proxyJump()}));
     }
