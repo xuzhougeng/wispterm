@@ -118,6 +118,7 @@ A Magpie Agent tab or Copilot sidebar shows its reasoning effort (for example
 `medium`) beside the model name in the header. Click it to move to the next
 level the connected model supports, or type `/effort` to list the current and
 supported levels and `/effort <level>` (for example `/effort high`) to pick one.
+The Chinese alias `/推理强度` works the same way.
 The choice applies to the session's next request; no restart is needed.
 
 The list comes from the `modelInfo.efforts` snapshot Magpie wrote for the

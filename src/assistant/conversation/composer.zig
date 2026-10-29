@@ -336,6 +336,7 @@ pub fn parseSlashCommand(input: []const u8) ?SlashCommand {
     if (isDistillAlias(trimmed)) return .distill;
     if (memoryCommandAlias(trimmed)) |c| return c;
     if (modelCommandAlias(trimmed)) |c| return c;
+    if (effortCommandAlias(trimmed)) |c| return c;
     for (slash_command_entries) |entry| {
         if (std.mem.eql(u8, trimmed, entry.suggestion.command)) return entry.action;
     }
@@ -348,6 +349,7 @@ pub fn exactBuiltinCommand(token: []const u8) ?SlashCommand {
     if (isDistillAlias(token)) return .distill;
     if (memoryCommandAlias(token)) |c| return c;
     if (modelCommandAlias(token)) |c| return c;
+    if (effortCommandAlias(token)) |c| return c;
     for (slash_command_entries) |entry| {
         if (std.mem.eql(u8, token, entry.suggestion.command)) return entry.action;
     }
@@ -367,6 +369,11 @@ pub fn memoryCommandAlias(token: []const u8) ?SlashCommand {
 
 pub fn modelCommandAlias(token: []const u8) ?SlashCommand {
     if (std.mem.eql(u8, token, "/模型")) return .model_switch;
+    return null;
+}
+
+pub fn effortCommandAlias(token: []const u8) ?SlashCommand {
+    if (std.mem.eql(u8, token, "/推理强度")) return .effort;
     return null;
 }
 
@@ -619,6 +626,8 @@ test "parseSlashCommand recognizes model switch and alias" {
 test "parseSlashCommand recognizes effort with an optional level argument" {
     try std.testing.expectEqual(SlashCommand.effort, parseSlashCommand("/effort").?);
     try std.testing.expectEqual(SlashCommand.effort, exactBuiltinCommand("/effort").?);
+    try std.testing.expectEqual(SlashCommand.effort, parseSlashCommand("/推理强度").?);
+    try std.testing.expectEqual(SlashCommand.effort, exactBuiltinCommand("/推理强度").?);
     try std.testing.expectEqual(@as(usize, 1), slashCommandSuggestionCountForInput("/eff", 4, &.{}));
 }
 

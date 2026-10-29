@@ -143,16 +143,21 @@ test "/effort lists, switches, and refuses levels the model does not list" {
     }
 }
 
-test "/effort reaches the session through the composer" {
+test "/effort and its Chinese alias reach the session through the composer" {
     const a = std.testing.allocator;
     const session = try testMagpieSession(a, "chat_completions");
     defer session.deinit();
-    session.mutex.lock();
-    session.setInputTextLocked("/effort low");
-    session.mutex.unlock();
-    session.submit();
-    try std.testing.expectEqualStrings("low", session.reasoningEffort());
-    try std.testing.expect(!session.request_inflight);
+    for ([_]struct { input: []const u8, effort: []const u8 }{
+        .{ .input = "/effort low", .effort = "low" },
+        .{ .input = "/推理强度 high", .effort = "high" },
+    }) |case| {
+        session.mutex.lock();
+        session.setInputTextLocked(case.input);
+        session.mutex.unlock();
+        session.submit();
+        try std.testing.expectEqualStrings(case.effort, session.reasoningEffort());
+        try std.testing.expect(!session.request_inflight);
+    }
 }
 
 test "the header chip cycles through the model's levels only" {

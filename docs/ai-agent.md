@@ -344,7 +344,8 @@ Local slash commands (handled in the panel, without calling the model):
   `/模型` is the Chinese alias.
 - `/effort` shows a Magpie session's reasoning effort and the levels its model
   supports; `/effort <level>` switches this session (see
-  [Magpie](magpie.md#switching-reasoning-effort-in-a-session)).
+  [Magpie](magpie.md#switching-reasoning-effort-in-a-session)). `/推理强度` is
+  the Chinese alias.
 - `/permission` shows the agent tool permission; `/permission ask`,
   `/permission auto`, or `/permission full` changes it at runtime.
   `ask` prompts for normal tool use, `auto` runs ordinary tools automatically
