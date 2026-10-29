@@ -5309,6 +5309,10 @@ fn runAiListRow(row: usize) void {
 fn deleteAiProfile(idx: usize) void {
     if (assistantProfiles().profile_count == 0) return;
     if (idx >= assistantProfiles().profile_count) return;
+    if (assistantProfiles().profiles[idx].managed_by_magpie) {
+        showStatusToast("Manage this profile in Magpie / 请在 Magpie 中管理此配置");
+        return;
+    }
     const deleted_is_default = std.mem.eql(u8, aiProfileField(&assistantProfiles().profiles[idx], .name), aiDefaultProfileName());
     var i = idx;
     while (i + 1 < assistantProfiles().profile_count) : (i += 1) {
@@ -5401,11 +5405,18 @@ fn saveAiFormProfile() ?usize {
     if (!aiProfileInputsValid(aiField(.protocol), base_url, model)) return null;
 
     const editing_existing = assistantProfiles().edit_index != AI_PROFILE_NONE;
+    if (editing_existing and assistantProfiles().profiles[assistantProfiles().edit_index].managed_by_magpie) {
+        showStatusToast("Manage this profile in Magpie / 请在 Magpie 中管理此配置");
+        return null;
+    }
     const idx = if (editing_existing)
         assistantProfiles().edit_index
     else blk: {
-        if (assistantProfiles().profile_count >= AI_PROFILE_MAX) return null;
-        const next = assistantProfiles().profile_count;
+        const st = assistantProfiles();
+        const managed_count: usize = if (assistant_profile_store.magpie.managedIndex(st.profiles[0..st.profile_count]) != null) 1 else 0;
+        if (st.profile_count - managed_count >= assistant_profile_store.PERSONAL_PROFILE_MAX) return null;
+        const next = st.profile_count;
+        st.profiles[next] = .{};
         assistantProfiles().profile_count += 1;
         break :blk next;
     };
@@ -5675,29 +5686,25 @@ test "overlays: missing copilot API with no profile opens Quick Configure" {
     try std.testing.expect(!g_ai_list_visible);
 }
 
-threadlocal var g_ai_default_name_buf: [256]u8 = undefined;
-threadlocal var g_ai_default_name_len: usize = 0;
-threadlocal var g_ai_default_loaded: bool = false;
-
 /// Cached value of the `ai-default-profile` config key. Cached to avoid file
 /// IO on every render frame; invalidated on in-app writes.
 fn aiDefaultProfileName() []const u8 {
-    if (!g_ai_default_loaded) {
-        g_ai_default_loaded = true;
-        g_ai_default_name_len = 0;
+    if (!assistantProfiles().default_loaded) {
+        assistantProfiles().default_loaded = true;
+        assistantProfiles().default_name_len = 0;
         const allocator = AppWindow.g_allocator orelse return "";
         var cfg = Config.load(allocator) catch return "";
         defer cfg.deinit(allocator);
         const name = cfg.@"ai-default-profile";
-        const len = @min(name.len, g_ai_default_name_buf.len);
-        @memcpy(g_ai_default_name_buf[0..len], name[0..len]);
-        g_ai_default_name_len = len;
+        const len = @min(name.len, assistantProfiles().default_name_buf.len);
+        @memcpy(assistantProfiles().default_name_buf[0..len], name[0..len]);
+        assistantProfiles().default_name_len = len;
     }
-    return g_ai_default_name_buf[0..g_ai_default_name_len];
+    return assistantProfiles().default_name_buf[0..assistantProfiles().default_name_len];
 }
 
 fn invalidateAiDefaultName() void {
-    g_ai_default_loaded = false;
+    assistantProfiles().default_loaded = false;
 }
 
 threadlocal var g_subagent_profile_name_buf: [256]u8 = undefined;
@@ -5763,6 +5770,8 @@ pub fn resolveSubagentProfileOverride(allocator: std.mem.Allocator) ?ai_chat.Sub
 /// to the first profile. Returns 0 when no profiles exist (callers guard).
 fn defaultAiProfileIndex() usize {
     loadAiProfiles();
+    const st = assistantProfiles();
+    if (assistant_profile_store.magpie.managedIndex(st.profiles[0..st.profile_count])) |idx| return idx;
     if (assistantProfiles().profile_count == 0) return 0;
     var names: [AI_PROFILE_MAX][]const u8 = undefined;
     for (0..assistantProfiles().profile_count) |i| {
@@ -5815,7 +5824,7 @@ fn loadAiProfiles() void {
     if (assistantProfiles().profiles_loaded) return;
     assistantProfiles().profiles_loaded = true;
     const allocator = AppWindow.g_allocator orelse return;
-    assistantProfiles().profile_count = assistant_profile_store.loadProfiles(allocator, assistantProfiles().profiles[0..]);
+    assistantProfiles().profile_count = assistant_profile_store.loadAvailableProfiles(allocator, assistantProfiles().profiles[0..]);
     assistantProfiles().known_count = 0;
     assistantProfiles().rememberProfileNames();
 }

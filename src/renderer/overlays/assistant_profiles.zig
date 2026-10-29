@@ -3,7 +3,7 @@ const profile_codec = @import("profile_codec.zig");
 
 pub const AI_FIELD_COUNT = profile_codec.AI_FIELD_COUNT;
 pub const AI_FIELD_MAX = profile_codec.AI_FIELD_MAX;
-pub const AI_PROFILE_MAX: usize = 16;
+pub const AI_PROFILE_MAX: usize = 17; // 16 personal profiles + one managed profile
 pub const AI_PROFILE_NONE: usize = std.math.maxInt(usize);
 /// Form rows = 13 fields + 3 action rows (save+connect, save, cancel).
 pub const AI_FORM_ROW_COUNT = AI_FIELD_COUNT + 3;
@@ -24,6 +24,9 @@ pub const State = struct {
     profiles: [AI_PROFILE_MAX]AiProfile = undefined,
     profile_count: usize = 0,
     profiles_loaded: bool = false,
+    default_name_buf: [256]u8 = undefined,
+    default_name_len: usize = 0,
+    default_loaded: bool = false,
     /// Hashes of every profile name this cache has seen (loaded or saved), so
     /// a save keeps profiles added on disk meanwhile (by a sync or another
     /// window) but not ones deleted here.
@@ -52,6 +55,7 @@ pub const State = struct {
     /// Record the names now in `profiles` (after a load or a save).
     pub fn rememberProfileNames(self: *State) void {
         for (self.profiles[0..self.profile_count]) |*profile| {
+            if (profile.managed_by_magpie) continue;
             const h = profile_codec.profileNameHash(profile_codec.aiProfileField(profile, .name));
             if (std.mem.indexOfScalar(u64, self.knownNames(), h) != null) continue;
             if (self.known_count == self.known_names.len) return;

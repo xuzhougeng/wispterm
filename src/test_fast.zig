@@ -523,6 +523,7 @@ test {
     _ = @import("assistant/conversation/types.zig");
     _ = @import("assistant/conversation/identity.zig");
     _ = @import("assistant/profile/store.zig");
+    _ = @import("assistant/profile/magpie.zig");
     _ = @import("assistant/sidebar/panel.zig");
     _ = @import("assistant/sidebar/hint_gate.zig");
     _ = @import("appwindow/flush_scheduler.zig");

@@ -331,3 +331,9 @@ Grok Build reads `~/.grok/sessions/**/updates.jsonl` with sibling
 excluded. Grok Build and Kimi are initially unchecked; enable them in Source
 settings to include their history. Grok streaming text chunks remain separate
 cursor units so resuming an in-progress reply does not lose appended text.
+
+## Magpie model connection
+
+An optional Magpie Agent plugin supplies a separate `~/.config/wispterm/magpie.json`
+connection. Restart after connecting, changing models, or disconnecting. See
+[Magpie model connection](magpie.md) for activation and preservation of personal profiles.

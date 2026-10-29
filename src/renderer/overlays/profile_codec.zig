@@ -46,6 +46,8 @@ pub const SshProfile = struct {
 };
 
 pub const AiProfile = struct {
+    /// Runtime-only origin; never serialized into ai_profiles.
+    managed_by_magpie: bool = false,
     fields: [AI_FIELD_COUNT][AI_FIELD_MAX]u8 = undefined,
     lens: [AI_FIELD_COUNT]usize = .{0} ** AI_FIELD_COUNT,
 };
