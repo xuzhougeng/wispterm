@@ -6349,6 +6349,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             return;
                         }
                         if (AppWindow.assistant_conversation_renderer.permissionChipHitTest(
+                            chat,
                             xpos,
                             ypos,
                             @floatFromInt(fb.width),
@@ -6516,6 +6517,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     return;
                 }
                 if (AppWindow.assistant_conversation_renderer.permissionChipHitTest(
+                    chat,
                     xpos,
                     ypos,
                     @floatFromInt(fb.width),

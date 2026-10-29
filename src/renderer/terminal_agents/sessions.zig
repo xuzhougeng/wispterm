@@ -17,8 +17,10 @@ const BUTTON_EXTRA_H: f32 = 10;
 const ACTION_BUTTON_GAP: f32 = 8;
 const RESUME_LABEL = "Resume";
 const ACTION_LABELS = [_][]const u8{ "Download", "Export", "Attach" };
-/// Width of the "r Retry" affordance sharing the Status value line (right-aligned).
+/// Width of the "r Retry" affordance sharing the Status value line
+/// (right-aligned) at 1x; `retryLabelWidth` grows it with the glyphs.
 const RETRY_LABEL_W: f32 = 70;
+const RETRY_LABEL = "r Retry";
 const MAX_DATE_BUCKETS: usize = 256;
 
 pub const DrawContext = panel_draw.DrawContext;
@@ -210,8 +212,9 @@ pub fn interactionHitTest(
 
     // Retry shares the Status value line, right-aligned; only that label is clickable.
     const refresh_top = refreshButtonTop(top, cell_h);
-    const retry_x = layout.left_x + layout.left_w - PAD_X - RETRY_LABEL_W;
-    if (rectContains(mx, my, retry_x, refresh_top, RETRY_LABEL_W, buttonHeight(cell_h))) {
+    const retry_w = retryLabelWidth(glyph_w);
+    const retry_x = layout.left_x + layout.left_w - PAD_X - retry_w;
+    if (rectContains(mx, my, retry_x, refresh_top, retry_w, buttonHeight(cell_h))) {
         return .refresh;
     }
 
@@ -365,8 +368,9 @@ fn renderLeftColumn(
 
     // Status label, plus the rescan affordance sharing the value line on the right.
     _ = draw.renderTextLimited("Status", layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.status_label_top), muted, layout.left_w - PAD_X * 2);
-    const retry_x = layout.left_x + layout.left_w - PAD_X - RETRY_LABEL_W;
-    _ = draw.renderTextLimited("r Retry", retry_x, yTextFromTop(draw, window_height, lc.retry_text_top), muted, RETRY_LABEL_W);
+    const retry_w = retryLabelWidth(@max(draw.glyphAdvance('W'), 1));
+    const retry_x = layout.left_x + layout.left_w - PAD_X - retry_w;
+    _ = draw.renderTextLimited(RETRY_LABEL, retry_x, yTextFromTop(draw, window_height, lc.retry_text_top), muted, retry_w);
     var status_buf: [48]u8 = undefined;
     const status_label = if (session.state == .scanning)
         ai_history_session.scanningStatusLabel(&status_buf, session.rows.items.len)
@@ -831,6 +835,11 @@ fn detailActionTop(top: f32, cell_h: f32) f32 {
     return resumeButtonTop(top, cell_h) + buttonHeight(cell_h) + 10;
 }
 
+/// Same per-glyph estimate as `labelButtonWidth`, so render and hit test agree.
+fn retryLabelWidth(glyph_w: f32) f32 {
+    return @max(RETRY_LABEL_W, @as(f32, @floatFromInt(RETRY_LABEL.len)) * @max(glyph_w, 1));
+}
+
 fn labelButtonWidth(label: []const u8, glyph_w: f32) f32 {
     return @as(f32, @floatFromInt(label.len)) * @max(glyph_w, 1) + BUTTON_PAD_X * 2;
 }
@@ -974,6 +983,14 @@ test "terminal agent sessions renderer: interaction hit test maps buttons and ro
     const layout = computeLayout(0, 1000);
     const cell_h: f32 = 16;
     const top: f32 = 40;
+
+    // Retry keeps its 1x width at a 10px glyph and doubles with 2x glyphs.
+    try std.testing.expectEqual(RETRY_LABEL_W, retryLabelWidth(10));
+    try std.testing.expectEqual(@as(f32, 140), retryLabelWidth(20));
+    try std.testing.expectEqual(
+        Hit.refresh,
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, 20, layout.left_x + layout.left_w - PAD_X - 140 + 4, refreshButtonTop(top, cell_h) + 2),
+    );
 
     // Retry is right-aligned on the Status value line; click inside that label.
     try std.testing.expectEqual(

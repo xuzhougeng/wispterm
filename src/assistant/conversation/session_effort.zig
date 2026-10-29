@@ -25,12 +25,13 @@ pub fn cycle(session: *Session) void {
     const level = levels.next(session.reasoningEffort()) orelse return;
     _ = selectLocked(session, level);
     if (session.request_inflight) return;
-    var buf: [96]u8 = undefined;
+    // Short: the wide header's status slot is ~200px at 1x.
+    var buf: [64]u8 = undefined;
     const status = if (levels.count == 1)
-        std.fmt.bufPrint(&buf, "Reasoning effort: {s} (only level for this model)", .{level})
+        std.fmt.bufPrint(&buf, "Effort: {s} (only level)", .{level})
     else
-        std.fmt.bufPrint(&buf, "Reasoning effort: {s}", .{level});
-    session.setStatusLocked(status catch "Reasoning effort changed");
+        std.fmt.bufPrint(&buf, "Effort: {s}", .{level});
+    session.setStatusLocked(status catch "Effort changed");
 }
 
 /// `/effort [level]`: show the current and available levels, or switch this
@@ -168,13 +169,13 @@ test "the header chip cycles through the model's levels only" {
         cycle(session);
         try std.testing.expectEqualStrings(expected, session.reasoningEffort());
     }
-    try std.testing.expectEqualStrings("Reasoning effort: medium", session.status());
+    try std.testing.expectEqualStrings("Effort: medium", session.status());
 
     session.effort_levels = .{};
     session.effort_levels.append("auto");
     cycle(session);
     try std.testing.expectEqualStrings("auto", session.reasoningEffort());
-    try std.testing.expectEqualStrings("Reasoning effort: auto (only level for this model)", session.status());
+    try std.testing.expectEqualStrings("Effort: auto (only level)", session.status());
 }
 
 test "personal sessions without levels keep their profile effort" {

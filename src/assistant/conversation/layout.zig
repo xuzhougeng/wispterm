@@ -181,19 +181,42 @@ pub fn permissionChipX(x: f32, w: f32, line_pad_x: f32, status_slot_w: f32, chip
     return x + w - line_pad_x - status_slot_w - chip_gap - chip_w;
 }
 
-/// Header labels left of the permission chip, laid out right to left:
-/// `[model] [effort] [mode] [chip]`. Every slot comes from measured widths,
-/// so render and hit tests share one placement and no label can overlap its
-/// neighbour whatever the font scale.
-pub const HeaderLabels = struct {
+/// Header row left of the right-edge controls, laid out right to left:
+/// `[model] [effort] [mode] [permission]`, plus an optional status span that
+/// the permission, mode, and effort labels yield to (the compact sidebar's
+/// error text). Every slot comes from measured widths, so render and hit tests
+/// share one placement and no label can overlap its neighbour at any font
+/// scale.
+pub const HeaderRow = struct {
     mode_x: f32,
     /// Left edge of the effort label, or null when it is absent or hidden.
-    effort_x: ?f32,
+    effort_x: ?f32 = null,
     /// Width left for the model label; callers hide it below a minimum.
     model_limit: f32,
+    show_mode: bool = true,
+    show_permission: bool = true,
+    /// Status span, when one claimed space (`status_w` 0 otherwise).
+    status_x: f32 = 0,
+    status_w: f32 = 0,
 };
 
-pub const HeaderLabelMetrics = struct {
+pub const HeaderRowWidths = struct {
+    /// Left edge of the permission label (`permissionChipX`).
+    chip_x: f32,
+    permission_w: f32,
+    mode_slot_w: f32,
+    mode_w: f32,
+    effort_w: ?f32 = null,
+};
+
+/// A status that may take the permission, mode, and effort labels' space,
+/// right-aligned at `right`. It never takes the model label's space.
+pub const StatusClaim = struct {
+    right: f32,
+    text_w: f32,
+};
+
+pub const HeaderRowMetrics = struct {
     line_pad_x: f32,
     /// Space between the mode slot and the permission chip.
     mode_gap: f32 = 8,
@@ -203,21 +226,52 @@ pub const HeaderLabelMetrics = struct {
     model_gap: f32 = 12,
     /// Model label width the effort label must leave, or it is hidden.
     min_model_w: f32,
+    /// Space a label keeps before a status span.
+    status_gap: f32 = 8,
 };
 
-pub fn headerLabels(x: f32, chip_x: f32, mode_slot_w: f32, effort_w: ?f32, m: HeaderLabelMetrics) HeaderLabels {
+pub fn headerRow(x: f32, widths: HeaderRowWidths, status: ?StatusClaim, m: HeaderRowMetrics) HeaderRow {
     const model_x = x + m.line_pad_x;
-    const mode_x = @max(model_x, chip_x - mode_slot_w - m.mode_gap);
-    var right = mode_x;
-    var effort_x: ?f32 = null;
-    if (effort_w) |w| {
+    const mode_x = @max(model_x, widths.chip_x - widths.mode_slot_w - m.mode_gap);
+    var row: HeaderRow = .{ .mode_x = mode_x, .model_limit = mode_x - model_x - m.model_gap };
+    if (widths.effort_w) |w| {
         const left = mode_x - m.effort_gap - w;
         if (left - m.model_gap - model_x >= m.min_model_w) {
-            effort_x = left;
-            right = left;
+            row.effort_x = left;
+            row.model_limit = left - model_x - m.model_gap;
         }
     }
-    return .{ .mode_x = mode_x, .effort_x = effort_x, .model_limit = right - model_x - m.model_gap };
+    const claim = status orelse return row;
+    const region_left = row.effort_x orelse mode_x;
+    row.status_x = @min(claim.right, @max(region_left, claim.right - claim.text_w));
+    row.status_w = @max(1.0, claim.right - row.status_x);
+    const clear = row.status_x - m.status_gap;
+    if (widths.chip_x + widths.permission_w > clear) row.show_permission = false;
+    if (mode_x + widths.mode_w > clear) row.show_mode = false;
+    if (row.effort_x) |effort_x| {
+        if (effort_x + widths.effort_w.? > clear) row.effort_x = null;
+    }
+    return row;
+}
+
+/// Placement of the queued-prompt count, right-aligned `gap` before
+/// `anchor_x` and never left of `left_bound`: the full text when it fits,
+/// else the short form, else hidden.
+pub const QueueLabel = struct {
+    x: f32,
+    short: bool,
+};
+
+pub fn queueLabel(anchor_x: f32, left_bound: f32, gap: f32, full_w: f32, short_w: f32) ?QueueLabel {
+    if (anchor_x - gap - full_w >= left_bound) return .{ .x = anchor_x - gap - full_w, .short = false };
+    if (anchor_x - gap - short_w >= left_bound) return .{ .x = anchor_x - gap - short_w, .short = true };
+    return null;
+}
+
+/// Width of a label slot that must fit `text_w` plus padding but never shrink
+/// below the slot's 1x design width.
+pub fn labelSlotWidth(min_w: f32, text_w: f32, pad: f32) f32 {
+    return @max(min_w, text_w + pad);
 }
 
 /// Left-aligned title plus a hint string in a popup header, never overlapping.
@@ -522,31 +576,135 @@ test "permissionChipX" {
     try std.testing.expectApproxEqAbs(@as(f32, 586), px, 0.001);
 }
 
-test "header effort label keeps clear of a mode label wider than its default slot" {
-    const m: HeaderLabelMetrics = .{ .line_pad_x = 18, .effort_gap = 16, .min_model_w = 52 };
-    // Retina-scale glyphs: "Agent" needs more than the 84px default mode slot.
-    const mode_text_w: f32 = 96;
-    const mode_slot_w = @max(84.0, mode_text_w + 20);
-    const effort_w: f32 = 114; // "medium"
-    const labels = headerLabels(0, 700, mode_slot_w, effort_w, m);
-    const effort_x = labels.effort_x.?;
-    try std.testing.expectEqual(@as(f32, 700 - 116 - 8), labels.mode_x);
-    try std.testing.expect(effort_x + effort_w + m.effort_gap <= labels.mode_x);
-    try std.testing.expect(18 + labels.model_limit + m.model_gap <= effort_x);
-    try std.testing.expect(labels.model_limit >= m.min_model_w);
+// Header geometry as the renderer sets it up (conversation.zig constants),
+// with every glyph `adv` px wide: 8 at 1x, 16 for a 2x Retina backing store.
+const TestHeader = struct {
+    const line_pad_x: f32 = 18;
+    const chip_w: f32 = 104;
+    const chip_gap: f32 = 12;
+    const compact_trailing: f32 = 36;
+    const dot_hit: f32 = 28;
+    const metrics: HeaderRowMetrics = .{ .line_pad_x = line_pad_x, .effort_gap = 16, .min_model_w = 52 };
+
+    fn textW(text: []const u8, adv: f32) f32 {
+        return @as(f32, @floatFromInt(text.len)) * adv;
+    }
+
+    fn chipX(w: f32, compact: bool) f32 {
+        const reserve = if (compact) compact_trailing else @min(280.0, @max(72.0, w * 0.22));
+        return permissionChipX(0, w, line_pad_x, reserve, chip_gap, chip_w);
+    }
+
+    fn widths(w: f32, compact: bool, adv: f32, effort: ?[]const u8) HeaderRowWidths {
+        return .{
+            .chip_x = chipX(w, compact),
+            .permission_w = textW("Full", adv),
+            .mode_slot_w = labelSlotWidth(84, textW("Agent", adv), 20),
+            .mode_w = textW("Agent", adv),
+            .effort_w = if (effort) |e| textW(e, adv) else null,
+        };
+    }
+
+    fn dotX(w: f32) f32 {
+        return headerButtonRect(0, w, 0, line_pad_x + compact_trailing, dot_hit, dot_hit, 54).x;
+    }
+
+    /// Labels drawn left to right never touch: model, effort, mode,
+    /// permission, then the status span when one claimed space.
+    fn expectClear(row: HeaderRow, wd: HeaderRowWidths) !void {
+        const m = metrics;
+        const next_after_model = row.effort_x orelse row.mode_x;
+        if (row.model_limit > 24) try std.testing.expect(m.line_pad_x + row.model_limit + m.model_gap <= next_after_model);
+        if (row.effort_x) |effort_x| try std.testing.expect(effort_x + wd.effort_w.? + m.effort_gap <= row.mode_x);
+        if (row.mode_x > m.line_pad_x) try std.testing.expect(row.mode_x + wd.mode_w <= wd.chip_x);
+        if (row.status_w > 0) {
+            if (row.show_permission) try std.testing.expect(wd.chip_x + wd.permission_w + m.status_gap <= row.status_x);
+            if (row.show_mode) try std.testing.expect(row.mode_x + wd.mode_w + m.status_gap <= row.status_x);
+            if (row.effort_x) |effort_x| try std.testing.expect(effort_x + wd.effort_w.? + m.status_gap <= row.status_x);
+            try std.testing.expect(row.model_limit <= 24 or m.line_pad_x + row.model_limit < row.status_x);
+        }
+    }
+};
+
+test "header row keeps model, effort, mode, and permission labels apart at 1x and 2x" {
+    for ([_]f32{ 8, 16 }) |adv| for ([_]bool{ false, true }) |compact| for ([_]?[]const u8{ null, "medium", "xhigh" }) |effort| {
+        for ([_]f32{ 360, 600, 966, 1932 }) |w| {
+            const wd = TestHeader.widths(w, compact, adv, effort);
+            try TestHeader.expectClear(headerRow(0, wd, null, TestHeader.metrics), wd);
+        }
+    };
+    // The case seen on screen: "Agent" at 2x is wider than the 84px default
+    // slot, so the mode label moves left and the effort label must follow it.
+    const wd = TestHeader.widths(1932, false, 16, "medium");
+    const row = headerRow(0, wd, null, TestHeader.metrics);
+    try std.testing.expectEqual(wd.chip_x - 100 - 8, row.mode_x);
+    try std.testing.expect(row.effort_x.? + wd.effort_w.? + 16 == row.mode_x);
 }
 
 test "header effort label hides before it crowds out the model label" {
-    const m: HeaderLabelMetrics = .{ .line_pad_x = 18, .effort_gap = 16, .min_model_w = 52 };
-    const without = headerLabels(0, 260, 84, null, m);
-    try std.testing.expect(without.effort_x == null);
-    try std.testing.expectEqual(@as(f32, 260 - 84 - 8 - 18 - 12), without.model_limit);
+    const m = TestHeader.metrics;
+    const wd: HeaderRowWidths = .{ .chip_x = 260, .permission_w = 32, .mode_slot_w = 84, .mode_w = 40, .effort_w = 80 };
+    var without = wd;
+    without.effort_w = null;
+    const base = headerRow(0, without, null, m);
+    try std.testing.expectEqual(@as(f32, 260 - 84 - 8 - 18 - 12), base.model_limit);
     // 260 - 92 = 168 mode_x; 168 - 16 - 80 = 72 left; 72 - 12 - 18 = 42 < 52.
-    const narrow = headerLabels(0, 260, 84, 80, m);
+    const narrow = headerRow(0, wd, null, m);
     try std.testing.expect(narrow.effort_x == null);
-    try std.testing.expectEqual(without.model_limit, narrow.model_limit);
-    const wide = headerLabels(0, 300, 84, 80, m);
-    try std.testing.expectEqual(@as(?f32, 300 - 92 - 16 - 80), wide.effort_x);
+    try std.testing.expectEqual(base.model_limit, narrow.model_limit);
+    var roomy = wd;
+    roomy.chip_x = 300;
+    try std.testing.expectEqual(@as(?f32, 300 - 92 - 16 - 80), headerRow(0, roomy, null, m).effort_x);
+}
+
+test "compact sidebar status takes the label space it needs at 1x and 2x" {
+    const long = "Missing API key. Click to configure";
+    for ([_]f32{ 8, 16 }) |adv| for ([_]?[]const u8{ null, "medium" }) |effort| {
+        const w = 360 * (adv / 8); // a 360pt sidebar
+        const wd = TestHeader.widths(w, true, adv, effort);
+        const right = TestHeader.dotX(w) - 8;
+        const plain = headerRow(0, wd, null, TestHeader.metrics);
+        const region_left = plain.effort_x orelse plain.mode_x;
+
+        // A long error gets everything right of the model label, not 1px.
+        const err = headerRow(0, wd, .{ .right = right, .text_w = TestHeader.textW(long, adv) }, TestHeader.metrics);
+        try std.testing.expectEqual(region_left, err.status_x);
+        try std.testing.expectEqual(right - region_left, err.status_w);
+        try std.testing.expect(err.status_w >= 160);
+        try std.testing.expect(!err.show_permission and !err.show_mode and err.effort_x == null);
+        try std.testing.expectEqual(plain.model_limit, err.model_limit);
+        try TestHeader.expectClear(err, wd);
+
+        // A short status keeps its own width; only labels it would cover hide.
+        const short = headerRow(0, wd, .{ .right = right, .text_w = TestHeader.textW("Stopped", adv) }, TestHeader.metrics);
+        try std.testing.expectEqual(TestHeader.textW("Stopped", adv), short.status_w);
+        try TestHeader.expectClear(short, wd);
+    };
+}
+
+test "queued count stays clear of the permission label, then shortens, then hides" {
+    // Wide tab at 2x in a 590pt pane: the stop button sits in the status reserve.
+    const w: f32 = 1180;
+    const wd = TestHeader.widths(w, false, 16, null);
+    const left_bound = wd.chip_x + wd.permission_w + 12;
+    const stop_x = w - 18 - labelSlotWidth(104, 28 + TestHeader.textW("Esc Stop", 16) + 6, 0);
+    const full_w = TestHeader.textW("Queued: 3", 16);
+    const short_w = TestHeader.textW("+3", 16);
+    const placed = queueLabel(stop_x, left_bound, 12, full_w, short_w).?;
+    try std.testing.expect(placed.x >= left_bound);
+    try std.testing.expect(placed.x + (if (placed.short) short_w else full_w) + 12 <= stop_x);
+    try std.testing.expectEqual(@as(?QueueLabel, .{ .x = 100 - 12 - 10, .short = false }), queueLabel(100, 0, 12, 10, 4));
+    try std.testing.expectEqual(@as(?QueueLabel, .{ .x = 100 - 12 - 4, .short = true }), queueLabel(100, 80, 12, 10, 4));
+    try std.testing.expect(queueLabel(100, 90, 12, 10, 4) == null);
+    // Compact sidebar at 2x: no room between "Full" and the dot, so it hides.
+    const cw = TestHeader.widths(720, true, 16, null);
+    try std.testing.expect(queueLabel(TestHeader.dotX(720), cw.chip_x + cw.permission_w + 12, 12, full_w, short_w) == null);
+}
+
+test "label slots grow to fit measured text but keep their 1x width" {
+    try std.testing.expectEqual(@as(f32, 12), labelSlotWidth(12, 8, 0));
+    try std.testing.expectEqual(@as(f32, 16), labelSlotWidth(12, 16, 0));
+    try std.testing.expectEqual(@as(f32, 186), labelSlotWidth(104, 28 + 152, 6));
 }
 
 test "compact copilot chip is to the right of the wide-tab chip" {

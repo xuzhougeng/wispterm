@@ -91,6 +91,12 @@ const MODE_SLOT_W: f32 = 84;
 // leave before it is hidden on narrow headers.
 const EFFORT_CHIP_GAP: f32 = 16;
 const EFFORT_CHIP_MIN_MODEL_W: f32 = 52;
+// Gap between a header label and the next control (queue count, status).
+const HEADER_LABEL_GAP: f32 = 12;
+// "Esc Stop" label inset inside the stop button: icon column on the left,
+// padding on the right.
+const STOP_LABEL_X: f32 = 28;
+const STOP_LABEL_PAD_R: f32 = 6;
 const INPUT_SCROLLBAR_GUTTER: f32 = 10;
 const INPUT_SCROLLBAR_W: f32 = 4;
 const INPUT_SCROLLBAR_PAD: f32 = 7;
@@ -109,6 +115,12 @@ const BLOCK_COPY_BUTTON_PAD: f32 = 4;
 const DETAIL_PAD_X: f32 = 14;
 const DETAIL_PAD_Y: f32 = 10;
 const DETAIL_ARROW_W: f32 = 12;
+
+/// Collapse-arrow column: the wider of ">" and "v" as drawn (twice the 1x
+/// width on Retina), so the arrow is never truncated to nothing.
+fn detailArrowW() f32 {
+    return ai_chat_layout.labelSlotWidth(DETAIL_ARROW_W, @max(titlebarTextWidth(">"), titlebarTextWidth("v")), 0);
+}
 const DETAIL_RULE_W: f32 = 3;
 /// Gap between an expanded activity group's header row and its first card.
 const GROUP_HEADER_GAP: f32 = 6;
@@ -262,36 +274,40 @@ pub fn render(
     const chip_x = headerPermissionChipX(x, w, compact);
     const mode_text = headerModeText(session);
     const mode_slot_w = headerModeSlotW(mode_text);
-    const labels = headerLabels(session, x, w, compact);
-    const mode_x = labels.mode_x;
+    const header_row = headerRowLocked(session, x, w, top, compact);
+    const mode_x = header_row.mode_x;
 
     // Model label fills the space left of the effort chip (or the mode slot);
     // it is hidden when the panel (e.g. the narrow copilot sidebar) is too
     // tight to show it without overlapping the controls.
     const model_x = x + LINE_PAD_X;
-    if (labels.model_limit > 24) {
-        _ = titlebar.renderTextLimited(session.model(), model_x, header_y + 10, mixColor(fg, accent, 0.12), labels.model_limit);
+    if (header_row.model_limit > 24) {
+        _ = titlebar.renderTextLimited(session.model(), model_x, header_y + 10, mixColor(fg, accent, 0.12), header_row.model_limit);
     }
-    if (labels.effort_x) |effort_x| {
+    if (header_row.effort_x) |effort_x| {
         const effort_w = titlebarTextWidth(session.reasoningEffort());
         _ = titlebar.renderTextLimited(session.reasoningEffort(), effort_x, header_y + 10, mixColor(fg, accent, 0.18), effort_w + 2);
         ui_pipeline.fillQuadAlpha(effort_x, header_y + 8, effort_w, 1, accent, 0.26);
     }
-    _ = titlebar.renderTextLimited(mode_text, mode_x, header_y + 10, mixColor(fg, accent, 0.18), mode_slot_w);
+    if (header_row.show_mode) {
+        _ = titlebar.renderTextLimited(mode_text, mode_x, header_y + 10, mixColor(fg, accent, 0.18), mode_slot_w);
+    }
 
     const perm_text = permissionDisplayName(permission);
-    const perm_color = switch (permission) {
-        .confirm => mixColor(bg, fg, 0.66),
-        .auto => mixColor(fg, accent, 0.12),
-        .full => mixColor(fg, accent, 0.25),
-    };
-    _ = titlebar.renderTextLimited(perm_text, chip_x, header_y + 10, perm_color, PERMISSION_CHIP_W);
-    const perm_alpha: f32 = switch (permission) {
-        .confirm => 0.16,
-        .auto => 0.26,
-        .full => 0.38,
-    };
-    ui_pipeline.fillQuadAlpha(chip_x, header_y + 8, PERMISSION_CHIP_W - 8, 1, accent, perm_alpha);
+    if (header_row.show_permission) {
+        const perm_color = switch (permission) {
+            .confirm => mixColor(bg, fg, 0.66),
+            .auto => mixColor(fg, accent, 0.12),
+            .full => mixColor(fg, accent, 0.25),
+        };
+        _ = titlebar.renderTextLimited(perm_text, chip_x, header_y + 10, perm_color, PERMISSION_CHIP_W);
+        const perm_alpha: f32 = switch (permission) {
+            .confirm => 0.16,
+            .auto => 0.26,
+            .full => 0.38,
+        };
+        ui_pipeline.fillQuadAlpha(chip_x, header_y + 8, PERMISSION_CHIP_W - 8, 1, accent, perm_alpha);
+    }
 
     if (compact) {
         // Narrow copilot sidebar: collapse the status into a colored dot.
@@ -299,7 +315,9 @@ pub fn render(
         //   yellow (palette[3]) = in progress; the dot doubles as the click
         //                         target to stop the request (Esc also works)
         //   red    (palette[1]) = stopped / error; the dot keeps its actionable
-        //                         status text alongside it (e.g. "Missing API key")
+        //                         status text alongside it (e.g. "Missing API
+        //                         key"), which takes the mode/permission labels'
+        //                         space while it is shown
         const status_kind = session.statusKind();
         const dot_color = switch (status_kind) {
             .ready => AppWindow.g_theme.palette[2],
@@ -307,10 +325,8 @@ pub fn render(
             .stopped => AppWindow.g_theme.palette[1],
         };
         if (status_kind == .stopped) {
-            const status_text = if (session.missingApiKey()) MISSING_API_KEY_ACTION_TEXT else session.status();
-            const status_rect = statusActionRect(x, w, top, status_text, true);
-            _ = titlebar.renderTextLimited(status_text, status_rect.x, header_y + 10, dot_color, status_rect.w);
-            ui_pipeline.fillQuadAlpha(status_rect.x, header_y + 8, status_rect.w, 1, dot_color, 0.34);
+            _ = titlebar.renderTextLimited(headerStatusText(session), header_row.status_x, header_y + 10, dot_color, header_row.status_w);
+            ui_pipeline.fillQuadAlpha(header_row.status_x, header_y + 8, header_row.status_w, 1, dot_color, 0.34);
         }
         const dot_hit = statusDotRect(x, w, top);
         fillDot(dot_hit.x + dot_hit.w / 2, header_y + HEADER_H / 2, STATUS_DOT_D, dot_color);
@@ -319,26 +335,29 @@ pub fn render(
         renderStopButton(stopButtonRect(x, w, top), window_height, session.request_stopping);
     } else {
         const missing_api_key = session.missingApiKey();
-        const status_text = if (missing_api_key) MISSING_API_KEY_ACTION_TEXT else session.status();
+        const status_text = headerStatusText(session);
         const status_color = if (missing_api_key) mixColor(fg, accent, 0.22) else mixColor(bg, fg, 0.62);
-        const status_rect = statusActionRect(x, w, top, status_text, false);
-        _ = titlebar.renderTextLimited(status_text, status_rect.x, header_y + 10, status_color, STATUS_SLOT_W);
+        const status_rect = wideStatusRect(x, w, top, status_text);
+        _ = titlebar.renderTextLimited(status_text, status_rect.x, header_y + 10, status_color, status_rect.w);
         if (missing_api_key) {
             ui_pipeline.fillQuadAlpha(status_rect.x, header_y + 8, status_rect.w, 1, accent, 0.34);
         }
     }
 
-    // Busy 且有排队 prompt 时，在 header 状态区左侧显示队列计数。
+    // Busy 且有排队 prompt 时，在 header 状态区左侧显示队列计数；放不下时
+    // 缩成 "+N"，再放不下就隐藏，绝不压到权限标签上。
     if (session.request_inflight and session.prompt_queue.len() > 0) {
-        var queue_buf: [24]u8 = undefined;
-        const queue_text = std.fmt.bufPrint(&queue_buf, "Queued: {d}", .{session.prompt_queue.len()}) catch "";
-        if (queue_text.len > 0) {
-            const anchor_x = if (compact) statusDotRect(x, w, top).x else stopButtonRect(x, w, top).x;
-            const queue_w = titlebarTextWidth(queue_text);
-            const queue_x = anchor_x - queue_w - 12;
-            if (queue_x > x + LINE_PAD_X) {
-                _ = titlebar.renderTextLimited(queue_text, queue_x, header_y + 10, mixColor(fg, accent, 0.18), queue_w + 2);
-            }
+        var full_buf: [24]u8 = undefined;
+        var short_buf: [16]u8 = undefined;
+        const full = std.fmt.bufPrint(&full_buf, "Queued: {d}", .{session.prompt_queue.len()}) catch "";
+        const short = std.fmt.bufPrint(&short_buf, "+{d}", .{session.prompt_queue.len()}) catch "";
+        const anchor_x = if (compact) statusDotRect(x, w, top).x else stopButtonRect(x, w, top).x;
+        const left_bound = if (header_row.show_permission) chip_x + titlebarTextWidth(perm_text) + HEADER_LABEL_GAP else mode_x + mode_slot_w;
+        const full_w = titlebarTextWidth(full);
+        const short_w = titlebarTextWidth(short);
+        if (ai_chat_layout.queueLabel(anchor_x, @max(left_bound, x + LINE_PAD_X), HEADER_LABEL_GAP, full_w, short_w)) |q| {
+            const text = if (q.short) short else full;
+            _ = titlebar.renderTextLimited(text, q.x, header_y + 10, mixColor(fg, accent, 0.18), (if (q.short) short_w else full_w) + 2);
         }
     }
 
@@ -860,6 +879,7 @@ pub fn stopButtonHitTest(
 }
 
 pub fn permissionChipHitTest(
+    session: *ai_chat.Session,
     xpos: f64,
     ypos: f64,
     window_width: f32,
@@ -871,6 +891,10 @@ pub fn permissionChipHitTest(
     _ = window_width;
     const x = @round(chat_x);
     const w = @round(@max(1.0, chat_w));
+    session.mutex.lock();
+    const shown = headerRowLocked(session, x, w, titlebar_offset, compact).show_permission;
+    session.mutex.unlock();
+    if (!shown) return false;
     const chip_x = headerPermissionChipX(x, w, compact);
     return pointInRect(@floatCast(xpos), @floatCast(ypos), .{
         .x = chip_x,
@@ -883,9 +907,9 @@ pub fn permissionChipHitTest(
 /// Bounding box of the header model label (top-left of the panel), or null when
 /// the label is hidden because the panel is too narrow (mirrors the render-time
 /// `model_limit > 24` guard in `render`).
-fn modelLabelRect(session: *ai_chat.Session, x: f32, w: f32, titlebar_offset: f32, compact: bool) ?Rect {
+fn modelLabelRectLocked(session: *ai_chat.Session, x: f32, w: f32, titlebar_offset: f32, compact: bool) ?Rect {
     const model_x = x + LINE_PAD_X;
-    const model_limit = headerLabels(session, x, w, compact).model_limit;
+    const model_limit = headerRowLocked(session, x, w, titlebar_offset, compact).model_limit;
     if (model_limit <= 24) return null;
     const text_w = @min(measureText(session.model()), model_limit);
     return .{ .x = model_x, .top_px = titlebar_offset + 8, .w = @max(1.0, text_w), .h = 32 };
@@ -899,14 +923,31 @@ fn headerModeSlotW(mode_text: []const u8) f32 {
     return @max(MODE_SLOT_W, titlebarTextWidth(mode_text) + 20);
 }
 
+fn headerStatusText(session: *const ai_chat.Session) []const u8 {
+    return if (session.missingApiKey()) MISSING_API_KEY_ACTION_TEXT else session.status();
+}
+
 /// Header label placement shared by `render` and the header hit tests, from
-/// the same measured widths the renderer draws with.
-fn headerLabels(session: *ai_chat.Session, x: f32, w: f32, compact: bool) ai_chat_layout.HeaderLabels {
+/// the same measured widths the renderer draws with. In the compact sidebar a
+/// stopped/error status claims the effort, mode, and permission labels' space
+/// beside the dot. Assumes `session.mutex` is held.
+fn headerRowLocked(session: *ai_chat.Session, x: f32, w: f32, titlebar_offset: f32, compact: bool) ai_chat_layout.HeaderRow {
+    const mode_text = headerModeText(session);
     const effort_w: ?f32 = if (session.effort_levels.count > 0 and session.thinking_enabled)
         titlebarTextWidth(session.reasoningEffort())
     else
         null;
-    return ai_chat_layout.headerLabels(x, headerPermissionChipX(x, w, compact), headerModeSlotW(headerModeText(session)), effort_w, .{
+    const status: ?ai_chat_layout.StatusClaim = if (compact and session.statusKind() == .stopped) .{
+        .right = statusDotRect(x, w, titlebar_offset).x - 8,
+        .text_w = titlebarTextWidth(headerStatusText(session)),
+    } else null;
+    return ai_chat_layout.headerRow(x, .{
+        .chip_x = headerPermissionChipX(x, w, compact),
+        .permission_w = titlebarTextWidth(permissionDisplayName(ai_chat.agentPermission())),
+        .mode_slot_w = headerModeSlotW(mode_text),
+        .mode_w = titlebarTextWidth(mode_text),
+        .effort_w = effort_w,
+    }, status, .{
         .line_pad_x = LINE_PAD_X,
         .effort_gap = EFFORT_CHIP_GAP,
         .min_model_w = EFFORT_CHIP_MIN_MODEL_W,
@@ -915,9 +956,9 @@ fn headerLabels(session: *ai_chat.Session, x: f32, w: f32, compact: bool) ai_cha
 
 /// Reasoning-effort chip just left of the mode label, for sessions with
 /// switchable levels (Magpie). Null when there is none or the header has no
-/// room left for a readable model label beside it.
-fn effortChipRect(session: *ai_chat.Session, x: f32, w: f32, titlebar_offset: f32, compact: bool) ?Rect {
-    const effort_x = headerLabels(session, x, w, compact).effort_x orelse return null;
+/// room left for a readable model label beside it. Assumes the mutex is held.
+fn effortChipRectLocked(session: *ai_chat.Session, x: f32, w: f32, titlebar_offset: f32, compact: bool) ?Rect {
+    const effort_x = headerRowLocked(session, x, w, titlebar_offset, compact).effort_x orelse return null;
     return .{ .x = effort_x, .top_px = titlebar_offset + 8, .w = @max(1.0, titlebarTextWidth(session.reasoningEffort())), .h = 32 };
 }
 
@@ -933,8 +974,10 @@ pub fn effortChipHitTest(
 ) bool {
     const x = @round(chat_x);
     const w = @round(@max(1.0, chat_w));
-    const rect = effortChipRect(session, x, w, titlebar_offset, compact) orelse return false;
-    return pointInRect(@floatCast(xpos), @floatCast(ypos), rect);
+    session.mutex.lock();
+    const rect = effortChipRectLocked(session, x, w, titlebar_offset, compact);
+    session.mutex.unlock();
+    return pointInRect(@floatCast(xpos), @floatCast(ypos), rect orelse return false);
 }
 
 pub fn modelLabelHitTest(
@@ -950,8 +993,10 @@ pub fn modelLabelHitTest(
     _ = window_width;
     const x = @round(chat_x);
     const w = @round(@max(1.0, chat_w));
-    const rect = modelLabelRect(session, x, w, titlebar_offset, compact) orelse return false;
-    return pointInRect(@floatCast(xpos), @floatCast(ypos), rect);
+    session.mutex.lock();
+    const rect = modelLabelRectLocked(session, x, w, titlebar_offset, compact);
+    session.mutex.unlock();
+    return pointInRect(@floatCast(xpos), @floatCast(ypos), rect orelse return false);
 }
 
 pub fn missingApiKeyStatusHitTest(
@@ -965,14 +1010,16 @@ pub fn missingApiKeyStatusHitTest(
     compact: bool,
 ) bool {
     _ = window_width;
-    session.mutex.lock();
-    const clickable = !session.request_inflight and session.missingApiKey();
-    session.mutex.unlock();
-    if (!clickable) return false;
-
     const x = @round(chat_x);
     const w = @round(@max(1.0, chat_w));
-    const rect = statusActionRect(x, w, titlebar_offset, MISSING_API_KEY_ACTION_TEXT, compact);
+    session.mutex.lock();
+    const clickable = !session.request_inflight and session.missingApiKey();
+    const rect: Rect = if (!compact) wideStatusRect(x, w, titlebar_offset, MISSING_API_KEY_ACTION_TEXT) else row: {
+        const row = headerRowLocked(session, x, w, titlebar_offset, true);
+        break :row .{ .x = row.status_x, .top_px = titlebar_offset + 8, .w = row.status_w, .h = 32 };
+    };
+    session.mutex.unlock();
+    if (!clickable) return false;
     return pointInRect(@floatCast(xpos), @floatCast(ypos), rect);
 }
 
@@ -1507,11 +1554,11 @@ fn renderToolGroupHeader(msgs: []const ai_chat.Message, start: usize, x: f32, to
 
     const arrow_x = x + DETAIL_PAD_X;
     const text_y = y + @round((h - font.g_titlebar_cell_height) / 2);
-    _ = titlebar.renderTextLimited(if (collapsed) ">" else "v", arrow_x, text_y, mixColor(fg, accent, 0.16), DETAIL_ARROW_W);
+    _ = titlebar.renderTextLimited(if (collapsed) ">" else "v", arrow_x, text_y, mixColor(fg, accent, 0.16), detailArrowW());
 
     var title_buf: [32]u8 = undefined;
     const title = std.fmt.bufPrint(&title_buf, "{d} steps", .{end - start}) catch "steps";
-    var text_x = arrow_x + DETAIL_ARROW_W + 6;
+    var text_x = arrow_x + detailArrowW() + 6;
     const text_limit = x + w - DETAIL_PAD_X;
     text_x = titlebar.renderTextLimited(title, text_x, text_y, mixColor(fg, accent, 0.18), @max(24.0, text_limit - text_x)) + 10;
     if (collapsed and text_x + 12 < text_limit) {
@@ -1548,9 +1595,9 @@ fn renderToolCard(msg: ai_chat.Message, x: f32, top_px: f32, w: f32, h: f32, win
 
     const arrow_x = x + DETAIL_PAD_X;
     const arrow_y = header_y + @round((header_h - font.g_titlebar_cell_height) / 2);
-    _ = titlebar.renderTextLimited(if (msg.content_collapsed) ">" else "v", arrow_x, arrow_y, mixColor(fg, accent, 0.16), DETAIL_ARROW_W);
+    _ = titlebar.renderTextLimited(if (msg.content_collapsed) ">" else "v", arrow_x, arrow_y, mixColor(fg, accent, 0.16), detailArrowW());
 
-    var text_x = arrow_x + DETAIL_ARROW_W + 6;
+    var text_x = arrow_x + detailArrowW() + 6;
     const text_y = header_y + @round((header_h - font.g_titlebar_cell_height) / 2);
     const copy_rect = detailCopyButtonRect(x, top_px, w);
     renderCopyButton(copy_rect, window_height, selected);
@@ -1596,9 +1643,9 @@ fn renderReasoningCard(text: []const u8, collapsed: bool, x: f32, top_px: f32, w
 
     const arrow_x = x + DETAIL_PAD_X;
     const arrow_y = header_y + @round((header_h - font.g_titlebar_cell_height) / 2);
-    _ = titlebar.renderTextLimited(if (collapsed) ">" else "v", arrow_x, arrow_y, mixColor(fg, accent, 0.14), DETAIL_ARROW_W);
+    _ = titlebar.renderTextLimited(if (collapsed) ">" else "v", arrow_x, arrow_y, mixColor(fg, accent, 0.14), detailArrowW());
 
-    const title_x = arrow_x + DETAIL_ARROW_W + 6;
+    const title_x = arrow_x + detailArrowW() + 6;
     const title_y = header_y + @round((header_h - font.g_titlebar_cell_height) / 2);
     const preview = previewLine(text);
     const title_end = titlebar.renderTextLimited("Thinking", title_x, title_y, mixColor(fg, accent, 0.14), w * 0.3);
@@ -1791,7 +1838,13 @@ fn fillDot(cx: f32, cy: f32, diameter: f32, color: [3]f32) void {
 // Wide-tab "Esc Stop" button geometry (text mode). The compact sidebar uses
 // statusDotRect instead.
 fn stopButtonRect(x: f32, w: f32, titlebar_offset: f32) HeaderButtonRect {
-    return ai_chat_layout.stopButtonRect(x, w, titlebar_offset, LINE_PAD_X, STOP_BUTTON_W, STOP_BUTTON_H, HEADER_H);
+    // Fit the measured label (Retina glyphs are twice as wide), but never grow
+    // over the permission label on a narrow pane.
+    const label_w = @max(titlebarTextWidth("Esc Stop"), titlebarTextWidth("Stopping"));
+    const permission_end = headerPermissionChipX(x, w, false) + titlebarTextWidth(permissionDisplayName(ai_chat.agentPermission())) + HEADER_LABEL_GAP;
+    const room = x + w - LINE_PAD_X - permission_end;
+    const button_w = @max(STOP_BUTTON_W, @min(ai_chat_layout.labelSlotWidth(STOP_BUTTON_W, label_w, STOP_LABEL_X + STOP_LABEL_PAD_R), room));
+    return ai_chat_layout.stopButtonRect(x, w, titlebar_offset, LINE_PAD_X, button_w, STOP_BUTTON_H, HEADER_H);
 }
 
 fn renderStopButton(rect: HeaderButtonRect, window_height: f32, stopping: bool) void {
@@ -1811,15 +1864,15 @@ fn renderStopButton(rect: HeaderButtonRect, window_height: f32, stopping: bool) 
     ui_pipeline.fillQuad(icon_x, icon_y, icon_size, icon_size, if (stopping) mixColor(bg, fg, 0.62) else mixColor(fg, accent, 0.10));
 
     const label = if (stopping) "Stopping" else "Esc Stop";
-    _ = titlebar.renderTextLimited(label, rect.x + 28, y + @round((rect.h - font.g_titlebar_cell_height) / 2), if (stopping) mixColor(bg, fg, 0.72) else fg, rect.w - 34);
+    _ = titlebar.renderTextLimited(label, rect.x + STOP_LABEL_X, y + @round((rect.h - font.g_titlebar_cell_height) / 2), if (stopping) mixColor(bg, fg, 0.72) else fg, rect.w - STOP_LABEL_X - STOP_LABEL_PAD_R);
 }
 
-fn statusActionRect(x: f32, w: f32, titlebar_offset: f32, text: []const u8, compact: bool) Rect {
-    // Wide tab: text owns the far-right corner. Compact sidebar: text sits to
-    // the LEFT of the status dot. Either way it is clamped to the space right of
-    // the permission chip so it can't overlap the chip/dot on a narrow panel.
-    const right = if (compact) statusDotRect(x, w, titlebar_offset).x - 8 else x + w - LINE_PAD_X;
-    const avail = @max(1.0, right - (headerPermissionChipX(x, w, compact) + PERMISSION_CHIP_W + 12));
+fn wideStatusRect(x: f32, w: f32, titlebar_offset: f32, text: []const u8) Rect {
+    // Wide tab: text owns the far-right corner, clamped to the space right of
+    // the permission chip so it can't overlap the chip on a narrow pane. The
+    // compact sidebar's status span comes from `headerRowLocked` instead.
+    const right = x + w - LINE_PAD_X;
+    const avail = @max(1.0, right - (headerPermissionChipX(x, w, false) + PERMISSION_CHIP_W + 12));
     const status_w = @min(@min(measureText(text), STATUS_SLOT_W), avail);
     return .{
         .x = right - status_w,
