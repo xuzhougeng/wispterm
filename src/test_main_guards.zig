@@ -137,12 +137,15 @@ test "app source guards" {
 
     const profile_codec_source = try readSource(allocator, "renderer/overlays/profile_codec.zig");
     defer allocator.free(profile_codec_source);
-    if (std.mem.indexOf(u8, profile_codec_source, "pub const SSH_FIELD_COUNT = 8") == null or
+    if (std.mem.indexOf(u8, profile_codec_source, "pub const SSH_FIELD_COUNT = 11") == null or
         std.mem.indexOf(u8, profile_codec_source, "auth_method = 6") == null or
         std.mem.indexOf(u8, profile_codec_source, "identity_file = 7") == null or
+        std.mem.indexOf(u8, profile_codec_source, "proxy_type = 8") == null or
+        std.mem.indexOf(u8, profile_codec_source, "proxy_host = 9") == null or
+        std.mem.indexOf(u8, profile_codec_source, "proxy_port = 10") == null or
         std.mem.indexOf(u8, profile_codec_source, "port_forward") != null)
     {
-        return guardFailed("ssh_hosts profile schema must only add server auth fields; port forwarding must not extend it");
+        return guardFailed("ssh_hosts profile schema must preserve auth and session network-route fields; port forwarding must not extend it");
     }
 
     const ssh_tunnel_source = try readSource(allocator, "ssh/tunnel.zig");

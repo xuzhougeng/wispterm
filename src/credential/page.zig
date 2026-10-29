@@ -522,7 +522,9 @@ test "password page secret edit starts empty and seals the replacement" {
     try std.testing.expectEqualStrings("n", s.draftText()); // old secret never seeded
     _ = s.paste("ew");
     try std.testing.expect(s.commitEdit());
-    try std.testing.expect(std.mem.indexOf(u8, s.current().?.secret, "new") == null);
+    // Random base64 ciphertext may contain "new" by chance. Reject storing
+    // plaintext verbatim, and verify authenticated decryption below.
+    try std.testing.expect(!std.mem.eql(u8, s.current().?.secret, "new"));
     const plain = s.revealForCopy().?;
     defer store.wipe(std.testing.allocator, plain);
     try std.testing.expectEqualStrings("new", plain);

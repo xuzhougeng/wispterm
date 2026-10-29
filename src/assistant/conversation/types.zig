@@ -250,6 +250,9 @@ pub const SshProfileSaveArgs = struct {
     password: []const u8 = "",
     port: []const u8 = "",
     proxy_jump: []const u8 = "",
+    proxy_type: []const u8 = "",
+    proxy_host: []const u8 = "",
+    proxy_port: []const u8 = "",
     auth_method: []const u8 = "",
     identity_file: []const u8 = "",
 };

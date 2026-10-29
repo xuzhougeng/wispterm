@@ -58,7 +58,7 @@ $script:CodeSignToolZipUrl = 'https://github.com/SSLcom/CodeSignTool/releases/do
 $script:TimestampUrl = 'http://ts.ssl.com/legacy'
 $script:LegacyTimestampUrl = 'http://ts.ssl.com/legacy'
 $script:BundleNames = @('portable', 'portable-compat', 'portable-opengl', 'portable-debug')
-$script:SignNames = @('wispterm.exe', 'wispterm-ssh-askpass.exe', 'wispterm-shell-extension.dll')
+$script:SignNames = @('wispterm.exe', 'wispterm-ssh-askpass.exe', 'wispterm-ssh-proxy.exe', 'wispterm-shell-extension.dll')
 $script:SecretNames = @(
     'ESIGNER_CREDENTIAL_ID',
     'ESIGNER_USERNAME',

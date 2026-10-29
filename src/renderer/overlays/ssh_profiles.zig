@@ -5,7 +5,7 @@ pub const SSH_FIELD_COUNT = profile_codec.SSH_FIELD_COUNT;
 pub const SSH_FIELD_MAX = profile_codec.SSH_FIELD_MAX;
 pub const SSH_PROFILE_MAX: usize = 128;
 pub const SSH_PROFILE_NONE: usize = std.math.maxInt(usize);
-/// Form rows = 8 fields + 3 action rows (save+connect, save, cancel).
+/// Form rows = SSH fields + 3 action rows (save+connect, save, cancel).
 pub const SSH_FORM_ROW_COUNT = SSH_FIELD_COUNT + 3;
 pub const SshField = profile_codec.SshField;
 pub const SshProfile = profile_codec.SshProfile;
@@ -19,6 +19,9 @@ pub const SshListMode = enum {
 };
 
 pub const State = struct {
+    list_visible: bool = false,
+    form_visible: bool = false,
+    proxy_display_buf: [80]u8 = undefined,
     focus: usize = @intFromEnum(SshField.name),
     bufs: [SSH_FIELD_COUNT][SSH_FIELD_MAX]u8 = undefined,
     lens: [SSH_FIELD_COUNT]usize = .{0} ** SSH_FIELD_COUNT,

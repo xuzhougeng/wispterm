@@ -136,6 +136,9 @@ function Copy-PortablePayload {
         throw "Expected SSH askpass helper was not found: $sourceAskPassHelper"
     }
     Copy-Item -Path $sourceAskPassHelper -Destination (Join-Path $TargetDir 'wispterm-ssh-askpass.exe') -Force
+    $sourceProxyHelper = Join-Path (Split-Path -Parent $BinaryPath) 'wispterm-ssh-proxy.exe'
+    if (-not (Test-Path -LiteralPath $sourceProxyHelper)) { throw "Expected SSH proxy helper was not found: $sourceProxyHelper" }
+    Copy-Item -LiteralPath $sourceProxyHelper -Destination (Join-Path $TargetDir 'wispterm-ssh-proxy.exe') -Force
     Set-Content -Path (Join-Path $TargetDir 'version.txt') -Value $ReleaseVersion -Encoding ASCII
 
     $targetPluginsDir = Join-Path $TargetDir 'plugins'

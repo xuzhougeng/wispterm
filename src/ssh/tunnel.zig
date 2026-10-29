@@ -34,6 +34,7 @@ const SshTunnel = struct {
     host_len: usize = 0,
     ssh_port_buf: [16]u8 = undefined,
     ssh_port_len: usize = 0,
+    network_proxy: @import("network_proxy.zig").Config = .{},
     proxy_jump_buf: [256]u8 = undefined,
     proxy_jump_len: usize = 0,
 
@@ -48,6 +49,7 @@ const SshTunnel = struct {
         tunnel.user_len = copyBounded(tunnel.user_buf[0..], conn.user());
         tunnel.host_len = copyBounded(tunnel.host_buf[0..], conn.host());
         tunnel.ssh_port_len = copyBounded(tunnel.ssh_port_buf[0..], conn.port());
+        tunnel.network_proxy = conn.network_proxy;
         tunnel.proxy_jump_len = copyBounded(tunnel.proxy_jump_buf[0..], conn.proxyJump());
         return tunnel;
     }
@@ -59,7 +61,7 @@ const SshTunnel = struct {
             std.mem.eql(u8, self.user(), conn.user()) and
             std.mem.eql(u8, self.host(), conn.host()) and
             std.mem.eql(u8, self.sshPort(), conn.port()) and
-            std.mem.eql(u8, self.proxyJump(), conn.proxyJump());
+            std.mem.eql(u8, self.proxyJump(), conn.proxyJump()) and self.network_proxy.eql(&conn.network_proxy);
     }
 
     fn localHost(self: *const SshTunnel) []const u8 {
@@ -299,6 +301,7 @@ fn spawnSshTunnel(allocator: std.mem.Allocator, conn: *const ssh_connection.SshC
     // Route the forwarding connection through the same jump host as the
     // interactive session so loopback tunnels reach the real destination.
     // `proxy_opt_buf` must outlive the child spawn below, which it does.
+    if (conn.network_proxy.kind != .none) appendSshOption(&argv_buf, &argc, conn.network_proxy.option());
     var proxy_opt_buf: [288]u8 = undefined;
     if (conn.proxyJump().len > 0) {
         const opt = std.fmt.bufPrint(&proxy_opt_buf, "ProxyJump={s}", .{conn.proxyJump()}) catch return null;
@@ -544,4 +547,17 @@ test "reservePreferredLocalPort skips an occupied preferred port" {
 
     const selected = reservePreferredLocalPort(preferred) orelse return error.SkipZigTest;
     try std.testing.expect(selected > preferred);
+}
+
+test "ssh_tunnel cache key distinguishes direct and network proxy routes" {
+    const route = @import("network_proxy.zig").Config.forHelper(.socks5, "127.0.0.1", "7897", "helper").?;
+    const child = std.process.Child.init(&.{"ssh.exe"}, std.testing.allocator);
+    const direct = ssh_connection.SshConnection.fromParts(.{ .user = "alice", .host = "host.test" });
+    var proxied = direct;
+    proxied.network_proxy = route;
+    const tunnel = SshTunnel.init(child, &proxied, 8888, 50123, "127.0.0.1", "127.0.0.1");
+    try std.testing.expect(tunnel.matches(&proxied, 8888, "127.0.0.1", "127.0.0.1"));
+    try std.testing.expect(!tunnel.matches(&direct, 8888, "127.0.0.1", "127.0.0.1"));
+    proxied.network_proxy = @import("network_proxy.zig").Config.forHelper(.http, "127.0.0.1", "7897", "helper").?;
+    try std.testing.expect(!tunnel.matches(&proxied, 8888, "127.0.0.1", "127.0.0.1"));
 }

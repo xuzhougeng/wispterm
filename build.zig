@@ -830,6 +830,21 @@ pub fn build(b: *std.Build) void {
         wisptermctl_step.dependOn(&b.addInstallArtifact(ctl_exe, .{}).step);
     }
 
+    // Session network proxies use a bundled stdio bridge, not an external nc/corkscrew dependency.
+    const ssh_proxy_mod = b.createModule(.{
+        .root_source_file = b.path("src/ssh_proxy_main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    if (target.result.os.tag == .windows) ssh_proxy_mod.linkSystemLibrary("ws2_32", .{});
+    const ssh_proxy_exe = b.addExecutable(.{ .name = "wispterm-ssh-proxy", .root_module = ssh_proxy_mod });
+    if (platform.supports_app_bundle) apple_sdk.addPaths(b, ssh_proxy_exe) catch @panic("failed to locate Apple SDK for SSH proxy bridge");
+    if (platform.supports_gui_subsystem) ssh_proxy_exe.subsystem = .Console;
+    b.installArtifact(ssh_proxy_exe);
+    const ssh_proxy_step = b.step("ssh-proxy", "Build the bundled SOCKS5/HTTP CONNECT stdio bridge");
+    ssh_proxy_step.dependOn(&b.addInstallArtifact(ssh_proxy_exe, .{}).step);
+
     const filetool_mod = b.createModule(.{
         .root_source_file = b.path("src/wispterm_filetool.zig"),
         .target = target,
@@ -902,6 +917,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run fast native logic unit tests");
     const test_full_step = b.step("test-full", "Run the complete suite (shared compile checks + app test binary)");
+    test_full_step.dependOn(&ssh_proxy_exe.step);
     const test_shared_step = b.step("test-shared", "Compile shared modules for the selected target");
     const test_metal_step = b.step("test-metal", "Run native macOS Metal backend interface tests");
     const test_macos_window_step = b.step("test-macos-window", "Run native macOS AppKit window backend smoke tests");
@@ -920,7 +936,7 @@ pub fn build(b: *std.Build) void {
             macos_dist_step.dependOn(&b.addFail("macos-dist supports only aarch64-macos and x86_64-macos targets").step);
             check_macos_minimum_step.dependOn(&b.addFail("check-macos-minimum supports only aarch64-macos and x86_64-macos targets").step);
         } else {
-            const macos_app_install = addMacosAppBundle(b, target, optimize, app_version, platform, debug_console, gpu_backend);
+            const macos_app_install = addMacosAppBundle(b, target, optimize, app_version, platform, debug_console, gpu_backend, ssh_proxy_exe);
             macos_app_step.dependOn(&macos_app_install.step);
             const macos_package = b.addSystemCommand(&.{ "bash", macosPackageScriptPath() });
             macos_package.step.dependOn(&macos_app_install.step);
@@ -1615,6 +1631,7 @@ fn addMacosAppBundle(
     platform: PlatformFeatures,
     debug_console: bool,
     gpu_backend: []const u8,
+    ssh_proxy_exe: *std.Build.Step.Compile,
 ) *std.Build.Step.InstallDir {
     const metadata = macosBundleMetadata();
     const macos_mod = createAppModule(b, target, optimize, app_version, platform, platform.supports_embedded_browser, debug_console, gpu_backend);
@@ -1631,6 +1648,7 @@ fn addMacosAppBundle(
     _ = bundle.add("WispTerm.app/Contents/PkgInfo", "APPL????");
     _ = bundle.add(macosBundleResourcesKeepPath(), "");
     _ = bundle.addCopyFile(exe.getEmittedBin(), macosBundleExecutablePath());
+    _ = bundle.addCopyFile(ssh_proxy_exe.getEmittedBin(), "WispTerm.app/Contents/MacOS/wispterm-ssh-proxy");
     _ = bundle.addCopyFile(b.path(macosBundleIconSourcePath()), macosBundleIconBundlePath());
     // Ship the bundled default skills/commands so a packaged .app has them even
     // before the user populates ~/Library/Application Support. The runtime looks

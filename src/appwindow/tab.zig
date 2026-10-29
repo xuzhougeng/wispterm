@@ -469,6 +469,7 @@ fn splitSshCommand(
         .password_auth = conn.password_auth,
         .legacy_algorithms = conn.legacy_algorithms,
         .proxy_jump = conn.proxyJump(),
+        .network_proxy = conn.network_proxy,
         .terminal_capabilities = g_ssh_terminal_capabilities,
     }) orelse return null;
 
@@ -1991,6 +1992,9 @@ fn sshSnapFromConn(arena: std.mem.Allocator, conn: *const Surface.SshConnection,
         .host = try arena.dupe(u8, conn.host()),
         .port = port_num,
         .proxy_jump = try arena.dupe(u8, conn.proxyJump()),
+        .network_proxy_type = try arena.dupe(u8, conn.network_proxy.kind.fieldValue()),
+        .network_proxy_host = try arena.dupe(u8, conn.network_proxy.host()),
+        .network_proxy_port = try arena.dupe(u8, conn.network_proxy.port()),
         .pi_session_path = if (pi_session_path) |p| try arena.dupe(u8, p) else null,
     };
 }
@@ -2106,7 +2110,15 @@ fn surfaceFromSnapImpl(
             // endpoint without a password, then let the arm hook re-supply it from
             // the saved profile (host/user/port match) and arm autofill — so a
             // restored session logs in without re-typing, like a fresh connect.
-            surface.setSshConnection(s.user, s.host, port_slice, "", s.proxy_jump, false, g_ssh_legacy_algorithms);
+            var restored_conn = Surface.SshConnection.fromParts(.{
+                .user = s.user,
+                .host = s.host,
+                .port = port_slice,
+                .proxy_jump = s.proxy_jump,
+                .network_proxy = Surface.SshConnection.networkProxyFromFields(s.network_proxy_type, s.network_proxy_host, s.network_proxy_port) orelse return error.InvalidNetworkProxy,
+            });
+            restored_conn.legacy_algorithms = g_ssh_legacy_algorithms;
+            surface.setSshConnectionValue(restored_conn);
             if (g_ssh_restore_arm_hook) |hook| hook(surface);
             return surface;
         },
@@ -2126,7 +2138,9 @@ fn previewSourceFromSnap(ps: *const session_persist.PreviewSnap) PreviewPane.Pre
                 .host = s.host,
                 .port = std.fmt.bufPrint(&port_buf, "{}", .{s.port}) catch "22",
                 .proxy_jump = s.proxy_jump,
+                .network_proxy = Surface.SshConnection.networkProxyFromFields(s.network_proxy_type, s.network_proxy_host, s.network_proxy_port) orelse return .local,
             });
+            if (!conn.network_proxy.allowsJump(s.proxy_jump)) return .local;
             conn.legacy_algorithms = g_ssh_legacy_algorithms;
             if (g_ssh_restore_password_hook) |hook| _ = hook(&conn);
             break :blk .{ .remote = conn };
@@ -2151,6 +2165,7 @@ fn buildSshRestoreCommand(
         .legacy_algorithms = g_ssh_legacy_algorithms,
         .terminal_capabilities = g_ssh_terminal_capabilities,
         .proxy_jump = s.proxy_jump,
+        .network_proxy = Surface.SshConnection.networkProxyFromFields(s.network_proxy_type, s.network_proxy_host, s.network_proxy_port) orelse return error.InvalidNetworkProxy,
     }) orelse return error.CommandTooLong;
     var final_len: usize = base.len;
 

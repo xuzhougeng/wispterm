@@ -50,6 +50,7 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $payload 'plugins\skills') | Out-Null
     Set-Content -LiteralPath (Join-Path $payload 'wispterm.exe') -Value 'stub exe' -Encoding ascii -NoNewline
     Set-Content -LiteralPath (Join-Path $payload 'wispterm-ssh-askpass.exe') -Value 'stub askpass' -Encoding ascii -NoNewline
+    Set-Content -LiteralPath (Join-Path $payload 'wispterm-ssh-proxy.exe') -Value 'stub proxy' -Encoding ascii -NoNewline
     Set-Content -LiteralPath (Join-Path $payload 'version.txt') -Value $version -Encoding ascii
     Set-Content -LiteralPath (Join-Path $payload 'plugins\skills\sample.md') -Value 'skill' -Encoding ascii
     foreach ($name in @('uninstall.ps1', 'Uninstall-WispTerm.cmd', 'replace-install.ps1', 'Replace-WispTerm.cmd')) {
@@ -71,6 +72,7 @@ try {
     Assert-Equal $install.ExitCode 0 'silent install exits 0'
     Assert-Equal ([IO.File]::ReadAllText((Join-Path $installDir 'wispterm.exe'))) 'stub exe' 'wispterm.exe is installed'
     Assert-True (Test-Path -LiteralPath (Join-Path $installDir 'wispterm-ssh-askpass.exe')) 'askpass helper is installed'
+    Assert-True (Test-Path -LiteralPath (Join-Path $installDir 'wispterm-ssh-proxy.exe')) 'network proxy helper is installed'
     Assert-True (Test-Path -LiteralPath (Join-Path $installDir 'plugins\skills\sample.md')) 'bundled skills are installed'
     Assert-True (Test-Path -LiteralPath (Join-Path $installDir 'Uninstall.exe')) 'Uninstall.exe is written'
     Assert-True (Test-Path -LiteralPath (Join-Path $installDir 'user-note.txt')) 'install keeps a user file in the folder'
