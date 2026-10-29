@@ -185,6 +185,7 @@ pub const SlashCommand = enum {
     memory,
     forget,
     model_switch,
+    effort,
     btw,
     unknown,
 };
@@ -294,6 +295,10 @@ pub const slash_command_entries = [_]SlashCommandEntry{
     .{
         .suggestion = .{ .command = "/model", .description = "switch the model / AI profile" },
         .action = .model_switch,
+    },
+    .{
+        .suggestion = .{ .command = "/effort", .description = "view or set this Magpie session's reasoning effort" },
+        .action = .effort,
     },
     .{
         .suggestion = .{ .command = "/btw", .description = "open an isolated side conversation" },
@@ -609,6 +614,12 @@ test "parseSlashCommand recognizes model switch and alias" {
     try std.testing.expectEqual(SlashCommand.model_switch, exactBuiltinCommand("/model").?);
     // parseSlashCommand on the whole string with an arg must NOT match (has a space):
     try std.testing.expectEqual(@as(?SlashCommand, null), parseSlashCommand("/model GPT-5"));
+}
+
+test "parseSlashCommand recognizes effort with an optional level argument" {
+    try std.testing.expectEqual(SlashCommand.effort, parseSlashCommand("/effort").?);
+    try std.testing.expectEqual(SlashCommand.effort, exactBuiltinCommand("/effort").?);
+    try std.testing.expectEqual(@as(usize, 1), slashCommandSuggestionCountForInput("/eff", 4, &.{}));
 }
 
 test "parseSlashCommand recognizes exact, unknown, and rejects non-slash" {

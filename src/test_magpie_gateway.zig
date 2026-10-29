@@ -20,6 +20,14 @@ pub fn main() !void {
     if (expected_vision) |expected| {
         if (!std.mem.eql(u8, expected, codec.aiProfileField(&profile, .vision))) return error.UnexpectedVisionSetting;
     }
+    // Stands in for `/effort` or the header chip: a level the model lists
+    // replaces the default for this request; any other level is refused.
+    const requested_effort = std.process.getEnvVarOwned(a, "MAGPIE_TEST_REASONING_EFFORT") catch null;
+    defer if (requested_effort) |requested| a.free(requested);
+    var effort = codec.aiProfileField(&profile, .reasoning_effort);
+    if (requested_effort) |requested| {
+        if (profile.efforts.contains(requested)) effort = requested;
+    }
     // A real one-pixel PNG, passed through the application's request builder.
     var images = [_]protocol.ImageBlock{.{
         .media_type = @constCast("image/png"),
@@ -35,7 +43,7 @@ pub fn main() !void {
         .system_prompt = codec.aiProfileField(&profile, .system_prompt),
         .protocol = api,
         .thinking_enabled = !std.mem.eql(u8, codec.aiProfileField(&profile, .thinking), "disabled"),
-        .reasoning_effort = codec.aiProfileField(&profile, .reasoning_effort),
+        .reasoning_effort = effort,
         .max_tokens = try std.fmt.parseInt(u32, codec.aiProfileField(&profile, .max_tokens), 10),
         .stream = false,
     }, &messages, false);

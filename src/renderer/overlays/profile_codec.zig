@@ -6,6 +6,7 @@
 //! re-exports these symbols so its call sites are unchanged.
 const std = @import("std");
 const ai_chat_protocol = @import("../../assistant/conversation/protocol.zig");
+const effort_levels = @import("../../assistant/conversation/effort_levels.zig");
 const ssh_connection = @import("../../ssh/connection.zig");
 
 pub const SSH_FIELD_COUNT = 11;
@@ -53,6 +54,8 @@ pub const AiProfile = struct {
     managed_by_magpie: bool = false,
     /// Model capacity metadata, not an output limit or a request parameter.
     context_window: u32 = 0,
+    /// Runtime-only levels a session may switch to; empty for personal profiles.
+    efforts: effort_levels.EffortLevels = .{},
     fields: [AI_FIELD_COUNT][AI_FIELD_MAX]u8 = undefined,
     lens: [AI_FIELD_COUNT]usize = .{0} ** AI_FIELD_COUNT,
 };

@@ -5530,7 +5530,7 @@ fn spawnAiProfileWithAgentOverride(idx: usize, agent_override: ?[]const u8) bool
     if (!aiProfileInputsValid(protocol, base_url, model)) return false;
 
     sessionLauncherClose();
-    return AppWindow.spawnAiChatTab(name, base_url, api_key, model, protocol, system_prompt, thinking, reasoning_effort, stream_val, agent_val, max_tokens, vision_val);
+    return AppWindow.spawnAiChatTab(name, base_url, api_key, model, protocol, system_prompt, thinking, reasoning_effort, profile.efforts, stream_val, agent_val, max_tokens, vision_val);
 }
 
 /// Apply profile `idx` to the given live session in place (provider/model only)
@@ -5547,7 +5547,7 @@ fn applyProfileToSession(session: *AppWindow.ai_chat.Session, idx: usize) bool {
     const max_tokens = std.fmt.parseInt(u32, std.mem.trim(u8, aiProfileField(profile, .max_tokens), " \t"), 10) catch 8192;
     const vision_val = aiProfileField(profile, .vision);
     if (!aiProfileInputsValid(protocol, base_url, model)) return false;
-    ai_chat.applyProviderProfile(session, base_url, api_key, model, protocol, thinking, reasoning_effort, max_tokens, vision_val);
+    ai_chat.applyProviderProfile(session, base_url, api_key, model, protocol, thinking, reasoning_effort, profile.efforts, max_tokens, vision_val);
     AppWindow.applyUiEffect(.repaint);
     return true;
 }
@@ -5622,6 +5622,7 @@ pub fn makeCopilotSessionForDefaultProfile() ?*ai_chat.Session {
         vision_val,
     ) catch return null;
     session.max_tokens = max_tokens;
+    session.effort_levels = profile.efforts;
     session.copilot = true;
     return session;
 }
