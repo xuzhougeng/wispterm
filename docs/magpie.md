@@ -31,9 +31,9 @@ The fixed path is `~/.config/wispterm/magpie.json`, including on macOS. Windows
 uses `%USERPROFILE%\.config\wispterm\magpie.json`. This path is independent of
 WispTerm's native configuration directory and `XDG_CONFIG_HOME`.
 
-Magpie writes `baseURL`, `apiKey`, and `model`; WispTerm reads all three as a unit.
+Magpie writes `baseURL`, `apiKey`, and `model`; WispTerm reads all three as a unit. WispTerm plugin `0.1.0-alpha.3` also writes `modelInfo` with the selected model ID, context capacity, output limit, and supported reasoning efforts.
 Missing, partial, invalid, oversized files, and `{}` are treated as inactive.
-The integration uses OpenAI Chat Completions; model IDs are passed unchanged.
+The integration defaults to OpenAI Chat Completions; `"protocol": "responses"` selects the Responses gateway instead. These are gateway APIs, independent of the provider behind Magpie; do not select the direct `codex` subscription protocol. Model IDs are passed unchanged.
 Image attachment is enabled by default for this managed profile. Select an
 image-capable model in Magpie to use it; enabling attachment does not give a
 text-only upstream model vision capability. To disable it explicitly, add
@@ -42,8 +42,8 @@ text-only upstream model vision capability. To disable it explicitly, add
 An absent or null `vision` uses the enabled default. Other values make the
 external configuration invalid.
 
-`vision` belongs to the user: the Agent plugin only manages the three connection
-keys, so model switches and disconnects preserve this override. Restart WispTerm
+`vision` belongs to the user: the Agent plugin manages the three connection
+keys and its modelInfo snapshot, so model switches and disconnects preserve this override. Restart WispTerm
 and create a new session after editing it; existing sessions retain their
 snapshot. Editing the native `config` or `ai_profiles` does not change this
 managed profile. Builds that hard-code vision off in the Magpie reader must be
@@ -68,3 +68,44 @@ personal-profile preservation, and existing application tests. The optional
 platform HTTP client against a temporary gateway. Build/run instructions live
 in `magpie-agents/docs/verification.md`; it requires `MAGPIE_TEST_CONFIG` and never
 loads personal settings.
+
+
+## Reasoning, output limits, and context capacity
+
+The managed profile now reads optional user-owned settings in `magpie.json`:
+
+| Field | Behavior |
+| --- | --- |
+| `thinking` | Boolean or `enabled`/`disabled`, `on`/`off`, `true`/`false`, `auto`. |
+| `reasoningEffort` | A supported effort such as `low`, `medium`, `high`, or `auto` to leave the provider's reasoning choice unchanged. |
+| `maxTokens` | Positive integer output limit; defaults to Magpie's advertised model output limit, or 8192 when unknown. A larger override is capped at the model's known output limit. |
+| `protocol` | `chat_completions` (default) or `responses`. |
+| `stream`, `agent` | Booleans, default true. |
+| `systemPrompt` | Optional system prompt text. |
+| `vision` | Image-attachment switch described above. |
+
+When Magpie provides supported reasoning levels, WispTerm picks `medium`, then
+`high`, then the first supported level. An explicit `reasoningEffort` overrides
+this selection and must be supported when the list is known. Without model
+reasoning information, `auto` omits explicit reasoning settings instead of
+forcing thinking off. Explicit `thinking: false` stops WispTerm requesting
+reasoning; the provider may impose its own behavior. Explicit thinking on with
+no known effort uses medium unless the user explicitly requests `reasoningEffort: "auto"`.
+
+For example, add `"reasoningEffort": "high", "maxTokens": 32768` to the existing
+JSON object. Do not replace the connection keys or edit `modelInfo`; Magpie
+refreshes its model facts. User-owned fields survive reconnection and model
+switches. Recheck an explicit effort after switching to a model with different
+supported levels. Restart the app and create a new session to apply changes.
+
+The form labels the generation cap **Max Output Tokens** and shows Magpie's
+**context capacity** in the hint. Capacity is model metadata, not a generation
+limit: it is not sent as a `context_window` API parameter and this change does
+not add automatic conversation truncation or compaction. Change model capacity
+in Magpie when supported by the upstream model. Unknown context stays unknown;
+metadata for a different model ID is ignored.
+
+The serializer sends `max_tokens` for Chat Completions and `max_output_tokens`
+for generic Responses. Native Codex subscription requests retain their existing
+behavior because that backend rejects `max_output_tokens`. Magpie owns any
+translation from its gateway protocol to the actual provider.

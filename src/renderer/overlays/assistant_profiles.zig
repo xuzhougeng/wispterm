@@ -18,6 +18,8 @@ pub const AiListMode = enum {
 };
 
 pub const State = struct {
+    form_visible: bool = false,
+    context_hint_buf: [160]u8 = undefined,
     focus: usize = @intFromEnum(AiField.name),
     bufs: [AI_FIELD_COUNT][AI_FIELD_MAX]u8 = undefined,
     lens: [AI_FIELD_COUNT]usize = .{0} ** AI_FIELD_COUNT,
@@ -35,6 +37,14 @@ pub const State = struct {
     list_selected: usize = 0,
     list_mode: AiListMode = .manage,
     edit_index: usize = AI_PROFILE_NONE,
+
+    pub fn managedHint(self: *State, label: []const u8, unknown: []const u8) ?[]const u8 {
+        if (self.edit_index >= self.profile_count) return null;
+        const profile = &self.profiles[self.edit_index];
+        if (!profile.managed_by_magpie) return null;
+        if (profile.context_window == 0) return unknown;
+        return std.fmt.bufPrint(&self.context_hint_buf, "{s} {d} tokens", .{ label, profile.context_window }) catch unknown;
+    }
 
     pub fn formField(self: *const State, field: AiField) []const u8 {
         const idx = @intFromEnum(field);
@@ -117,4 +127,18 @@ test "ai form reset clears fields and edit index" {
     try std.testing.expectEqualStrings("", state.formField(.name));
     try std.testing.expectEqual(@intFromEnum(AiField.name), state.focus);
     try std.testing.expectEqual(AI_PROFILE_NONE, state.edit_index);
+}
+
+test "Magpie form hint shows model context capacity separately from output limit" {
+    const state = try std.testing.allocator.create(State);
+    defer std.testing.allocator.destroy(state);
+    state.* = .{ .profile_count = 1, .edit_index = 0 };
+    state.profiles[0] = .{ .managed_by_magpie = true, .context_window = 400000 };
+    try std.testing.expectEqualStrings("Magpie context: 400000 tokens", state.managedHint("Magpie context:", "Unknown").?);
+    state.profiles[0].context_window = 0;
+    try std.testing.expectEqualStrings("Unknown", state.managedHint("Magpie context:", "Unknown").?);
+    state.profiles[0].managed_by_magpie = false;
+    try std.testing.expect(state.managedHint("Magpie context:", "Unknown") == null);
+    state.edit_index = AI_PROFILE_NONE;
+    try std.testing.expect(state.managedHint("Magpie context:", "Unknown") == null);
 }

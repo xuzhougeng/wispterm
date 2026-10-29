@@ -2806,7 +2806,6 @@ const SessionLayout = struct {
 pub threadlocal var g_session_launcher_visible: bool = false;
 threadlocal var g_session_launcher_return_to_command_palette: bool = false;
 threadlocal var g_ai_list_visible: bool = false;
-threadlocal var g_ai_form_visible: bool = false;
 threadlocal var g_ai_history_source_visible: bool = false;
 // Feishu credential form rides on the session-launcher overlay plumbing
 // (render/input/hit-test are all gated by sessionLauncherVisible()); openFeishuConfigForm
@@ -2902,7 +2901,7 @@ fn commandCenterStateSnapshot() command_center_state.State {
         .ssh_list_visible = sshState().list_visible,
         .ssh_form_visible = sshState().form_visible,
         .ai_list_visible = g_ai_list_visible,
-        .ai_form_visible = g_ai_form_visible,
+        .ai_form_visible = assistantProfiles().form_visible,
         .ai_history_source_visible = g_ai_history_source_visible,
         .settings_visible = settingsState().visible,
     };
@@ -2931,7 +2930,7 @@ fn commandCenterStateApply(state: command_center_state.State) void {
     sshState().list_visible = state.ssh_list_visible;
     sshState().form_visible = state.ssh_form_visible;
     g_ai_list_visible = state.ai_list_visible;
-    g_ai_form_visible = state.ai_form_visible;
+    assistantProfiles().form_visible = state.ai_form_visible;
     g_ai_history_source_visible = state.ai_history_source_visible;
     settingsState().visible = state.settings_visible;
     // Feishu form isn't tracked in command_center_state; any overlay transition that goes
@@ -3248,7 +3247,7 @@ pub fn sessionLauncherInsertChar(codepoint: u21) void {
         sshState().lens[field] += 1;
         return;
     }
-    if (g_ai_form_visible) {
+    if (assistantProfiles().form_visible) {
         if (assistantProfiles().focus >= AI_FIELD_COUNT) return;
         appendAiFormCodepoint(assistantProfiles().focus, codepoint);
     }
@@ -3275,7 +3274,7 @@ pub fn sessionLauncherPasteText(text: []const u8) bool {
         appendSshListFilterText(text);
         return true;
     }
-    if (g_ai_form_visible) {
+    if (assistantProfiles().form_visible) {
         if (assistantProfiles().focus >= AI_FIELD_COUNT) return false;
         appendAiFormText(assistantProfiles().focus, text);
         return true;
@@ -3390,7 +3389,7 @@ fn sessionLauncherHandleKeyImpl(ev: input_key.KeyEvent) void {
         return;
     }
 
-    if (!sshState().form_visible and !g_ai_form_visible) {
+    if (!sshState().form_visible and !assistantProfiles().form_visible) {
         if (g_ai_history_source_visible) {
             handleAiHistorySourceKey(ev);
             return;
@@ -3434,7 +3433,7 @@ fn sessionLauncherHandleKeyImpl(ev: input_key.KeyEvent) void {
         return;
     }
 
-    if (g_ai_form_visible) {
+    if (assistantProfiles().form_visible) {
         switch (ev.key) {
             .tab, .arrow_down => assistantProfiles().focusNextRow(),
             .arrow_up => assistantProfiles().focusPrevRow(),
@@ -3544,7 +3543,7 @@ fn openAiHistorySourcePicker() void {
     sshState().list_visible = false;
     sshState().form_visible = false;
     g_ai_list_visible = false;
-    g_ai_form_visible = false;
+    assistantProfiles().form_visible = false;
     g_ai_history_source_visible = true;
     launcherState().ai_history_source_selected = 0;
 }
@@ -4679,7 +4678,7 @@ fn openAiList() void {
     sshState().form_visible = false;
     g_ai_history_source_visible = false;
     g_ai_list_visible = true;
-    g_ai_form_visible = false;
+    assistantProfiles().form_visible = false;
     assistantProfiles().list_mode = .manage;
     assistantProfiles().list_selected = @min(assistantProfiles().list_selected, aiListRowCount() - 1);
 }
@@ -4768,7 +4767,7 @@ fn openAiProfilePicker(mode: AiListMode) void {
     sshState().list_visible = false;
     sshState().form_visible = false;
     g_ai_list_visible = true;
-    g_ai_form_visible = false;
+    assistantProfiles().form_visible = false;
     assistantProfiles().list_mode = mode;
     assistantProfiles().list_selected = if (assistantProfiles().list_selected < assistantProfiles().profile_count) assistantProfiles().list_selected else 0;
 }
@@ -4864,7 +4863,7 @@ fn openAiForm() void {
     g_ai_list_visible = false;
     g_session_launcher_visible = false;
     settingsState().visible = false;
-    g_ai_form_visible = true;
+    assistantProfiles().form_visible = true;
     assistantProfiles().focus = @intFromEnum(AiField.name);
 }
 
@@ -4877,7 +4876,7 @@ fn openFeishuConfigForm() void {
     sshState().list_visible = false;
     sshState().form_visible = false;
     g_ai_list_visible = false;
-    g_ai_form_visible = false;
+    assistantProfiles().form_visible = false;
     g_ai_history_source_visible = false;
     settingsState().visible = false;
     commandPaletteClose();
@@ -4909,7 +4908,7 @@ pub fn openQuickAiForm() void {
     sshState().list_visible = false;
     sshState().form_visible = false;
     g_ai_list_visible = false;
-    g_ai_form_visible = false;
+    assistantProfiles().form_visible = false;
     g_ai_history_source_visible = false;
     settingsState().visible = false;
     commandPaletteClose();
@@ -4934,7 +4933,7 @@ pub fn openRecipeForm() void {
     sshState().list_visible = false;
     sshState().form_visible = false;
     g_ai_list_visible = false;
-    g_ai_form_visible = false;
+    assistantProfiles().form_visible = false;
     g_ai_history_source_visible = false;
     settingsState().visible = false;
     commandPaletteClose(); // the commit hides the recipe form; show() below re-sets it
@@ -5707,14 +5706,14 @@ test "overlays: missing copilot API with no profile opens Quick Configure" {
     const saved_loaded = assistantProfiles().profiles_loaded;
     const saved_count = assistantProfiles().profile_count;
     const saved_list = g_ai_list_visible;
-    const saved_form = g_ai_form_visible;
+    const saved_form = assistantProfiles().form_visible;
     const saved_quick = quickAiForm().visible;
     const saved_launcher = g_session_launcher_visible;
     defer {
         assistantProfiles().profiles_loaded = saved_loaded;
         assistantProfiles().profile_count = saved_count;
         g_ai_list_visible = saved_list;
-        g_ai_form_visible = saved_form;
+        assistantProfiles().form_visible = saved_form;
         quickAiForm().visible = saved_quick;
         g_session_launcher_visible = saved_launcher;
     }
@@ -5722,15 +5721,15 @@ test "overlays: missing copilot API with no profile opens Quick Configure" {
     assistantProfiles().profiles_loaded = true;
     assistantProfiles().profile_count = 0;
     g_ai_list_visible = true;
-    g_ai_form_visible = false;
+    assistantProfiles().form_visible = false;
     quickAiForm().visible = false;
 
     openAiConfigForMissingCopilotApi();
 
     // No AI configured → guide setup via the Quick Configure overlay, not the full
-    // 13-field profile form (which g_ai_form_visible tracks).
+    // 13-field profile form (which assistantProfiles().form_visible tracks).
     try std.testing.expect(quickAiForm().visible);
-    try std.testing.expect(!g_ai_form_visible);
+    try std.testing.expect(!assistantProfiles().form_visible);
     try std.testing.expect(!g_ai_list_visible);
 }
 
@@ -5897,7 +5896,7 @@ fn loadSshProfiles() void {
 /// into the cache is open; the caller retries.
 pub fn reloadProfileCachesAfterSync(ssh: bool, ai: bool) bool {
     if (ssh and (sshState().list_visible or sshState().form_visible)) return false;
-    if (ai and (g_ai_list_visible or g_ai_form_visible)) return false;
+    if (ai and (g_ai_list_visible or assistantProfiles().form_visible)) return false;
     if (ssh) sshState().profiles_loaded = false;
     if (ai) assistantProfiles().profiles_loaded = false;
     return true;
@@ -5962,7 +5961,7 @@ fn sessionLauncherTitle() []const u8 {
     if (feishuForm().visible) return i18n.s().feishu_form_title;
     if (quickAiForm().visible) return i18n.s().quick_ai_form_title;
     if (g_ai_history_source_visible) return i18n.s().sl_sessions;
-    if (g_ai_form_visible) {
+    if (assistantProfiles().form_visible) {
         return i18n.s().sl_ai_agent;
     }
     if (g_ai_list_visible) {
@@ -5990,8 +5989,8 @@ fn sessionLauncherHint() []const u8 {
     if (recipe_ui.form().visible) return i18n.s().recipe_form_hint;
     if (feishuForm().visible) return i18n.s().toast_feishu_restart;
     if (g_ai_history_source_visible) return "Choose a source";
-    if (g_ai_form_visible) {
-        return i18n.s().sl_hint_ai_form;
+    if (assistantProfiles().form_visible) {
+        return assistantProfiles().managedHint(i18n.s().sl_magpie_context, i18n.s().sl_hint_magpie_form) orelse i18n.s().sl_hint_ai_form;
     }
     if (g_ai_list_visible) {
         return switch (assistantProfiles().list_mode) {
@@ -6023,7 +6022,7 @@ fn sessionDesiredBoxWidth() f32 {
         desired = @max(desired, measureTitlebarText(i18n.s().sl_search_ssh_servers) + 96.0);
     }
 
-    if (g_ai_form_visible) {
+    if (assistantProfiles().form_visible) {
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_profile_name, aiField(.name)));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_base_url, aiField(.base_url)));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_api_key, aiField(.api_key)));
@@ -6157,7 +6156,7 @@ fn sessionActiveRowCount() usize {
         FEISHU_ROW_COUNT
     else if (quickAiForm().visible)
         quick_ai_config.ROW_COUNT
-    else if (g_ai_form_visible)
+    else if (assistantProfiles().form_visible)
         AI_FIELD_COUNT + 3
     else if (g_ai_list_visible)
         aiListRowCount()
@@ -6179,7 +6178,7 @@ fn sessionActiveSelection() usize {
         feishuConfig().focus
     else if (quickAiForm().visible)
         quickAi().focus
-    else if (g_ai_form_visible)
+    else if (assistantProfiles().form_visible)
         assistantProfiles().focus
     else if (g_ai_list_visible)
         assistantProfiles().list_selected
@@ -6201,7 +6200,7 @@ fn sessionActiveSelectionPtr() *usize {
         &feishuConfig().focus
     else if (quickAiForm().visible)
         &quickAi().focus
-    else if (g_ai_form_visible)
+    else if (assistantProfiles().form_visible)
         &assistantProfiles().focus
     else if (g_ai_list_visible)
         &assistantProfiles().list_selected
@@ -6237,7 +6236,7 @@ fn sessionFirstVisibleRow(selection: usize, visible_rows: usize, row_count: usiz
 
 fn sessionLayout(window_width: f32, window_height: f32, top_offset: f32) SessionLayout {
     const content_height = @max(1, window_height - top_offset);
-    const min_box_w: f32 = if (sshState().form_visible or sshState().list_visible or g_ai_form_visible or g_ai_list_visible) 460 else 360;
+    const min_box_w: f32 = if (sshState().form_visible or sshState().list_visible or assistantProfiles().form_visible or g_ai_list_visible) 460 else 360;
     const box_w = ui_patterns.modalWidth(window_width, min_box_w, sessionDesiredBoxWidth(), 760, 24);
     const row_h = overlayRowHeight(38);
     const header_h = @round(18 + overlayLineHeight() * 2 + 12);
@@ -6337,13 +6336,13 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
         };
     }
 
-    if (!sshState().form_visible and !g_ai_form_visible) {
+    if (!sshState().form_visible and !assistantProfiles().form_visible) {
         const action = sessionLauncherActionForRow(row) orelse return null;
         launcherState().selected = row;
         return action;
     }
 
-    if (g_ai_form_visible) {
+    if (assistantProfiles().form_visible) {
         if (row < AI_FIELD_COUNT) {
             assistantProfiles().focus = row;
             _ = cycleFocusedAiFormChoice(true); // ←/→ choice rows advance on click
@@ -6647,7 +6646,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         return;
     }
 
-    if (!sshState().form_visible and !g_ai_form_visible) {
+    if (!sshState().form_visible and !assistantProfiles().form_visible) {
         if (g_ai_history_source_visible) {
             var row: usize = 0;
             renderSessionRow(layout, window_height, row, "Local", "This computer", launcherState().ai_history_source_selected == row);
@@ -6745,7 +6744,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         return;
     }
 
-    if (g_ai_form_visible) {
+    if (assistantProfiles().form_visible) {
         const subscription = AppWindow.ai_chat.ApiProtocol.parse(aiField(.protocol)).isSubscription();
         const api_key_val = if (subscription and aiField(.api_key).len == 0) i18n.s().sl_ai_oauth_api_key else aiField(.api_key);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.name), i18n.s().sl_ai_profile_name, aiField(.name), false);
@@ -8532,7 +8531,7 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     const saved_ssh_list = sshState().list_visible;
     const saved_ssh_form = sshState().form_visible;
     const saved_ai_list = g_ai_list_visible;
-    const saved_ai_form = g_ai_form_visible;
+    const saved_ai_form = assistantProfiles().form_visible;
     const saved_ai_history = g_ai_history_source_visible;
     defer {
         commandPaletteState().visible = saved_palette;
@@ -8544,7 +8543,7 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
         sshState().list_visible = saved_ssh_list;
         sshState().form_visible = saved_ssh_form;
         g_ai_list_visible = saved_ai_list;
-        g_ai_form_visible = saved_ai_form;
+        assistantProfiles().form_visible = saved_ai_form;
         g_ai_history_source_visible = saved_ai_history;
     }
 
@@ -8558,7 +8557,7 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     sshState().list_visible = false;
     sshState().form_visible = false;
     g_ai_list_visible = false;
-    g_ai_form_visible = false;
+    assistantProfiles().form_visible = false;
     g_ai_history_source_visible = false;
     try std.testing.expect(!anyBlockingOverlayVisible());
 
