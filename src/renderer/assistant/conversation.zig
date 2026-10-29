@@ -87,10 +87,10 @@ const STATUS_DOT_D: f32 = 9;
 const STATUS_DOT_HIT: f32 = 28;
 const COMPACT_STATUS_TRAILING_RESERVE: f32 = 36;
 const MODE_SLOT_W: f32 = 84;
-// Effort chip: text plus a trailing gap before the mode label, and the model
-// label width it must leave before it is hidden on narrow headers.
-const EFFORT_CHIP_PAD: f32 = 16;
-const EFFORT_CHIP_MIN_MODEL_W: f32 = 64;
+// Effort chip: gap before the mode label, and the model label width it must
+// leave before it is hidden on narrow headers.
+const EFFORT_CHIP_GAP: f32 = 16;
+const EFFORT_CHIP_MIN_MODEL_W: f32 = 52;
 const INPUT_SCROLLBAR_GUTTER: f32 = 10;
 const INPUT_SCROLLBAR_W: f32 = 4;
 const INPUT_SCROLLBAR_PAD: f32 = 7;
@@ -260,22 +260,22 @@ pub fn render(
     // chip beside the dot in compact mode and give the model the reclaimed
     // header width.
     const chip_x = headerPermissionChipX(x, w, compact);
-    const mode_text = if (session.agent_enabled) "Agent" else "Chat";
-    const mode_slot_w = @max(MODE_SLOT_W, titlebarTextWidth(mode_text) + 20);
-    const mode_x = @max(x + LINE_PAD_X, chip_x - mode_slot_w - 8);
+    const mode_text = headerModeText(session);
+    const mode_slot_w = headerModeSlotW(mode_text);
+    const labels = headerLabels(session, x, w, compact);
+    const mode_x = labels.mode_x;
 
-    // Model label fills the space left of the mode slot (and the effort chip,
-    // when shown); it is hidden when the panel (e.g. the narrow copilot
-    // sidebar) is too tight to show it without overlapping the controls.
-    const effort_rect = effortChipRect(session, x, w, top, compact);
+    // Model label fills the space left of the effort chip (or the mode slot);
+    // it is hidden when the panel (e.g. the narrow copilot sidebar) is too
+    // tight to show it without overlapping the controls.
     const model_x = x + LINE_PAD_X;
-    const model_limit = (if (effort_rect) |r| r.x else mode_x) - model_x - 12;
-    if (model_limit > 24) {
-        _ = titlebar.renderTextLimited(session.model(), model_x, header_y + 10, mixColor(fg, accent, 0.12), model_limit);
+    if (labels.model_limit > 24) {
+        _ = titlebar.renderTextLimited(session.model(), model_x, header_y + 10, mixColor(fg, accent, 0.12), labels.model_limit);
     }
-    if (effort_rect) |r| {
-        _ = titlebar.renderTextLimited(session.reasoningEffort(), r.x, header_y + 10, mixColor(fg, accent, 0.18), r.w);
-        ui_pipeline.fillQuadAlpha(r.x, header_y + 8, r.w - EFFORT_CHIP_PAD, 1, accent, 0.26);
+    if (labels.effort_x) |effort_x| {
+        const effort_w = titlebarTextWidth(session.reasoningEffort());
+        _ = titlebar.renderTextLimited(session.reasoningEffort(), effort_x, header_y + 10, mixColor(fg, accent, 0.18), effort_w + 2);
+        ui_pipeline.fillQuadAlpha(effort_x, header_y + 8, effort_w, 1, accent, 0.26);
     }
     _ = titlebar.renderTextLimited(mode_text, mode_x, header_y + 10, mixColor(fg, accent, 0.18), mode_slot_w);
 
@@ -884,27 +884,41 @@ pub fn permissionChipHitTest(
 /// the label is hidden because the panel is too narrow (mirrors the render-time
 /// `model_limit > 24` guard in `render`).
 fn modelLabelRect(session: *ai_chat.Session, x: f32, w: f32, titlebar_offset: f32, compact: bool) ?Rect {
-    const chip_x = headerPermissionChipX(x, w, compact);
-    const mode_x = @max(x + LINE_PAD_X, chip_x - MODE_SLOT_W - 8);
     const model_x = x + LINE_PAD_X;
-    const right = if (effortChipRect(session, x, w, titlebar_offset, compact)) |r| r.x else mode_x;
-    const model_limit = right - model_x - 12;
+    const model_limit = headerLabels(session, x, w, compact).model_limit;
     if (model_limit <= 24) return null;
     const text_w = @min(measureText(session.model()), model_limit);
     return .{ .x = model_x, .top_px = titlebar_offset + 8, .w = @max(1.0, text_w), .h = 32 };
+}
+
+fn headerModeText(session: *const ai_chat.Session) []const u8 {
+    return if (session.agent_enabled) "Agent" else "Chat";
+}
+
+fn headerModeSlotW(mode_text: []const u8) f32 {
+    return @max(MODE_SLOT_W, titlebarTextWidth(mode_text) + 20);
+}
+
+/// Header label placement shared by `render` and the header hit tests, from
+/// the same measured widths the renderer draws with.
+fn headerLabels(session: *ai_chat.Session, x: f32, w: f32, compact: bool) ai_chat_layout.HeaderLabels {
+    const effort_w: ?f32 = if (session.effort_levels.count > 0 and session.thinking_enabled)
+        titlebarTextWidth(session.reasoningEffort())
+    else
+        null;
+    return ai_chat_layout.headerLabels(x, headerPermissionChipX(x, w, compact), headerModeSlotW(headerModeText(session)), effort_w, .{
+        .line_pad_x = LINE_PAD_X,
+        .effort_gap = EFFORT_CHIP_GAP,
+        .min_model_w = EFFORT_CHIP_MIN_MODEL_W,
+    });
 }
 
 /// Reasoning-effort chip just left of the mode label, for sessions with
 /// switchable levels (Magpie). Null when there is none or the header has no
 /// room left for a readable model label beside it.
 fn effortChipRect(session: *ai_chat.Session, x: f32, w: f32, titlebar_offset: f32, compact: bool) ?Rect {
-    if (session.effort_levels.count == 0 or !session.thinking_enabled) return null;
-    const chip_x = headerPermissionChipX(x, w, compact);
-    const mode_x = @max(x + LINE_PAD_X, chip_x - MODE_SLOT_W - 8);
-    const chip_w = measureText(session.reasoningEffort()) + EFFORT_CHIP_PAD;
-    const effort_x = mode_x - chip_w;
-    if (effort_x - (x + LINE_PAD_X) < EFFORT_CHIP_MIN_MODEL_W) return null;
-    return .{ .x = effort_x, .top_px = titlebar_offset + 8, .w = chip_w, .h = 32 };
+    const effort_x = headerLabels(session, x, w, compact).effort_x orelse return null;
+    return .{ .x = effort_x, .top_px = titlebar_offset + 8, .w = @max(1.0, titlebarTextWidth(session.reasoningEffort())), .h = 32 };
 }
 
 /// Click on the effort chip cycles this session to the model's next level.

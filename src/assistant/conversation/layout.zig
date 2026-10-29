@@ -181,6 +181,45 @@ pub fn permissionChipX(x: f32, w: f32, line_pad_x: f32, status_slot_w: f32, chip
     return x + w - line_pad_x - status_slot_w - chip_gap - chip_w;
 }
 
+/// Header labels left of the permission chip, laid out right to left:
+/// `[model] [effort] [mode] [chip]`. Every slot comes from measured widths,
+/// so render and hit tests share one placement and no label can overlap its
+/// neighbour whatever the font scale.
+pub const HeaderLabels = struct {
+    mode_x: f32,
+    /// Left edge of the effort label, or null when it is absent or hidden.
+    effort_x: ?f32,
+    /// Width left for the model label; callers hide it below a minimum.
+    model_limit: f32,
+};
+
+pub const HeaderLabelMetrics = struct {
+    line_pad_x: f32,
+    /// Space between the mode slot and the permission chip.
+    mode_gap: f32 = 8,
+    /// Space between the effort label and the mode label.
+    effort_gap: f32,
+    /// Space kept after the model label.
+    model_gap: f32 = 12,
+    /// Model label width the effort label must leave, or it is hidden.
+    min_model_w: f32,
+};
+
+pub fn headerLabels(x: f32, chip_x: f32, mode_slot_w: f32, effort_w: ?f32, m: HeaderLabelMetrics) HeaderLabels {
+    const model_x = x + m.line_pad_x;
+    const mode_x = @max(model_x, chip_x - mode_slot_w - m.mode_gap);
+    var right = mode_x;
+    var effort_x: ?f32 = null;
+    if (effort_w) |w| {
+        const left = mode_x - m.effort_gap - w;
+        if (left - m.model_gap - model_x >= m.min_model_w) {
+            effort_x = left;
+            right = left;
+        }
+    }
+    return .{ .mode_x = mode_x, .effort_x = effort_x, .model_limit = right - model_x - m.model_gap };
+}
+
 /// Left-aligned title plus a hint string in a popup header, never overlapping.
 /// If both cannot fit on one row (with `gap` between them), `stacked` is true
 /// and both occupy the full inner width on separate rows.
@@ -481,6 +520,33 @@ test "copyButtonRectForBlock anchors to block top-right" {
 test "permissionChipX" {
     const px = permissionChipX(0, 1000, 18, 280, 12, 104); // w - line_pad - status - gap - chip
     try std.testing.expectApproxEqAbs(@as(f32, 586), px, 0.001);
+}
+
+test "header effort label keeps clear of a mode label wider than its default slot" {
+    const m: HeaderLabelMetrics = .{ .line_pad_x = 18, .effort_gap = 16, .min_model_w = 52 };
+    // Retina-scale glyphs: "Agent" needs more than the 84px default mode slot.
+    const mode_text_w: f32 = 96;
+    const mode_slot_w = @max(84.0, mode_text_w + 20);
+    const effort_w: f32 = 114; // "medium"
+    const labels = headerLabels(0, 700, mode_slot_w, effort_w, m);
+    const effort_x = labels.effort_x.?;
+    try std.testing.expectEqual(@as(f32, 700 - 116 - 8), labels.mode_x);
+    try std.testing.expect(effort_x + effort_w + m.effort_gap <= labels.mode_x);
+    try std.testing.expect(18 + labels.model_limit + m.model_gap <= effort_x);
+    try std.testing.expect(labels.model_limit >= m.min_model_w);
+}
+
+test "header effort label hides before it crowds out the model label" {
+    const m: HeaderLabelMetrics = .{ .line_pad_x = 18, .effort_gap = 16, .min_model_w = 52 };
+    const without = headerLabels(0, 260, 84, null, m);
+    try std.testing.expect(without.effort_x == null);
+    try std.testing.expectEqual(@as(f32, 260 - 84 - 8 - 18 - 12), without.model_limit);
+    // 260 - 92 = 168 mode_x; 168 - 16 - 80 = 72 left; 72 - 12 - 18 = 42 < 52.
+    const narrow = headerLabels(0, 260, 84, 80, m);
+    try std.testing.expect(narrow.effort_x == null);
+    try std.testing.expectEqual(without.model_limit, narrow.model_limit);
+    const wide = headerLabels(0, 300, 84, 80, m);
+    try std.testing.expectEqual(@as(?f32, 300 - 92 - 16 - 80), wide.effort_x);
 }
 
 test "compact copilot chip is to the right of the wide-tab chip" {
