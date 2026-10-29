@@ -86,7 +86,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) ?codec.AiProfile
         }
     }
     const thinking = switchValue(c.thinking) catch return null;
-    const effective_effort = if (thinking == true and std.mem.eql(u8, effort, "auto")) "medium" else effort;
+    const effective_effort = if (thinking == true and c.reasoningEffort == null and std.mem.eql(u8, effort, "auto")) "medium" else effort;
     codec.setProfileDefault(&profile, .protocol, c.protocol);
     codec.setProfileDefault(&profile, .thinking, if (thinking == false) "disabled" else if (std.mem.eql(u8, effective_effort, "auto")) "auto" else "enabled");
     codec.setProfileDefault(&profile, .reasoning_effort, effective_effort);
@@ -305,4 +305,12 @@ test "Magpie rejects invalid options and caps overrides at advertised model limi
     try std.testing.expectEqualStrings("disabled", codec.aiProfileField(&p, .thinking));
     try std.testing.expectEqualStrings("20000", codec.aiProfileField(&p, .max_tokens));
     try std.testing.expectEqual(@as(u32, 100000), p.context_window);
+}
+
+test "Magpie explicit auto effort wins over thinking on" {
+    const p = parse(std.testing.allocator,
+        \\{"baseURL":"http://localhost/v1","apiKey":"fixture","model":"m","thinking":true,"reasoningEffort":"auto"}
+    ) orelse return error.ExpectedProfile;
+    try std.testing.expectEqualStrings("auto", codec.aiProfileField(&p, .thinking));
+    try std.testing.expectEqualStrings("auto", codec.aiProfileField(&p, .reasoning_effort));
 }

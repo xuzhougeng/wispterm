@@ -42,8 +42,8 @@ text-only upstream model vision capability. To disable it explicitly, add
 An absent or null `vision` uses the enabled default. Other values make the
 external configuration invalid.
 
-`vision` belongs to the user: the Agent plugin only manages the three connection
-keys, so model switches and disconnects preserve this override. Restart WispTerm
+`vision` belongs to the user: the Agent plugin manages the three connection
+keys and its modelInfo snapshot, so model switches and disconnects preserve this override. Restart WispTerm
 and create a new session after editing it; existing sessions retain their
 snapshot. Editing the native `config` or `ai_profiles` does not change this
 managed profile. Builds that hard-code vision off in the Magpie reader must be
@@ -90,7 +90,7 @@ this selection and must be supported when the list is known. Without model
 reasoning information, `auto` omits explicit reasoning settings instead of
 forcing thinking off. Explicit `thinking: false` stops WispTerm requesting
 reasoning; the provider may impose its own behavior. Explicit thinking on with
-no known effort uses medium.
+no known effort uses medium unless the user explicitly requests `reasoningEffort: "auto"`.
 
 For example, add `"reasoningEffort": "high", "maxTokens": 32768` to the existing
 JSON object. Do not replace the connection keys or edit `modelInfo`; Magpie
