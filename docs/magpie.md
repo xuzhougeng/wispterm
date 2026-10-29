@@ -34,8 +34,20 @@ WispTerm's native configuration directory and `XDG_CONFIG_HOME`.
 Magpie writes `baseURL`, `apiKey`, and `model`; WispTerm reads all three as a unit.
 Missing, partial, invalid, oversized files, and `{}` are treated as inactive.
 The integration uses OpenAI Chat Completions; model IDs are passed unchanged.
-Vision is off for this managed profile because the file does not declare model
-capabilities.
+Image attachment is enabled by default for this managed profile. Select an
+image-capable model in Magpie to use it; enabling attachment does not give a
+text-only upstream model vision capability. To disable it explicitly, add
+`"vision": false` to the existing `magpie.json` object. `true` enables it again;
+`"on"`/`"off"` (and `"true"`/`"false"`, `"enabled"`/`"disabled"`) are also accepted.
+An absent or null `vision` uses the enabled default. Other values make the
+external configuration invalid.
+
+`vision` belongs to the user: the Agent plugin only manages the three connection
+keys, so model switches and disconnects preserve this override. Restart WispTerm
+and create a new session after editing it; existing sessions retain their
+snapshot. Editing the native `config` or `ai_profiles` does not change this
+managed profile. Builds that hard-code vision off in the Magpie reader must be
+updated; a plugin-only update cannot fix that older application code.
 
 The managed profile is never saved into `ai_profiles`, and connecting does not
 rewrite the saved `ai-default-profile` preference. There is an extra profile slot
