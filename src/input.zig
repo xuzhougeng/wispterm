@@ -45,6 +45,7 @@ const WindowMetrics = window_metrics.WindowMetrics;
 const input_key = @import("input/key.zig");
 const feishu_reg_panel = @import("feishu/registration_panel.zig");
 const assistant_conversation = @import("input/assistant_conversation.zig");
+const session_effort = @import("assistant/conversation/session_effort.zig");
 const command_dispatch = @import("input/command_dispatch.zig");
 const file_explorer_keymap = @import("input/file_explorer_keymap.zig");
 const input_effects = @import("input/effects.zig");
@@ -6320,6 +6321,19 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             }
                             return;
                         }
+                        if (AppWindow.assistant_conversation_renderer.effortChipHitTest(
+                            chat,
+                            xpos,
+                            ypos,
+                            @floatCast(titlebarHeight()),
+                            chat_x,
+                            chat_w,
+                            true, // copilot sidebar: compact header layout
+                        )) {
+                            session_effort.cycle(chat);
+                            requestInputRepaint();
+                            return;
+                        }
                         if (AppWindow.assistant_conversation_renderer.modelLabelHitTest(
                             chat,
                             xpos,
@@ -6335,6 +6349,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             return;
                         }
                         if (AppWindow.assistant_conversation_renderer.permissionChipHitTest(
+                            chat,
                             xpos,
                             ypos,
                             @floatFromInt(fb.width),
@@ -6474,6 +6489,19 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     }
                     return;
                 }
+                if (AppWindow.assistant_conversation_renderer.effortChipHitTest(
+                    chat,
+                    xpos,
+                    ypos,
+                    @floatCast(titlebarHeight()),
+                    AppWindow.leftPanelsWidth(),
+                    @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
+                    false, // full tab
+                )) {
+                    session_effort.cycle(chat);
+                    requestInputRepaint();
+                    return;
+                }
                 if (AppWindow.assistant_conversation_renderer.modelLabelHitTest(
                     chat,
                     xpos,
@@ -6489,6 +6517,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     return;
                 }
                 if (AppWindow.assistant_conversation_renderer.permissionChipHitTest(
+                    chat,
                     xpos,
                     ypos,
                     @floatFromInt(fb.width),

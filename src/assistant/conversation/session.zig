@@ -37,6 +37,8 @@ const terminal_lease = @import("../../agent/terminal_lease.zig");
 const session_identity = @import("identity.zig");
 const prompt_queue = @import("prompt_queue.zig");
 const session_queue = @import("session_queue.zig");
+const session_effort = @import("session_effort.zig");
+pub const EffortLevels = @import("effort_levels.zig").EffortLevels;
 const table_hscroll = @import("table_hscroll.zig");
 const question_hscroll = @import("question_hscroll.zig");
 const secret_redact = @import("../../credential/redact.zig");
@@ -996,9 +998,9 @@ fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8
         // .remember, .memory, .forget suppress output and emit their own messages;
         // this path is never reached, but the arm is required for exhaustiveness.
         .remember, .memory, .forget => allocator.dupe(u8, ""),
-        // .model_switch suppresses output and defers to the picker / by-name path;
-        // this path is never reached, but the arm is required for exhaustiveness.
-        .model_switch => allocator.dupe(u8, ""),
+        // .model_switch defers to the picker / by-name path and .effort emits its
+        // own message; this path is never reached, but the arm is required.
+        .model_switch, .effort => allocator.dupe(u8, ""),
         // .copy_transcript suppresses output (the copied Markdown must not
         // include its own progress message); this path is never reached.
         .copy_transcript => allocator.dupe(u8, ""),
@@ -1096,6 +1098,8 @@ pub const Session = struct {
     thinking_enabled: bool = true,
     reasoning_effort_buf: [16]u8 = undefined,
     reasoning_effort_len: usize = 0,
+    /// Levels `/effort` and the header chip may pick; runtime-only (Magpie).
+    effort_levels: EffortLevels = .{},
     stream: bool = false,
     max_tokens: u32 = 8192,
     agent_enabled: bool = false,
@@ -2728,7 +2732,7 @@ pub const Session = struct {
         @memcpy(self.approval_reason_buf[0..self.approval_reason_len], reason[0..self.approval_reason_len]);
     }
 
-    fn appendLocalToolMessageLocked(self: *Session, text: []const u8) !void {
+    pub fn appendLocalToolMessageLocked(self: *Session, text: []const u8) !void {
         const content = try self.allocator.dupe(u8, text);
         errdefer self.allocator.free(content);
         try self.messages.append(self.allocator, .{
@@ -3254,6 +3258,7 @@ pub const Session = struct {
                 self.setStatusLocked("Ready");
                 result.suppress_output = true;
             },
+            .effort => result.suppress_output = session_effort.runCommandLocked(self, arg),
             .btw => {
                 self.pending_btw_prompt_len = @min(arg.len, self.pending_btw_prompt_buf.len);
                 @memcpy(self.pending_btw_prompt_buf[0..self.pending_btw_prompt_len], arg[0..self.pending_btw_prompt_len]);
@@ -4044,7 +4049,7 @@ pub const Session = struct {
         self.transcript_selection = null;
     }
 
-    fn clearSubmittedInputLocked(self: *Session) void {
+    pub fn clearSubmittedInputLocked(self: *Session) void {
         self.clearComposerHistoryNavigationLocked();
         self.composer.clear();
         self.input_scroll_row = 0;
@@ -4578,7 +4583,7 @@ pub const Session = struct {
         }
     }
 
-    fn buildRequestLocked(self: *Session) !*ChatRequest {
+    pub fn buildRequestLocked(self: *Session) !*ChatRequest {
         const req = try self.allocator.create(ChatRequest);
         errdefer self.allocator.destroy(req);
 
@@ -4916,7 +4921,7 @@ pub const Session = struct {
         @memcpy(self.system_prompt_buf[0..self.system_prompt_len], value[0..self.system_prompt_len]);
     }
 
-    fn copyReasoningEffort(self: *Session, value: []const u8) void {
+    pub fn copyReasoningEffort(self: *Session, value: []const u8) void {
         self.reasoning_effort_len = @min(value.len, self.reasoning_effort_buf.len);
         @memcpy(self.reasoning_effort_buf[0..self.reasoning_effort_len], value[0..self.reasoning_effort_len]);
     }
@@ -5226,6 +5231,7 @@ pub fn applyProviderProfile(
     protocol_str: []const u8,
     thinking_str: []const u8,
     reasoning_effort: []const u8,
+    effort_levels: EffortLevels,
     max_tokens: u32,
     vision_str: []const u8,
 ) void {
@@ -5271,6 +5277,7 @@ pub fn applyProviderProfile(
         session.protocol = ApiProtocol.parse(protocol_str);
         session.thinking_enabled = !std.mem.eql(u8, thinking_str, "disabled");
         session.copyReasoningEffort(reasoning_effort);
+        session.effort_levels = effort_levels;
         session.max_tokens = max_tokens;
         session.vision_enabled = std.mem.eql(u8, vision_str, "on") or std.mem.eql(u8, vision_str, "enabled") or std.mem.eql(u8, vision_str, "true");
 
@@ -8934,10 +8941,10 @@ test "ai chat double esc after stop opens rewind picker" {
 }
 
 // ---------------------------------------------------------------------------
-// Request-layer tests that need private Session methods (buildRequestLocked,
+// Request-layer tests that need Session internals (buildRequestLocked,
 // assignSessionId, copyTitle, copyBaseUrl, copyApiKey, copyModel,
-// copySystemPrompt, copyReasoningEffort).  They are co-located here so those
-// methods can remain private.  The request-serialization helpers they exercise
+// copySystemPrompt, copyReasoningEffort).  Most of those stay private, so the
+// tests are co-located here.  The request-serialization helpers they exercise
 // (buildRequestJson / buildRequestJsonForMessages) are pub on ai_chat_request.
 // ---------------------------------------------------------------------------
 

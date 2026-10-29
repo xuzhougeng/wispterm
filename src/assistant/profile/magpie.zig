@@ -90,6 +90,13 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) ?codec.AiProfile
     codec.setProfileDefault(&profile, .protocol, c.protocol);
     codec.setProfileDefault(&profile, .thinking, if (thinking == false) "disabled" else if (std.mem.eql(u8, effective_effort, "auto")) "auto" else "enabled");
     codec.setProfileDefault(&profile, .reasoning_effort, effective_effort);
+    // Session-only choices: the model's levels (auto when unknown), plus the
+    // configured level so a session can switch back to it.
+    if (thinking != false) {
+        if (info) |value| for (value.efforts) |level| if (validEffort(level)) profile.efforts.append(level);
+        if (profile.efforts.count == 0) profile.efforts.append("auto");
+        profile.efforts.append(effective_effort);
+    }
     codec.setProfileDefault(&profile, .system_prompt, c.systemPrompt);
     codec.setProfileDefault(&profile, .stream, if (c.stream) "true" else "false");
     codec.setProfileDefault(&profile, .agent, if (c.agent) "true" else "false");
@@ -305,6 +312,24 @@ test "Magpie rejects invalid options and caps overrides at advertised model limi
     try std.testing.expectEqualStrings("disabled", codec.aiProfileField(&p, .thinking));
     try std.testing.expectEqualStrings("20000", codec.aiProfileField(&p, .max_tokens));
     try std.testing.expectEqual(@as(u32, 100000), p.context_window);
+}
+
+test "Magpie offers sessions only the model's levels, or auto when unknown" {
+    const a = std.testing.allocator;
+    var buf: [64]u8 = undefined;
+    for ([_]struct { options: []const u8, expected: []const u8 }{
+        .{ .options = "\"modelInfo\":{\"id\":\"m\",\"efforts\":[\"low\",\"medium\",\"high\"]}", .expected = "low, medium, high" },
+        .{ .options = "\"modelInfo\":{\"id\":\"m\",\"efforts\":[\"low\",\"high\"]},\"reasoningEffort\":\"auto\"", .expected = "low, high, auto" },
+        .{ .options = "\"modelInfo\":{\"id\":\"old\",\"efforts\":[\"high\"]}", .expected = "auto" },
+        .{ .options = "\"modelInfo\":{\"id\":\"m\",\"efforts\":[]}", .expected = "auto" },
+        .{ .options = "\"thinking\":true", .expected = "auto, medium" },
+        .{ .options = "\"thinking\":false,\"modelInfo\":{\"id\":\"m\",\"efforts\":[\"high\"]}", .expected = "" },
+    }) |case| {
+        const json = try std.fmt.allocPrint(a, "{{\"baseURL\":\"http://localhost/v1\",\"apiKey\":\"fixture\",\"model\":\"m\",{s}}}", .{case.options});
+        defer a.free(json);
+        const p = parse(a, json) orelse return error.ExpectedProfile;
+        try std.testing.expectEqualStrings(case.expected, p.efforts.join(&buf));
+    }
 }
 
 test "Magpie explicit auto effort wins over thinking on" {

@@ -656,6 +656,7 @@ pub fn spawnAiChatTab(
     system_prompt: []const u8,
     thinking: []const u8,
     reasoning_effort: []const u8,
+    effort_levels: ai_chat.EffortLevels,
     stream_val: []const u8,
     agent_val: []const u8,
     max_tokens: u32,
@@ -681,6 +682,7 @@ pub fn spawnAiChatTab(
         return false;
     };
     session.setMaxTokens(max_tokens);
+    session.effort_levels = effort_levels;
 
     if (!spawnAiChatSession(allocator, session)) {
         session.deinit();

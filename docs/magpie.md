@@ -97,6 +97,8 @@ JSON object. Do not replace the connection keys or edit `modelInfo`; Magpie
 refreshes its model facts. User-owned fields survive reconnection and model
 switches. Recheck an explicit effort after switching to a model with different
 supported levels. Restart the app and create a new session to apply changes.
+To change the effort for one conversation without editing the file, see
+[Switching reasoning effort in a session](#switching-reasoning-effort-in-a-session).
 
 The form labels the generation cap **Max Output Tokens** and shows Magpie's
 **context capacity** in the hint. Capacity is model metadata, not a generation
@@ -109,3 +111,25 @@ The serializer sends `max_tokens` for Chat Completions and `max_output_tokens`
 for generic Responses. Native Codex subscription requests retain their existing
 behavior because that backend rejects `max_output_tokens`. Magpie owns any
 translation from its gateway protocol to the actual provider.
+
+## Switching reasoning effort in a session
+
+A Magpie Agent tab or Copilot sidebar shows its reasoning effort (for example
+`medium`) beside the model name in the header. Click it to move to the next
+level the connected model supports, or type `/effort` to list the current and
+supported levels and `/effort <level>` (for example `/effort high`) to pick one.
+The Chinese alias `/推理强度` works the same way.
+The choice applies to the session's next request; no restart is needed.
+
+The list comes from the `modelInfo.efforts` snapshot Magpie wrote for the
+selected model, plus the level the session started with. When Magpie has no
+level information for the model, only `auto` is offered, which leaves the
+reasoning choice to the provider. Levels the model does not list are refused.
+Explicit `"thinking": false` hides the control.
+
+The choice belongs to that session only. It is not written to `magpie.json`,
+`ai_profiles`, or the native config, so new sessions start from the configured
+default again, and switching models with `/model` resets the list to the new
+profile's levels. Personal profiles keep their effort in the profile form;
+`/effort` does not change them. A conversation resumed from history keeps the
+effort it was saved with but does not show the control.
