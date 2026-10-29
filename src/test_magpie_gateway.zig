@@ -10,7 +10,8 @@ pub fn main() !void {
     const path = try std.process.getEnvVarOwned(a, "MAGPIE_TEST_CONFIG");
     defer a.free(path);
     const profile = magpie.loadFromPath(a, path) orelse return error.InactiveFixture;
-    const url = try protocol.apiEndpoint(a, codec.aiProfileField(&profile, .base_url), .chat_completions);
+    const api = protocol.ApiProtocol.parse(codec.aiProfileField(&profile, .protocol));
+    const url = try protocol.apiEndpoint(a, codec.aiProfileField(&profile, .base_url), api);
     defer a.free(url);
     const auth = try std.fmt.allocPrint(a, "Bearer {s}", .{codec.aiProfileField(&profile, .api_key)});
     defer a.free(auth);
@@ -31,10 +32,11 @@ pub fn main() !void {
     }};
     const body = try protocol.buildRequestJson(a, .{
         .model = codec.aiProfileField(&profile, .model),
-        .system_prompt = "",
-        .protocol = .chat_completions,
-        .thinking_enabled = false,
-        .reasoning_effort = "",
+        .system_prompt = codec.aiProfileField(&profile, .system_prompt),
+        .protocol = api,
+        .thinking_enabled = !std.mem.eql(u8, codec.aiProfileField(&profile, .thinking), "disabled"),
+        .reasoning_effort = codec.aiProfileField(&profile, .reasoning_effort),
+        .max_tokens = try std.fmt.parseInt(u32, codec.aiProfileField(&profile, .max_tokens), 10),
         .stream = false,
     }, &messages, false);
     defer a.free(body);
@@ -45,10 +47,12 @@ pub fn main() !void {
         .headers = &.{ .{ .name = "Content-Type", .value = "application/json" }, .{ .name = "Authorization", .value = auth } },
     });
     defer response.deinit(a);
-    if (response.status != 200) return error.GatewayFailed;
-    const payload = try std.json.parseFromSlice(std.json.Value, a, response.body, .{});
-    defer payload.deinit();
-    const content = payload.value.object.get("choices").?.array.items[0].object.get("message").?.object.get("content").?.string;
-    if (!std.mem.eql(u8, content, "fixture-ok")) return error.UnexpectedFixtureResponse;
+    if (response.status != 200) {
+        std.debug.print("fixture gateway status {d}: {s}\n", .{ response.status, response.body[0..@min(response.body.len, 1024)] });
+        return error.GatewayFailed;
+    }
+    const result = try protocol.parseApiResponse(a, response.body, api);
+    defer result.deinit(a);
+    if (!std.mem.eql(u8, result.content, "fixture-ok")) return error.UnexpectedFixtureResponse;
     std.debug.print("fixture-ok\n", .{});
 }

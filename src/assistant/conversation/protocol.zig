@@ -586,10 +586,15 @@ fn buildChatCompletionsRequestJsonForMessages(
         }
         try out.append(allocator, '}');
     }
-    try out.appendSlice(allocator, "],\"thinking\":{\"type\":");
-    try appendJsonString(allocator, &out, if (params.thinking_enabled) "enabled" else "disabled");
-    try out.append(allocator, '}');
-    if (params.thinking_enabled) {
+    try out.append(allocator, ']');
+    const automatic_reasoning = params.thinking_enabled and std.mem.eql(u8, params.reasoning_effort, "auto");
+    if (!automatic_reasoning) {
+        try out.appendSlice(allocator, ",\"thinking\":{\"type\":");
+        try appendJsonString(allocator, &out, if (params.thinking_enabled) "enabled" else "disabled");
+        try out.append(allocator, '}');
+    }
+    if (params.max_tokens > 0) try out.print(allocator, ",\"max_tokens\":{d}", .{params.max_tokens});
+    if (params.thinking_enabled and !automatic_reasoning) {
         try out.appendSlice(allocator, ",\"reasoning_effort\":");
         try appendJsonString(allocator, &out, if (params.reasoning_effort.len > 0) params.reasoning_effort else "high");
     }
@@ -656,11 +661,14 @@ fn buildResponsesRequestJsonForMessages(
         }
     }
     try out.append(allocator, ']');
-    if (params.thinking_enabled and params.reasoning_effort.len > 0) {
+    if (params.thinking_enabled and params.reasoning_effort.len > 0 and !std.mem.eql(u8, params.reasoning_effort, "auto")) {
         try out.appendSlice(allocator, ",\"reasoning\":{\"effort\":");
         try appendJsonString(allocator, &out, params.reasoning_effort);
         try out.append(allocator, '}');
     }
+    // Native Codex subscriptions reject max_output_tokens; the generic Responses
+    // gateway accepts it and owns any downstream protocol conversion.
+    if (params.max_tokens > 0 and params.protocol != .codex) try out.print(allocator, ",\"max_output_tokens\":{d}", .{params.max_tokens});
     // chatgpt.com/backend-api/codex/responses requires store:false and stream:true.
     const wire_stream = params.stream or params.protocol == .codex;
     try out.appendSlice(allocator, ",\"stream\":");
@@ -2599,4 +2607,30 @@ test "subagent toolset gating applies to all three protocol emitters" {
     try std.testing.expect(std.mem.indexOf(u8, anthropic_out.items, "\"name\":\"subagent\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, anthropic_out.items, "\"name\":\"continue_later\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, anthropic_out.items, "\"write_file\"") == null);
+}
+
+test "request limits are emitted for chat and Responses without confusing context capacity" {
+    const a = std.testing.allocator;
+    for ([_]ApiProtocol{ .chat_completions, .responses, .codex }) |api| {
+        const json = try buildRequestJson(a, .{ .model = "m", .system_prompt = "", .protocol = api, .thinking_enabled = true, .reasoning_effort = "high", .stream = false, .max_tokens = 32768 }, &.{}, false);
+        defer a.free(json);
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, json, .{});
+        defer parsed.deinit();
+        const o = parsed.value.object;
+        if (api != .codex) {
+            try std.testing.expectEqual(@as(i64, 32768), o.get(if (api == .responses) "max_output_tokens" else "max_tokens").?.integer);
+        } else try std.testing.expect(o.get("max_output_tokens") == null);
+        try std.testing.expect(o.get("context_window") == null);
+    }
+}
+
+test "automatic gateway reasoning leaves the provider defaults untouched" {
+    const a = std.testing.allocator;
+    for ([_]ApiProtocol{ .chat_completions, .responses }) |api| {
+        const json = try buildRequestJson(a, .{ .model = "m", .system_prompt = "", .protocol = api, .thinking_enabled = true, .reasoning_effort = "auto", .stream = false }, &.{}, false);
+        defer a.free(json);
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, json, .{});
+        defer parsed.deinit();
+        for ([_][]const u8{ "thinking", "reasoning", "reasoning_effort" }) |key| try std.testing.expect(parsed.value.object.get(key) == null);
+    }
 }
