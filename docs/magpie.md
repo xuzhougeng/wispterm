@@ -15,7 +15,7 @@ magpie wispterm magpie/provider/model
 
 Replace `provider/model` with a model available in Magpie and keep its gateway
 running. Once published, the package can also be installed with
-`magpie plugin add @xuzhougeng/magpie-agent-wispterm@alpha`.
+`magpie plugin add @hoptoper/magpie-agent-wispterm@alpha`.
 
 Restart WispTerm after connecting, changing models, or disconnecting. A read-only
 **Magpie** profile becomes the default for new Agent/Copilot sessions. Existing
