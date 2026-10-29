@@ -475,6 +475,8 @@ const UiTriggers = struct {
     export_markdown: ?*const fn (*Session, MarkdownExportMode) void = null,
     copy: ?*const fn (*Session, MarkdownExportMode) void = null,
     fork_at_rewind: ?*const fn (*Session, usize) void = null,
+    /// Wakes the render loop after `markUiDirty` (window_backend.postWakeup).
+    ui_wake: ?*const fn () void = null,
 };
 var g_ui_triggers: UiTriggers = .{};
 threadlocal var g_dynamic_tool_specs: []ai_chat_protocol.DynamicToolSpec = &.{};
@@ -565,6 +567,14 @@ pub fn setTranscriptCopyTrigger(cb: ?*const fn (*Session, MarkdownExportMode) vo
 /// truncation point), already mapped by `requestForkAtRewindSelection`.
 pub fn setForkAtRewindTrigger(cb: ?*const fn (*Session, usize) void) void {
     g_ui_triggers.fork_at_rewind = cb;
+}
+
+/// Wire the callback `Session.markUiDirty` uses to wake the render loop from
+/// the request thread (the app layer passes `window_backend.postWakeup`).
+/// Without it the UI still repaints on the next loop wake, at most
+/// `render_gate.CAP_FOCUSED_MS` later.
+pub fn setUiWakeTrigger(cb: ?*const fn () void) void {
+    g_ui_triggers.ui_wake = cb;
 }
 threadlocal var g_tool_host: ?ToolHost = null;
 
@@ -1111,6 +1121,10 @@ pub const Session = struct {
     history_on_change: ?HistoryChangeHook = null,
     request_inflight: bool = false,
     request_stopping: bool = false,
+    /// Set (any thread) when what the conversation renders changed; consumed
+    /// by the UI thread's frame gate (`takeUiDirty`). Replaces "repaint every
+    /// frame while `request_inflight`" — see appwindow/ai_stream_gate.zig.
+    ui_dirty: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     // —— UI 线程注意力跟踪（AppWindow.pollSessionAttention 每帧读写）——
     // ui_attention_phase：上一帧观察到的相位，用于边沿检测。
     // attention_done：「回合在你没看着时完成了」的粘性徽标，看到该 tab 即清除。
@@ -1822,6 +1836,24 @@ pub const Session = struct {
         };
     }
 
+    /// Any thread: the rendered conversation state changed (streamed delta,
+    /// status line, tool card, approval/question prompt, request end). Marks
+    /// the session for the next frame and wakes the render loop once per
+    /// pending frame — repeated marks before the UI consumes the flag do not
+    /// post more wakeups (same dedupe as `Surface.markOutputDirty`).
+    /// Safe to call while holding `mutex`: the renderer takes the mutex before
+    /// reading, so it cannot paint a half-applied mutation.
+    pub fn markUiDirty(self: *Session) void {
+        if (self.ui_dirty.swap(true, .release)) return;
+        if (g_ui_triggers.ui_wake) |wake| wake();
+    }
+
+    /// UI thread, once per frame decision: was a UI change reported since the
+    /// last call?
+    pub fn takeUiDirty(self: *Session) bool {
+        return self.ui_dirty.swap(false, .acq_rel);
+    }
+
     /// Explicit (user-driven) rename. Marks the title as custom so a later
     /// auto-title never overwrites the user's choice.
     pub fn setTitle(self: *Session, title_text: []const u8) void {
@@ -2478,6 +2510,7 @@ pub const Session = struct {
     }
 
     pub fn requestApproval(self: *Session, tool: []const u8, command: []const u8, reason: []const u8) bool {
+        defer self.markUiDirty();
         if (self.stop_requested.load(.acquire)) return false;
         self.approval_mutex.lock();
         self.copyApprovalLocked(tool, command, reason);
@@ -2559,6 +2592,7 @@ pub const Session = struct {
     /// Mirrors `requestApproval`. The returned `.custom` slice borrows Session
     /// memory valid until the next `askUser` call.
     pub fn askUser(self: *Session, question: []const u8, options: []const QuestionOption) AskResult {
+        defer self.markUiDirty();
         if (self.stop_requested.load(.acquire)) return .cancelled;
 
         self.question_mutex.lock();
@@ -2717,6 +2751,7 @@ pub const Session = struct {
     /// Thread-safe wrapper used by the tool layer (worker thread) to post a
     /// transcript note such as a diff. Swallows OOM (best-effort UI message).
     pub fn appendLocalToolMessage(self: *Session, text: []const u8) void {
+        defer self.markUiDirty();
         self.mutex.lock();
         defer self.mutex.unlock();
         self.appendLocalToolMessageLocked(text) catch {};
@@ -4910,6 +4945,7 @@ pub const Session = struct {
     }
 
     pub fn setStatusLocked(self: *Session, value: []const u8) void {
+        defer self.markUiDirty();
         self.status_len = @min(value.len, self.status_buf.len);
         @memcpy(self.status_buf[0..self.status_len], value[0..self.status_len]);
     }
@@ -5154,6 +5190,7 @@ pub fn sessionCancelled(session: *Session) bool {
 }
 
 pub fn finishStoppedRequest(session: *Session) void {
+    defer session.markUiDirty();
     if (session.closing.load(.acquire)) return;
     session.mutex.lock();
     defer session.mutex.unlock();
@@ -5170,6 +5207,7 @@ pub fn finishStoppedRequest(session: *Session) void {
 /// user has not manually renamed it (a manual rename in the meantime always
 /// wins) and the session is not closing.
 pub fn applyGeneratedTitle(session: *Session, raw: []const u8) void {
+    defer session.markUiDirty();
     if (session.closing.load(.acquire)) return;
     var buf: [ai_chat_title.max_title_bytes]u8 = undefined;
     const cleaned = ai_chat_title.cleanTitle(raw, &buf) orelse return;
@@ -5327,6 +5365,7 @@ fn buildSummaryRequestLocked(session: *Session, turns: []const ai_model_switch.T
 /// Runs under the mutex; safe even if a request is in flight because each request
 /// snapshots its messages under the mutex at start.
 pub fn applySummaryResult(session: *Session, summary: []const u8, boundary: usize, from_model: []const u8) void {
+    defer session.markUiDirty();
     if (session.closing.load(.acquire)) return;
     const allocator = session.allocator;
     var history_change: ?PendingHistoryChange = null;
@@ -5377,6 +5416,7 @@ pub fn applySummaryResult(session: *Session, summary: []const u8, boundary: usiz
 /// Summary request failed (e.g. the new model is also overloaded): keep the full
 /// raw history, just clear the in-progress status.
 pub fn failSummaryResult(session: *Session) void {
+    defer session.markUiDirty();
     if (session.closing.load(.acquire)) return;
     session.mutex.lock();
     defer session.mutex.unlock();
@@ -5481,6 +5521,7 @@ pub fn maybeAutoTitle(session: *Session) void {
 // to assistant/conversation/request.zig.
 
 pub fn appendAssistantResult(session: *Session, result: ApiResult, started_ms: i64) void {
+    defer session.markUiDirty();
     const allocator = session.allocator;
     if (session.closing.load(.acquire)) return;
     if (session.stop_requested.load(.acquire)) {
@@ -5546,6 +5587,7 @@ pub fn appendAssistantResult(session: *Session, result: ApiResult, started_ms: i
 /// finish the in-flight request. Called from the web-search worker thread with
 /// no lock held. Mirrors the closing-guarded shape of `appendAssistantResult`.
 pub fn appendWebSearchResult(session: *Session, text: []const u8) void {
+    defer session.markUiDirty();
     if (session.closing.load(.acquire)) return;
     session.mutex.lock();
     defer session.mutex.unlock();
@@ -5560,6 +5602,7 @@ pub fn appendWebSearchResult(session: *Session, text: []const u8) void {
 }
 
 pub fn applyDistillCandidate(session: *Session, candidate: *ai_skill_distill.Candidate) void {
+    defer session.markUiDirty();
     const allocator = session.allocator;
     const root = ai_chat_skills.defaultWritableSkillRootPath(allocator) catch |err| {
         candidate.deinit(allocator);
@@ -5608,6 +5651,7 @@ pub fn applyDistillCandidate(session: *Session, candidate: *ai_skill_distill.Can
 }
 
 pub fn failDistillRequest(session: *Session, err: anyerror) void {
+    defer session.markUiDirty();
     const allocator = session.allocator;
     const text = std.fmt.allocPrint(allocator, "Could not distill this conversation: {}.", .{err}) catch null;
     defer if (text) |msg| allocator.free(msg);
@@ -5629,6 +5673,7 @@ pub fn failDistillRequest(session: *Session, err: anyerror) void {
 }
 
 pub fn appendProgressMessage(session: *Session, text: []const u8) !void {
+    defer session.markUiDirty();
     if (sessionCancelled(session)) return error.Canceled;
     const allocator = session.allocator;
     const content = try allocator.dupe(u8, text);
@@ -5656,6 +5701,7 @@ pub fn appendReplayableToolMessage(
     tool_name: []const u8,
     text: []const u8,
 ) !void {
+    defer session.markUiDirty();
     if (sessionCancelled(session)) return error.Canceled;
     const allocator = session.allocator;
     const content = try allocator.dupe(u8, text);
@@ -5697,6 +5743,7 @@ pub fn appendReplayableToolMessage(
 }
 
 pub fn beginAssistantStream(session: *Session) !usize {
+    defer session.markUiDirty();
     const allocator = session.allocator;
     if (sessionCancelled(session)) return error.Canceled;
 
@@ -5805,6 +5852,7 @@ pub fn appendAssistantStreamDelta(session: *Session, message_idx: usize, content
 }
 
 pub fn finishAssistantStream(session: *Session, message_idx: usize, started_ms: i64, first_token_ms: i64, usage: ?ApiUsage) void {
+    defer session.markUiDirty();
     if (session.closing.load(.acquire)) return;
     if (session.stop_requested.load(.acquire)) {
         finishStoppedRequest(session);
@@ -5868,6 +5916,7 @@ pub fn sealCancelledAssistantStream(session: *Session, message_idx: usize, start
 }
 
 pub fn failAssistantStream(session: *Session, message_idx: ?usize, text: []const u8) void {
+    defer session.markUiDirty();
     if (session.stop_requested.load(.acquire)) {
         finishStoppedRequest(session);
         return;
@@ -5937,6 +5986,7 @@ pub fn applyApiStreamLineToSession(
     usage_out: *?ApiUsage,
     first_token_ms: *i64,
 ) !bool {
+    defer session.markUiDirty();
     const line = std.mem.trim(u8, line_raw, " \t\r");
     if (!std.mem.startsWith(u8, line, "data:")) return false;
 

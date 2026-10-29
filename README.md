@@ -68,6 +68,7 @@ and the [Remote guide](remote/README.md) for the web console and relay.
 - [Configuration](docs/configuration.md)
 - [File Explorer and previews](docs/file-explorer.md)
 - [AI Agent sessions](docs/ai-agent.md)
+- [Magpie model connection](docs/magpie.md)
 - [Media, background images, and inline remote images](docs/media.md)
 - [SSH port forwarding](docs/port-forwarding.md)
 - [Development, architecture, packaging, and releases](docs/development.md)

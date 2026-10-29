@@ -18,10 +18,14 @@ typedef struct WispWsConn {
     bool pending_is_text;
 } WispWsConn;
 
-// dispatch objects are ARC-managed when OS_OBJECT_USE_OBJC is set; otherwise we
-// must release them ourselves (mirrors http_client_macos_bridge.m).
+// Dispatch objects are only reference-counted for us by the compiler under
+// ARC (OS_OBJECT_USE_OBJC_RETAIN_RELEASE). These bridges build without ARC, so
+// OS_OBJECT_USE_OBJC is 1 (dispatch objects are ObjC objects) while nothing
+// balances the +1 from dispatch_semaphore_create: gating on OS_OBJECT_USE_OBJC
+// compiled this release out and leaked one semaphore per WebSocket call
+// (mirrors http_client_macos_bridge.m).
 static void wispterm_ws_release_semaphore(dispatch_semaphore_t sema) {
-#if !OS_OBJECT_USE_OBJC
+#if !OS_OBJECT_USE_OBJC_RETAIN_RELEASE
     dispatch_release(sema);
 #else
     (void)sema;

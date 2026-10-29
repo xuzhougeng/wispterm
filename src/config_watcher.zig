@@ -12,6 +12,18 @@ watcher: platform_config_watcher.DirectoryWatcher,
 allocator: std.mem.Allocator,
 config_path: []const u8,
 last_mtime: ?i128,
+/// Last time the config file was stat'ed (ms). See `hasChanged`.
+last_stat_ms: i64 = 0,
+/// Minimum spacing between mtime stats when the directory watcher reported
+/// nothing. Tests set this to 0 to observe an in-place rewrite immediately.
+stat_interval_ms: i64 = STAT_INTERVAL_MS,
+
+/// The main loop calls `hasChanged` on every wake (>= 10 Hz while focused,
+/// see `appwindow/render_gate.zig`). Stat'ing the config file that often is
+/// pure idle CPU: the reload itself is debounced by `CONFIG_DEBOUNCE_MS`
+/// anyway, so a one-second stat cadence adds at most a second of latency.
+/// Ghostty has no auto-reload at all (`reload_config` keybind only).
+pub const STAT_INTERVAL_MS: i64 = 1000;
 
 /// Open the config directory and start watching for changes.
 pub fn init(allocator: std.mem.Allocator) ?ConfigWatcher {
@@ -55,8 +67,15 @@ pub fn initForPath(allocator: std.mem.Allocator, config_path: []const u8) ?Confi
 /// gating on the event would miss every in-place edit and force an app restart
 /// to pick up changes (the Windows `ReadDirectoryChangesW` backend fires on
 /// last-write/size, which is why this only manifested on macOS).
+///
+/// The stat is throttled to `stat_interval_ms` unless the directory watcher
+/// did report an event (create / rename / delete land there and should be
+/// picked up at once).
 pub fn hasChanged(self: *ConfigWatcher) bool {
-    _ = self.watcher.hasChanged();
+    const dir_event = self.watcher.hasChanged();
+    const now = std.time.milliTimestamp();
+    if (!shouldStat(dir_event, now, self.last_stat_ms, self.stat_interval_ms)) return false;
+    self.last_stat_ms = now;
     const next_mtime = configMtime(self.config_path);
     if (optionalMtimeEql(self.last_mtime, next_mtime)) return false;
     self.last_mtime = next_mtime;
@@ -73,12 +92,30 @@ fn configMtime(path: []const u8) ?i128 {
     return stat.mtime;
 }
 
+/// Pure decision for `hasChanged`: stat on a directory event, or once the
+/// throttle interval since the last stat has elapsed.
+fn shouldStat(dir_event: bool, now_ms: i64, last_stat_ms: i64, interval_ms: i64) bool {
+    if (dir_event) return true;
+    return now_ms - last_stat_ms >= interval_ms;
+}
+
 fn optionalMtimeEql(a: ?i128, b: ?i128) bool {
     if (a) |av| {
         if (b) |bv| return av == bv;
         return false;
     }
     return b == null;
+}
+
+test "config watcher throttles the mtime stat unless the directory reported an event" {
+    // Quiet directory: stat only once per interval.
+    try std.testing.expect(!shouldStat(false, 999, 0, STAT_INTERVAL_MS));
+    try std.testing.expect(shouldStat(false, 1000, 0, STAT_INTERVAL_MS));
+    try std.testing.expect(shouldStat(false, 1500, 500, STAT_INTERVAL_MS));
+    // A directory event (create/rename/delete) bypasses the throttle.
+    try std.testing.expect(shouldStat(true, 1, 0, STAT_INTERVAL_MS));
+    // Interval 0 (tests) stats every call.
+    try std.testing.expect(shouldStat(false, 5, 5, 0));
 }
 
 test "config watcher wraps platform directory watcher" {
@@ -112,6 +149,8 @@ test "config watcher detects in-place rewrite of existing config file" {
         return error.SkipZigTest;
     };
     defer watcher.deinit();
+    // The stat throttle would otherwise hide a rewrite made within a second.
+    watcher.stat_interval_ms = 0;
 
     try testing.expect(!watcher.hasChanged());
 

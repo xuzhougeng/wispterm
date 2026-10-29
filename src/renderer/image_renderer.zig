@@ -21,6 +21,7 @@ pub fn snapshot(rend: *Renderer, terminal: *ghostty_vt.Terminal) void {
     rend.kitty_placements.clearRetainingCapacity();
 
     if (!storage.enabled()) {
+        pruneOrphanTextures(rend, storage);
         storage.dirty = false;
         return;
     }
@@ -74,7 +75,30 @@ pub fn snapshot(rend: *Renderer, terminal: *ghostty_vt.Terminal) void {
         }.lessThan,
     );
 
+    pruneOrphanTextures(rend, storage);
     storage.dirty = false;
+}
+
+/// Release GPU textures whose image is gone from terminal storage.
+///
+/// ghostty-vt drops images on kitty `delete` commands and when the storage
+/// limit evicts old ones, but the per-image texture uploaded here used to
+/// outlive both and stay resident until surface teardown — a session that
+/// streams many images (imgcat loops, notebook plots, agent screenshots)
+/// pinned VRAM for every image it had ever shown. Ghostty's
+/// `renderer/generic.zig` `prepKittyGraphics` does the same sweep: any image
+/// id no longer in `kitty_images` is marked `.unload` and freed next flush.
+/// Runs with the cell snapshot on rebuild frames only; the cost is one map
+/// lookup per resident texture.
+fn pruneOrphanTextures(rend: *Renderer, storage: *const KittyStorage) void {
+    var i: usize = rend.kitty_textures.items.len;
+    while (i > 0) {
+        i -= 1;
+        const tex = &rend.kitty_textures.items[i];
+        if (storage.imageById(tex.image_id) != null) continue;
+        tex.texture.destroy();
+        _ = rend.kitty_textures.swapRemove(i);
+    }
 }
 
 pub fn uploadPending(rend: *Renderer) void {
