@@ -110,6 +110,7 @@ const d3d11_fallback_marker = @import("renderer/gpu/d3d11/fallback_marker.zig");
 pub const gpu = @import("renderer/gpu/gpu.zig");
 pub const split_layout = @import("appwindow/split_layout.zig");
 const render_gate = @import("appwindow/render_gate.zig");
+const ai_stream_gate = @import("appwindow/ai_stream_gate.zig");
 const frame_scheduler = @import("appwindow/frame_scheduler.zig");
 const frame_latency = @import("appwindow/frame_latency.zig");
 const flush_scheduler = @import("appwindow/flush_scheduler.zig");
@@ -245,6 +246,9 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     // Rewind picker `f`: fork the session before the selected user message
     // (the source session stays intact). The payload ordinal is already mapped
     // to record user-message counting by the session layer.
+    // Request threads wake the render loop after each streamed change; the
+    // loop no longer repaints every iteration just because a request is open.
+    ai_chat.setUiWakeTrigger(window_backend.postWakeup);
     ai_chat.setForkAtRewindTrigger(struct {
         fn cb(session: *ai_chat.Session, user_point: usize) void {
             forkAiChatSession(session, user_point);
@@ -7277,19 +7281,36 @@ fn clearVisibleSurfaceDirty() void {
     clearTabSurfaceDirty(tb);
 }
 
-fn aiStreamingActive() bool {
+/// Render signal for the displayed AI surfaces (btw overlay, active chat tab,
+/// visible Copilot sidebar): a frame when any of them reported a UI change
+/// since the last frame, plus a slow heartbeat while a request is in flight.
+/// Consumes each session's dirty flag. Replaces the old "inflight ⇒ render
+/// every iteration" rule that spun at display refresh rate for the whole
+/// request (including minutes parked on a tool-approval dialog).
+fn aiStreamingNeedsFrame(now_ms: i64) bool {
+    var inflight = false;
+    var dirty = false;
     if (overlays.btwConversationSession()) |session| {
-        if (session.requestState().inflight) return true;
+        if (session.takeUiDirty()) dirty = true;
+        if (session.requestState().inflight) inflight = true;
     }
     if (activeAiChat()) |session| {
-        if (session.request_inflight) return true;
+        if (session.takeUiDirty()) dirty = true;
+        if (session.request_inflight) inflight = true;
     }
     if (activeTab()) |tb| {
-        if (tb.copilot_session) |session| {
-            if (session.request_inflight) return true;
+        if (tb.copilot_visible) {
+            if (tb.copilot_session) |session| {
+                if (session.takeUiDirty()) dirty = true;
+                if (session.request_inflight) inflight = true;
+            }
         }
     }
-    return false;
+    return ai_stream_gate.needsFrame(&g_appwindow_state.ai_stream, .{
+        .inflight = inflight,
+        .dirty = dirty,
+        .now_ms = now_ms,
+    });
 }
 
 fn clearIconFont(allocator: std.mem.Allocator) void {
@@ -8726,7 +8747,7 @@ fn runMainLoop(self: *AppWindow) !void {
             .force_rebuild = g_force_rebuild or !g_cells_valid or pendingResizeActive() or windowState().layout_resize_immediate or agent_requests.hasPendingUiScreenshot(),
             .any_surface_dirty = anyVisibleSurfaceDirty(),
             .cursor_blink_due = blink.due,
-            .ai_streaming = aiStreamingActive(),
+            .ai_streaming = aiStreamingNeedsFrame(gate_now),
             .overlay_active = overlays.anyOverlayActive(gate_now),
             .atlas_sync_pending = font.atlasSyncPending(),
         };
