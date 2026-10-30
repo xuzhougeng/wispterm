@@ -289,6 +289,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     g_focus_follows_mouse = app.focus_follows_mouse;
     g_copy_on_select = app.copy_on_select;
     g_copilot_hint = app.copilot_hint;
+    titlebar.setToolbarMode(app.window_show_toolbar);
     _ = right_dock_actions.applyPlacement(dockPlacement(app.file_explorer_position));
     right_dock_actions.restoreWidth(app.allocator);
     g_right_click_action = app.right_click_action;
@@ -6235,6 +6236,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     g_focus_follows_mouse = cfg.@"focus-follows-mouse";
     g_copy_on_select = cfg.@"copy-on-select";
     g_copilot_hint = cfg.@"copilot-hint";
+    titlebar.setToolbarMode(cfg.@"window-show-toolbar");
     if (right_dock_actions.applyPlacement(dockPlacement(cfg.@"file-explorer-position"))) requestImmediateLayoutResize();
     g_right_click_action = cfg.@"right-click-action";
     link_open.current_mode = cfg.@"url-open-mode";
@@ -8812,12 +8814,15 @@ fn runMainLoop(self: *AppWindow) !void {
             .interval_ms = CURSOR_BLINK_INTERVAL_MS,
         });
 
+        // Hover-revealed toolbar: sample the pointer every iteration (mouse
+        // moves wake the loop) and keep painting while it fades.
+        const toolbar_animating = titlebar.tickToolbarReveal(gate_now);
         const signals = render_gate.RenderSignals{
             .force_rebuild = g_force_rebuild or !g_cells_valid or pendingResizeActive() or windowState().layout_resize_immediate or agent_requests.hasPendingUiScreenshot(),
             .any_surface_dirty = anyVisibleSurfaceDirty(),
             .cursor_blink_due = blink.due,
             .ai_streaming = aiStreamingNeedsFrame(gate_now),
-            .overlay_active = overlays.anyOverlayActive(gate_now),
+            .overlay_active = overlays.anyOverlayActive(gate_now) or toolbar_animating,
             .atlas_sync_pending = font.atlasSyncPending(),
         };
 

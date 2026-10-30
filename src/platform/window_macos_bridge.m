@@ -78,6 +78,8 @@ typedef struct WispTermMacWindowState WispTermMacWindowState;
 
 @interface WispTermMacContentView : NSView <NSTextInputClient>
 @property(nonatomic, assign) WispTermMacWindowState *state;
+// Owned by the view's trackingAreas; kept only to install it once.
+@property(nonatomic, assign) NSTrackingArea *pointerTrackingArea;
 @end
 
 @interface WispTermMacWindowDelegate : NSObject <NSWindowDelegate>
@@ -131,6 +133,10 @@ struct WispTermMacWindowState {
     WispTermMacMouseMoveEvent mouse_move_events[64];
     size_t mouse_move_head;
     size_t mouse_move_count;
+    // The pointer left the content view. Mouse-moved events stop at the window
+    // edge, so without the tracking-area exit the last in-window position
+    // would stick and hover state (the hover-revealed toolbar) never clears.
+    bool pointer_outside;
     WispTermMacMouseWheelEvent mouse_wheel_events[16];
     size_t mouse_wheel_head;
     size_t mouse_wheel_count;
@@ -510,6 +516,13 @@ static bool wispterm_macos_pop_mouse_button_event(WispTermMacWindowState *state,
     }
     os_unfair_lock_unlock(&state->input_lock);
     return has_event;
+}
+
+static void wispterm_macos_set_pointer_outside(WispTermMacWindowState *state, bool outside) {
+    if (state == NULL) return;
+    os_unfair_lock_lock(&state->input_lock);
+    state->pointer_outside = outside;
+    os_unfair_lock_unlock(&state->input_lock);
 }
 
 static void wispterm_macos_push_mouse_move_event(WispTermMacWindowState *state, WispTermMacMouseMoveEvent event) {
@@ -927,6 +940,26 @@ static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
     [self.window makeFirstResponder:self];
+    // NSTrackingInVisibleRect follows resizes, so one area covers the view.
+    if (self.window != nil && self.pointerTrackingArea == nil) {
+        NSTrackingArea *area = [[NSTrackingArea alloc]
+            initWithRect:NSZeroRect
+                 options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect | NSTrackingAssumeInside
+                   owner:self
+                userInfo:nil];
+        [self addTrackingArea:area];
+        self.pointerTrackingArea = area;
+        [area release];
+    }
+}
+
+- (void)mouseEntered:(NSEvent *)event {
+    wispterm_macos_set_pointer_outside(self.state, false);
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    wispterm_macos_set_pointer_outside(self.state, true);
+    wispterm_macos_worker_wakeup_signal();
 }
 
 - (void)keyDown:(NSEvent *)event {
@@ -1096,6 +1129,7 @@ static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_
         .super = false,
     };
     wispterm_macos_mods(event.modifierFlags, &out.ctrl, &out.shift, &out.alt, &out.super);
+    wispterm_macos_set_pointer_outside(self.state, false);
     wispterm_macos_push_mouse_move_event(self.state, out);
 }
 
@@ -1453,6 +1487,15 @@ bool wispterm_macos_window_pop_mouse_move_event(void *handle, WispTermMacMouseMo
     return wispterm_macos_pop_mouse_move_event(wispterm_macos_state(handle), out);
 }
 
+bool wispterm_macos_window_pointer_outside(void *handle) {
+    WispTermMacWindowState *state = wispterm_macos_state(handle);
+    if (state == NULL) return false;
+    os_unfair_lock_lock(&state->input_lock);
+    const bool outside = state->pointer_outside;
+    os_unfair_lock_unlock(&state->input_lock);
+    return outside;
+}
+
 bool wispterm_macos_window_pop_mouse_wheel_event(void *handle, WispTermMacMouseWheelEvent *out) {
     return wispterm_macos_pop_mouse_wheel_event(wispterm_macos_state(handle), out);
 }
@@ -1562,6 +1605,10 @@ void wispterm_macos_window_test_push_mouse_move(void *handle, int32_t x, int32_t
         .shift = shift,
         .alt = alt,
     });
+}
+
+void wispterm_macos_window_test_set_pointer_outside(void *handle, bool outside) {
+    wispterm_macos_set_pointer_outside(wispterm_macos_state(handle), outside);
 }
 
 void wispterm_macos_window_test_push_mouse_wheel(

@@ -22,6 +22,7 @@ const builtin = @import("builtin");
 const ai_agent_config = @import("agent/config.zig");
 const keybind = @import("keybind.zig");
 const link_open = @import("link_open.zig");
+const toolbar_reveal = @import("renderer/toolbar_reveal.zig");
 const console_host_policy = @import("platform/console_host_policy.zig");
 const platform_atomic_file = @import("platform/atomic_file.zig");
 const platform_dirs = @import("platform/dirs.zig");
@@ -199,6 +200,9 @@ pub const RightClickAction = enum {
 
 pub const UrlOpenMode = link_open.Mode;
 
+/// `window-show-toolbar`: when WispTerm's own titlebar/sidebar buttons show.
+pub const WindowShowToolbar = toolbar_reveal.Mode;
+
 // ============================================================================
 // Background Image
 // ============================================================================
@@ -298,6 +302,14 @@ theme: ?[]const u8 = null,
 
 /// Initial terminal width in cells (min: 10, 0 = auto).
 @"window-width": u16 = 0,
+
+/// When WispTerm's own titlebar and sidebar buttons (sidebar toggle,
+/// settings, help, Copilot, command center, new tab) are drawn. `hover`
+/// reveals them while the pointer is over the titlebar or tab sidebar of the
+/// focused window; `always` keeps them visible. Native window controls, the
+/// title and the Update pill always show. Named after Ghostty's
+/// `window-show-tab-bar`.
+@"window-show-toolbar": WindowShowToolbar = .hover,
 
 /// Scrollback buffer limit in bytes.
 @"scrollback-limit": u32 = 10_000_000,
@@ -964,6 +976,12 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
             return;
         }
         self.@"http-proxy" = self.dupeString(allocator, trimmed) orelse return;
+    } else if (std.mem.eql(u8, key, "window-show-toolbar")) {
+        if (WindowShowToolbar.parse(value)) |mode| {
+            self.@"window-show-toolbar" = mode;
+        } else {
+            log.warn("invalid window-show-toolbar: {s}", .{value});
+        }
     } else if (std.mem.eql(u8, key, "right-click-action")) {
         if (RightClickAction.parse(value)) |action| {
             self.@"right-click-action" = action;
@@ -2527,6 +2545,19 @@ test "config: ai agent options parse" {
     try std.testing.expectEqual(ai_agent_config.AgentPermission.full, cfg.@"ai-agent-permission");
     try std.testing.expectEqual(@as(u32, 120000), cfg.@"ai-agent-command-timeout-ms");
     try std.testing.expectEqual(@as(u32, 4096), cfg.@"ai-agent-output-limit");
+}
+
+test "config: window-show-toolbar parses hover and always" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+
+    try std.testing.expectEqual(WindowShowToolbar.hover, cfg.@"window-show-toolbar");
+    cfg.applyKeyValue(allocator, "window-show-toolbar", "always", ".");
+    try std.testing.expectEqual(WindowShowToolbar.always, cfg.@"window-show-toolbar");
+    cfg.applyKeyValue(allocator, "window-show-toolbar", "sometimes", ".");
+    try std.testing.expectEqual(WindowShowToolbar.always, cfg.@"window-show-toolbar");
+    cfg.applyKeyValue(allocator, "window-show-toolbar", "hover", ".");
+    try std.testing.expectEqual(WindowShowToolbar.hover, cfg.@"window-show-toolbar");
 }
 
 test "config: copy and right click options parse" {
