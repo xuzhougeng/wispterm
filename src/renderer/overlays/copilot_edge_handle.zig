@@ -1,10 +1,11 @@
-//! Closed-state Copilot "summon handle" at the terminal's right edge — the
-//! universal, cross-platform affordance for the Copilot sidebar. Reveal-on-
-//! proximity + hover tooltip + a one-time first-session shimmer. Structured like
-//! startup_shortcuts.zig: threadlocal animation state, time-based easing.
+//! Closed-state right-dock "summon handle" at the terminal's right edge — the
+//! universal, cross-platform affordance for reopening the dock (Copilot /
+//! Files) on its last panel. Reveal-on-proximity + hover tooltip + a one-time
+//! first-session shimmer. Structured like startup_shortcuts.zig: threadlocal
+//! animation state, time-based easing.
 const std = @import("std");
 const AppWindow = @import("../../AppWindow.zig");
-const ai_sidebar = @import("../../assistant/sidebar/panel.zig");
+const right_dock = @import("../../appwindow/right_dock.zig");
 const keybind = @import("../../keybind.zig");
 const primitives = @import("primitives.zig");
 const hint_tooltip = @import("hint_tooltip.zig");
@@ -51,12 +52,23 @@ pub fn isAnimating() bool {
     return false;
 }
 
-fn shortcutText(buf: []u8) []const u8 {
-    const binding = AppWindow.g_keybinds.firstForAction(.toggle_ai_copilot) orelse return "";
+/// The panel a click reopens: the active tab's last dock selection.
+fn summonPanel() right_dock.Panel {
+    const t = AppWindow.activeTab() orelse return .copilot;
+    if (!right_dock.panelAvailable(right_dock.g_state.placement, t.right_dock.panel)) return .copilot;
+    return t.right_dock.panel;
+}
+
+fn shortcutText(panel: right_dock.Panel, buf: []u8) []const u8 {
+    const action: keybind.Action = switch (panel) {
+        .copilot => .toggle_ai_copilot,
+        .files => .toggle_file_explorer,
+    };
+    const binding = AppWindow.g_keybinds.firstForAction(action) orelse return "";
     return keybind.formatTrigger(binding.trigger, buf) catch "";
 }
 
-/// Render the closed-state handle. Caller guarantees Copilot is closed, the
+/// Render the closed-state handle. Caller guarantees the dock is closed, the
 /// active tab is a terminal, the feature is enabled, and no other right-docked
 /// panel is open. `left_offset` is `AppWindow.leftPanelsWidth()`.
 pub fn render(window_w: f32, window_h: f32, titlebar_h: f32, left_offset: f32) void {
@@ -64,7 +76,7 @@ pub fn render(window_w: f32, window_h: f32, titlebar_h: f32, left_offset: f32) v
     const dt: f32 = if (g_last_frame_ms == 0) 0 else @floatFromInt(now - g_last_frame_ms);
     g_last_frame_ms = now;
 
-    const rect = ai_sidebar.closedHandleRect(window_w, window_h, titlebar_h, left_offset);
+    const rect = right_dock.closedHandleRect(window_w, window_h, titlebar_h, left_offset);
     if (!rect.eligible) {
         g_alpha = 0;
         return;
@@ -91,7 +103,7 @@ pub fn render(window_w: f32, window_h: f32, titlebar_h: f32, left_offset: f32) v
     }
     if (draw_alpha <= 0.01) return;
 
-    // top-down rect -> GL bottom-left (mirror renderAiCopilotCloseButton).
+    // top-down rect -> GL bottom-left.
     const gl_y = window_h - (rect.y + rect.h);
     const accent = primitives.mixColor(AppWindow.g_theme.background, AppWindow.g_theme.cursor_color, 0.6);
     const base = primitives.mixColor(AppWindow.g_theme.background, AppWindow.g_theme.foreground, 0.35);
@@ -99,13 +111,14 @@ pub fn render(window_w: f32, window_h: f32, titlebar_h: f32, left_offset: f32) v
     primitives.renderRoundedQuadAlpha(rect.x, gl_y, rect.w, rect.h, rect.w / 2, color, draw_alpha);
 
     if (g_hovered and (now - g_hover_since) >= TOOLTIP_DWELL_MS) {
+        const panel = summonPanel();
         var key_buf: [64]u8 = undefined;
-        const keys = shortcutText(&key_buf);
+        const keys = shortcutText(panel, &key_buf);
         var label_buf: [96]u8 = undefined;
         const label = if (keys.len > 0)
-            (std.fmt.bufPrint(&label_buf, "Copilot  {s}", .{keys}) catch "Copilot")
+            (std.fmt.bufPrint(&label_buf, "{s}  {s}", .{ panel.label(), keys }) catch panel.label())
         else
-            "Copilot";
+            panel.label();
         const center_y = gl_y + rect.h / 2;
         hint_tooltip.render(label, rect.x, center_y, .left, 1.0);
     }

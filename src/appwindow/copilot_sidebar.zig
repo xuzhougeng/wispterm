@@ -7,9 +7,7 @@ const agent_history = @import("../agent/history.zig");
 const agent_history_store = @import("../agent/history_store.zig");
 const tab = @import("tab.zig");
 const surface_snapshots = @import("surface_snapshots.zig");
-const sidebar_panel = @import("../assistant/sidebar/panel.zig");
 const picker = @import("../assistant/sidebar/picker.zig");
-const platform_window_state = @import("../platform/window_state.zig");
 const browser_panel = if (build_options.webview)
     @import("../browser/panel.zig")
 else
@@ -32,17 +30,6 @@ pub fn visible() bool {
     return tab.activeCopilotVisible();
 }
 
-pub fn hide(host: Host) void {
-    if (!tab.setActiveCopilotVisible(false)) return;
-    host.blur_input();
-    host.mark_dirty();
-}
-
-pub fn width(window_width: i32, left_panels_width: f32) f32 {
-    if (!visible()) return 0;
-    return sidebar_panel.panelWidthForWindow(window_width, left_panels_width, 0);
-}
-
 pub fn activeSessionForInput() ?*ai_chat.Session {
     if (!visible()) return null;
     const t = tab.activeTab() orelse return null;
@@ -56,9 +43,10 @@ pub fn ensureActiveSession(host: Host) ?*ai_chat.Session {
     return session;
 }
 
+/// No profile: the dock stays open on Copilot and shows its "No Copilot
+/// profile configured" empty state while the config dialog opens.
 pub fn ensureActiveSessionConfigured(host: Host) ?*ai_chat.Session {
     const session = ensureActiveSession(host) orelse {
-        _ = tab.setActiveCopilotVisible(false);
         host.blur_input();
         host.open_api_config(null);
         return null;
@@ -135,24 +123,5 @@ pub fn newConversation(host: Host) void {
         return;
     };
     host.focus_input();
-    host.mark_dirty();
-}
-
-pub fn toggle(host: Host) void {
-    if (!tab.isActiveTabTerminal()) return;
-    if (tab.activeCopilotVisible()) {
-        _ = tab.setActiveCopilotVisible(false);
-        host.blur_input();
-        host.mark_dirty();
-        return;
-    }
-    browser_panel.close();
-    _ = tab.setActiveCopilotVisible(true);
-    _ = ensureActiveSessionConfigured(host) orelse {
-        host.mark_dirty();
-        return;
-    };
-    host.focus_input();
-    if (host.allocator) |alloc| platform_window_state.setCopilotHintShown(alloc);
     host.mark_dirty();
 }

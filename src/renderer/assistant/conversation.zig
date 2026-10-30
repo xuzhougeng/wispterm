@@ -87,7 +87,10 @@ const STOP_BUTTON_H: f32 = 28;
 // stops an in-flight request when the dot is busy/yellow.
 const STATUS_DOT_D: f32 = 9;
 const STATUS_DOT_HIT: f32 = 28;
-const COMPACT_STATUS_TRAILING_RESERVE: f32 = 36;
+// Trailing room after the status dot. It used to clear a × close button drawn
+// over the header's right end; the right dock's tab row now owns open/close,
+// so the dot only keeps a small gap from the panel edge.
+const COMPACT_STATUS_TRAILING_RESERVE: f32 = 4;
 const MODE_SLOT_W: f32 = 84;
 // Effort chip: gap before the mode label, and the model label width it must
 // leave before it is hidden on narrow headers.

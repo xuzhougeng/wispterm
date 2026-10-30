@@ -46,6 +46,8 @@ const keybind = @import("keybind.zig");
 const thread_message = @import("appwindow/thread_message.zig");
 const skill_center_actions = @import("appwindow/skill_center_actions.zig");
 const copilot_sidebar = @import("appwindow/copilot_sidebar.zig");
+const right_dock = @import("appwindow/right_dock.zig");
+const right_dock_actions = @import("appwindow/right_dock_actions.zig");
 const appwindow_state = @import("appwindow/state.zig");
 const ssh_latency = @import("ssh/latency.zig");
 const render_diagnostics = @import("render_diagnostics.zig");
@@ -131,6 +133,7 @@ const bench_report = @import("benchmark/report.zig");
 pub const background_image = @import("renderer/background_image.zig");
 pub const file_explorer = @import("file_explorer.zig");
 const file_explorer_renderer = @import("renderer/file_explorer_renderer.zig");
+const right_dock_renderer = @import("renderer/right_dock_renderer.zig");
 const markdown_preview_renderer = @import("renderer/markdown_preview_renderer.zig");
 pub const weixin_qr_panel = @import("weixin/qr_panel.zig");
 const weixin_qr_renderer = @import("renderer/weixin_qr_renderer.zig");
@@ -287,6 +290,8 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     g_copy_on_select = app.copy_on_select;
     g_copilot_hint = app.copilot_hint;
     titlebar.setToolbarMode(app.window_show_toolbar);
+    _ = right_dock_actions.applyPlacement(dockPlacement(app.file_explorer_position));
+    right_dock_actions.restoreWidth(app.allocator);
     g_right_click_action = app.right_click_action;
     link_open.current_mode = app.url_open_mode;
     g_ssh_legacy_algorithms = app.ssh_legacy_algorithms;
@@ -1449,7 +1454,7 @@ test "AppWindow: markdown export target includes visible copilot sidebar" {
         .ai_chat_session = null,
         .ai_history_session = null,
         .copilot_session = &copilot,
-        .copilot_visible = true,
+        .right_dock = .{ .open = true, .panel = .copilot },
     };
     tab.g_tabs[0] = &terminal_tab;
     tab.g_tab_count = 1;
@@ -2398,45 +2403,6 @@ fn scInstallPickItemAt(ctx: *anyopaque, i: usize) skill_center_renderer.ListItem
     return .{ .label = label, .marker = "" };
 }
 var g_sc_pick_label_buf: [64][256]u8 = undefined;
-
-fn renderAiCopilotPanel(fb_width: c_int, fb_height: c_int, titlebar_offset: f32) void {
-    if (!aiCopilotVisible()) return;
-    const session = ensureActiveCopilotSession() orelse return;
-    const left = leftPanelsWidth();
-    const bounds = ai_sidebar.boundsForWindow(@intCast(fb_width), @intCast(fb_height), titlebar_offset, left, 0);
-    const chat_x: f32 = @floatFromInt(bounds.left);
-    const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
-    assistant_conversation_renderer.render(session, @floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, chat_x, chat_w, true); // copilot sidebar: status shown as a colored dot
-    renderAiCopilotCloseButton(bounds, @floatFromInt(fb_height));
-}
-
-fn renderAiCopilotCloseButton(bounds: ai_sidebar.Bounds, window_height: f32) void {
-    const layout: hit_test.PanelHeaderLayout = .{
-        .visible = true,
-        .left = @floatFromInt(bounds.left),
-        .right = @floatFromInt(bounds.right),
-        .top = @floatFromInt(bounds.top),
-        .height = assistant_conversation_renderer.HEADER_H,
-    };
-    const close = hit_test.panelCloseButtonRect(layout) orelse return;
-    const close_x: f32 = @floatCast(close.left);
-    const close_w: f32 = @floatCast(close.width);
-    const close_h: f32 = @floatCast(close.height);
-    const close_y = window_height - @as(f32, @floatCast(close.top + close.height));
-
-    const bg = g_theme.background;
-    const fg = g_theme.foreground;
-    const hovered = blk: {
-        const win = g_window orelse break :blk false;
-        const mouse = window_backend.mousePosition(win);
-        if (mouse.x < 0 or mouse.y < 0) break :blk false;
-        break :blk hit_test.panelHeaderCloseButton(layout, @floatFromInt(mouse.x), @floatFromInt(mouse.y));
-    };
-    if (hovered) {
-        ui_pipeline.fillQuadAlpha(close_x + 6, close_y + @round((close_h - 20) / 2), 20, 20, mixColor(bg, fg, 0.14), 0.95);
-    }
-    titlebar.renderCloseIcon(close_x, close_y, close_w, close_h, if (hovered) fg else mixColor(bg, fg, 0.68));
-}
 
 fn mixColor(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
     const clamped = @max(0.0, @min(1.0, t));
@@ -4199,28 +4165,124 @@ pub fn aiCopilotVisible() bool {
     return copilot_sidebar.visible();
 }
 
-/// True when a right-docked panel (browser / Jupyter webview) is showing for the
-/// active tab. The Copilot edge handle defers while one is up, since they share
-/// the exclusive right slot.
+/// True when a right-docked webview panel (browser / Jupyter) is showing for
+/// the active tab. It and the right dock are mutually exclusive.
 pub fn anyRightDockPanelVisible() bool {
     return browser_panel.isVisibleForActiveTab();
 }
 
-/// Hide the active tab's copilot panel if visible (used by the right-slot
-/// arbiter when another right panel opens). No-op if already hidden.
+/// Close the Copilot tab of the active tab's dock if it is the panel showing
+/// (Escape in Copilot). No-op otherwise.
 pub fn hideAiCopilot() void {
-    copilot_sidebar.hide(copilotSidebarHost());
+    right_dock_actions.hidePanel(rightDockHost(), .copilot);
 }
 
-pub fn aiCopilotWidth(window_width: i32) f32 {
-    return copilot_sidebar.width(window_width, leftPanelsWidth());
+fn rightDockHost() right_dock_actions.Host {
+    return .{
+        .copilot = copilotSidebarHost(),
+        .sync_explorer = syncVisibleFileExplorerForActiveTab,
+        .relayout = rightDockRelayout,
+    };
+}
+
+fn rightDockRelayout() void {
+    requestImmediateLayoutResize();
+    markUiDirty();
+}
+
+/// True when the active tab's right dock (Copilot / Files) is showing.
+pub fn rightDockVisible() bool {
+    return right_dock_actions.visible();
+}
+
+pub fn rightDockActivePanel() ?right_dock.Panel {
+    return right_dock_actions.activePanel();
+}
+
+pub fn toggleRightDockPanel(panel: right_dock.Panel) void {
+    right_dock_actions.toggle(rightDockHost(), panel);
+}
+
+pub fn selectRightDockPanel(panel: right_dock.Panel) void {
+    right_dock_actions.select(rightDockHost(), panel);
+}
+
+/// Close the active tab's dock (header toggle; another right panel opening).
+pub fn closeRightDock() void {
+    right_dock_actions.close(rightDockHost());
+}
+
+/// Remember the dock width after a resize drag ends.
+pub fn persistRightDockWidth() void {
+    right_dock_actions.persistWidth(g_allocator);
+}
+
+/// Reopen the dock on its last panel (closed-state edge handle).
+pub fn summonRightDock() void {
+    right_dock_actions.summon(rightDockHost());
+}
+
+fn dockPlacement(position: Config.FileExplorerPosition) right_dock.Placement {
+    return switch (position) {
+        .right => .right,
+        .left => .left,
+    };
+}
+
+pub fn rightDockUiScale() f32 {
+    return right_dock.uiScaleForDpi(font.g_dpi);
+}
+
+pub fn rightDockTabRowHeight() f32 {
+    return right_dock.tabRowHeight(font.g_titlebar_cell_height, rightDockUiScale());
+}
+
+/// Whole dock rect (tab row + content) for a framebuffer size, or null when
+/// the active tab's dock is closed.
+pub fn rightDockBounds(window_width: i32, window_height: i32) ?right_dock.Bounds {
+    if (!rightDockVisible()) return null;
+    return right_dock.boundsForWindow(window_width, window_height, currentTitlebarHeight(), leftPanelsWidth(), 0);
+}
+
+/// The dock's panel area below its tab row.
+pub fn rightDockContentBounds(window_width: i32, window_height: i32) ?right_dock.Bounds {
+    const dock = rightDockBounds(window_width, window_height) orelse return null;
+    return right_dock.contentBounds(dock, rightDockTabRowHeight());
+}
+
+/// The Copilot conversation rect (dock content area), only while Copilot is
+/// showing. Every Copilot render/hit-test path uses this one source.
+pub fn copilotPanelBounds(window_width: i32, window_height: i32) ?ai_sidebar.Bounds {
+    if (!aiCopilotVisible()) return null;
+    const c = rightDockContentBounds(window_width, window_height) orelse return null;
+    return .{ .left = c.left, .top = c.top, .right = c.right, .bottom = c.bottom };
+}
+
+/// Where the File Explorer panel sits: beside the tab sidebar (`left`) or in
+/// the right dock's content area (`right`). `top` is where its own header
+/// begins. Null when it is not showing for the active tab.
+pub const ExplorerRect = struct {
+    left: f32,
+    right: f32,
+    top: f32,
+    docked: bool,
+};
+
+pub fn fileExplorerPanelRect(window_width: i32, window_height: i32) ?ExplorerRect {
+    if (!file_explorer.isVisibleForActiveTab()) return null;
+    if (file_explorer.isDocked()) {
+        const c = rightDockContentBounds(window_width, window_height) orelse return null;
+        return .{ .left = @floatFromInt(c.left), .right = @floatFromInt(c.right), .top = @floatFromInt(c.top), .docked = true };
+    }
+    const left = titlebar.sidebarWidth();
+    return .{ .left = left, .right = left + file_explorer.width(), .top = currentTitlebarHeight(), .docked = false };
 }
 
 fn makeCopilotSession() ?*ai_chat.Session {
     return overlays.makeCopilotSessionForDefaultProfile();
 }
 
-fn ensureActiveCopilotSession() ?*ai_chat.Session {
+pub fn ensureActiveCopilotSession() ?*ai_chat.Session {
     return copilot_sidebar.ensureActiveSession(copilotSidebarHost());
 }
 
@@ -4329,8 +4391,7 @@ pub fn appendDroppedPathToChatAtPoint(text: []const u8, x: i32, y: i32) bool {
         return false;
     }
 
-    if (aiCopilotVisible()) {
-        const bounds = ai_sidebar.boundsForWindow(size.width, size.height, currentTitlebarHeight(), leftPanelsWidth(), 0);
+    if (copilotPanelBounds(size.width, size.height)) |bounds| {
         if (x >= bounds.left and x < bounds.right and y >= bounds.top and y < bounds.bottom) {
             const session = activeCopilotSessionForInput() orelse return false;
             session.appendInputText(text);
@@ -4343,17 +4404,18 @@ pub fn appendDroppedPathToChatAtPoint(text: []const u8, x: i32, y: i32) bool {
 }
 
 pub fn toggleAiCopilot() void {
-    copilot_sidebar.toggle(copilotSidebarHost());
+    toggleRightDockPanel(.copilot);
 }
 
 pub fn rightPanelsWidth() f32 {
-    const copilot_w = if (aiCopilotVisible()) ai_sidebar.g_width else 0;
-    return browser_panel.width() + copilot_w;
+    const dock_w = if (rightDockVisible()) right_dock.g_state.width else 0;
+    return browser_panel.width() + dock_w;
 }
 
 pub fn rightPanelsWidthForWindow(window_width: i32) f32 {
     const browser_w = browser_panel.panelWidthForWindow(window_width, leftPanelsWidth(), 0);
-    return browser_w + aiCopilotWidth(window_width);
+    const dock_w = if (rightDockVisible()) right_dock.panelWidthForWindow(window_width, leftPanelsWidth(), 0) else 0;
+    return browser_w + dock_w;
 }
 
 pub fn browserPanelRightOffset() f32 {
@@ -5922,10 +5984,10 @@ fn renderResizeFrame(width: i32, height: i32) void {
         file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     }
 
-    // Copilot panel draws on top of the reserved right region (terminal tabs only;
-    // renderAiCopilotPanel gates on aiCopilotVisible). Placed after the terminal
-    // content + markdown preview so it occupies the exclusive right slot.
-    renderAiCopilotPanel(fb_width, fb_height, titlebar_offset);
+    // The right dock (Copilot / Files) draws on top of the reserved right
+    // region, after the terminal content + markdown preview so it occupies the
+    // exclusive right slot. It gates on the active tab's dock being open.
+    right_dock_renderer.render(fb_width, fb_height, titlebar_offset);
 
     overlays.renderBrowserUrlBar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderCommandPalette(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -6175,6 +6237,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     g_copy_on_select = cfg.@"copy-on-select";
     g_copilot_hint = cfg.@"copilot-hint";
     titlebar.setToolbarMode(cfg.@"window-show-toolbar");
+    if (right_dock_actions.applyPlacement(dockPlacement(cfg.@"file-explorer-position"))) requestImmediateLayoutResize();
     g_right_click_action = cfg.@"right-click-action";
     link_open.current_mode = cfg.@"url-open-mode";
     g_ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";
@@ -6525,7 +6588,7 @@ fn maybePrintMemoryDebug(now: i64) void {
 }
 
 fn markRemoteSyncUiDirty() void {
-    g_force_rebuild = true;
+    applyUiEffect(.{ .needs_rebuild = true });
 }
 
 fn openDefaultAiAgentForRemoteSync() remote_sync.AiAgentOpenStatus {
@@ -6589,7 +6652,7 @@ fn openRemoteAiAgentForClient(ctx: *anyopaque, request_id: []const u8) void {
 }
 
 fn markWeixinUiDirty() void {
-    g_force_rebuild = true;
+    applyUiEffect(.{ .needs_rebuild = true });
 }
 
 fn openDefaultAgentSessionForWeixin() weixin_control.OpenResult {
@@ -7262,7 +7325,18 @@ fn anyTabSurfaceDirty(tb: *const tab.TabState) bool {
     return false;
 }
 
-fn clearTabSurfaceDirty(tb: *const tab.TabState) void {
+/// Consume the PTY-output dirty flags of the tab a frame is about to draw. The
+/// main loop calls this once per frame BEFORE any render branch snapshots
+/// terminal state — never after present. The IO thread feeds output and then
+/// marks dirty (posting the one deduped wakeup) under `render_state.mutex`, so
+/// a chunk the snapshot misses marks after this swap and re-arms the gate with
+/// a fresh wakeup. Clearing after the (vsync-blocking) present instead swallowed
+/// such a chunk: its mark found the flag still set and posted nothing, then the
+/// late clear left it unpainted until an unrelated event (the prompt after
+/// `echo quick` in an unfocused window). Mirrors Ghostty, whose
+/// `RenderState.beginUpdate` resets the terminal's dirty bits inside the same
+/// critical section that copies the screen.
+fn consumeTabSurfaceDirty(tb: *const tab.TabState) void {
     var it = tb.tree.surfaces();
     while (it.next()) |entry| {
         _ = entry.surface.dirty.swap(false, .acq_rel);
@@ -7277,11 +7351,6 @@ fn clearTabSurfaceDirty(tb: *const tab.TabState) void {
 fn anyVisibleSurfaceDirty() bool {
     const tb = activeTab() orelse return false;
     return anyTabSurfaceDirty(tb);
-}
-
-fn clearVisibleSurfaceDirty() void {
-    const tb = activeTab() orelse return;
-    clearTabSurfaceDirty(tb);
 }
 
 /// Render signal for the displayed AI surfaces (btw overlay, active chat tab,
@@ -7302,7 +7371,7 @@ fn aiStreamingNeedsFrame(now_ms: i64) bool {
         if (session.request_inflight) inflight = true;
     }
     if (activeTab()) |tb| {
-        if (tb.copilot_visible) {
+        if (tb.right_dock.showing(.copilot)) {
             if (tb.copilot_session) |session| {
                 if (session.takeUiDirty()) dirty = true;
                 if (session.request_inflight) inflight = true;
@@ -7594,7 +7663,7 @@ fn syncImeCaretPosition(win: *window_backend.Window, split_count: usize) void {
         if (activeCopilotSessionForInput()) |session| {
             if (win.ime_composing) return;
             const size = window_backend.clientSize(win);
-            const bounds = ai_sidebar.boundsForWindow(size.width, size.height, currentTitlebarHeight(), leftPanelsWidth(), 0);
+            const bounds = copilotPanelBounds(size.width, size.height) orelse return;
             const chat_x: f32 = @floatFromInt(bounds.left);
             const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
             syncAiChatImeCaret(win, session, chat_x, chat_w);
@@ -8647,8 +8716,7 @@ fn runMainLoop(self: *AppWindow) !void {
             }
             const variant: overlays.CloseConfirmVariant = if (confirm_for_program) .running_program else .window_generic;
             overlays.closeConfirmOpen(.window, variant);
-            g_force_rebuild = true;
-            g_cells_valid = false;
+            applyUiEffect(.repaint);
         }
 
         if (window_backend.consumeDpiChanged(win)) {
@@ -8701,7 +8769,7 @@ fn runMainLoop(self: *AppWindow) !void {
                     if (s.drainPromptQueue()) applyUiEffect(.repaint);
                 }
                 if (tb.copilot_session) |s| {
-                    pollSessionAttention(s, tab_active and tb.copilot_visible);
+                    pollSessionAttention(s, tab_active and tb.right_dock.showing(.copilot));
                     // 同上：copilot 侧栏会话形态。
                     if (s.drainPromptQueue()) applyUiEffect(.repaint);
                 }
@@ -8782,7 +8850,7 @@ fn runMainLoop(self: *AppWindow) !void {
         }
 
         // In-app GPU benchmark: capture the render-branch start timestamp. The
-        // matching frameEnd (after present + dirty-clear) records the sample and
+        // matching frameEnd (after present) records the sample and
         // feeds the next VT chunk; see driver.zig for the measurement model.
         if (bench_driver.isEnabled()) bench_driver.frameBegin();
 
@@ -8836,6 +8904,13 @@ fn runMainLoop(self: *AppWindow) !void {
                 frame_timing.abortFrame();
                 continue;
             }
+
+            // Every branch below snapshots terminal state, so consume the PTY
+            // dirty flags first: output processed after this point re-arms the
+            // gate and posts its own wakeup instead of being lost to a
+            // post-present clear. The synchronized-output deferral above keeps
+            // them latched so its watchdog is re-polled next iteration.
+            consumeTabSurfaceDirty(active_tab);
 
             // Debug: print split count on first few frames
             // GL rendering
@@ -9054,14 +9129,14 @@ fn runMainLoop(self: *AppWindow) !void {
 
         gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
         ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
-        // Copilot panel draws on top of the reserved right region (terminal tabs
-        // only; renderAiCopilotPanel gates on aiCopilotVisible). Placed after the
-        // full-window viewport/projection are restored — so it is unaffected by the
-        // per-split viewport and the post-process framebuffer paths above — and
-        // after terminal content, occupying the exclusive right slot.
-        renderAiCopilotPanel(fb_width, fb_height, titlebar_offset);
+        // The right dock (Copilot / Files) draws on top of the reserved right
+        // region. Placed after the full-window viewport/projection are restored
+        // — so it is unaffected by the per-split viewport and the post-process
+        // framebuffer paths above — and after terminal content, occupying the
+        // exclusive right slot.
+        right_dock_renderer.render(fb_width, fb_height, titlebar_offset);
         overlays.renderBrowserUrlBar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
-        if (copilot_hint_gate.handleEligible(g_copilot_hint, aiCopilotVisible(), isActiveTabTerminal(), anyRightDockPanelVisible())) {
+        if (copilot_hint_gate.handleEligible(g_copilot_hint, rightDockVisible(), isActiveTabTerminal(), anyRightDockPanelVisible())) {
             if (!g_copilot_shimmer_checked) {
                 g_copilot_shimmer_checked = true;
                 const hint_shown = if (g_allocator) |alloc| platform_window_state.copilotHintShown(alloc) else true;
@@ -9117,7 +9192,6 @@ fn runMainLoop(self: *AppWindow) !void {
             platform_window_state.settleD3dBringup(allocator);
         }
         recordFrameLatencyIfInputDriven();
-        clearVisibleSurfaceDirty();
         g_force_rebuild = false;
         g_cells_valid = true;
         if (bench_driver.isEnabled()) {
@@ -9140,8 +9214,7 @@ fn runMainLoop(self: *AppWindow) !void {
             // seen during that window permanently blank — rebuild the atlas
             // and re-render everything on the GDI path.
             font.clearGlyphCache(allocator);
-            g_force_rebuild = true;
-            g_cells_valid = false;
+            applyUiEffect(.repaint);
             // The in-session GDI switch is best-effort only: this HWND has
             // already flip-presented, and blt presents on such a window are
             // undefined (often blank). Persist the marker so the next launch
@@ -9300,11 +9373,49 @@ test "appwindow: render gate ignores background-tab surface dirty" {
     active_surface.dirty.store(true, .release);
     try std.testing.expect(anyVisibleSurfaceDirty());
 
-    // Frame-end clear consumes only the rendered (active) tab; the background
-    // tab's dirty flag stays latched for its eventual tab switch.
-    clearVisibleSurfaceDirty();
+    // The frame consumes only the rendered (active) tab; the background tab's
+    // dirty flag stays latched for its eventual tab switch.
+    consumeTabSurfaceDirty(activeTab().?);
     try std.testing.expect(!active_surface.dirty.load(.acquire));
     try std.testing.expect(background_surface.dirty.load(.acquire));
+}
+
+test "appwindow: output after the frame's snapshot keeps the render gate armed" {
+    // Regression: the frame cleared surface dirty only after present. A chunk
+    // the IO thread processed between the snapshot and that clear (the prompt
+    // after `echo quick`) found the flag still set, posted no wakeup, and was
+    // then cleared unpainted until an unrelated mouse event.
+    const allocator = std.testing.allocator;
+    for (0..tab.MAX_TABS) |idx| tab.g_tabs[idx] = null;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    defer {
+        for (0..tab.MAX_TABS) |idx| tab.g_tabs[idx] = null;
+        tab.g_tab_count = 0;
+        active_tab_state.g_active_tab = 0;
+    }
+
+    var surface: Surface = undefined;
+    surface.ref_count = 1;
+    surface.dirty = std.atomic.Value(bool).init(false);
+    var tab_v = tab.TabState{ .tree = try SplitTree.init(allocator, &surface) };
+    defer tab_v.tree.deinit();
+    tab.g_tabs[0] = &tab_v;
+    tab.g_tab_count = 1;
+
+    // IO: the first chunk ("quick") marks dirty and posts the frame's wakeup.
+    try std.testing.expect(surface.markOutputDirty());
+    try std.testing.expect(anyVisibleSurfaceDirty());
+
+    // Frame: consume before the terminal snapshot is taken.
+    consumeTabSurfaceDirty(activeTab().?);
+    try std.testing.expect(!anyVisibleSurfaceDirty());
+
+    // IO: the prompt lands after the snapshot, while the frame draws/presents.
+    // It must post a fresh wakeup, and with nothing clearing dirty after
+    // present, the next gate check still renders it.
+    try std.testing.expect(surface.markOutputDirty());
+    try std.testing.expect(anyVisibleSurfaceDirty());
 }
 
 test "appwindow: ui screenshot focused_panel uses focused non-terminal split rect" {

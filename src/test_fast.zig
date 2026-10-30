@@ -366,6 +366,7 @@ test {
     _ = @import("appwindow/active_tab.zig");
     _ = @import("appwindow/frame_latency.zig");
     _ = @import("appwindow/frame_scheduler.zig");
+    _ = @import("appwindow/right_dock.zig");
     _ = @import("appwindow/png_writer.zig");
     _ = @import("appwindow/render_gate.zig");
     _ = @import("appwindow/ai_stream_gate.zig");
@@ -376,6 +377,7 @@ test {
     _ = @import("appwindow/state.zig");
     _ = @import("appwindow/state_guard.zig");
     _ = @import("appwindow/p3_1_guard.zig");
+    _ = @import("appwindow/frame_dirty_guard.zig");
     _ = @import("appwindow/thread_join.zig");
     _ = @import("ssh/scp.zig");
     _ = @import("surface_registry.zig");
