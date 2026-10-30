@@ -8,6 +8,7 @@ const std = @import("std");
 const text_hint = @import("text_hint.zig");
 const builtin = @import("builtin");
 const titlebar_layout = @import("titlebar_layout.zig");
+const toolbar_reveal = @import("toolbar_reveal.zig");
 const chrome_icons = @import("chrome_icons.zig");
 const AppWindow = @import("../AppWindow.zig");
 const ui_pipeline = @import("ui_pipeline.zig");
@@ -56,6 +57,36 @@ pub fn titlebarLeftReserved() f32 {
     return @round(TITLEBAR_LEFT_RESERVED_LOGICAL * scale);
 }
 pub threadlocal var g_sidebar_width: f32 = SIDEBAR_WIDTH;
+/// Per-window `window-show-toolbar` reveal state (see toolbar_reveal.zig).
+threadlocal var g_toolbar_reveal: toolbar_reveal.State = .{};
+
+pub fn setToolbarMode(mode: toolbar_reveal.Mode) void {
+    g_toolbar_reveal.setMode(mode);
+}
+
+/// The pointer is over the focused window's titlebar strip or tab sidebar.
+/// Unfocused windows keep their toolbar hidden: macOS stops sending mouse
+/// moves to a non-key window, so its last pointer position would be stale.
+fn toolbarHovered() bool {
+    const win = AppWindow.g_window orelse return false;
+    if (!window_backend.isFocused(win)) return false;
+    // Windows reports the draggable caption area as non-client, where the
+    // client mouse position is cleared to -1.
+    if (window_backend.pointerOverHostTitlebar(win)) return true;
+    const mouse = window_backend.mousePosition(win);
+    return toolbar_reveal.pointInZone(@floatFromInt(mouse.x), @floatFromInt(mouse.y), titlebarHeight(), sidebarWidth());
+}
+
+/// Sample the toolbar hover once per main-loop iteration. True while the
+/// reveal is changing, so the event-driven render gate keeps producing frames
+/// through the fade instead of waiting for the next incidental wake.
+pub fn tickToolbarReveal(now_ms: i64) bool {
+    return g_toolbar_reveal.tick(toolbarHovered(), now_ms);
+}
+
+fn toolbarOpacity() f32 {
+    return g_toolbar_reveal.opacityAt(std.time.milliTimestamp());
+}
 
 pub fn sidebarWidth() f32 {
     return if (tab.g_sidebar_visible) g_sidebar_width else 0;
@@ -464,6 +495,69 @@ pub fn renderIconGlyph(ch: Character, btn_x: f32, btn_y: f32, btn_w: f32, btn_h:
     );
 }
 
+/// The app's own titlebar buttons: sidebar toggle, then settings, help,
+/// Copilot and command center (Windows/Linux). With `window-show-toolbar =
+/// hover` they fade toward the titlebar background by `opacity`; the caption
+/// buttons, title and Update pill are drawn by the caller and never fade.
+fn renderToolbarButtons(layout: titlebar_layout.TopBarLayout, titlebar_h: f32, top_bg: [3]f32, opacity: f32) void {
+    if (opacity <= 0.01) return;
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const hover_bg = blend(top_bg, blend(bg, fg, 0.11), opacity);
+    const icon_color = blend(top_bg, blend(bg, fg, 0.82), opacity);
+
+    const toggle_x = layout.toggle_x;
+    const toggle_hovered = mouseInTitlebarRange(titlebar_h, toggle_x, toggle_x + TITLEBAR_TOGGLE_W);
+    if (toggle_hovered) {
+        ui_pipeline.fillQuad(toggle_x, layout.top_y, TITLEBAR_TOGGLE_W, titlebar_h, hover_bg);
+    }
+    renderTitlebarIcon(.menu, .menu, toggle_x, layout.top_y, TITLEBAR_TOGGLE_W, titlebar_h, icon_color);
+
+    const config_x = layout.config_x;
+    if (TITLEBAR_CONFIG_W > 0) {
+        const config_hovered = mouseInTitlebarRange(titlebar_h, config_x, config_x + TITLEBAR_CONFIG_W);
+        if (config_hovered) {
+            ui_pipeline.fillQuad(config_x, layout.top_y, TITLEBAR_CONFIG_W, titlebar_h, hover_bg);
+        }
+        renderTitlebarIcon(.settings, .settings, config_x, layout.top_y, TITLEBAR_CONFIG_W, titlebar_h, icon_color);
+    }
+
+    const help_x = layout.help_x;
+    if (TITLEBAR_HELP_W > 0) {
+        const help_hovered = mouseInTitlebarRange(titlebar_h, help_x, help_x + TITLEBAR_HELP_W);
+        if (help_hovered) {
+            ui_pipeline.fillQuad(help_x, layout.top_y, TITLEBAR_HELP_W, titlebar_h, hover_bg);
+        }
+        renderTitlebarIcon(.help, .help, help_x, layout.top_y, TITLEBAR_HELP_W, titlebar_h, icon_color);
+    }
+
+    const copilot_x = layout.copilot_x;
+    if (TITLEBAR_COPILOT_W > 0) {
+        const copilot_open = AppWindow.aiCopilotVisible();
+        const copilot_usable = AppWindow.isActiveTabTerminal();
+        const copilot_hovered = mouseInTitlebarRange(titlebar_h, copilot_x, copilot_x + TITLEBAR_COPILOT_W);
+        if (copilot_hovered and copilot_usable) {
+            ui_pipeline.fillQuad(copilot_x, layout.top_y, TITLEBAR_COPILOT_W, titlebar_h, hover_bg);
+        }
+        const copilot_tint = if (!copilot_usable)
+            blend(top_bg, blend(bg, fg, 0.30), opacity) // dimmed: no terminal target
+        else if (copilot_open)
+            blend(top_bg, blend(bg, AppWindow.g_theme.cursor_color, 0.85), opacity) // active
+        else
+            icon_color;
+        renderTitlebarIcon(.copilot, .copilot, copilot_x, layout.top_y, TITLEBAR_COPILOT_W, titlebar_h, copilot_tint);
+    }
+
+    const palette_x = layout.palette_x;
+    if (TITLEBAR_PALETTE_W > 0) {
+        const palette_hovered = mouseInTitlebarRange(titlebar_h, palette_x, palette_x + TITLEBAR_PALETTE_W);
+        if (palette_hovered) {
+            ui_pipeline.fillQuad(palette_x, layout.top_y, TITLEBAR_PALETTE_W, titlebar_h, hover_bg);
+        }
+        renderTitlebarIcon(.command_palette, .command_palette, palette_x, layout.top_y, TITLEBAR_PALETTE_W, titlebar_h, icon_color);
+    }
+}
+
 /// Render the Ghostty-style tab bar.
 /// Single row: [tabs...][+][  ][min][max][close]
 ///
@@ -502,9 +596,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
             window_backend.caption_button_visual_style.width,
         );
         const top_bg = blend(bg, fg, 0.04);
-        const hover_bg = blend(bg, fg, 0.11);
         const border_color_simple = blend(bg, .{ 0.0, 0.0, 0.0 }, 0.20);
-        const icon_color = blend(bg, fg, 0.82);
 
         // WispTerm keeps terminal tabs in the application UI layer, matching
         // Ghostty's apprt action/tab-view split. The top bar now only hosts the
@@ -513,58 +605,9 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
         ui_pipeline.fillQuad(0, layout.top_y, window_width, titlebar_h, top_bg);
         ui_pipeline.fillQuad(0, layout.top_y, window_width, 1, border_color_simple);
 
-        const toggle_x = layout.toggle_x;
-        const toggle_hovered = mouseInTitlebarRange(titlebar_h, toggle_x, toggle_x + TITLEBAR_TOGGLE_W);
-        if (toggle_hovered) {
-            ui_pipeline.fillQuad(toggle_x, layout.top_y, TITLEBAR_TOGGLE_W, titlebar_h, hover_bg);
-        }
-        renderTitlebarIcon(.menu, .menu, toggle_x, layout.top_y, TITLEBAR_TOGGLE_W, titlebar_h, icon_color);
+        renderToolbarButtons(layout, titlebar_h, top_bg, toolbarOpacity());
 
         const top_hovered: window_backend.CaptionButton = if (AppWindow.g_window) |w| window_backend.hoveredCaptionButton(w) else .none;
-
-        const config_x = layout.config_x;
-        if (TITLEBAR_CONFIG_W > 0) {
-            const config_hovered = mouseInTitlebarRange(titlebar_h, config_x, config_x + TITLEBAR_CONFIG_W);
-            if (config_hovered) {
-                ui_pipeline.fillQuad(config_x, layout.top_y, TITLEBAR_CONFIG_W, titlebar_h, hover_bg);
-            }
-            renderTitlebarIcon(.settings, .settings, config_x, layout.top_y, TITLEBAR_CONFIG_W, titlebar_h, icon_color);
-        }
-
-        const help_x = layout.help_x;
-        if (TITLEBAR_HELP_W > 0) {
-            const help_hovered = mouseInTitlebarRange(titlebar_h, help_x, help_x + TITLEBAR_HELP_W);
-            if (help_hovered) {
-                ui_pipeline.fillQuad(help_x, layout.top_y, TITLEBAR_HELP_W, titlebar_h, hover_bg);
-            }
-            renderTitlebarIcon(.help, .help, help_x, layout.top_y, TITLEBAR_HELP_W, titlebar_h, icon_color);
-        }
-
-        const copilot_x = layout.copilot_x;
-        if (TITLEBAR_COPILOT_W > 0) {
-            const copilot_open = AppWindow.aiCopilotVisible();
-            const copilot_usable = AppWindow.isActiveTabTerminal();
-            const copilot_hovered = mouseInTitlebarRange(titlebar_h, copilot_x, copilot_x + TITLEBAR_COPILOT_W);
-            if (copilot_hovered and copilot_usable) {
-                ui_pipeline.fillQuad(copilot_x, layout.top_y, TITLEBAR_COPILOT_W, titlebar_h, hover_bg);
-            }
-            const copilot_tint = if (!copilot_usable)
-                blend(bg, fg, 0.30) // dimmed: no terminal target
-            else if (copilot_open)
-                blend(bg, AppWindow.g_theme.cursor_color, 0.85) // active
-            else
-                icon_color;
-            renderTitlebarIcon(.copilot, .copilot, copilot_x, layout.top_y, TITLEBAR_COPILOT_W, titlebar_h, copilot_tint);
-        }
-
-        const palette_x = layout.palette_x;
-        if (TITLEBAR_PALETTE_W > 0) {
-            const palette_hovered = mouseInTitlebarRange(titlebar_h, palette_x, palette_x + TITLEBAR_PALETTE_W);
-            if (palette_hovered) {
-                ui_pipeline.fillQuad(palette_x, layout.top_y, TITLEBAR_PALETTE_W, titlebar_h, hover_bg);
-            }
-            renderTitlebarIcon(.command_palette, .command_palette, palette_x, layout.top_y, TITLEBAR_PALETTE_W, titlebar_h, icon_color);
-        }
 
         if (layout.update_w > 0) renderUpdatePill(layout.update_x, layout.top_y, layout.update_w, titlebar_h);
 
@@ -1133,12 +1176,16 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
         6,
         font.g_titlebar_cell_height,
     );
-    const plus_hovered = mouseInRect(header.plus_x, header.top_px, header.plus_w, header.plus_h);
-    if (plus_hovered) {
-        ui_pipeline.fillQuad(header.plus_x, header.plus_y + 4, header.plus_w, header.plus_h - 8, hover_bg);
-    }
     _ = renderTextLimited("Tabs", header.title_x, header.title_y, header_text, header.title_max_w);
-    renderPlusIcon(header.plus_x, header.plus_y, header.plus_w, header.plus_h, text_active);
+    // The new-tab button is part of the hover-revealed toolbar.
+    const toolbar_opacity = toolbarOpacity();
+    if (toolbar_opacity > 0.01) {
+        const plus_hovered = mouseInRect(header.plus_x, header.top_px, header.plus_w, header.plus_h);
+        if (plus_hovered) {
+            ui_pipeline.fillQuad(header.plus_x, header.plus_y + 4, header.plus_w, header.plus_h - 8, blend(sidebar_bg, hover_bg, toolbar_opacity));
+        }
+        renderPlusIcon(header.plus_x, header.plus_y, header.plus_w, header.plus_h, blend(sidebar_bg, text_active, toolbar_opacity));
+    }
     ui_pipeline.fillQuad(0, header.rule_y, sidebar_w, 1, border_color);
 
     const now_ms = std.time.milliTimestamp();

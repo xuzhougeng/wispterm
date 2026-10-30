@@ -523,6 +523,7 @@ test {
     _ = @import("benchmark/scenarios.zig");
     _ = @import("renderer/cell_geometry.zig");
     _ = @import("renderer/titlebar_layout.zig");
+    _ = @import("renderer/toolbar_reveal.zig");
     _ = @import("renderer/chrome_icons.zig");
     _ = @import("assistant/conversation/layout.zig");
     _ = @import("assistant/conversation/types.zig");

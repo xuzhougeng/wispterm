@@ -921,9 +921,16 @@ pub const Window = struct {
     /// Per-tab close button x ranges (synced from renderer, used for double-click suppression)
     close_btn_x_start: [16]i32 = .{0} ** 16,
     close_btn_x_end: [16]i32 = .{0} ** 16,
-    /// Current mouse position in client coordinates (for hover tracking)
-    mouse_x: i32 = 0,
-    mouse_y: i32 = 0,
+    /// Current mouse position in client coordinates (for hover tracking).
+    /// -1 while the pointer is outside the client area.
+    mouse_x: i32 = -1,
+    mouse_y: i32 = -1,
+    /// The pointer is over the titlebar strip but in a non-client region (the
+    /// draggable caption, caption buttons, or top resize edge), where mouse_x/y
+    /// read -1. Drives `window-show-toolbar = hover`.
+    titlebar_nc_hover: bool = false,
+    /// A client-area TME_LEAVE request is outstanding (WM_MOUSELEAVE pending).
+    client_leave_tracked: bool = false,
     /// Terminal caret position in client coordinates for Windows IME UI.
     ime_caret_x: i32 = 12,
     ime_caret_y: i32 = TITLEBAR_HEIGHT + 10,
@@ -1009,6 +1016,7 @@ pub const Window = struct {
         self.pressed_button = .none;
         self.mouse_x = -1;
         self.mouse_y = -1;
+        self.titlebar_nc_hover = false;
     }
 
     /// Initialize a Win32 window with an OpenGL 3.3 core profile context.
@@ -2189,6 +2197,15 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
             // Mouse left client area — set position to -1 so + button hover clears
             w.mouse_x = -1;
             w.mouse_y = -1;
+            w.client_leave_tracked = false;
+            {
+                var pt = POINT{
+                    .x = @as(i16, @bitCast(@as(u16, @intCast(lParam & 0xFFFF)))),
+                    .y = @as(i16, @bitCast(@as(u16, @intCast((lParam >> 16) & 0xFFFF)))),
+                };
+                _ = ScreenToClient(hwnd, &pt);
+                w.titlebar_nc_hover = pt.y >= 0 and pt.y < w.titlebar_height;
+            }
 
             // Request WM_NCMOUSELEAVE so we know when the mouse leaves
             var tme = TRACKMOUSEEVENT{
@@ -2262,10 +2279,17 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
         },
         WM_NCMOUSELEAVE => {
             w.hovered_button = .none;
+            w.titlebar_nc_hover = false;
             return 0;
         },
         WM_MOUSELEAVE => {
+            // Requested from WM_MOUSEMOVE. Clear the client position so hover
+            // state (and the hover-revealed toolbar) does not stick when the
+            // pointer jumps straight out of the window past the thin borders.
             w.hovered_button = .none;
+            w.client_leave_tracked = false;
+            w.mouse_x = -1;
+            w.mouse_y = -1;
             return 0;
         },
 
@@ -2387,6 +2411,14 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
             const mods = getModifiers();
             w.mouse_x = x;
             w.mouse_y = y;
+            w.titlebar_nc_hover = false;
+            if (!w.client_leave_tracked) {
+                var tme = TRACKMOUSEEVENT{
+                    .dwFlags = TME_LEAVE,
+                    .hwndTrack = hwnd,
+                };
+                w.client_leave_tracked = TrackMouseEvent(&tme) != 0;
+            }
             w.mouse_move_events.push(.{
                 .x = x,
                 .y = y,

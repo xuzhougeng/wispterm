@@ -141,6 +141,7 @@ auto_update_download: bool,
 update_inplace: update_inplace_mod.Controller,
 whats_new_on_update: bool,
 copilot_hint: bool,
+window_show_toolbar: Config.WindowShowToolbar,
 update_mutex: std.Thread.Mutex,
 update_result: update_check.CheckResult,
 update_latest_version_buf: [32]u8,
@@ -330,6 +331,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .update_inplace = update_inplace_mod.Controller.init(allocator, window_backend.postWakeup),
         .whats_new_on_update = cfg.@"whats-new-on-update",
         .copilot_hint = cfg.@"copilot-hint",
+        .window_show_toolbar = cfg.@"window-show-toolbar",
         .update_mutex = .{},
         .update_result = .{ .state = .idle },
         .update_latest_version_buf = undefined,
@@ -626,6 +628,7 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.auto_update_download = cfg.@"auto-update" == .download;
     self.whats_new_on_update = cfg.@"whats-new-on-update";
     self.copilot_hint = cfg.@"copilot-hint";
+    self.window_show_toolbar = cfg.@"window-show-toolbar";
     self.shell_cmd_len = resolveShellCommandLine(&self.shell_cmd_buf, cfg.shell);
 }
 

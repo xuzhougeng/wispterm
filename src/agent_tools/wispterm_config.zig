@@ -35,6 +35,7 @@ const font_styles = [_][]const u8{ "thin", "extra-light", "extralight", "light",
 const cursor_styles = [_][]const u8{ "block", "bar", "underline", "block_hollow" };
 const right_click_actions = [_][]const u8{ "ignore", "copy", "paste", "copy-or-paste" };
 const url_open_modes = [_][]const u8{ "embedded", "system-browser" };
+const window_show_toolbar_values = [_][]const u8{ "hover", "always" };
 const agent_permissions = [_][]const u8{ "ask", "confirm", "auto", "guarded", "full", "full-permission" };
 const windows_conpty_values = [_][]const u8{ "auto", "system" };
 const auto_update_values = [_][]const u8{ "off", "check", "download" };
@@ -53,6 +54,7 @@ const key_specs = [_]KeySpec{
     .{ .name = "custom-shader", .kind = .string, .default_value = "" },
     .{ .name = "window-height", .kind = .uint, .default_value = "0" },
     .{ .name = "window-width", .kind = .uint, .default_value = "0" },
+    .{ .name = "window-show-toolbar", .kind = .one_of, .default_value = "hover", .values = window_show_toolbar_values[0..] },
     .{ .name = "scrollback-limit", .kind = .uint, .default_value = "10000000" },
     .{ .name = "copy-on-select", .kind = .boolean, .default_value = "false", .values = bool_values[0..] },
     .{ .name = "right-click-action", .kind = .one_of, .default_value = "copy", .values = right_click_actions[0..] },

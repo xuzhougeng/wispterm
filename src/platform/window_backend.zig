@@ -375,6 +375,15 @@ pub fn hoveredCaptionButton(window: *const Window) CaptionButton {
     return window.hovered_button;
 }
 
+/// The pointer is over the titlebar strip but in a region the host treats as
+/// non-client (Windows' draggable caption, caption buttons, top resize edge),
+/// where `mousePosition` reads -1. Hosts whose titlebar is client area (macOS
+/// full-size content view) always report false and use the mouse position.
+pub fn pointerOverHostTitlebar(window: *const Window) bool {
+    if (comptime @hasField(Window, "titlebar_nc_hover")) return window.titlebar_nc_hover;
+    return false;
+}
+
 pub fn setTabCloseButtonBounds(window: *Window, tab_index: usize, start_x: i32, end_x: i32) void {
     window.close_btn_x_start[tab_index] = start_x;
     window.close_btn_x_end[tab_index] = end_x;
