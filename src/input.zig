@@ -46,6 +46,7 @@ const input_key = @import("input/key.zig");
 const feishu_reg_panel = @import("feishu/registration_panel.zig");
 const assistant_conversation = @import("input/assistant_conversation.zig");
 const session_effort = @import("assistant/conversation/session_effort.zig");
+const session_question_select = @import("assistant/conversation/session_question_select.zig");
 const command_dispatch = @import("input/command_dispatch.zig");
 const file_explorer_keymap = @import("input/file_explorer_keymap.zig");
 const input_effects = @import("input/effects.zig");
@@ -2085,10 +2086,16 @@ const AiScrollDrag = struct {
     question: ?AppWindow.assistant_conversation_renderer.QuestionScrollbarHit = null,
 };
 threadlocal var ai_scroll_drag: AiScrollDrag = .{};
-threadlocal var g_ai_transcript_selecting: bool = false;
-threadlocal var g_ai_transcript_select_chat: ?*AppWindow.ai_chat.Session = null;
-threadlocal var g_ai_transcript_select_auto_copy: bool = false;
-threadlocal var g_ai_transcript_select_panel: AiTranscriptPanel = .active_chat;
+/// Mouse-held text selection in an AI chat: its transcript, or the pending
+/// ask_user card while `session_question_select.dragging(chat)`.
+const AiTextSelect = struct {
+    active: bool = false,
+    chat: ?*AppWindow.ai_chat.Session = null,
+    /// Shift held at press: copy as soon as the drag ends.
+    auto_copy: bool = false,
+    panel: AiTranscriptPanel = .active_chat,
+};
+threadlocal var g_ai_text_select: AiTextSelect = .{};
 const CommandCharSuppressors = struct {
     port_forwarding: ?u21 = null,
     skill_center: ?u21 = null,
@@ -2279,10 +2286,7 @@ pub fn cancelTransientMouseState(win: anytype) void {
     ai_scroll_drag = .{};
     AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_dragging = false;
     AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_hover = false;
-    g_ai_transcript_selecting = false;
-    g_ai_transcript_select_chat = null;
-    g_ai_transcript_select_auto_copy = false;
-    g_ai_transcript_select_panel = .active_chat;
+    g_ai_text_select = .{};
     window_backend.clearTransientInput(win);
 }
 
@@ -6314,10 +6318,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                                     applyAiQuestionScrollbarDrag(chat, xpos);
                                     requestInputRepaint();
                                 },
-                                .question_option => |idx| {
-                                    _ = chat.resolveQuestionOption(idx);
-                                    requestInputRepaint();
-                                },
+                                .question_text => |hit| beginAiQuestionSelection(chat, hit, ev.shift, .copilot_sidebar),
                             }
                             return;
                         }
@@ -6389,10 +6390,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                                 chat_w,
                             )) |hit| {
                                 chat.beginTranscriptSelection(hit.message_index, hit.byte_offset);
-                                g_ai_transcript_selecting = true;
-                                g_ai_transcript_select_chat = chat;
-                                g_ai_transcript_select_auto_copy = ev.shift;
-                                g_ai_transcript_select_panel = .copilot_sidebar;
+                                g_ai_text_select = .{ .active = true, .chat = chat, .auto_copy = ev.shift, .panel = .copilot_sidebar };
                                 platform_cursor.set(.ibeam);
                                 requestInputRepaint();
                                 return;
@@ -6482,10 +6480,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             applyAiQuestionScrollbarDrag(chat, xpos);
                             requestInputRepaint();
                         },
-                        .question_option => |idx| {
-                            _ = chat.resolveQuestionOption(idx);
-                            requestInputRepaint();
-                        },
+                        .question_text => |hit| beginAiQuestionSelection(chat, hit, ev.shift, .active_chat),
                     }
                     return;
                 }
@@ -6557,10 +6552,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                         @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                     )) |hit| {
                         chat.beginTranscriptSelection(hit.message_index, hit.byte_offset);
-                        g_ai_transcript_selecting = true;
-                        g_ai_transcript_select_chat = chat;
-                        g_ai_transcript_select_auto_copy = ev.shift;
-                        g_ai_transcript_select_panel = .active_chat;
+                        g_ai_text_select = .{ .active = true, .chat = chat, .auto_copy = ev.shift, .panel = .active_chat };
                         platform_cursor.set(.ibeam);
                         requestInputRepaint();
                         return;
@@ -6697,14 +6689,9 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             g_ai_input_scroll_chat = null;
             ai_scroll_drag = .{};
             AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_dragging = false;
-            if (g_ai_transcript_selecting) {
-                if (g_ai_transcript_select_chat) |chat| {
-                    if (chat.finishTranscriptSelection() and g_ai_transcript_select_auto_copy) copyAiChatToClipboard(chat);
-                }
-                g_ai_transcript_selecting = false;
-                g_ai_transcript_select_chat = null;
-                g_ai_transcript_select_auto_copy = false;
-                g_ai_transcript_select_panel = .active_chat;
+            if (g_ai_text_select.active) {
+                if (g_ai_text_select.chat) |chat| finishAiTextSelection(chat, g_ai_text_select.auto_copy);
+                g_ai_text_select = .{};
                 requestInputRepaint();
                 platform_cursor.set(.arrow);
                 return;
@@ -6950,8 +6937,44 @@ fn applyAiQuestionScrollbarDrag(chat: *AppWindow.ai_chat.Session, xpos: f64) voi
     if (chat.scrollQuestionTo(hit.generation, drag.offset, drag.content_w, drag.clip_w)) requestInputRepaint();
 }
 
-fn updateAiTranscriptSelectionDrag(chat: *AppWindow.ai_chat.Session, xpos: f64, ypos: f64) void {
-    const geometry = aiTranscriptPanelGeometry(g_ai_transcript_select_panel) orelse return;
+fn beginAiQuestionSelection(
+    chat: *AppWindow.ai_chat.Session,
+    hit: AppWindow.assistant_conversation_renderer.QuestionTextHit,
+    auto_copy: bool,
+    panel: AiTranscriptPanel,
+) void {
+    session_question_select.begin(chat, hit.generation, hit.point, hit.option);
+    g_ai_text_select = .{ .active = true, .chat = chat, .auto_copy = auto_copy, .panel = panel };
+    platform_cursor.set(.ibeam);
+    requestInputRepaint();
+}
+
+fn finishAiTextSelection(chat: *AppWindow.ai_chat.Session, auto_copy: bool) void {
+    if (!session_question_select.dragging(chat)) {
+        if (chat.finishTranscriptSelection() and auto_copy) copyAiChatToClipboard(chat);
+        return;
+    }
+    switch (session_question_select.finish(chat)) {
+        .none => {},
+        .selected => if (auto_copy) copyAiChatToClipboard(chat),
+        .choose => |option| _ = chat.resolveQuestionOption(option),
+    }
+}
+
+fn updateAiTextSelectionDrag(chat: *AppWindow.ai_chat.Session, xpos: f64, ypos: f64) void {
+    const geometry = aiTranscriptPanelGeometry(g_ai_text_select.panel) orelse return;
+    if (session_question_select.dragging(chat)) {
+        const hit = AppWindow.assistant_conversation_renderer.questionSelectionDragAt(
+            chat,
+            xpos,
+            ypos,
+            geometry.window_height,
+            geometry.chat_x,
+            geometry.chat_w,
+        ) orelse return;
+        if (session_question_select.update(chat, hit.generation, hit.point)) requestInputRepaint();
+        return;
+    }
     if (AppWindow.assistant_conversation_renderer.transcriptTextHitTest(
         chat,
         xpos,
@@ -7007,8 +7030,8 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         }
         return;
     }
-    if (g_ai_transcript_selecting) {
-        if (g_ai_transcript_select_chat) |chat| updateAiTranscriptSelectionDrag(chat, xpos, ypos);
+    if (g_ai_text_select.active) {
+        if (g_ai_text_select.chat) |chat| updateAiTextSelectionDrag(chat, xpos, ypos);
         platform_cursor.set(.ibeam);
         return;
     }

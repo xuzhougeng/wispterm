@@ -189,6 +189,7 @@ keybind = global:ctrl+backquote=toggle_quake
 | tmux 鼠标模式开启时选择终端文本 | **Shift 拖选** | **Shift 拖选** |
 | 选择 AI 回答的一部分 | 拖选 AI 回答文本 | 拖选 AI 回答文本 |
 | 选择并复制 AI 回答的一部分 | Shift 拖选 AI 回答文本 | Shift 拖选 AI 回答文本 |
+| 复制 Agent 提问或选项的一部分（直接单击仍是选择该选项） | 拖选提问卡片文本后按 **Ctrl+C**（或 Shift 拖选） | 拖选提问卡片文本后按 **Cmd+C**（或 Shift 拖选） |
 | 选择 AI 聊天输入；输入为空时选择整段记录 | 在 AI 聊天中 **Ctrl+A** | 在 AI 聊天中 **Cmd+A** |
 | 复制 AI 聊天选区或完整记录 | 在 AI 聊天中 **Ctrl+C** | 在 AI 聊天中 **Cmd+C** |
 | 删除选中的已保存智能体会话 | 在智能体历史中 **D** / **Delete** | 在智能体历史中 **D** / **Delete** |
