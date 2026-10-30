@@ -7260,7 +7260,18 @@ fn anyTabSurfaceDirty(tb: *const tab.TabState) bool {
     return false;
 }
 
-fn clearTabSurfaceDirty(tb: *const tab.TabState) void {
+/// Consume the PTY-output dirty flags of the tab a frame is about to draw. The
+/// main loop calls this once per frame BEFORE any render branch snapshots
+/// terminal state — never after present. The IO thread feeds output and then
+/// marks dirty (posting the one deduped wakeup) under `render_state.mutex`, so
+/// a chunk the snapshot misses marks after this swap and re-arms the gate with
+/// a fresh wakeup. Clearing after the (vsync-blocking) present instead swallowed
+/// such a chunk: its mark found the flag still set and posted nothing, then the
+/// late clear left it unpainted until an unrelated event (the prompt after
+/// `echo quick` in an unfocused window). Mirrors Ghostty, whose
+/// `RenderState.beginUpdate` resets the terminal's dirty bits inside the same
+/// critical section that copies the screen.
+fn consumeTabSurfaceDirty(tb: *const tab.TabState) void {
     var it = tb.tree.surfaces();
     while (it.next()) |entry| {
         _ = entry.surface.dirty.swap(false, .acq_rel);
@@ -7275,11 +7286,6 @@ fn clearTabSurfaceDirty(tb: *const tab.TabState) void {
 fn anyVisibleSurfaceDirty() bool {
     const tb = activeTab() orelse return false;
     return anyTabSurfaceDirty(tb);
-}
-
-fn clearVisibleSurfaceDirty() void {
-    const tb = activeTab() orelse return;
-    clearTabSurfaceDirty(tb);
 }
 
 /// Render signal for the displayed AI surfaces (btw overlay, active chat tab,
@@ -8645,8 +8651,7 @@ fn runMainLoop(self: *AppWindow) !void {
             }
             const variant: overlays.CloseConfirmVariant = if (confirm_for_program) .running_program else .window_generic;
             overlays.closeConfirmOpen(.window, variant);
-            g_force_rebuild = true;
-            g_cells_valid = false;
+            applyUiEffect(.repaint);
         }
 
         if (window_backend.consumeDpiChanged(win)) {
@@ -8777,7 +8782,7 @@ fn runMainLoop(self: *AppWindow) !void {
         }
 
         // In-app GPU benchmark: capture the render-branch start timestamp. The
-        // matching frameEnd (after present + dirty-clear) records the sample and
+        // matching frameEnd (after present) records the sample and
         // feeds the next VT chunk; see driver.zig for the measurement model.
         if (bench_driver.isEnabled()) bench_driver.frameBegin();
 
@@ -8831,6 +8836,13 @@ fn runMainLoop(self: *AppWindow) !void {
                 frame_timing.abortFrame();
                 continue;
             }
+
+            // Every branch below snapshots terminal state, so consume the PTY
+            // dirty flags first: output processed after this point re-arms the
+            // gate and posts its own wakeup instead of being lost to a
+            // post-present clear. The synchronized-output deferral above keeps
+            // them latched so its watchdog is re-polled next iteration.
+            consumeTabSurfaceDirty(active_tab);
 
             // Debug: print split count on first few frames
             // GL rendering
@@ -9112,7 +9124,6 @@ fn runMainLoop(self: *AppWindow) !void {
             platform_window_state.settleD3dBringup(allocator);
         }
         recordFrameLatencyIfInputDriven();
-        clearVisibleSurfaceDirty();
         g_force_rebuild = false;
         g_cells_valid = true;
         if (bench_driver.isEnabled()) {
@@ -9135,8 +9146,7 @@ fn runMainLoop(self: *AppWindow) !void {
             // seen during that window permanently blank — rebuild the atlas
             // and re-render everything on the GDI path.
             font.clearGlyphCache(allocator);
-            g_force_rebuild = true;
-            g_cells_valid = false;
+            applyUiEffect(.repaint);
             // The in-session GDI switch is best-effort only: this HWND has
             // already flip-presented, and blt presents on such a window are
             // undefined (often blank). Persist the marker so the next launch
@@ -9295,11 +9305,49 @@ test "appwindow: render gate ignores background-tab surface dirty" {
     active_surface.dirty.store(true, .release);
     try std.testing.expect(anyVisibleSurfaceDirty());
 
-    // Frame-end clear consumes only the rendered (active) tab; the background
-    // tab's dirty flag stays latched for its eventual tab switch.
-    clearVisibleSurfaceDirty();
+    // The frame consumes only the rendered (active) tab; the background tab's
+    // dirty flag stays latched for its eventual tab switch.
+    consumeTabSurfaceDirty(activeTab().?);
     try std.testing.expect(!active_surface.dirty.load(.acquire));
     try std.testing.expect(background_surface.dirty.load(.acquire));
+}
+
+test "appwindow: output after the frame's snapshot keeps the render gate armed" {
+    // Regression: the frame cleared surface dirty only after present. A chunk
+    // the IO thread processed between the snapshot and that clear (the prompt
+    // after `echo quick`) found the flag still set, posted no wakeup, and was
+    // then cleared unpainted until an unrelated mouse event.
+    const allocator = std.testing.allocator;
+    for (0..tab.MAX_TABS) |idx| tab.g_tabs[idx] = null;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    defer {
+        for (0..tab.MAX_TABS) |idx| tab.g_tabs[idx] = null;
+        tab.g_tab_count = 0;
+        active_tab_state.g_active_tab = 0;
+    }
+
+    var surface: Surface = undefined;
+    surface.ref_count = 1;
+    surface.dirty = std.atomic.Value(bool).init(false);
+    var tab_v = tab.TabState{ .tree = try SplitTree.init(allocator, &surface) };
+    defer tab_v.tree.deinit();
+    tab.g_tabs[0] = &tab_v;
+    tab.g_tab_count = 1;
+
+    // IO: the first chunk ("quick") marks dirty and posts the frame's wakeup.
+    try std.testing.expect(surface.markOutputDirty());
+    try std.testing.expect(anyVisibleSurfaceDirty());
+
+    // Frame: consume before the terminal snapshot is taken.
+    consumeTabSurfaceDirty(activeTab().?);
+    try std.testing.expect(!anyVisibleSurfaceDirty());
+
+    // IO: the prompt lands after the snapshot, while the frame draws/presents.
+    // It must post a fresh wakeup, and with nothing clearing dirty after
+    // present, the next gate check still renders it.
+    try std.testing.expect(surface.markOutputDirty());
+    try std.testing.expect(anyVisibleSurfaceDirty());
 }
 
 test "appwindow: ui screenshot focused_panel uses focused non-terminal split rect" {

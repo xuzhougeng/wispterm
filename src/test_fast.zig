@@ -376,6 +376,7 @@ test {
     _ = @import("appwindow/state.zig");
     _ = @import("appwindow/state_guard.zig");
     _ = @import("appwindow/p3_1_guard.zig");
+    _ = @import("appwindow/frame_dirty_guard.zig");
     _ = @import("appwindow/thread_join.zig");
     _ = @import("ssh/scp.zig");
     _ = @import("surface_registry.zig");
