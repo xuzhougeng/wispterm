@@ -160,6 +160,19 @@ pub const AutoUpdate = enum {
     }
 };
 
+/// Where the File Explorer lives. Shaped like Ghostty's
+/// `quick-terminal-position` / `gtk-tabs-location` enums.
+pub const FileExplorerPosition = enum {
+    /// A tab in the right dock, beside Copilot.
+    right,
+    /// The original left-side panel next to the tab sidebar.
+    left,
+
+    pub fn parse(s: []const u8) ?FileExplorerPosition {
+        return std.meta.stringToEnum(FileExplorerPosition, s);
+    }
+};
+
 pub const RightClickAction = enum {
     ignore,
     copy,
@@ -513,6 +526,9 @@ language: i18n.LanguageSetting = .auto,
 @"whats-new-on-update": bool = true,
 /// Show the Copilot discovery hint to new users. Set to false to suppress permanently.
 @"copilot-hint": bool = true,
+/// right | left. `right` hosts the File Explorer as a tab in the right dock
+/// beside Copilot; `left` keeps it as a panel next to the tab sidebar.
+@"file-explorer-position": FileExplorerPosition = .right,
 
 // ============================================================================
 // Memory Digest (scheduler)
@@ -1202,6 +1218,12 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         } else {
             log.warn("invalid whats-new-on-update: {s}", .{value});
         }
+    } else if (std.mem.eql(u8, key, "file-explorer-position")) {
+        if (FileExplorerPosition.parse(value)) |position| {
+            self.@"file-explorer-position" = position;
+        } else {
+            log.warn("invalid file-explorer-position: {s}", .{value});
+        }
     } else if (std.mem.eql(u8, key, "copilot-hint")) {
         if (std.mem.eql(u8, value, "true")) {
             self.@"copilot-hint" = true;
@@ -1629,6 +1651,7 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --windows-conpty <mode>      Windows pseudo console host: auto | system
         \\  --auto-update <mode>        Updates: off | check | download
         \\  --auto-update-check <bool>  Check GitHub Releases after startup
+        \\  --file-explorer-position <pos> File Explorer: right (dock tab) | left
         \\  --config-file <path>         Include another config file (prefix ? for optional)
         \\  --keybind <binding>          Configure a shortcut, e.g. global:ctrl+backquote=toggle_quake
         \\  --remote-enabled <bool>      Enable opt-in remote access foundation
@@ -2035,6 +2058,10 @@ const default_config_template =
     \\# OpenConsole.exe next to wispterm.exe; system forces the OS inbox one
     \\# windows-conpty = auto
     \\
+    \\# File Explorer placement: right (a tab in the right dock beside Copilot)
+    \\# or left (next to the tab sidebar)
+    \\# file-explorer-position = right
+    \\
     \\# Updates: off | check | download. download fetches and verifies a new
     \\# release in the background, then offers a restart from the titlebar
     \\# (signed Windows portable installs; elsewhere it behaves like check)
@@ -2328,6 +2355,18 @@ test "config: auto-update defaults to download and parses Ghostty's values" {
     try std.testing.expectEqual(AutoUpdate.off, cfg.@"auto-update");
     cfg.applyKeyValue(allocator, "auto-update", "sometimes", ".");
     try std.testing.expectEqual(AutoUpdate.off, cfg.@"auto-update");
+}
+
+test "config: file-explorer-position defaults to right and parses left/right" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+    try std.testing.expectEqual(FileExplorerPosition.right, cfg.@"file-explorer-position");
+    cfg.applyKeyValue(allocator, "file-explorer-position", "left", ".");
+    try std.testing.expectEqual(FileExplorerPosition.left, cfg.@"file-explorer-position");
+    cfg.applyKeyValue(allocator, "file-explorer-position", "bottom", ".");
+    try std.testing.expectEqual(FileExplorerPosition.left, cfg.@"file-explorer-position");
+    cfg.applyKeyValue(allocator, "file-explorer-position", "right", ".");
+    try std.testing.expectEqual(FileExplorerPosition.right, cfg.@"file-explorer-position");
 }
 
 test "config: quake mode defaults disabled and parses true false" {

@@ -1,14 +1,19 @@
-//! Pure layout math for the file explorer side panel.
+//! Pure layout math for the file explorer panel.
 //!
 //! The file explorer renderer owns state lookup, hover checks, text drawing, and
-//! colors. This module only computes panel geometry and list row placement.
+//! colors. This module only computes panel geometry and list row placement. The
+//! panel is either beside the tab sidebar (`panel_x` = sidebar width, `top` =
+//! titlebar height) or inside the right dock (`panel_x` = dock left edge, `top`
+//! = bottom of the dock's tab row).
 
 const std = @import("std");
 
 pub const Input = struct {
     window_height: f32,
+    /// Top inset of the panel: where its own header begins.
     titlebar_height: f32,
-    sidebar_width: f32,
+    /// Left edge of the panel.
+    panel_x: f32,
     explorer_width: f32,
     header_height: f32,
     row_height: f32,
@@ -70,7 +75,7 @@ pub const RowState = union(enum) {
 
 pub fn compute(input: Input) Layout {
     const side_height = input.window_height - input.titlebar_height;
-    const panel_x = input.sidebar_width;
+    const panel_x = input.panel_x;
     const panel_right = panel_x + input.explorer_width;
     const header_y = input.window_height - input.titlebar_height - input.header_height;
     const list_top_px = input.titlebar_height + input.header_height;
@@ -99,7 +104,7 @@ test "file explorer layout computes panel and header bands" {
     const layout = compute(.{
         .window_height = 820,
         .titlebar_height = 44,
-        .sidebar_width = 220,
+        .panel_x = 220,
         .explorer_width = 280,
         .header_height = 36,
         .row_height = 28,
@@ -118,7 +123,7 @@ test "file explorer rows report before visible and after states" {
     const layout = compute(.{
         .window_height = 400,
         .titlebar_height = 40,
-        .sidebar_width = 180,
+        .panel_x = 180,
         .explorer_width = 260,
         .header_height = 40,
         .row_height = 30,
@@ -138,7 +143,7 @@ test "file explorer text and status metrics follow font height" {
     const layout = compute(.{
         .window_height = 480,
         .titlebar_height = 42,
-        .sidebar_width = 200,
+        .panel_x = 200,
         .explorer_width = 300,
         .header_height = 38,
         .row_height = 32,
@@ -150,11 +155,29 @@ test "file explorer text and status metrics follow font height" {
     try std.testing.expectEqual(@as(f32, 30), layout.status_height);
 }
 
+test "docked explorer sits in the right dock below its tab row" {
+    const layout = compute(.{
+        .window_height = 900,
+        .titlebar_height = 64, // titlebar 30 + dock tab row 34
+        .panel_x = 1120,
+        .explorer_width = 480,
+        .header_height = 36,
+        .row_height = 28,
+        .text_height = 20,
+    });
+
+    try std.testing.expectEqual(@as(f32, 1120), layout.panel_x);
+    try std.testing.expectEqual(@as(f32, 1600), layout.panel_right);
+    try std.testing.expectEqual(@as(f32, 100), layout.list_top_px);
+    try std.testing.expectEqual(@as(f32, 800), layout.header_y);
+    try std.testing.expectEqual(@as(f32, 836), layout.side_height);
+}
+
 test "operation row preserves append-row visibility math" {
     const layout = compute(.{
         .window_height = 400,
         .titlebar_height = 40,
-        .sidebar_width = 180,
+        .panel_x = 180,
         .explorer_width = 260,
         .header_height = 40,
         .row_height = 30,

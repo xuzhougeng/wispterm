@@ -1,7 +1,16 @@
 # File Explorer and Preview Panel
 
-Press `Ctrl+Shift+Alt+E` to open the left-side File Explorer. It follows the
-active environment:
+Press `Ctrl+Shift+Alt+E` (`Cmd+Shift+Opt+E` on macOS) to open the File
+Explorer. By default it is the **Files** tab of the right dock, beside
+**Copilot**: the dock's tab row switches between them (the selected tab shows
+its label), the button at the right end of the row closes the dock, and the
+dock's left edge resizes it (the width is shared by both tabs and remembered
+across restarts). With the dock closed, hover the window's right edge and click
+the handle to reopen it on its last tab. Each tab remembers whether its dock is
+open and which panel it shows. Set `file-explorer-position = left` to keep the
+explorer as a panel next to the tab sidebar instead.
+
+The explorer follows the active environment:
 
 - Windows shells browse local Windows paths.
 - WSL sessions browse the default WSL distro through `wsl.exe`.

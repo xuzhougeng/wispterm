@@ -28,6 +28,7 @@ const agent_history = @import("../agent/history.zig");
 const platform_pty_command = @import("../platform/pty_command.zig");
 const Pty = @import("../platform/pty.zig").Pty;
 const active_tab_state = @import("active_tab.zig");
+const right_dock_state = @import("right_dock.zig");
 const i18n = @import("../i18n.zig");
 const agent_detector = @import("../terminal_agents/detector.zig");
 
@@ -79,10 +80,11 @@ pub const TabState = struct {
     /// `ai_chat_session`, which backs a dedicated AI-chat tab. Lazily created
     /// the first time the copilot sidebar is opened on this tab.
     copilot_session: ?*ai_chat.Session = null,
-    /// Whether this terminal tab's right-side Copilot sidebar is currently
-    /// open. The session is also per-tab; this flag prevents a Copilot opened
-    /// on one tab from appearing on another tab.
-    copilot_visible: bool = false,
+    /// This tab's right dock: whether it is open and which panel (Copilot or
+    /// Files) is selected. Per tab, like Ghostty's per-surface inspector, so a
+    /// Copilot opened on one tab never appears on another. Replaces the old
+    /// `copilot_visible` flag (now `right_dock.showing(.copilot)`).
+    right_dock: right_dock_state.TabDock = .{},
 
     /// tmux control-mode window id this tab mirrors (Phase 3c-2), or null for a
     /// normal local tab. `tmux_owner` is the controller/bridge that owns this
@@ -383,22 +385,31 @@ pub fn activeCopilotSession(
 
 pub fn activeCopilotVisible() bool {
     const t = activeTab() orelse return false;
-    return t.kind == .terminal and t.copilot_visible;
+    return t.kind == .terminal and t.right_dock.showing(.copilot);
 }
 
+/// Show (dock open on Copilot) or hide (close the dock only if Copilot is the
+/// panel showing) the active terminal tab's Copilot. Returns true on change.
 pub fn setActiveCopilotVisible(visible: bool) bool {
     const t = activeTab() orelse return false;
     if (t.kind != .terminal) return false;
-    if (t.copilot_visible == visible) return false;
-    t.copilot_visible = visible;
-    return true;
+    return if (visible)
+        right_dock_state.show(&t.right_dock, .copilot)
+    else
+        right_dock_state.hidePanel(&t.right_dock, .copilot);
 }
 
 pub fn toggleActiveCopilotVisible() bool {
     const t = activeTab() orelse return false;
     if (t.kind != .terminal) return false;
-    t.copilot_visible = !t.copilot_visible;
-    return t.copilot_visible;
+    _ = right_dock_state.toggle(&t.right_dock, .copilot);
+    return t.right_dock.showing(.copilot);
+}
+
+/// The active tab's right-dock state (any tab kind), or null with no tab.
+pub fn activeRightDock() ?*right_dock_state.TabDock {
+    const t = activeTab() orelse return null;
+    return &t.right_dock;
 }
 
 pub fn findAiTabBySessionId(session_id: []const u8) ?usize {
@@ -562,7 +573,7 @@ pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: 
     t.tmux_window_id = null;
     t.tmux_owner = null;
     t.tmux_name_len = 0;
-    t.copilot_visible = false;
+    t.right_dock = .{};
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -637,7 +648,7 @@ pub fn spawnBenchmarkTab(
     t.tmux_window_id = null;
     t.tmux_owner = null;
     t.tmux_name_len = 0;
-    t.copilot_visible = false;
+    t.right_dock = .{};
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -713,7 +724,7 @@ pub fn spawnAiChatSession(allocator: std.mem.Allocator, session: *ai_chat.Sessio
     t.tmux_window_id = null;
     t.tmux_owner = null;
     t.tmux_name_len = 0;
-    t.copilot_visible = false;
+    t.right_dock = .{};
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -763,7 +774,7 @@ pub fn spawnAiHistoryTab(allocator: std.mem.Allocator, source: ai_history_source
     t.tmux_window_id = null;
     t.tmux_owner = null;
     t.tmux_name_len = 0;
-    t.copilot_visible = false;
+    t.right_dock = .{};
     t.ai_history_session = session_ptr;
     t.memory_center_session = null;
     t.conversation_center_session = null;
@@ -796,7 +807,7 @@ pub fn spawnMemoryCenterTab(allocator: std.mem.Allocator) bool {
     t.skill_center_session = null;
     t.port_forwarding_session = null;
     t.copilot_session = null;
-    t.copilot_visible = false;
+    t.right_dock = .{};
     t.tmux_window_id = null;
     t.tmux_owner = null;
     t.tmux_name_len = 0;
@@ -836,7 +847,7 @@ pub fn spawnConversationCenterTab(allocator: std.mem.Allocator) bool {
     t.skill_center_session = null;
     t.port_forwarding_session = null;
     t.copilot_session = null;
-    t.copilot_visible = false;
+    t.right_dock = .{};
     t.tmux_window_id = null;
     t.tmux_owner = null;
     t.tmux_name_len = 0;
@@ -868,7 +879,7 @@ pub fn spawnSkillCenterTab(allocator: std.mem.Allocator) bool {
     t.skill_center_session = session_ptr;
     t.port_forwarding_session = null;
     t.copilot_session = null;
-    t.copilot_visible = false;
+    t.right_dock = .{};
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -900,7 +911,7 @@ pub fn spawnPortForwardingTab(allocator: std.mem.Allocator) bool {
     t.skill_center_session = null;
     t.port_forwarding_session = session_ptr;
     t.copilot_session = null;
-    t.copilot_visible = false;
+    t.right_dock = .{};
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -1881,7 +1892,7 @@ pub fn snapshotTab(arena: std.mem.Allocator, t: *const TabState) !session_persis
         .zoomed_leaf = zoomed_leaf,
         .tree = tree,
         .copilot_session_id = copilot_sid,
-        .copilot_visible = if (copilot_sid != null) t.copilot_visible else false,
+        .copilot_visible = if (copilot_sid != null) t.right_dock.showing(.copilot) else false,
     };
 }
 
@@ -2248,7 +2259,7 @@ pub fn restoreTab(
     t.tmux_window_id = null;
     t.tmux_owner = null;
     t.tmux_name_len = 0;
-    t.copilot_visible = false;
+    t.right_dock = .{};
 
     // Restore the Copilot sidebar conversation in place, if any. Missing record
     // (deleted / corrupt store) → silent fallback to an empty sidebar.
@@ -2256,7 +2267,7 @@ pub fn restoreTab(
         if (g_copilot_restore_hook) |hook| {
             if (hook(sid)) |session| {
                 t.copilot_session = session;
-                t.copilot_visible = snap.copilot_visible;
+                t.right_dock = right_dock_state.TabDock.fromCopilotVisible(snap.copilot_visible);
             }
         }
     }
@@ -2683,14 +2694,14 @@ test "tab: copilot visibility is scoped to the active terminal tab" {
 
     active_tab_state.g_active_tab = 1;
     try std.testing.expect(!activeCopilotVisible());
-    try std.testing.expect(!second.copilot_visible);
+    try std.testing.expect(!second.right_dock.showing(.copilot));
     try std.testing.expect(!setActiveCopilotVisible(false));
     try std.testing.expect(setActiveCopilotVisible(true));
     try std.testing.expect(activeCopilotVisible());
 
     active_tab_state.g_active_tab = 0;
     try std.testing.expect(activeCopilotVisible());
-    try std.testing.expect(first.copilot_visible);
+    try std.testing.expect(first.right_dock.showing(.copilot));
 }
 
 test "tab: snapshotTab persists focused surface title override" {
@@ -3239,7 +3250,7 @@ test "tab: splitIntoPreview adds a preview leaf and grows the tree by 2 nodes" {
         .ai_history_session = null,
         .skill_center_session = null,
         .copilot_session = null,
-        .copilot_visible = false,
+        .right_dock = .{},
     };
     defer {
         t.deinit(gpa);
@@ -3323,7 +3334,7 @@ test "tab: focusPreviewPane selects the just-opened preview leaf" {
         .ai_history_session = null,
         .skill_center_session = null,
         .copilot_session = null,
-        .copilot_visible = false,
+        .right_dock = .{},
     };
     defer {
         t.deinit(gpa);
@@ -3392,7 +3403,7 @@ test "tab: closeFocusedSplit closes a focused preview and refocuses the terminal
         .ai_history_session = null,
         .skill_center_session = null,
         .copilot_session = null,
-        .copilot_visible = false,
+        .right_dock = .{},
     };
     defer {
         t.deinit(gpa);
@@ -3450,7 +3461,7 @@ test "tab: closeFocusedSplit on the last terminal focuses a preview leaf, not a 
         .ai_history_session = null,
         .skill_center_session = null,
         .copilot_session = null,
-        .copilot_visible = false,
+        .right_dock = .{},
     };
     defer {
         t.deinit(gpa);
@@ -3509,7 +3520,7 @@ test "tab: previewForReuse matches preview panes by kind" {
         .ai_history_session = null,
         .skill_center_session = null,
         .copilot_session = null,
-        .copilot_visible = false,
+        .right_dock = .{},
     };
     defer {
         t.deinit(gpa);
@@ -3588,7 +3599,7 @@ test "tab: previewForReuse prefers the focused same-kind preview" {
         .ai_history_session = null,
         .skill_center_session = null,
         .copilot_session = null,
-        .copilot_visible = false,
+        .right_dock = .{},
     };
     defer {
         t.deinit(gpa);
@@ -3651,7 +3662,7 @@ test "tab: splitIntoPreviewStacked stacks below the existing preview column" {
         .ai_history_session = null,
         .skill_center_session = null,
         .copilot_session = null,
-        .copilot_visible = false,
+        .right_dock = .{},
     };
     defer {
         t.deinit(gpa);
@@ -3728,7 +3739,7 @@ test "tab: splitIntoPreviewStacked remaps focus when the split target is focused
         .ai_history_session = null,
         .skill_center_session = null,
         .copilot_session = null,
-        .copilot_visible = false,
+        .right_dock = .{},
     };
     defer {
         t.deinit(gpa);

@@ -24,6 +24,10 @@ pub const Kind = enum {
     minimize,
     maximize,
     restore,
+    /// Right-dock "Files" tab.
+    folder,
+    /// Right-dock open/close toggle: a window with its right pane marked.
+    panel_right,
 };
 
 pub const max_quads: usize = 64;
@@ -190,6 +194,31 @@ fn fillRestore(out: []Quad, i: *usize, cx: f32, cy: f32, g: f32) void {
     appendRectStroke(out, i, cx - s / 2 - off * 0.35, cy - s / 2 - off * 0.15, s, s, stroke);
 }
 
+fn fillFolder(out: []Quad, i: *usize, cx: f32, cy: f32, g: f32) void {
+    const bw = g + 3.0;
+    const bh = g * 0.72;
+    const bx = cx - bw / 2;
+    const by = cy - bh / 2 - 0.8;
+    appendRectStroke(out, i, bx, by, bw, bh, stroke);
+    // Tab on the top-left edge (GL y-up: above the body).
+    const tab_w = bw * 0.42;
+    const tab_h: f32 = 2.2;
+    append(out, i, .{ .x = bx, .y = by + bh - stroke, .w = stroke, .h = tab_h + stroke });
+    append(out, i, .{ .x = bx, .y = by + bh + tab_h - stroke, .w = tab_w, .h = stroke });
+    append(out, i, .{ .x = bx + tab_w - stroke, .y = by + bh - stroke, .w = stroke, .h = tab_h });
+}
+
+fn fillPanelRight(out: []Quad, i: *usize, cx: f32, cy: f32, g: f32) void {
+    const bw = g + 3.0;
+    const bh = g * 0.86;
+    const bx = cx - bw / 2;
+    const by = cy - bh / 2;
+    appendRectStroke(out, i, bx, by, bw, bh, stroke);
+    // Divider marking the right-hand pane.
+    const split_x = bx + bw * 0.62;
+    append(out, i, .{ .x = split_x, .y = by, .w = stroke, .h = bh });
+}
+
 /// Write icon quads for `kind` into `out`. Returns the number of quads written.
 pub fn fill(out: []Quad, kind: Kind, x: f32, y: f32, w: f32, h: f32) usize {
     var i: usize = 0;
@@ -208,6 +237,8 @@ pub fn fill(out: []Quad, kind: Kind, x: f32, y: f32, w: f32, h: f32) usize {
         .minimize => fillMinimize(out, &i, cx, cy, g),
         .maximize => fillMaximize(out, &i, cx, cy, g),
         .restore => fillRestore(out, &i, cx, cy, g),
+        .folder => fillFolder(out, &i, cx, cy, g),
+        .panel_right => fillPanelRight(out, &i, cx, cy, g),
     }
     return i;
 }

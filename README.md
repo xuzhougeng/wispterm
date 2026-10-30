@@ -197,8 +197,8 @@ sessions hide the readout.
 | Toggle tab sidebar | **Ctrl+Shift+B** | **Cmd+Shift+B** |
 | Split to the right | **Ctrl+Shift++** | **Cmd+Shift++** |
 | Split downward | **Ctrl+Shift+-** | **Cmd+Shift+-** |
-| Toggle file explorer sidebar | **Ctrl+Shift+Alt+E** | **Cmd+Shift+Opt+E** |
-| Toggle AI Copilot sidebar (current terminal) | **Ctrl+Shift+A** | **Cmd+Shift+A** |
+| Toggle File Explorer (the right dock's Files tab; the left panel with `file-explorer-position = left`) | **Ctrl+Shift+Alt+E** | **Cmd+Shift+Opt+E** |
+| Toggle Copilot (the right dock's Copilot tab, current tab) | **Ctrl+Shift+A** | **Cmd+Shift+A** |
 | Preview files (Ctrl/Cmd-click in terminal, or double-click in File Explorer) | Ctrl-click | Cmd-click |
 | Previous / next image/PDF in gallery (preview focused) | Left / Right | Left / Right |
 | Previous / next PDF page (PDF preview focused) | PageUp / PageDown | PageUp / PageDown |
