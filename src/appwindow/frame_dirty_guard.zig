@@ -14,11 +14,30 @@ const scan = @import("../source_guards/scan.zig");
 
 const appwindow_source = @embedFile("../AppWindow.zig");
 
+/// Body of the top-level function starting at `start_marker`, up to its first
+/// unindented closing brace. Accepts LF and CRLF: Windows checkouts may embed
+/// AppWindow.zig with CRLF line endings.
+fn topLevelFnSource(source: []const u8, start_marker: []const u8) ![]const u8 {
+    const start = std.mem.indexOf(u8, source, start_marker) orelse return error.StartMarkerMissing;
+    const rest = source[start..];
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, rest, from, "\n}")) |pos| {
+        const after = pos + "\n}".len;
+        if (after == rest.len or rest[after] == '\n' or rest[after] == '\r') return rest[0..pos];
+        from = after;
+    }
+    return error.EndMarkerMissing;
+}
+
 fn mainLoopSource() ![]const u8 {
-    const start = std.mem.indexOf(u8, appwindow_source, "fn runMainLoop(") orelse return error.StartMarkerMissing;
-    const rest = appwindow_source[start..];
-    const end = std.mem.indexOf(u8, rest, "\n}\n") orelse return error.EndMarkerMissing;
-    return rest[0..end];
+    return topLevelFnSource(appwindow_source, "fn runMainLoop(");
+}
+
+test "topLevelFnSource ends at the first unindented brace with LF or CRLF" {
+    const lf = "fn a() void {\n    if (x) {\n    }\n}\nfn b() void {}\n";
+    try std.testing.expectEqualStrings("fn a() void {\n    if (x) {\n    }", try topLevelFnSource(lf, "fn a("));
+    const crlf = "fn a() void {\r\n    if (x) {\r\n    }\r\n}\r\nfn b() void {}\r\n";
+    try std.testing.expectEqualStrings("fn a() void {\r\n    if (x) {\r\n    }\r", try topLevelFnSource(crlf, "fn a("));
 }
 
 fn indexOrFail(haystack: []const u8, needle: []const u8) !usize {
