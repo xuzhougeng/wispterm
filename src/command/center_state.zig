@@ -79,7 +79,7 @@ pub const CommandEntry = struct {
 pub const command_entries = [_]CommandEntry{
     .{ .title = "New Session", .detail = platform_pty_command.session_launcher_detail, .shortcut = "", .action = .new_tab },
     .{ .title = "New Copilot", .detail = "Open a new Copilot tab with the default AI config", .shortcut = "", .action = .new_agent },
-    .{ .title = "Toggle Copilot", .detail = "Open or close the Copilot sidebar on the current terminal", .shortcut = "", .action = .toggle_ai_copilot },
+    .{ .title = "Toggle Copilot", .detail = "Open or close Copilot in the right dock on the current tab", .shortcut = "", .action = .toggle_ai_copilot },
     .{ .title = "Send to Chat", .detail = "Send the terminal selection (or recent output) to Copilot as a context card", .shortcut = "", .action = .send_to_copilot },
     .{ .title = "Manage AI Profiles", .detail = "Create, edit, or delete saved AI profiles", .shortcut = "", .action = .manage_ai_profiles },
     .{ .title = "MCP Servers", .detail = "Add, edit, test, or remove MCP tool servers", .shortcut = "", .action = .manage_mcp_servers },
@@ -97,7 +97,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Equalize Panels", .detail = "Reset split sizes in the current tab", .shortcut = "", .action = .equalize_splits },
     .{ .title = "Close Panel / Tab", .detail = "Close focused panel or tab; press again for the last panel", .shortcut = "", .action = .close_split_or_tab },
     .{ .title = "Toggle Sidebar", .detail = "Show or hide the tab sidebar", .shortcut = "", .action = .toggle_sidebar },
-    .{ .title = "Toggle File Explorer", .detail = "Show or hide the left-side file explorer", .shortcut = "", .action = .toggle_file_explorer },
+    .{ .title = "Toggle File Explorer", .detail = "Show or hide the File Explorer (right dock Files tab, or the left panel)", .shortcut = "", .action = .toggle_file_explorer },
     .{ .title = "Toggle SSH Latency", .detail = "Show the current SSH server's Ping round-trip time every 5 seconds", .shortcut = "", .action = .toggle_ssh_latency },
     .{ .title = "Toggle Browser", .detail = "Open the configured browser for local or SSH URLs", .shortcut = "", .action = .toggle_browser_panel },
     .{ .title = "Open Jupyter", .detail = "Open the panel and paste a running Jupyter URL (local or SSH)", .shortcut = "", .action = .open_jupyter_panel },

@@ -41,6 +41,9 @@ pub const PersistedState = struct {
     /// has already been shown. Set the first time the handle is eligible, or as
     /// soon as the user opens Copilot by any means.
     copilot_hint_shown: bool = false,
+    /// Shared right-dock width in pixels (Copilot / Files), remembered across
+    /// launches. Null until the user first drags the dock edge.
+    right_dock_width: ?i32 = null,
     // Last app version whose "What's New" was seen. Stored inline (fixed buffer)
     // so this pure codec stays allocation-free and never aliases the parse input.
     last_seen_version_buf: [version_max_len]u8 = undefined,
@@ -107,6 +110,8 @@ pub fn parse(data: []const u8) PersistedState {
             state.ai_setup_prompted = std.mem.eql(u8, val, "1") or std.mem.eql(u8, val, "true");
         } else if (std.mem.eql(u8, key, "copilot-hint-shown")) {
             state.copilot_hint_shown = std.mem.eql(u8, val, "1") or std.mem.eql(u8, val, "true");
+        } else if (std.mem.eql(u8, key, "right-dock-width")) {
+            state.right_dock_width = std.fmt.parseInt(i32, val, 10) catch null;
         } else if (std.mem.eql(u8, key, "last-seen-version")) {
             const n = @min(val.len, version_max_len);
             @memcpy(state.last_seen_version_buf[0..n], val[0..n]);
@@ -138,6 +143,7 @@ pub fn format(buf: []u8, state: PersistedState) ![]const u8 {
     if (state.quake_height) |h| len += (try std.fmt.bufPrint(buf[len..], "quake-height = {d}\n", .{h})).len;
     len += (try std.fmt.bufPrint(buf[len..], "ai-setup-prompted = {d}\n", .{@intFromBool(state.ai_setup_prompted)})).len;
     len += (try std.fmt.bufPrint(buf[len..], "copilot-hint-shown = {d}\n", .{@intFromBool(state.copilot_hint_shown)})).len;
+    if (state.right_dock_width) |w| len += (try std.fmt.bufPrint(buf[len..], "right-dock-width = {d}\n", .{w})).len;
     if (state.last_seen_version_len > 0) {
         len += (try std.fmt.bufPrint(buf[len..], "last-seen-version = {s}\n", .{state.lastSeenVersion()})).len;
     }
@@ -407,6 +413,18 @@ test "a full state file fits the save buffer with the bring-up marker" {
     full = withD3d11Fallback(full, "d3d11:v1;kind=fallback_candidate;version=1.2.3-aaaaaaaaaaaaaaaa;adapter=v10ded2684l1234abcd00000000;reason=render_target_failed");
     var buf: [640]u8 = undefined;
     _ = try format(&buf, full);
+}
+
+test "right-dock-width round-trips and stays absent until set" {
+    var buf: [256]u8 = undefined;
+    const empty = try format(&buf, .{});
+    try std.testing.expect(std.mem.indexOf(u8, empty, "right-dock-width") == null);
+    try std.testing.expectEqual(@as(?i32, null), parse(empty).right_dock_width);
+
+    const text = try format(&buf, .{ .right_dock_width = 520 });
+    try std.testing.expect(std.mem.indexOf(u8, text, "right-dock-width = 520") != null);
+    try std.testing.expectEqual(@as(?i32, 520), parse(text).right_dock_width);
+    try std.testing.expectEqual(@as(?i32, null), parse("right-dock-width = wide\n").right_dock_width);
 }
 
 test "parse reads copilot-hint-shown" {

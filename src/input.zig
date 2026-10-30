@@ -23,6 +23,9 @@ const browser_panel = AppWindow.browser_panel;
 const html_server = @import("html/server.zig");
 const html_server_model = @import("html/server_model.zig");
 const ai_sidebar = @import("assistant/sidebar/panel.zig");
+const right_dock = @import("appwindow/right_dock.zig");
+const right_dock_renderer = @import("renderer/right_dock_renderer.zig");
+const file_explorer_renderer = @import("renderer/file_explorer_renderer.zig");
 const copilot_hint_gate = @import("assistant/sidebar/hint_gate.zig");
 const ui_perf = AppWindow.ui_perf;
 const render_diagnostics = @import("render_diagnostics.zig");
@@ -1659,7 +1662,7 @@ test "input: terminal viewport mouse wheel scroll requests a repaint" {
         .skill_center_session = null,
         .port_forwarding_session = null,
         .copilot_session = null,
-        .copilot_visible = false,
+        .right_dock = .{},
     };
     defer tab_state.tree.deinit();
 
@@ -1741,6 +1744,62 @@ test "input: file explorer mouse wheel scroll requests a repaint" {
     // The explorer draws above the terminal cell grid, so scrolling it must not
     // invalidate the cells — that would force an unnecessary grid rebuild.
     try std.testing.expect(AppWindow.g_cells_valid);
+}
+
+test "input: right dock tab-row clicks switch panels and request a repaint" {
+    try skipUnlessInputRendererShard();
+    const right_dock_actions = @import("appwindow/right_dock_actions.zig");
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_dock_state = right_dock.g_state;
+    const previous_docked = file_explorer.isDocked();
+    const previous_browser_visible = browser_panel.g_visible;
+    defer {
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        right_dock.g_state = previous_dock_state;
+        file_explorer.setDockVisibilityQuery(if (previous_docked) &right_dock_actions.filesShowing else null);
+        // applyPlacement closed the left-panel explorer; leave it closed.
+        file_explorer.close();
+        browser_panel.g_visible = previous_browser_visible;
+    }
+
+    var tab_state = tab.TabState{
+        .kind = .terminal,
+        .tree = .empty,
+        .focused = .root,
+        .ai_chat_session = null,
+        .ai_history_session = null,
+        .copilot_session = null,
+        .right_dock = .{ .open = false, .panel = .copilot },
+    };
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tabs[0] = &tab_state;
+    tab.g_tab_count = 1;
+    active_tab_state.g_active_tab = 0;
+    browser_panel.g_visible = false;
+    right_dock.g_state.placement = .left;
+    _ = right_dock_actions.applyPlacement(.right);
+
+    // Clicking the Files tab opens the dock on Files and hands the explorer's
+    // visibility to the dock.
+    resetInputRepaintForTest();
+    applyInputEffect(applyRightDockHeaderHit(.{ .tab = .files }));
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+    try std.testing.expect(tab_state.right_dock.showing(.files));
+    try std.testing.expect(file_explorer.isVisibleForActiveTab());
+    try std.testing.expectEqual(@as(f32, 0), file_explorer.width());
+
+    // The toggle closes the dock (and with it the docked explorer) at once.
+    resetInputRepaintForTest();
+    applyInputEffect(applyRightDockHeaderHit(.toggle));
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!tab_state.right_dock.open);
+    try std.testing.expectEqual(right_dock.Panel.files, tab_state.right_dock.panel);
+    try std.testing.expect(!file_explorer.isVisibleForActiveTab());
 }
 
 test "input: file explorer keyboard navigation requests a repaint" {
@@ -2108,8 +2167,6 @@ pub threadlocal var g_explorer_resize_hover: bool = false; // Mouse is over the 
 pub threadlocal var g_explorer_resize_dragging: bool = false; // Currently dragging the file explorer edge
 pub threadlocal var g_browser_resize_hover: bool = false; // Mouse is over the embedded browser edge
 pub threadlocal var g_browser_resize_dragging: bool = false; // Currently dragging the browser edge
-pub threadlocal var g_ai_copilot_resize_hover: bool = false; // Mouse is over the AI copilot left edge
-pub threadlocal var g_ai_copilot_resize_dragging: bool = false; // Currently dragging the AI copilot edge
 
 /// Whether the AI copilot sidebar currently owns keyboard/mouse focus. Set by
 /// AppWindow.toggleAiCopilot; full key/mouse routing lands in a later task.
@@ -2271,8 +2328,7 @@ pub fn cancelTransientMouseState(win: anytype) void {
     g_explorer_resize_dragging = false;
     g_browser_resize_hover = false;
     g_browser_resize_dragging = false;
-    g_ai_copilot_resize_hover = false;
-    g_ai_copilot_resize_dragging = false;
+    right_dock.g_interaction = .{};
     g_selecting = false;
     plus_btn_pressed = false;
     tab.g_tab_close_pressed = null;
@@ -2306,6 +2362,11 @@ pub fn toggleFileExplorer() void {
     const perf = ui_perf.begin("input.toggle_file_explorer");
     defer perf.end();
 
+    // `file-explorer-position = right`: the explorer is the dock's Files tab.
+    if (file_explorer.isDocked()) {
+        AppWindow.toggleRightDockPanel(.files);
+        return;
+    }
     file_explorer.toggle();
     if (file_explorer.isVisibleForActiveTab()) {
         AppWindow.syncVisibleFileExplorerForActiveTab(true);
@@ -2317,6 +2378,11 @@ pub fn toggleFileExplorer() void {
 }
 
 fn closeFileExplorerPanel() void {
+    if (file_explorer.isDocked()) {
+        AppWindow.closeRightDock();
+        blurBrowserUrlBarIfFocused();
+        return;
+    }
     file_explorer.close();
     blurBrowserUrlBarIfFocused();
     if (AppWindow.g_window) |win| {
@@ -2338,7 +2404,7 @@ pub fn toggleBrowserPanel() void {
         _ = platform_open_url.open(allocator, .{ .url = target });
         return;
     }
-    if (!browser_panel.isVisibleForActiveTab()) AppWindow.hideAiCopilot();
+    if (!browser_panel.isVisibleForActiveTab()) AppWindow.closeRightDock();
     if (!browser_panel.toggleForSurface(allocator, parent, surface)) return;
     if (AppWindow.g_window) |win| {
         syncPanelGridFromWindow(win);
@@ -2353,7 +2419,7 @@ pub fn openJupyterPanel() void {
     const allocator = AppWindow.g_allocator orelse return;
     const parent = AppWindow.currentNativeHandle();
     const surface = AppWindow.activeSurface();
-    if (!browser_panel.isVisibleForActiveTab()) AppWindow.hideAiCopilot();
+    if (!browser_panel.isVisibleForActiveTab()) AppWindow.closeRightDock();
 
     // Open Jupyter takes over the full content area.
     browser_panel.setDisplayMode(.full);
@@ -2398,14 +2464,6 @@ fn closeBrowserPanel() void {
 
 pub fn refreshBrowserPanel() void {
     browser_panel.refresh();
-    requestInputRepaint();
-}
-
-fn closeAiCopilotPanel() void {
-    AppWindow.hideAiCopilot();
-    if (AppWindow.g_window) |win| {
-        syncPanelGridFromWindow(win);
-    }
     requestInputRepaint();
 }
 
@@ -3112,18 +3170,12 @@ fn aiTranscriptPanelGeometry(panel: AiTranscriptPanel) ?AiTranscriptPanelGeometr
         .active_chat => .{
             .window_width = @floatFromInt(metrics.framebuffer_width),
             .window_height = @floatFromInt(metrics.framebuffer_height),
+            .top = @floatCast(metrics.titlebar_h),
             .chat_x = AppWindow.leftPanelsWidth(),
             .chat_w = @as(f32, @floatFromInt(metrics.framebuffer_width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(metrics.framebuffer_width),
         },
         .copilot_sidebar => blk: {
-            if (!AppWindow.aiCopilotVisible()) return null;
-            const bounds = ai_sidebar.boundsForWindow(
-                @intCast(metrics.framebuffer_width),
-                @intCast(metrics.framebuffer_height),
-                @floatCast(metrics.titlebar_h),
-                AppWindow.leftPanelsWidth(),
-                0,
-            );
+            const bounds = AppWindow.copilotPanelBounds(@intCast(metrics.framebuffer_width), @intCast(metrics.framebuffer_height)) orelse return null;
             break :blk aiTranscriptPanelGeometryForBounds(@intCast(metrics.framebuffer_width), @intCast(metrics.framebuffer_height), bounds);
         },
     };
@@ -3138,7 +3190,7 @@ test "input: copilot transcript panel geometry uses sidebar bounds" {
     try skipUnlessInputRendererShard();
     const bounds = ai_sidebar.Bounds{
         .left = 1120,
-        .top = 30,
+        .top = 64,
         .right = 1600,
         .bottom = 900,
     };
@@ -3146,6 +3198,7 @@ test "input: copilot transcript panel geometry uses sidebar bounds" {
 
     try std.testing.expectApproxEqAbs(@as(f32, 1600), geometry.window_width, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 900), geometry.window_height, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 64), geometry.top, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 1120), geometry.chat_x, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 480), geometry.chat_w, 0.001);
 }
@@ -4186,7 +4239,8 @@ fn btwInputWrapCols() usize {
 fn aiCopilotInputWrapCols() usize {
     const win = AppWindow.g_window orelse return std.math.maxInt(usize);
     const size = clientSize(win);
-    const panel_w = AppWindow.aiCopilotWidth(size.width);
+    const bounds = AppWindow.copilotPanelBounds(size.width, size.height) orelse return std.math.maxInt(usize);
+    const panel_w: f32 = @floatFromInt(bounds.right - bounds.left);
     return AppWindow.assistant_conversation_renderer.inputWrapColumns(panel_w);
 }
 
@@ -4324,33 +4378,48 @@ fn applySidebarWidthFromMouse(xpos: f64) void {
     requestInputRepaint();
 }
 
+/// Where the explorer is drawn this frame (beside the sidebar, or inside the
+/// right dock below its tab row). Shared by every explorer hit-test.
+fn fileExplorerRect() ?AppWindow.ExplorerRect {
+    // The left placement needs no window size (it hangs off the sidebar), so
+    // window-less test harnesses still route explorer input.
+    var width: i32 = 0;
+    var height: i32 = 0;
+    if (AppWindow.g_window) |win| {
+        const metrics = windowMetrics(win);
+        width = @intCast(metrics.framebuffer_width);
+        height = @intCast(metrics.framebuffer_height);
+    }
+    return AppWindow.fileExplorerPanelRect(width, height);
+}
+
 fn hitTestFileExplorer(xpos: f64, ypos: f64) bool {
-    if (!file_explorer.isVisibleForActiveTab()) return false;
-    if (ypos < titlebarHeight()) return false;
-    const panel_x: f64 = @floatCast(titlebar.sidebarWidth());
-    const panel_right = panel_x + @as(f64, @floatCast(file_explorer.width()));
-    return xpos >= panel_x and xpos < panel_right;
+    const rect = fileExplorerRect() orelse return false;
+    if (ypos < rect.top) return false;
+    return xpos >= rect.left and xpos < rect.right;
 }
 
 fn fileExplorerHeaderLayout() ?hit_test.PanelHeaderLayout {
-    if (!file_explorer.isVisibleForActiveTab()) return null;
-    const panel_x: f64 = @floatCast(titlebar.sidebarWidth());
-    const panel_right = panel_x + @as(f64, @floatCast(file_explorer.width()));
+    const rect = fileExplorerRect() orelse return null;
     return .{
         .visible = true,
-        .left = panel_x,
-        .right = panel_right,
-        .top = titlebarHeight(),
+        .left = rect.left,
+        .right = rect.right,
+        .top = rect.top,
         .height = @floatCast(file_explorer.headerHeight()),
     };
 }
 
+/// The explorer's own × only exists beside the sidebar; in the dock the tab
+/// row's toggle closes it.
 fn hitTestFileExplorerCloseButton(xpos: f64, ypos: f64) bool {
+    if (file_explorer.isDocked()) return false;
     return hit_test.panelHeaderCloseButton(fileExplorerHeaderLayout() orelse return false, xpos, ypos);
 }
 
 fn hitTestFileExplorerRefreshButton(xpos: f64, ypos: f64) bool {
-    return hit_test.panelHeaderSecondButton(fileExplorerHeaderLayout() orelse return false, xpos, ypos);
+    const slot = file_explorer_renderer.refreshSlot(file_explorer.isDocked());
+    return hit_test.panelHeaderButton(fileExplorerHeaderLayout() orelse return false, slot, xpos, ypos);
 }
 
 fn browserPanelBounds() ?browser_panel.Bounds {
@@ -4415,30 +4484,6 @@ fn toggleBrowserDisplayMode() void {
     requestInputRepaint();
 }
 
-fn aiCopilotHeaderLayout() ?hit_test.PanelHeaderLayout {
-    if (!AppWindow.aiCopilotVisible()) return null;
-    const win = AppWindow.g_window orelse return null;
-    const metrics = windowMetrics(win);
-    const bounds = ai_sidebar.boundsForWindow(
-        @intCast(metrics.framebuffer_width),
-        @intCast(metrics.framebuffer_height),
-        @floatCast(metrics.titlebar_h),
-        AppWindow.leftPanelsWidth(),
-        0,
-    );
-    return .{
-        .visible = true,
-        .left = @floatFromInt(bounds.left),
-        .right = @floatFromInt(bounds.right),
-        .top = @floatFromInt(bounds.top),
-        .height = @floatCast(AppWindow.assistant_conversation_renderer.HEADER_H),
-    };
-}
-
-fn hitTestAiCopilotCloseButton(xpos: f64, ypos: f64) bool {
-    return hit_test.panelHeaderCloseButton(aiCopilotHeaderLayout() orelse return false, xpos, ypos);
-}
-
 fn hitTestBrowserResizeHandle(xpos: f64, ypos: f64) bool {
     if (!browser_panel.isVisibleForActiveTab()) return false;
     if (ypos < titlebarHeight()) return false;
@@ -4459,28 +4504,74 @@ fn applyBrowserWidthFromMouse(xpos: f64) void {
     requestInputRepaint();
 }
 
-// AI copilot panel resize grip. The copilot is right-docked (right_offset 0)
-// and its bounds are computed against framebufferSize everywhere (renderer +
-// click handling), so the hit-test/apply mirror the browser resize structure
-// but read the framebuffer size to track the panel's actual left edge.
-fn hitTestAiCopilotResizeHandle(xpos: f64, ypos: f64) bool {
-    if (!AppWindow.aiCopilotVisible()) return false;
-    if (ypos < titlebarHeight()) return false;
-    const win = AppWindow.g_window orelse return false;
+fn rightDockBoundsForInput() ?right_dock.Bounds {
+    const win = AppWindow.g_window orelse return null;
     const metrics = windowMetrics(win);
-    const bounds = ai_sidebar.boundsForWindow(
-        @intCast(metrics.framebuffer_width),
-        @intCast(metrics.framebuffer_height),
-        @floatCast(metrics.titlebar_h),
-        AppWindow.leftPanelsWidth(),
-        0,
-    );
-    const panel_x: f64 = @floatFromInt(bounds.left);
-    const half_hit: f64 = @as(f64, @floatCast(ai_sidebar.RESIZE_HIT_WIDTH)) / 2;
-    return xpos >= panel_x - half_hit and xpos <= panel_x + half_hit;
+    return AppWindow.rightDockBounds(@intCast(metrics.framebuffer_width), @intCast(metrics.framebuffer_height));
 }
 
-/// Hit-test the closed-state Copilot summon handle (valid only when Copilot is
+/// The right dock's resize grip straddles its left edge (shared width for
+/// every dock tab, so dragging never depends on which panel is showing).
+fn hitTestRightDockResizeHandle(xpos: f64, ypos: f64) bool {
+    const dock = rightDockBoundsForInput() orelse return false;
+    return right_dock.resizeHandleHit(dock, xpos, ypos);
+}
+
+/// True when the right dock (tab row + panel) covers (xpos, ypos).
+fn hitTestRightDock(xpos: f64, ypos: f64) bool {
+    const dock = rightDockBoundsForInput() orelse return false;
+    return dock.contains(xpos, ypos);
+}
+
+fn rightDockHeaderHitAt(xpos: f64, ypos: f64) ?right_dock.HeaderHit {
+    const win = AppWindow.g_window orelse return null;
+    const metrics = windowMetrics(win);
+    const layout = right_dock_renderer.headerLayout(@intCast(metrics.framebuffer_width), @intCast(metrics.framebuffer_height)) orelse return null;
+    if (!layout.row.contains(xpos, ypos)) return null;
+    return right_dock.headerHitAt(&layout, xpos, ypos);
+}
+
+/// Left press on the dock chrome: start a resize, switch tabs, or close.
+/// Returns the effect when the press landed on the tab row or resize edge;
+/// presses in the panel below fall through to Copilot / explorer routing.
+fn handleRightDockPress(xpos: f64, ypos: f64) ?ui_effect.UiEffect {
+    if (hitTestRightDockResizeHandle(xpos, ypos)) {
+        right_dock.g_interaction.resize_dragging = true;
+        right_dock.g_interaction.resize_hover = true;
+        platform_cursor.set(.size_we);
+        return input_effects.repaint();
+    }
+    const dock = rightDockBoundsForInput() orelse return null;
+    const row_bottom: f64 = @as(f64, @floatFromInt(dock.top)) + @as(f64, @floatCast(AppWindow.rightDockTabRowHeight()));
+    if (!dock.contains(xpos, ypos) or ypos >= row_bottom) return null;
+    if (rightDockHeaderHitAt(xpos, ypos)) |hit| return applyRightDockHeaderHit(hit);
+    // Empty stretches of the tab row are still dock chrome: consume them.
+    return input_effects.repaint();
+}
+
+/// A tab-row click: switch to that panel, or close the dock (the toggle).
+/// Either way the switch must paint now, not on the next cursor blink.
+fn applyRightDockHeaderHit(hit: right_dock.HeaderHit) ui_effect.UiEffect {
+    switch (hit) {
+        .tab => |panel| AppWindow.selectRightDockPanel(panel),
+        .toggle => AppWindow.closeRightDock(),
+    }
+    return input_effects.repaint();
+}
+
+fn applyRightDockWidthFromMouse(xpos: f64) void {
+    const win = AppWindow.g_window orelse return;
+    const metrics = windowMetrics(win);
+    // Right-docked at the far right edge: width grows as the mouse moves left.
+    const right_edge = @as(f64, @floatFromInt(metrics.framebuffer_width));
+    const new_width = right_edge - xpos;
+    const available_width: f32 = @as(f32, @floatFromInt(metrics.framebuffer_width)) - AppWindow.leftPanelsWidth();
+    if (!right_dock.setWidth(@floatCast(new_width), available_width)) return;
+    syncGridFromWindow(win);
+    requestInputRepaint();
+}
+
+/// Hit-test the closed-state dock summon handle (valid only when the dock is
 /// closed). Widens the click zone for comfort without a heavier visual.
 fn hitTestCopilotEdgeHandle(xpos: f64, ypos: f64) bool {
     // Must match the render + mouse-move eligibility exactly, or this becomes an
@@ -4488,14 +4579,14 @@ fn hitTestCopilotEdgeHandle(xpos: f64, ypos: f64) bool {
     // feature is disabled, or from a browser/Jupyter panel sharing the slot).
     if (!copilot_hint_gate.handleEligible(
         AppWindow.g_copilot_hint,
-        AppWindow.aiCopilotVisible(),
+        AppWindow.rightDockVisible(),
         AppWindow.isActiveTabTerminal(),
         AppWindow.anyRightDockPanelVisible(),
     )) return false;
     if (ypos < titlebarHeight()) return false;
     const win = AppWindow.g_window orelse return false;
     const metrics = windowMetrics(win);
-    const rect = ai_sidebar.closedHandleRect(
+    const rect = right_dock.closedHandleRect(
         @floatFromInt(metrics.framebuffer_width),
         @floatFromInt(metrics.framebuffer_height),
         @floatCast(metrics.titlebar_h),
@@ -4509,20 +4600,9 @@ fn hitTestCopilotEdgeHandle(xpos: f64, ypos: f64) bool {
     return xpos >= right - hit_w and ypos >= top and ypos <= bottom;
 }
 
-fn applyAiCopilotWidthFromMouse(xpos: f64) void {
-    const win = AppWindow.g_window orelse return;
-    const metrics = windowMetrics(win);
-    // Right-docked at the far right edge (right_offset 0): width grows as the
-    // mouse moves left, same as the browser's right-edge math.
-    const right_edge = @as(f64, @floatFromInt(metrics.framebuffer_width));
-    const new_width = right_edge - xpos;
-    const available_width: f32 = @as(f32, @floatFromInt(metrics.framebuffer_width)) - AppWindow.leftPanelsWidth();
-    if (!ai_sidebar.setWidth(@floatCast(new_width), available_width)) return;
-    syncGridFromWindow(win);
-    requestInputRepaint();
-}
-
 fn hitTestFileExplorerResizeHandle(xpos: f64, ypos: f64) bool {
+    // A docked explorer resizes with the dock's own left-edge grip.
+    if (file_explorer.isDocked()) return false;
     if (!file_explorer.isVisibleForActiveTab()) return false;
     if (ypos < titlebarHeight()) return false;
     const panel_x: f64 = @floatCast(titlebar.sidebarWidth());
@@ -4724,13 +4804,11 @@ fn handleFileExplorerPress(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: b
     }
 
     // Click on a file entry
-    const panel_x: f64 = @floatCast(titlebar.sidebarWidth());
-    const panel_right = panel_x + @as(f64, @floatCast(file_explorer.width()));
-    if (xpos < panel_x or xpos >= panel_right) return;
+    const rect = fileExplorerRect() orelse return;
+    if (xpos < rect.left or xpos >= rect.right) return;
 
-    const titlebar_h = titlebarHeight();
     const header_h: f64 = @floatCast(file_explorer.headerHeight());
-    const list_top = titlebar_h + header_h;
+    const list_top = rect.top + header_h;
     if (ypos < list_top) return;
 
     if (file_explorer.rowIndexAtListY(ypos - list_top)) |row_idx| {
@@ -4748,13 +4826,11 @@ fn handleFileExplorerPress(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: b
 }
 
 fn handleAgentHistoryPress(xpos: f64, ypos: f64) void {
-    const panel_x: f64 = @floatCast(titlebar.sidebarWidth());
-    const panel_right = panel_x + @as(f64, @floatCast(file_explorer.width()));
-    if (xpos < panel_x or xpos >= panel_right) return;
+    const rect = fileExplorerRect() orelse return;
+    if (xpos < rect.left or xpos >= rect.right) return;
 
-    const titlebar_h = titlebarHeight();
     const header_h: f64 = @floatCast(file_explorer.headerHeight());
-    const list_top = titlebar_h + header_h;
+    const list_top = rect.top + header_h;
     if (ypos < list_top) return;
 
     const row_h: f64 = @floatCast(file_explorer.rowHeight());
@@ -6133,10 +6209,6 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 closeBrowserPanel();
                 return;
             }
-            if (hitTestAiCopilotCloseButton(xpos, ypos)) {
-                closeAiCopilotPanel();
-                return;
-            }
             const over_browser_url_bar = hitTestBrowserUrlBar(xpos, ypos);
             if (!over_browser_url_bar) blurBrowserUrlBarIfFocused();
             if (hitTestSidebarResizeHandle(xpos, ypos)) {
@@ -6157,14 +6229,13 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 platform_cursor.set(.size_we);
                 return;
             }
-            if (hitTestAiCopilotResizeHandle(xpos, ypos)) {
-                g_ai_copilot_resize_dragging = true;
-                g_ai_copilot_resize_hover = true;
-                platform_cursor.set(.size_we);
+            // Right dock chrome: resize edge, tab row (tab switch / close).
+            if (handleRightDockPress(xpos, ypos)) |effect| {
+                applyInputEffect(effect);
                 return;
             }
-            if (!AppWindow.aiCopilotVisible() and hitTestCopilotEdgeHandle(xpos, ypos)) {
-                AppWindow.toggleAiCopilot();
+            if (!AppWindow.rightDockVisible() and hitTestCopilotEdgeHandle(xpos, ypos)) {
+                AppWindow.summonRightDock();
                 return;
             }
 
@@ -6245,13 +6316,10 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 if (AppWindow.activeCopilotSessionForInput()) |chat| {
                     const win = AppWindow.g_window orelse return;
                     const fb = window_backend.framebufferSize(win);
-                    const bounds = ai_sidebar.boundsForWindow(
-                        @intCast(fb.width),
-                        @intCast(fb.height),
-                        @floatCast(titlebarHeight()),
-                        AppWindow.leftPanelsWidth(),
-                        0,
-                    );
+                    const bounds = AppWindow.copilotPanelBounds(@intCast(fb.width), @intCast(fb.height)) orelse return;
+                    // The conversation starts below the dock's tab row, not at
+                    // the titlebar: every Copilot hit-test takes this top.
+                    const panel_top: f32 = @floatFromInt(bounds.top);
                     const bx_left: f64 = @floatFromInt(bounds.left);
                     const bx_right: f64 = @floatFromInt(bounds.right);
                     const by_top: f64 = @floatFromInt(bounds.top);
@@ -6265,7 +6333,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             xpos,
                             ypos,
                             @floatFromInt(fb.width),
-                            @floatCast(titlebarHeight()),
+                            panel_top,
                             chat_x,
                             chat_w,
                             true, // copilot sidebar: dot hit-box
@@ -6279,7 +6347,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             xpos,
                             ypos,
                             @floatFromInt(fb.width),
-                            @floatCast(titlebarHeight()),
+                            panel_top,
                             chat_x,
                             chat_w,
                             true, // copilot sidebar: error text left of dot
@@ -6294,7 +6362,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             ypos,
                             @floatFromInt(fb.width),
                             @floatFromInt(fb.height),
-                            @floatCast(titlebarHeight()),
+                            panel_top,
                             chat_x,
                             chat_w,
                         )) |target| {
@@ -6326,7 +6394,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             chat,
                             xpos,
                             ypos,
-                            @floatCast(titlebarHeight()),
+                            panel_top,
                             chat_x,
                             chat_w,
                             true, // copilot sidebar: compact header layout
@@ -6340,7 +6408,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             xpos,
                             ypos,
                             @floatFromInt(fb.width),
-                            @floatCast(titlebarHeight()),
+                            panel_top,
                             chat_x,
                             chat_w,
                             true, // copilot sidebar: compact header layout
@@ -6354,7 +6422,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             xpos,
                             ypos,
                             @floatFromInt(fb.width),
-                            @floatCast(titlebarHeight()),
+                            panel_top,
                             chat_x,
                             chat_w,
                             true, // copilot sidebar: chip sits next to the status dot
@@ -6368,7 +6436,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             ypos,
                             @floatFromInt(fb.width),
                             @floatFromInt(fb.height),
-                            @floatCast(titlebarHeight()),
+                            panel_top,
                             chat_x,
                             chat_w,
                         )) |drag_offset| {
@@ -6385,7 +6453,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                                 ypos,
                                 @floatFromInt(fb.width),
                                 @floatFromInt(fb.height),
-                                @floatCast(titlebarHeight()),
+                                panel_top,
                                 chat_x,
                                 chat_w,
                             )) |hit| {
@@ -6714,10 +6782,12 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 platform_cursor.set(if (g_browser_resize_hover) .size_we else .arrow);
                 return;
             }
-            if (g_ai_copilot_resize_dragging) {
-                g_ai_copilot_resize_dragging = false;
-                g_ai_copilot_resize_hover = hitTestAiCopilotResizeHandle(xpos, ypos);
-                platform_cursor.set(if (g_ai_copilot_resize_hover) .size_we else .arrow);
+            if (right_dock.g_interaction.resize_dragging) {
+                right_dock.g_interaction.resize_dragging = false;
+                right_dock.g_interaction.resize_hover = hitTestRightDockResizeHandle(xpos, ypos);
+                platform_cursor.set(if (right_dock.g_interaction.resize_hover) .size_we else .arrow);
+                AppWindow.persistRightDockWidth();
+                requestInputRepaint();
                 return;
             }
 
@@ -6899,7 +6969,7 @@ fn applyAiTranscriptScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) v
         ypos,
         geometry.window_width,
         geometry.window_height,
-        @floatCast(titlebarHeight()),
+        geometry.top,
         geometry.chat_x,
         geometry.chat_w,
         ai_scroll_drag.offset,
@@ -6981,7 +7051,7 @@ fn updateAiTextSelectionDrag(chat: *AppWindow.ai_chat.Session, xpos: f64, ypos: 
         ypos,
         geometry.window_width,
         geometry.window_height,
-        @floatCast(titlebarHeight()),
+        geometry.top,
         geometry.chat_x,
         geometry.chat_w,
     )) |hit| {
@@ -7012,8 +7082,8 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         platform_cursor.set(.size_we);
         return;
     }
-    if (g_ai_copilot_resize_dragging) {
-        applyAiCopilotWidthFromMouse(xpos);
+    if (right_dock.g_interaction.resize_dragging) {
+        applyRightDockWidthFromMouse(xpos);
         platform_cursor.set(.size_we);
         return;
     }
@@ -7127,10 +7197,6 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         return;
     }
     if (!g_selecting and !overlays.scrollbar.g_scrollbar_dragging) {
-        if (hitTestAiCopilotCloseButton(xpos, ypos)) {
-            platform_cursor.set(.arrow);
-            return;
-        }
         const over_sidebar_resize = hitTestSidebarResizeHandle(xpos, ypos);
         if (over_sidebar_resize) {
             platform_cursor.set(.size_we);
@@ -7158,20 +7224,29 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
             platform_cursor.set(.arrow);
             g_browser_resize_hover = false;
         }
-        const over_ai_copilot_resize = hitTestAiCopilotResizeHandle(xpos, ypos);
-        if (over_ai_copilot_resize) {
+        const over_dock_resize = hitTestRightDockResizeHandle(xpos, ypos);
+        if (over_dock_resize) {
             platform_cursor.set(.size_we);
-            g_ai_copilot_resize_hover = true;
+            if (!right_dock.g_interaction.resize_hover) requestInputRepaint();
+            right_dock.g_interaction.resize_hover = true;
             return;
-        } else if (g_ai_copilot_resize_hover) {
+        } else if (right_dock.g_interaction.resize_hover) {
             platform_cursor.set(.arrow);
-            g_ai_copilot_resize_hover = false;
+            right_dock.g_interaction.resize_hover = false;
+            requestInputRepaint();
         }
-        // Closed-state Copilot summon handle: reveal as the cursor nears the edge.
-        if (!AppWindow.aiCopilotVisible()) {
+        // Dock tab row: repaint when the hovered tab / toggle changes so the
+        // highlight follows the pointer without waiting for a cursor blink.
+        const dock_hover = rightDockHeaderHitAt(xpos, ypos);
+        if (!std.meta.eql(dock_hover, right_dock.g_interaction.header_hover)) {
+            right_dock.g_interaction.header_hover = dock_hover;
+            requestInputRepaint();
+        }
+        // Closed-state dock summon handle: reveal as the cursor nears the edge.
+        if (!AppWindow.rightDockVisible()) {
             const handle_eligible = copilot_hint_gate.handleEligible(
                 AppWindow.g_copilot_hint,
-                AppWindow.aiCopilotVisible(),
+                AppWindow.rightDockVisible(),
                 AppWindow.isActiveTabTerminal(),
                 AppWindow.anyRightDockPanelVisible(),
             );
@@ -7409,22 +7484,6 @@ fn sendTerminalMouseReport(
     return true;
 }
 
-/// True when the AI copilot sidebar is shown and covers (xf, yf).
-fn aiCopilotRegionContains(xf: f64, yf: f64) bool {
-    if (!AppWindow.aiCopilotVisible()) return false;
-    const win = AppWindow.g_window orelse return false;
-    const fb = window_backend.framebufferSize(win);
-    const bounds = ai_sidebar.boundsForWindow(
-        @intCast(fb.width),
-        @intCast(fb.height),
-        @floatCast(titlebarHeight()),
-        AppWindow.leftPanelsWidth(),
-        0,
-    );
-    return xf >= @as(f64, @floatFromInt(bounds.left)) and xf < @as(f64, @floatFromInt(bounds.right)) and
-        yf >= @as(f64, @floatFromInt(bounds.top)) and yf < @as(f64, @floatFromInt(bounds.bottom));
-}
-
 /// The surface that should receive a mouse report for an event at (x, y), or
 /// null when the point is over window chrome / side panels or the focused
 /// program has not enabled mouse tracking. Mirrors the chrome exclusions the
@@ -7438,7 +7497,7 @@ fn terminalMouseReportTarget(x_i: i32, y_i: i32) ?*Surface {
     if (hitTestFileExplorer(xf, yf)) return null;
     if (hitTestBrowserUrlBar(xf, yf)) return null;
     if (hitTestBrowserPanel(xf, yf)) return null;
-    if (aiCopilotRegionContains(xf, yf)) return null;
+    if (hitTestRightDock(xf, yf)) return null;
     const surface = split_layout.surfaceAtPoint(x_i, y_i) orelse return null;
     surface.render_state.mutex.lock();
     const mode = surface.terminal.flags.mouse_event;
@@ -7499,6 +7558,7 @@ fn scrollWideMarkdownTable(
     ev: platform_input.MouseWheelEvent,
     window_width: f32,
     window_height: f32,
+    top: f32,
     chat_x: f32,
     chat_w: f32,
 ) bool {
@@ -7508,7 +7568,7 @@ fn scrollWideMarkdownTable(
         @floatFromInt(ev.ypos),
         window_width,
         window_height,
-        @floatCast(titlebarHeight()),
+        top,
         chat_x,
         chat_w,
     ) orelse return false;
@@ -7561,11 +7621,11 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
     }
     if (tab.g_sidebar_visible and ev.xpos >= 0 and ev.xpos < @as(i32, @intFromFloat(titlebar.sidebarWidth()))) return;
     if (hitTestBrowserPanel(@floatFromInt(ev.xpos), @floatFromInt(ev.ypos))) return;
-    // Scroll in file explorer
-    if (file_explorer.isVisibleForActiveTab()) {
-        const panel_x = @as(i32, @intFromFloat(titlebar.sidebarWidth()));
-        const panel_right = @as(i32, @intFromFloat(titlebar.sidebarWidth() + file_explorer.width()));
-        if (ev.xpos >= panel_x and ev.xpos < panel_right) {
+    // Scroll in file explorer (beside the sidebar or in the right dock)
+    if (fileExplorerRect()) |rect| {
+        const panel_x: i32 = @intFromFloat(rect.left);
+        const panel_right: i32 = @intFromFloat(rect.right);
+        if (ev.xpos >= panel_x and ev.xpos < panel_right and @as(f64, @floatFromInt(ev.ypos)) >= rect.top) {
             const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * file_explorer.rowHeight() * 3 / 120.0;
             file_explorer.scrollBy(delta);
             // Request a frame so the new offset is drawn now; otherwise the panel
@@ -7645,7 +7705,7 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
             }
             const chat_x = AppWindow.leftPanelsWidth();
             const chat_w = @as(f32, @floatFromInt(size.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(size.width);
-            if (scrollWideMarkdownTable(chat, ev, @floatFromInt(size.width), @floatFromInt(size.height), chat_x, chat_w)) return;
+            if (scrollWideMarkdownTable(chat, ev, @floatFromInt(size.width), @floatFromInt(size.height), @floatCast(titlebarHeight()), chat_x, chat_w)) return;
             const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
             chat.scrollBy(delta);
             requestInputRebuild();
@@ -7660,13 +7720,7 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
         if (AppWindow.activeCopilotSessionForInput()) |chat| {
             const win = AppWindow.g_window orelse return;
             const size = clientSize(win);
-            const bounds = ai_sidebar.boundsForWindow(
-                size.width,
-                size.height,
-                @floatCast(titlebarHeight()),
-                AppWindow.leftPanelsWidth(),
-                0,
-            );
+            const bounds = AppWindow.copilotPanelBounds(size.width, size.height) orelse return;
             if (ev.xpos >= bounds.left and ev.xpos < bounds.right and ev.ypos >= bounds.top and ev.ypos < bounds.bottom) {
                 const chat_x: f32 = @floatFromInt(bounds.left);
                 const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
@@ -7685,7 +7739,7 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
                     requestInputRepaint();
                     return;
                 }
-                if (scrollWideMarkdownTable(chat, ev, @floatFromInt(size.width), @floatFromInt(size.height), chat_x, chat_w)) return;
+                if (scrollWideMarkdownTable(chat, ev, @floatFromInt(size.width), @floatFromInt(size.height), @floatFromInt(bounds.top), chat_x, chat_w)) return;
                 const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
                 chat.scrollBy(delta);
                 requestInputRebuild();

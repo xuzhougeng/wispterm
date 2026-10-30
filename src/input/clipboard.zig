@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
+const window_backend = @import("../platform/window_backend.zig");
 const file_explorer = AppWindow.file_explorer;
 const browser_panel = AppWindow.browser_panel;
 const overlays = AppWindow.overlays;
@@ -354,7 +355,7 @@ fn createDeferredSshDropPaste(surface: *Surface, text: []const u8) ?*DeferredSsh
 }
 
 pub fn handleFileDrop(local_path: []const u8, x: i32, y: i32) bool {
-    if (handleFileExplorerDrop(local_path, x)) return true;
+    if (handleFileExplorerDrop(local_path, x, y)) return true;
     if (handleAiChatFileDrop(local_path, x, y)) return true;
     return handleSshTerminalFileDrop(local_path);
 }
@@ -366,13 +367,16 @@ fn handleAiChatFileDrop(local_path: []const u8, x: i32, y: i32) bool {
     return AppWindow.appendDroppedPathToChatAtPoint(text, x, y);
 }
 
-fn handleFileExplorerDrop(local_path: []const u8, x: i32) bool {
+fn handleFileExplorerDrop(local_path: []const u8, x: i32, y: i32) bool {
     const win = AppWindow.g_window orelse return false;
-    if (!file_explorer.isVisibleForActiveTab() or file_explorer.g_mode != .remote) return false;
+    if (file_explorer.g_mode != .remote) return false;
 
-    const panel_x: i32 = win.sidebar_width;
-    const panel_right: i32 = panel_x + @as(i32, @intFromFloat(file_explorer.width()));
-    if (x < panel_x or x >= panel_right) return false;
+    // Beside the sidebar or in the right dock: one shared panel rect.
+    const size = window_backend.clientSize(win);
+    const rect = AppWindow.fileExplorerPanelRect(size.width, size.height) orelse return false;
+    const fx: f32 = @floatFromInt(x);
+    const fy: f32 = @floatFromInt(y);
+    if (fx < rect.left or fx >= rect.right or fy < rect.top) return false;
 
     file_explorer.uploadFile(local_path);
     return true;
