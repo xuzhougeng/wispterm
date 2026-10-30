@@ -236,6 +236,20 @@ pub const Strings = struct {
     sl_switch_model_title: []const u8,
     sl_switch_model_hint: []const u8,
     ai_summary_card_title: []const u8,
+    // —— AI 对话卡片：ask_user 问题卡 / 工具卡 / 审批卡 ——
+    ai_question_hint: []const u8,
+    ai_question_hint_numbered: []const u8,
+    ai_question_answered: []const u8,
+    ai_tool_call: []const u8,
+    ai_tool_result: []const u8,
+    ai_tool_update: []const u8,
+    /// 追加在步骤数之后："3" + " steps"。
+    ai_steps_suffix: []const u8,
+    ai_thinking_title: []const u8,
+    /// 审批卡标题 = prefix + 工具名 + suffix。
+    ai_approve_prefix: []const u8,
+    ai_approve_suffix: []const u8,
+    ai_approve_hint: []const u8,
     ai_model_no_profiles: []const u8,
     ai_model_unknown_profile: []const u8,
     sl_ai_model: []const u8,
@@ -588,6 +602,17 @@ const en = Strings{
     .sl_switch_model_title = "Switch Model",
     .sl_switch_model_hint = "Choose a profile, or Esc to cancel",
     .ai_summary_card_title = "Conversation summary",
+    .ai_question_hint = "Click an option, or type your answer below",
+    .ai_question_hint_numbered = "Click an option, or type its number or your answer below",
+    .ai_question_answered = "Answered",
+    .ai_tool_call = "Tool call",
+    .ai_tool_result = "Tool result",
+    .ai_tool_update = "Tool update",
+    .ai_steps_suffix = " steps",
+    .ai_thinking_title = "Thinking",
+    .ai_approve_prefix = "Approve ",
+    .ai_approve_suffix = "?",
+    .ai_approve_hint = "Enter/Y to run, Esc/N to deny",
     .ai_model_no_profiles = "No AI profiles configured. Add one in Settings → AI profiles.",
     .ai_model_unknown_profile = "No AI profile by that name; choose one from the list.",
     .sl_ai_model = "Model",
@@ -933,6 +958,17 @@ const zh_CN = Strings{
     .sl_switch_model_title = "切换模型",
     .sl_switch_model_hint = "选择一个配置，或按 Esc 取消",
     .ai_summary_card_title = "上文摘要",
+    .ai_question_hint = "点选项，或在下方直接输入你的答案",
+    .ai_question_hint_numbered = "点选项，或在下方输入序号/你的答案",
+    .ai_question_answered = "已回答",
+    .ai_tool_call = "工具调用",
+    .ai_tool_result = "工具结果",
+    .ai_tool_update = "工具更新",
+    .ai_steps_suffix = " 个步骤",
+    .ai_thinking_title = "思考",
+    .ai_approve_prefix = "允许运行 ",
+    .ai_approve_suffix = "？",
+    .ai_approve_hint = "Enter/Y 运行，Esc/N 拒绝",
     .ai_model_no_profiles = "尚未配置 AI 配置。请在 设置 → AI 配置 中新建。",
     .ai_model_unknown_profile = "没有同名的 AI 配置，请从列表中选择。",
     .sl_ai_model = "模型",
@@ -1395,4 +1431,16 @@ test "i18n: history panel strings present in both locales" {
     try std.testing.expectEqualStrings("今天", s().cmd_palette_group_today);
     try std.testing.expectEqualStrings("过去7天", s().cmd_palette_group_past_week);
     try std.testing.expectEqualStrings("侧栏", s().cmd_palette_source_sidebar);
+}
+
+test "i18n: AI chat card strings follow the active locale" {
+    defer setLang(.en);
+    setLang(.en);
+    try std.testing.expectEqualStrings("Click an option, or type your answer below", s().ai_question_hint);
+    try std.testing.expectEqualStrings("Tool update", s().ai_tool_update);
+    try std.testing.expectEqualStrings("Answered", s().ai_question_answered);
+    setLang(.zh_CN);
+    try std.testing.expectEqualStrings("点选项，或在下方直接输入你的答案", s().ai_question_hint);
+    try std.testing.expectEqualStrings("工具更新", s().ai_tool_update);
+    try std.testing.expectEqualStrings("已回答", s().ai_question_answered);
 }

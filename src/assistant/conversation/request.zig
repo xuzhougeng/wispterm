@@ -17,6 +17,8 @@ const web_search = @import("../../research/web_search.zig");
 const web_read = @import("../../research/web_read.zig");
 const pubmed = @import("../../research/pubmed.zig");
 const ai_chat_types = @import("types.zig");
+const question_answer = @import("question_answer.zig");
+const session_question_answer = @import("session_question_answer.zig");
 const ai_loop_store = @import("../loop/store.zig");
 const platform_agent_prompt = @import("../../platform/agent_prompt.zig");
 const oauth_client = @import("../oauth/client.zig");
@@ -323,6 +325,7 @@ fn runAgentRequest(request: *ChatRequest) !ApiResult {
 
     var total_usage: ApiUsage = .{};
     var has_usage = false;
+    var user_wait_ms: i64 = 0;
     while (true) {
         if (ai_chat.requestCancelled(request)) return error.Canceled;
         const result = try runChatRequestForMessages(request, transcript.items, true);
@@ -338,6 +341,7 @@ fn runAgentRequest(request: *ChatRequest) !ApiResult {
             applySubagentUsage(request, &total_usage, &has_usage);
             var final = result;
             if (has_usage) final.usage = total_usage;
+            final.user_wait_ms = user_wait_ms;
             return final;
         }
         errdefer result.deinit(request.allocator);
@@ -360,10 +364,16 @@ fn runAgentRequest(request: *ChatRequest) !ApiResult {
                 try std.fmt.allocPrint(request.allocator, "running {s} {s}", .{ call.name, call.arguments }),
             );
             defer request.allocator.free(progress);
-            ai_chat.appendProgressMessage(request.session, progress) catch {};
+            // ask_user's question card already shows its arguments: keep the
+            // raw call to one row, and keep the time the card waits for the
+            // user out of the turn's duration and token rate.
+            const asks_user = std.mem.eql(u8, call.name, question_answer.TOOL_NAME);
+            ai_chat.appendProgressMessageCollapsed(request.session, progress, asks_user) catch {};
 
+            const tool_started_ms = std.time.milliTimestamp();
             const tool_result = try executeToolCall(request, call);
             defer request.allocator.free(tool_result);
+            if (asks_user) user_wait_ms += @max(@as(i64, 0), std.time.milliTimestamp() - tool_started_ms);
             if (ai_chat.requestCancelled(request)) return error.Canceled;
             if (std.mem.eql(u8, call.name, "skill_info")) {
                 ai_chat.appendReplayableToolMessage(request.session, call.id, call.name, tool_result) catch {};
@@ -1041,7 +1051,9 @@ fn toolProgress(ctx: *anyopaque, text: []const u8) void {
 
 fn toolAsk(ctx: *anyopaque, question: []const u8, options: []const ai_chat_types.QuestionOption) ai_chat_types.AskResult {
     const session: *Session = @ptrCast(@alignCast(ctx));
-    return session.askUser(question, options);
+    const result = session.askUser(question, options);
+    session_question_answer.appendSummary(session, question, options, result);
+    return result;
 }
 
 fn toolScheduleContinuation(

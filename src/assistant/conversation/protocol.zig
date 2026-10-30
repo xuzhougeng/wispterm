@@ -312,6 +312,9 @@ pub const ApiResult = struct {
     tool_calls: ?[]ToolCall = null,
     usage: ?ApiUsage = null,
     api_error: bool = false,
+    /// Agent turns: time blocked on `ask_user` answers, kept out of the
+    /// reported duration and token rate (turn_stats.zig).
+    user_wait_ms: i64 = 0,
 
     pub fn deinit(self: ApiResult, allocator: std.mem.Allocator) void {
         allocator.free(self.content);
