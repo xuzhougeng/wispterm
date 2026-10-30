@@ -11,6 +11,7 @@ const md = @import("../../markdown_text.zig");
 const table_hscroll = @import("../../assistant/conversation/table_hscroll.zig");
 const question_hscroll = @import("../../assistant/conversation/question_hscroll.zig");
 const question_select = @import("../../assistant/conversation/question_select.zig");
+const question_answer = @import("../../assistant/conversation/question_answer.zig");
 const detail_wrap = @import("../../composer_detail_wrap.zig");
 
 // Transcript scrollbar interaction state (one mouse). Set by input.zig,
@@ -1561,8 +1562,8 @@ fn renderToolGroupHeader(msgs: []const ai_chat.Message, start: usize, x: f32, to
     const text_y = y + @round((h - font.g_titlebar_cell_height) / 2);
     _ = titlebar.renderTextLimited(if (collapsed) ">" else "v", arrow_x, text_y, mixColor(fg, accent, 0.16), detailArrowW());
 
-    var title_buf: [32]u8 = undefined;
-    const title = std.fmt.bufPrint(&title_buf, "{d} steps", .{end - start}) catch "steps";
+    var title_buf: [48]u8 = undefined;
+    const title = std.fmt.bufPrint(&title_buf, "{d}{s}", .{ end - start, i18n.s().ai_steps_suffix }) catch i18n.s().ai_steps_suffix;
     var text_x = arrow_x + detailArrowW() + 6;
     const text_limit = x + w - DETAIL_PAD_X;
     text_x = titlebar.renderTextLimited(title, text_x, text_y, mixColor(fg, accent, 0.18), @max(24.0, text_limit - text_x)) + 10;
@@ -1587,6 +1588,9 @@ fn renderToolCard(msg: ai_chat.Message, x: f32, top_px: f32, w: f32, h: f32, win
         .title = i18n.s().ai_summary_card_title,
         .name = "",
         .preview = ai_model_switch.cardPreview(msg.content),
+    } else if (msg.is_question_answer) ToolSectionMeta{
+        .title = i18n.s().ai_question_answered,
+        .preview = question_answer.answerLine(msg.content),
     } else toolSectionMeta(msg.content);
     const card_bg = if (selected) mixColor(bg, accent, 0.22) else mixColor(bg, fg, 0.055);
     const header_bg = if (selected) mixColor(bg, accent, 0.28) else mixColor(bg, fg, 0.08);
@@ -1653,7 +1657,7 @@ fn renderReasoningCard(text: []const u8, collapsed: bool, x: f32, top_px: f32, w
     const title_x = arrow_x + detailArrowW() + 6;
     const title_y = header_y + @round((header_h - font.g_titlebar_cell_height) / 2);
     const preview = previewLine(text);
-    const title_end = titlebar.renderTextLimited("Thinking", title_x, title_y, mixColor(fg, accent, 0.14), w * 0.3);
+    const title_end = titlebar.renderTextLimited(i18n.s().ai_thinking_title, title_x, title_y, mixColor(fg, accent, 0.14), w * 0.3);
     if (collapsed and preview.len > 0) {
         _ = titlebar.renderTextLimited(preview, title_end + 10, title_y, mixColor(bg, fg, 0.56), @max(24.0, w - (title_end - x) - DETAIL_PAD_X - 16));
     }
@@ -2409,10 +2413,11 @@ fn renderQuestionCard(session: *ai_chat.Session, view: ai_chat.QuestionView, x: 
             ui_pipeline.fillQuadAlpha(geo.thumb_x, y + scrollbar_y, geo.thumb_w, geo.track_h, accent, 0.85);
         }
     }
+    // Options past the visible rows can still be picked by typing their number.
     const hint = if (view.options.len > lay.visible_options)
-        "点选项，或在下方输入序号/你的答案"
+        i18n.s().ai_question_hint_numbered
     else
-        "点选项，或在下方直接输入你的答案";
+        i18n.s().ai_question_hint;
     _ = titlebar.renderTextLimited(hint, x + 16, y + lay.hint_y, mixColor(bg, fg, 0.62), w - 32);
 }
 
@@ -2429,9 +2434,10 @@ fn renderApprovalCard(view: ai_chat.ApprovalView, x: f32, y: f32, w: f32, h: f32
     const lay = ai_chat_layout.approvalLayout(font.g_titlebar_cell_height, view.reason.len > 0);
 
     var title_buf: [256]u8 = undefined;
-    const title = std.fmt.bufPrint(&title_buf, "Approve {s}?", .{view.tool}) catch "Approve tool?";
+    const strings = i18n.s();
+    const title = std.fmt.bufPrint(&title_buf, "{s}{s}{s}", .{ strings.ai_approve_prefix, view.tool, strings.ai_approve_suffix }) catch view.tool;
     _ = titlebar.renderTextLimited(title, x + 16, y + lay.title_y, mixColor(fg, accent, 0.20), w - 32);
-    _ = titlebar.renderTextLimited("Enter/Y to run, Esc/N to deny", x + 16, y + lay.hint_y, mixColor(bg, fg, 0.62), w - 32);
+    _ = titlebar.renderTextLimited(strings.ai_approve_hint, x + 16, y + lay.hint_y, mixColor(bg, fg, 0.62), w - 32);
     if (lay.has_reason) {
         _ = titlebar.renderTextLimited(view.reason, x + 16, y + lay.reason_y, mixColor(bg, fg, 0.70), w - 32);
     }
@@ -2479,10 +2485,14 @@ fn toolSectionMeta(text: []const u8) ToolSectionMeta {
         const rest = std.mem.trimLeft(u8, trimmed["running ".len..], " \t");
         var end: usize = 0;
         while (end < rest.len and rest[end] != ' ' and rest[end] != '\t' and rest[end] != '\r' and rest[end] != '\n') : (end += 1) {}
+        const name = rest[0..end];
+        const args = rest[end..];
+        // An ask_user row previews its question, not the raw JSON arguments.
+        const question = if (std.mem.eql(u8, name, question_answer.TOOL_NAME)) question_answer.callQuestion(args) else null;
         return .{
-            .title = "Tool call",
-            .name = if (end > 0) rest[0..end] else "",
-            .preview = if (end < rest.len) previewLine(rest[end..]) else "",
+            .title = i18n.s().ai_tool_call,
+            .name = name,
+            .preview = previewLine(question orelse args),
         };
     }
     if (std.mem.startsWith(u8, trimmed, "exit_code=") or
@@ -2491,9 +2501,9 @@ fn toolSectionMeta(text: []const u8) ToolSectionMeta {
         std.mem.startsWith(u8, trimmed, "stderr:") or
         std.mem.startsWith(u8, trimmed, "DENIED"))
     {
-        return .{ .title = "Tool result", .preview = previewLine(trimmed) };
+        return .{ .title = i18n.s().ai_tool_result, .preview = previewLine(trimmed) };
     }
-    return .{ .title = "Tool update", .preview = previewLine(trimmed) };
+    return .{ .title = i18n.s().ai_tool_update, .preview = previewLine(trimmed) };
 }
 
 fn previewLine(text: []const u8) []const u8 {

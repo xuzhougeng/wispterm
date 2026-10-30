@@ -43,6 +43,7 @@ const table_hscroll = @import("table_hscroll.zig");
 const question_hscroll = @import("question_hscroll.zig");
 const question_select = @import("question_select.zig");
 const session_question_select = @import("session_question_select.zig");
+const turn_stats = @import("turn_stats.zig");
 const secret_redact = @import("../../credential/redact.zig");
 
 pub const AgentSettings = ai_chat_types.AgentSettings;
@@ -128,6 +129,9 @@ pub const Message = struct {
     /// Synthetic "上文摘要" card produced by a model switch. Rendered like a
     /// collapsible tool card but sent to the model as a normal user message.
     is_context_summary: bool = false,
+    /// Answered `ask_user` summary card (session_question_answer.zig). Stays
+    /// out of activity groups so the choice is visible without expanding.
+    is_question_answer: bool = false,
     reasoning_collapsed: bool = true,
     reasoning_auto_expand: bool = false,
     /// Wall-clock time this message was appended (milliTimestamp). Set at
@@ -143,7 +147,7 @@ pub const Message = struct {
     /// tool messages: a real tool card that is not a context summary and not
     /// live (auto-expanded messages render individually while a request runs).
     pub fn groupableTool(self: Message) bool {
-        return self.role == .tool and !self.is_context_summary and !self.content_auto_expand;
+        return self.role == .tool and !self.is_context_summary and !self.is_question_answer and !self.content_auto_expand;
     }
 
     pub fn deinit(self: Message, allocator: std.mem.Allocator) void {
@@ -4940,21 +4944,9 @@ pub const Session = struct {
         self.setStatusLocked(value);
     }
 
-    fn setCompletionStatusLocked(self: *Session, started_ms: i64, usage: ?ApiUsage) void {
-        if (started_ms <= 0 and usage == null) {
-            self.setStatusLocked("Ready");
-            return;
-        }
-
+    fn setCompletionStatusLocked(self: *Session, timing: turn_stats.Timing, usage: ?ApiUsage) void {
         var buf: [32]u8 = undefined;
-        const elapsed_ms: i64 = if (started_ms > 0) @max(@as(i64, 0), std.time.milliTimestamp() - started_ms) else 0;
-        const secs: i64 = @divTrunc(elapsed_ms, 1000);
-        const tenths: i64 = @divTrunc(@mod(elapsed_ms, 1000), 100);
-        const text = if (started_ms > 0)
-            std.fmt.bufPrint(&buf, "Done in {d}.{d}s", .{ secs, tenths }) catch "Ready"
-        else
-            "Done";
-        self.setStatusLocked(text);
+        self.setStatusLocked(turn_stats.formatDoneStatus(&buf, timing, usage != null));
     }
 
     pub fn setStatusLocked(self: *Session, value: []const u8) void {
@@ -5005,60 +4997,10 @@ fn composeSystemPromptWithMemory(
     return std.fmt.allocPrint(allocator, "{s}\n\n{s}", .{ base, block });
 }
 
-fn tokenRateTenths(completion_tokens: u64, elapsed_ms: i64) ?u64 {
-    if (completion_tokens == 0 or elapsed_ms <= 0) return null;
-    const elapsed: u128 = @intCast(elapsed_ms);
-    const rate = (@as(u128, completion_tokens) * 10_000 + elapsed / 2) / elapsed;
-    return @intCast(@min(rate, std.math.maxInt(u64)));
-}
-
-fn allocUsageFooter(allocator: std.mem.Allocator, started_ms: i64, first_token_ms: i64, usage: ?ApiUsage) !?[]u8 {
-    return allocUsageFooterAt(allocator, started_ms, first_token_ms, std.time.milliTimestamp(), usage);
-}
-
-fn allocUsageFooterAt(allocator: std.mem.Allocator, started_ms: i64, first_token_ms: i64, finished_ms: i64, usage: ?ApiUsage) !?[]u8 {
+fn allocUsageFooter(allocator: std.mem.Allocator, timing: turn_stats.Timing, usage: ?ApiUsage) !?[]u8 {
     const u = usage orelse return null;
-    var buf: [224]u8 = undefined;
-    const text = if (started_ms > 0) blk: {
-        const elapsed_ms: i64 = @max(@as(i64, 0), finished_ms - started_ms);
-        const secs: i64 = @divTrunc(elapsed_ms, 1000);
-        const tenths: i64 = @divTrunc(@mod(elapsed_ms, 1000), 100);
-        const first_elapsed_ms: ?i64 = if (first_token_ms > 0) @max(@as(i64, 0), first_token_ms - started_ms) else null;
-        const rate_tenths = tokenRateTenths(u.completion_tokens, elapsed_ms);
-        if (first_elapsed_ms) |first_ms| {
-            const first_secs: i64 = @divTrunc(first_ms, 1000);
-            const first_tenths: i64 = @divTrunc(@mod(first_ms, 1000), 100);
-            if (rate_tenths) |rate| {
-                break :blk std.fmt.bufPrint(
-                    &buf,
-                    "time {d}.{d}s | first {d}.{d}s | {d}.{d} token/s | total {d} | input {d} | output {d} | cache {d}/{d}",
-                    .{ secs, tenths, first_secs, first_tenths, rate / 10, rate % 10, u.total_tokens, u.prompt_tokens, u.completion_tokens, u.prompt_cache_hit_tokens, u.prompt_cache_miss_tokens },
-                ) catch "usage unavailable";
-            }
-            break :blk std.fmt.bufPrint(
-                &buf,
-                "time {d}.{d}s | first {d}.{d}s | total {d} | input {d} | output {d} | cache {d}/{d}",
-                .{ secs, tenths, first_secs, first_tenths, u.total_tokens, u.prompt_tokens, u.completion_tokens, u.prompt_cache_hit_tokens, u.prompt_cache_miss_tokens },
-            ) catch "usage unavailable";
-        }
-        if (rate_tenths) |rate| {
-            break :blk std.fmt.bufPrint(
-                &buf,
-                "time {d}.{d}s | {d}.{d} token/s | total {d} | input {d} | output {d} | cache {d}/{d}",
-                .{ secs, tenths, rate / 10, rate % 10, u.total_tokens, u.prompt_tokens, u.completion_tokens, u.prompt_cache_hit_tokens, u.prompt_cache_miss_tokens },
-            ) catch "usage unavailable";
-        }
-        break :blk std.fmt.bufPrint(
-            &buf,
-            "time {d}.{d}s | total {d} | input {d} | output {d} | cache {d}/{d}",
-            .{ secs, tenths, u.total_tokens, u.prompt_tokens, u.completion_tokens, u.prompt_cache_hit_tokens, u.prompt_cache_miss_tokens },
-        ) catch "usage unavailable";
-    } else std.fmt.bufPrint(
-        &buf,
-        "total {d} | input {d} | output {d} | cache {d}/{d}",
-        .{ u.total_tokens, u.prompt_tokens, u.completion_tokens, u.prompt_cache_hit_tokens, u.prompt_cache_miss_tokens },
-    ) catch "usage unavailable";
-    return try allocator.dupe(u8, text);
+    var buf: [turn_stats.FOOTER_MAX]u8 = undefined;
+    return try allocator.dupe(u8, turn_stats.formatFooter(&buf, timing, u));
 }
 
 const VisualCursor = ai_chat_input_text.VisualCursor;
@@ -5565,7 +5507,8 @@ pub fn appendAssistantResult(session: *Session, result: ApiResult, started_ms: i
         session.setStatusLocked("Out of memory");
         return;
     };
-    var usage_footer = allocUsageFooter(allocator, started_ms, 0, result.usage) catch null;
+    const timing = turn_stats.Timing{ .started_ms = started_ms, .finished_ms = std.time.milliTimestamp(), .user_wait_ms = result.user_wait_ms };
+    var usage_footer = allocUsageFooter(allocator, timing, result.usage) catch null;
     var reasoning_copy: ?[]u8 = null;
     if (result.reasoning) |reasoning| {
         reasoning_copy = allocator.dupe(u8, reasoning) catch null;
@@ -5593,7 +5536,7 @@ pub fn appendAssistantResult(session: *Session, result: ApiResult, started_ms: i
     session.distill_inflight = false;
     session.collapseAutoExpandedDetailsLocked();
     session.scroll_px = 1_000_000;
-    session.setCompletionStatusLocked(started_ms, result.usage);
+    session.setCompletionStatusLocked(timing, result.usage);
     session.maybeAppendDistillSuggestionLocked();
     history_change = session.captureHistoryChangeLocked();
 }
@@ -5688,6 +5631,12 @@ pub fn failDistillRequest(session: *Session, err: anyerror) void {
 }
 
 pub fn appendProgressMessage(session: *Session, text: []const u8) !void {
+    return appendProgressMessageCollapsed(session, text, false);
+}
+
+/// Live progress row; `collapsed` shows only its header row (the ask_user
+/// call, whose question card already shows the arguments).
+pub fn appendProgressMessageCollapsed(session: *Session, text: []const u8, collapsed: bool) !void {
     defer session.markUiDirty();
     if (sessionCancelled(session)) return error.Canceled;
     const allocator = session.allocator;
@@ -5702,7 +5651,7 @@ pub fn appendProgressMessage(session: *Session, text: []const u8) !void {
         .content = content,
         .reasoning = null,
         .persist_to_history = false,
-        .content_collapsed = false,
+        .content_collapsed = collapsed,
         .content_auto_expand = true,
         .ts_ms = std.time.milliTimestamp(),
     });
@@ -5889,25 +5838,26 @@ pub fn finishAssistantStream(session: *Session, message_idx: usize, started_ms: 
         session.setStatusLocked("Stopped");
         return;
     }
-    history_change = sealStreamMessageLocked(session, message_idx, started_ms, first_token_ms, usage);
+    const timing = turn_stats.Timing{ .started_ms = started_ms, .finished_ms = std.time.milliTimestamp(), .first_token_ms = first_token_ms };
+    history_change = sealStreamMessageLocked(session, message_idx, timing, usage);
     session.request_inflight = false;
     session.distill_inflight = false;
     session.collapseAutoExpandedDetailsLocked();
     session.scroll_px = 1_000_000;
-    session.setCompletionStatusLocked(started_ms, usage);
+    session.setCompletionStatusLocked(timing, usage);
     session.maybeAppendDistillSuggestionLocked();
 }
 
 /// Seal a stream bubble's message in place: fill an all-empty message with
 /// "No response", attach the usage footer, and capture the history change.
 /// Message-only — request state and status stay with the caller.
-fn sealStreamMessageLocked(session: *Session, message_idx: usize, started_ms: i64, first_token_ms: i64, usage: ?ApiUsage) ?PendingHistoryChange {
+fn sealStreamMessageLocked(session: *Session, message_idx: usize, timing: turn_stats.Timing, usage: ?ApiUsage) ?PendingHistoryChange {
     if (message_idx >= session.messages.items.len) return null;
     const msg = &session.messages.items[message_idx];
     if (msg.content.len == 0 and msg.reasoning == null) {
         appendOwnedBytes(session.allocator, &msg.content, &msg.content_capacity, "No response") catch {};
     }
-    if (allocUsageFooter(session.allocator, started_ms, first_token_ms, usage) catch null) |footer| {
+    if (allocUsageFooter(session.allocator, timing, usage) catch null) |footer| {
         if (msg.usage_footer) |old_footer| session.allocator.free(old_footer);
         msg.usage_footer = footer;
     }
@@ -5927,7 +5877,7 @@ pub fn sealCancelledAssistantStream(session: *Session, message_idx: usize, start
         session.notifyHistoryChange(history_change);
     }
     if (session.closing.load(.acquire)) return;
-    history_change = sealStreamMessageLocked(session, message_idx, started_ms, 0, usage);
+    history_change = sealStreamMessageLocked(session, message_idx, .{ .started_ms = started_ms, .finished_ms = std.time.milliTimestamp() }, usage);
 }
 
 pub fn failAssistantStream(session: *Session, message_idx: ?usize, text: []const u8) void {
@@ -7420,28 +7370,9 @@ test "ai chat parses Responses API output text tool calls and usage" {
     try std.testing.expectEqual(@as(u64, 28), result.usage.?.total_tokens);
 }
 
-test "ai chat usage footer includes time token and cache fields" {
-    const footer = try allocUsageFooterAt(std.testing.allocator, 1000, 1800, 3300, .{
-        .prompt_tokens = 12,
-        .completion_tokens = 34,
-        .prompt_cache_hit_tokens = 5,
-        .prompt_cache_miss_tokens = 7,
-        .total_tokens = 46,
-    });
-    defer if (footer) |text| std.testing.allocator.free(text);
-    try std.testing.expect(footer != null);
-    try std.testing.expect(std.mem.indexOf(u8, footer.?, "time 2.") != null);
-    try std.testing.expect(std.mem.indexOf(u8, footer.?, "first 0.8s") != null);
-    try std.testing.expect(std.mem.indexOf(u8, footer.?, "14.8 token/s") != null);
-    try std.testing.expect(std.mem.indexOf(u8, footer.?, "total 46") != null);
-    try std.testing.expect(std.mem.indexOf(u8, footer.?, "input 12") != null);
-    try std.testing.expect(std.mem.indexOf(u8, footer.?, "output 34") != null);
-    try std.testing.expect(std.mem.indexOf(u8, footer.?, "cache 5/7") != null);
-}
-
 test "ai chat completion status stays compact while usage is message footer" {
     var session = Session{ .allocator = std.testing.allocator };
-    session.setCompletionStatusLocked(std.time.milliTimestamp() - 2300, .{
+    session.setCompletionStatusLocked(.{ .started_ms = std.time.milliTimestamp() - 2300, .finished_ms = std.time.milliTimestamp() }, .{
         .prompt_tokens = 12,
         .completion_tokens = 34,
         .total_tokens = 46,
