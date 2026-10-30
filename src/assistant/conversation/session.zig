@@ -41,6 +41,8 @@ const session_effort = @import("session_effort.zig");
 pub const EffortLevels = @import("effort_levels.zig").EffortLevels;
 const table_hscroll = @import("table_hscroll.zig");
 const question_hscroll = @import("question_hscroll.zig");
+const question_select = @import("question_select.zig");
+const session_question_select = @import("session_question_select.zig");
 const secret_redact = @import("../../credential/redact.zig");
 
 pub const AgentSettings = ai_chat_types.AgentSettings;
@@ -1179,6 +1181,7 @@ pub const Session = struct {
     question_answer_is_custom: bool = false,
     question_selected_index: usize = 0,
     question_scroll: question_hscroll.State = .{}, // protected by question_mutex
+    question_select: question_select.State = .{}, // UI drag selection; protected by mutex
     /// Copilot mode: when true, requests pre-target the bound surface and exec
     /// tools fall back to it when the model omits surface_id (Issue #98).
     copilot: bool = false,
@@ -2233,6 +2236,7 @@ pub const Session = struct {
         self.input_select_all = self.composer.len > 0;
         self.transcript_select_all = !self.input_select_all and self.messages.items.len > 0;
         self.transcript_selection = null;
+        self.question_select.clear();
     }
 
     pub fn clearSelection(self: *Session) void {
@@ -2246,7 +2250,8 @@ pub const Session = struct {
     pub fn hasSelection(self: *Session) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
-        return self.input_select_all or self.transcript_select_all or self.transcript_selection != null;
+        return self.input_select_all or self.transcript_select_all or self.transcript_selection != null or
+            session_question_select.hasSelectionLocked(self);
     }
 
     pub fn beginTranscriptSelection(self: *Session, message_index: usize, byte_offset: usize) void {
@@ -2267,6 +2272,7 @@ pub const Session = struct {
         const offset = byte_offset;
         self.input_select_all = false;
         self.transcript_select_all = false;
+        self.question_select.clear();
         self.transcript_selection = .{
             .message_index = message_index,
             .anchor = offset,
@@ -2303,6 +2309,7 @@ pub const Session = struct {
         if (self.input_select_all and self.composer.len > 0) {
             return allocator.dupe(u8, self.input());
         }
+        if (try session_question_select.allocTextLocked(self, allocator)) |selected| return selected;
         if (self.allocTranscriptSelectionTextLocked(allocator)) |selected| {
             return selected;
         } else |err| switch (err) {
@@ -4043,10 +4050,11 @@ pub const Session = struct {
         return if (rows > visible_rows) rows - visible_rows else 0;
     }
 
-    fn clearSelectionLocked(self: *Session) void {
+    pub fn clearSelectionLocked(self: *Session) void {
         self.input_select_all = false;
         self.transcript_select_all = false;
         self.transcript_selection = null;
+        self.question_select.clear();
     }
 
     pub fn clearSubmittedInputLocked(self: *Session) void {

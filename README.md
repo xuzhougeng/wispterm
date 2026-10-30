@@ -211,6 +211,7 @@ sessions hide the readout.
 | Select terminal text while tmux mouse mode is enabled | **Shift-drag** | **Shift-drag** |
 | Select part of an AI answer | Drag AI answer text | Drag AI answer text |
 | Select and copy part of an AI answer | Shift-drag AI answer text | Shift-drag AI answer text |
+| Copy part of an Agent question or option (a plain click still picks the option) | Drag question card text, then **Ctrl+C** (or Shift-drag) | Drag question card text, then **Cmd+C** (or Shift-drag) |
 | Select AI Chat input; select transcript when input is empty | **Ctrl+A** in AI Chat | **Cmd+A** in AI Chat |
 | Copy AI Chat selection or full transcript | **Ctrl+C** in AI Chat | **Cmd+C** in AI Chat |
 | Delete the selected saved Agent session | **D** / **Delete** in Agent History | **D** / **Delete** in Agent History |

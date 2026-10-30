@@ -10,6 +10,7 @@ const scrollbar_model = @import("../../assistant/conversation/scrollbar_model.zi
 const md = @import("../../markdown_text.zig");
 const table_hscroll = @import("../../assistant/conversation/table_hscroll.zig");
 const question_hscroll = @import("../../assistant/conversation/question_hscroll.zig");
+const question_select = @import("../../assistant/conversation/question_select.zig");
 const detail_wrap = @import("../../composer_detail_wrap.zig");
 
 // Transcript scrollbar interaction state (one mouse). Set by input.zig,
@@ -153,8 +154,10 @@ pub const HitTarget = union(enum) {
     /// cards between one summary row and individual cards.
     toggle_tool_group: usize,
     toggle_reasoning: usize,
-    /// Click on the Nth (zero-based) visible option of a pending ask_user card.
-    question_option: usize,
+    /// Press on the question or a visible option row of a pending ask_user
+    /// card. It starts a text selection; a release without a drag on an
+    /// option row chooses that option.
+    question_text: QuestionTextHit,
     question_scrollbar: QuestionScrollbarHit,
 };
 
@@ -168,6 +171,13 @@ pub const CopySpan = struct {
 /// extra options are still answerable by typing the option number in the
 /// composer (consistent with the WeChat digit reply).
 const MAX_VISIBLE_QUESTION_OPTIONS: usize = 6;
+
+pub const QuestionTextHit = struct {
+    generation: u64,
+    point: question_select.Point,
+    /// Visible option under the press, chosen by a plain click.
+    option: ?usize,
+};
 
 pub const TranscriptTextHit = struct {
     message_index: usize,
@@ -423,7 +433,9 @@ pub fn render(
         );
         renderInputScrollbar(layout, total_rows, visible_rows, first_row);
     }
-    if (!session.request_inflight and AppWindow.g_cursor_blink_visible) {
+    // The composer stays editable while a request runs: typing queues the next
+    // prompt or answers a pending ask_user question, so keep the caret.
+    if (AppWindow.g_cursor_blink_visible) {
         const cursor = inputCursorRect(input_text, session.inputCursorLocked(), layout.text_x, layout.text_w);
         const visible_rows = inputVisibleRowsForField(layout.field_h);
         const total_rows = countWrappedLines(input_text, layout.text_w);
@@ -591,24 +603,17 @@ pub fn interactionHitTest(
     const px: f32 = @floatCast(xpos);
     const py: f32 = @floatCast(ypos);
 
-    // Clicks on a visible option row of the question card resolve the question.
+    // Presses on the question card's text start a selection (option rows
+    // still answer on a plain click, see question_select.State.finish).
     if (question) |qv| {
-        const cell_h = font.g_titlebar_cell_height;
         const card_y = input_h + APPROVAL_GAP; // y-up bottom edge, matches the renderer
-        const lay = questionCardLayout(qv, content_w);
         if (questionScrollbarGeometry(qv, content_x, card_y, content_w, window_height)) |geo| {
             if (geo.hit(px, py)) |grab_offset| return .{ .question_scrollbar = .{
                 .drag_offset_px = grab_offset,
                 .generation = qv.generation,
             } };
         }
-        var k: usize = 0;
-        while (k < lay.visible_options) : (k += 1) {
-            const baseline = card_y + lay.first_option_y - @as(f32, @floatFromInt(k)) * lay.option_pitch;
-            const top_px = window_height - baseline - cell_h;
-            const rect = Rect{ .x = content_x, .top_px = top_px - 2, .w = content_w, .h = cell_h + 4 };
-            if (pointInRect(px, py, rect)) return .{ .question_option = k };
-        }
+        if (questionTextAt(qv, content_x, card_y, content_w, window_height, px, py, false)) |hit| return .{ .question_text = hit };
     }
 
     const content_h = transcriptContentHeight(session.messages.items, content_w);
@@ -2232,16 +2237,74 @@ pub const QuestionScrollbarDrag = struct {
     clip_w: f32,
 };
 
+const QUESTION_MARK = "❓ ";
+
 fn questionContentWidth(view: ai_chat.QuestionView) f32 {
-    var width = titlebarTextWidth("❓ ") + titlebarTextWidth(view.question);
-    for (view.options[0..@min(view.options.len, MAX_VISIBLE_QUESTION_OPTIONS)], 0..) |opt, k| {
-        var number_buf: [32]u8 = undefined;
-        const number = std.fmt.bufPrint(&number_buf, "{d}. ", .{k + 1}) catch unreachable;
-        var row_w = titlebarTextWidth(number) + titlebarTextWidth(opt.label);
-        if (opt.description.len > 0) row_w += titlebarTextWidth(" — ") + titlebarTextWidth(opt.description);
+    var width: f32 = 0;
+    for (0..1 + @min(view.options.len, MAX_VISIBLE_QUESTION_OPTIONS)) |index| {
+        var number_buf: [24]u8 = undefined;
+        const row = question_select.row(view, index, &number_buf);
+        var row_w: f32 = if (index == 0) titlebarTextWidth(QUESTION_MARK) else 0;
+        for (row.parts) |part| row_w += titlebarTextWidth(part);
         width = @max(width, row_w);
     }
     return width;
+}
+
+/// y-up bottom edge of card row `index` (0 = question, k + 1 = option k).
+fn questionRowY(lay: ai_chat_layout.QuestionLayout, card_y: f32, index: usize) f32 {
+    if (index == 0) return card_y + lay.title_y;
+    return card_y + lay.first_option_y - @as(f32, @floatFromInt(index - 1)) * lay.option_pitch;
+}
+
+/// x of row `index`'s first selectable glyph at the current pan offset.
+fn questionRowX(view: ai_chat.QuestionView, card_x: f32, card_w: f32, index: usize) f32 {
+    const clip_w = card_w - question_hscroll.TEXT_PAD * 2;
+    const offset = if (clip_w > 0) table_hscroll.clampOffset(view.scroll_offset, questionContentWidth(view), clip_w) else 0;
+    const text_x = card_x + question_hscroll.TEXT_PAD - offset;
+    return if (index == 0) text_x + titlebarTextWidth(QUESTION_MARK) else text_x;
+}
+
+/// Question-card text under the pointer. A press must land on a row; a drag
+/// (`clamp`) snaps to the nearest visible row so it can leave the card.
+fn questionTextAt(view: ai_chat.QuestionView, card_x: f32, card_y: f32, card_w: f32, window_h: f32, px: f32, py: f32, clamp: bool) ?QuestionTextHit {
+    const lay = questionCardLayout(view, card_w);
+    const cell_h = font.g_titlebar_cell_height;
+    var found: ?usize = null;
+    var best: f32 = std.math.inf(f32);
+    for (0..1 + lay.visible_options) |index| {
+        const top_px = window_h - questionRowY(lay, card_y, index) - cell_h;
+        if (clamp) {
+            const distance = @abs(py - (top_px + cell_h / 2));
+            if (distance < best) {
+                best = distance;
+                found = index;
+            }
+        } else if (pointInRect(px, py, .{ .x = card_x, .top_px = top_px - 2, .w = card_w, .h = cell_h + 4 })) {
+            found = index;
+            break;
+        }
+    }
+    const index = found orelse return null;
+    var number_buf: [24]u8 = undefined;
+    const row = question_select.row(view, index, &number_buf);
+    return .{
+        .generation = view.generation,
+        .point = .{ .row = index, .byte = question_select.byteAtX(row, px - questionRowX(view, card_x, card_w, index), &glyphAdvance) },
+        .option = if (index == 0) null else index - 1,
+    };
+}
+
+/// Question-card point for a selection drag, clamped to the nearest row.
+pub fn questionSelectionDragAt(session: *ai_chat.Session, xpos: f64, ypos: f64, window_h: f32, chat_x: f32, chat_w: f32) ?QuestionTextHit {
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    if (session.approvalView() != null) return null;
+    const view = session.questionView() orelse return null;
+    const x = @round(chat_x);
+    const w = @round(@max(1, chat_w));
+    const input_h = inputLayout(x, w, session.input()).input_h;
+    return questionTextAt(view, x + LINE_PAD_X, input_h + APPROVAL_GAP, w - LINE_PAD_X * 2, window_h, @floatCast(xpos), @floatCast(ypos), true);
 }
 
 fn questionCardLayout(view: ai_chat.QuestionView, w: f32) ai_chat_layout.QuestionLayout {
@@ -2316,20 +2379,25 @@ fn renderQuestionCard(session: *ai_chat.Session, view: ai_chat.QuestionView, x: 
     if (clip_w > 0) {
         const offset = table_hscroll.clampOffset(view.scroll_offset, questionContentWidth(view), clip_w);
         _ = session.scrollQuestionTo(view.generation, offset, questionContentWidth(view), clip_w);
-        const text_x = x + question_hscroll.TEXT_PAD - offset;
+        const title_color = mixColor(fg, accent, 0.20);
+        const selection_color = mixColor(bg, accent, 0.44);
+        const span = session.question_select.span(view.generation);
         // Limit both edges, including negative glyph positions while panning.
         ui_pipeline.beginClip(.{ .x = x + question_hscroll.TEXT_PAD, .y = y, .w = clip_w, .h = h });
-        const question_x = renderQuestionText("❓ ", text_x, y + lay.title_y, mixColor(fg, accent, 0.20));
-        _ = renderQuestionText(view.question, question_x, y + lay.title_y, mixColor(fg, accent, 0.20));
-        for (view.options[0..lay.visible_options], 0..) |opt, k| {
-            const row_y = y + lay.first_option_y - @as(f32, @floatFromInt(k)) * lay.option_pitch;
-            var number_buf: [32]u8 = undefined;
-            const number = std.fmt.bufPrint(&number_buf, "{d}. ", .{k + 1}) catch unreachable;
-            var row_x = renderQuestionText(number, text_x, row_y, fg);
-            row_x = renderQuestionText(opt.label, row_x, row_y, fg);
-            if (opt.description.len > 0) {
-                row_x = renderQuestionText(" — ", row_x, row_y, fg);
-                _ = renderQuestionText(opt.description, row_x, row_y, fg);
+        _ = renderQuestionText(QUESTION_MARK, x + question_hscroll.TEXT_PAD - offset, y + lay.title_y, title_color);
+        for (0..1 + lay.visible_options) |index| {
+            const row_y = questionRowY(lay, y, index);
+            const row_x = questionRowX(view, x, w, index);
+            var number_buf: [24]u8 = undefined;
+            const row = question_select.row(view, index, &number_buf);
+            if (span) |s| if (question_select.rowRange(s, index, row.len())) |range| {
+                const sel_x = question_select.xAtByte(row, range.start, &glyphAdvance);
+                const sel_w = question_select.xAtByte(row, range.end, &glyphAdvance) - sel_x;
+                ui_pipeline.fillQuad(row_x + sel_x, row_y - 1, @max(1.0, sel_w), cell_h + 2, selection_color);
+            };
+            var pen = row_x;
+            for (row.parts) |part| {
+                if (part.len > 0) pen = renderQuestionText(part, pen, row_y, if (index == 0) title_color else fg);
             }
         }
         ui_pipeline.endClip();
@@ -3371,8 +3439,42 @@ test "question scrollbar hit does not select an option and panned rows remain cl
     const lay = questionCardLayout(view, card_w);
     const option_y = 900 - card_y - lay.first_option_y - font.g_titlebar_cell_height / 2;
     const option = interactionHitTest(session, card_x + 30, option_y, 500, 900, 40, chat_x, chat_w).?;
-    try std.testing.expect(option == .question_option);
-    try std.testing.expectEqual(@as(usize, 0), option.question_option);
+    try std.testing.expect(option == .question_text);
+    try std.testing.expectEqual(@as(?usize, 0), option.question_text.option);
+}
+
+test "question card presses land on the painted option text and drags clamp to rows" {
+    var session = try ai_chat.Session.init(std.testing.allocator, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer session.deinit();
+    session.question_text = try std.testing.allocator.dupe(u8, "Choose");
+    session.question_options = try std.testing.allocator.alloc(ai_chat.QuestionOption, 2);
+    session.question_options[0] = .{ .label = try std.testing.allocator.dupe(u8, "alpha"), .description = try std.testing.allocator.dupe(u8, "first") };
+    session.question_options[1] = .{ .label = try std.testing.allocator.dupe(u8, "beta"), .description = "" };
+    session.question_pending = true;
+    const view = session.questionView().?;
+    const chat_x: f32 = 20;
+    const chat_w: f32 = 440;
+    const card_x = chat_x + LINE_PAD_X;
+    const card_w = chat_w - LINE_PAD_X * 2;
+    const card_y = inputLayout(chat_x, chat_w, session.input()).input_h + APPROVAL_GAP;
+    const lay = questionCardLayout(view, card_w);
+    const window_h: f32 = 900;
+
+    // Just right of "1. " lands at the start of "alpha" on option 0's row.
+    var number_buf: [24]u8 = undefined;
+    const row = question_select.row(view, 1, &number_buf);
+    const px = questionRowX(view, card_x, card_w, 1) + question_select.xAtByte(row, 3, &glyphAdvance) + 0.5;
+    const py = window_h - questionRowY(lay, card_y, 1) - font.g_titlebar_cell_height / 2;
+    const hit = interactionHitTest(session, px, py, 500, window_h, 40, chat_x, chat_w).?;
+    try std.testing.expect(hit == .question_text);
+    try std.testing.expectEqual(question_select.Point{ .row = 1, .byte = 3 }, hit.question_text.point);
+    try std.testing.expectEqual(@as(?usize, 0), hit.question_text.option);
+
+    // A drag above the card reaches the question; below it, the last option.
+    const above = questionSelectionDragAt(session, px, 0, window_h, chat_x, chat_w).?;
+    try std.testing.expectEqual(@as(usize, 0), above.point.row);
+    const below = questionSelectionDragAt(session, px, window_h, window_h, chat_x, chat_w).?;
+    try std.testing.expectEqual(@as(usize, 2), below.point.row);
 }
 
 test "markdown table wrapping height and selection share cell geometry" {

@@ -24,9 +24,10 @@ const Frozen = struct {
 
 const monoliths = [_]Frozen{
     // Ceilings re-tightened to the current actual after the settings-tab and
-    // `/btw` adoption passes grouped input, conversation, and overlay state.
+    // `/btw` adoption passes grouped input, conversation, and overlay state;
+    // input.zig then folded its AI chat text-selection drag into one struct.
     .{ .name = "AppWindow.zig", .source = @embedFile("../AppWindow.zig"), .ceiling = 66 },
-    .{ .name = "input.zig", .source = @embedFile("../input.zig"), .ceiling = 44 },
+    .{ .name = "input.zig", .source = @embedFile("../input.zig"), .ceiling = 41 },
     .{ .name = "renderer/overlays.zig", .source = @embedFile("../renderer/overlays.zig"), .ceiling = 23 },
     .{ .name = "assistant/conversation/session.zig", .source = @embedFile("../assistant/conversation/session.zig"), .ceiling = 13 },
 };

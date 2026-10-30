@@ -403,6 +403,7 @@ test {
     _ = @import("assistant/conversation/prompt_queue.zig");
     _ = @import("assistant/conversation/table_hscroll.zig");
     _ = @import("assistant/conversation/question_hscroll.zig");
+    _ = @import("assistant/conversation/question_select.zig");
     _ = @import("assistant/conversation/composer.zig");
     _ = @import("composer_detail_wrap.zig");
     _ = @import("assistant/conversation/presentation.zig");
