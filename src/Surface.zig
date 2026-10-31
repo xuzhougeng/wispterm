@@ -453,6 +453,11 @@ agent_detection: agent_detector.Detection = .{},
 /// output epoch (see `markOutputDirty`).
 agent_screen: screen_detect.SurfaceState = .{},
 
+/// Packed mirror of `agent_detection` for readers on other threads (the ctl
+/// server's `agent-state`, the Copilot tool worker). Writers of
+/// `agent_detection` call `publishAgentDetection` afterwards.
+agent_detection_shared: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+
 /// Last agent state seen by the main loop's notification poll (edge detection;
 /// UI thread only — see AppWindow.pollAgentMarker).
 agent_notify_prev_state: agent_detector.State = .none,
@@ -618,6 +623,7 @@ fn finishInit(
     surface.initial_cwd_path_len = 0;
     surface.agent_detection = .{};
     surface.agent_screen = .{};
+    surface.agent_detection_shared = std.atomic.Value(u32).init(0);
     surface.captureInitialCwd(cwd);
 
     // Init bell state
@@ -1356,8 +1362,19 @@ pub fn noteAgentCommand(self: *Surface, app: agent_detector.App) void {
     }
     if (!self.agent_osc_active and self.agent_detection.app == .none) {
         self.agent_detection.app = app;
+        self.publishAgentDetection();
     }
     self.agent_screen.seed(app);
+}
+
+/// Refresh the cross-thread mirror after `agent_detection` changed.
+pub fn publishAgentDetection(self: *Surface) void {
+    self.agent_detection_shared.store(self.agent_detection.pack(), .release);
+}
+
+/// `agent_detection` as last published, readable from any thread.
+pub fn agentDetectionShared(self: *const Surface) agent_detector.Detection {
+    return agent_detector.Detection.unpack(self.agent_detection_shared.load(.acquire));
 }
 
 /// Queue a command into the existing PTY mailbox. This is used only during
@@ -1836,6 +1853,7 @@ fn handleWispTermAgentOsc(self: *Surface) void {
         self.agent_capabilities = info.capabilities;
         self.agent_session_path_len = @min(info.session_path.len, self.agent_session_path_buf.len);
         self.agent_osc_active = true;
+        self.publishAgentDetection();
     }
 }
 

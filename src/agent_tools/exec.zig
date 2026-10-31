@@ -620,6 +620,13 @@ fn waitForAgentAppReplResult(ctx: *const ToolContext, host: ToolHost, surface: T
     defer ctx.allocator.free(last_text);
     var last_change_ms = started;
 
+    // Live agent state (hook marker or screen detection) is the authority when
+    // the host can read it: it keeps us waiting through long quiet "thinking"
+    // stretches that look settled, returns the moment the agent stops for a
+    // decision, and finishes on the agent's own idle instead of a guess.
+    var live: agent_detector.Detection = surface.liveDetection();
+    var saw_running = live.state == .running;
+
     while (std.time.milliTimestamp() < deadline) {
         if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
         std.Thread.sleep(150 * std.time.ns_per_ms);
@@ -634,9 +641,46 @@ fn waitForAgentAppReplResult(ctx: *const ToolContext, host: ToolHost, surface: T
             last_change_ms = now;
         }
 
-        // Settle on a screen that has been stable for quiet_ms (after a min-wait
-        // floor) and shows no active busy marker. The busy-marker gate keeps us
-        // waiting while Codex/Claude Code is still working.
+        if (host.surfaceAgentState) |read_state| {
+            if (read_state(host.ctx, surface.id, surface.ptr)) |det| live = det;
+        }
+        if (live.app != .none and live.state != .none) {
+            switch (live.state) {
+                .waiting_approval, .needs_input => return allocAgentAppReplResult(
+                    ctx.allocator,
+                    ctx.settings,
+                    repl,
+                    live.app,
+                    live.state,
+                    live.confidence,
+                    "stopped for a decision (approval or question); answer it with terminal_answer_prompt or terminal_repl_exec control keys",
+                    last_text,
+                ),
+                .running => {
+                    saw_running = true;
+                    continue;
+                },
+                .idle, .done, .halted, .failed => if (saw_running or now - started >= min_wait_ms) {
+                    return allocAgentAppReplResult(
+                        ctx.allocator,
+                        ctx.settings,
+                        repl,
+                        live.app,
+                        live.state,
+                        live.confidence,
+                        "reports it is no longer working",
+                        last_text,
+                    );
+                },
+                .none => {},
+            }
+            continue;
+        }
+
+        // No live state: settle on a screen that has been stable for quiet_ms
+        // (after a min-wait floor) and shows no active busy marker. The
+        // busy-marker gate keeps us waiting while Codex/Claude Code is still
+        // working.
         const settled = now - started >= min_wait_ms and now - last_change_ms >= quiet_ms;
         if (settled and !replSnapshotLooksBusy(repl, last_text)) {
             return allocAgentAppReplResult(
@@ -662,9 +706,9 @@ fn waitForAgentAppReplResult(ctx: *const ToolContext, host: ToolHost, surface: T
         ctx.allocator,
         ctx.settings,
         repl,
-        surface.agent_app,
-        surface.agent_state,
-        surface.agent_confidence,
+        if (live.app != .none) live.app else surface.agent_app,
+        if (live.app != .none) live.state else surface.agent_state,
+        if (live.app != .none) live.confidence else surface.agent_confidence,
         note,
         last_text,
     );

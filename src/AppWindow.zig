@@ -6723,23 +6723,56 @@ pub fn enableAgentControl() void {
     control_api.enable();
 }
 
-/// UI-thread handler for `wisptermctl spawn`: open a new terminal tab. `cwd`
-/// empty = inherit the active tab's cwd; `command` empty = the configured shell.
-fn ctlSpawnTab(cwd_path: []const u8, command: []const u8) void {
-    const allocator = g_allocator orelse return;
+/// UI-thread handler for `wisptermctl spawn`: open a new terminal tab, or a
+/// split of the active tab's focused pane. `cwd` empty = inherit the active
+/// tab's cwd; `command` empty = the configured shell. A `kind` seeds the new
+/// surface's agent identity so screen detection classifies it immediately.
+/// Returns the new surface so the caller can report its id.
+fn ctlSpawnTab(req: control_api.SpawnRequest) ?*Surface {
+    const allocator = g_allocator orelse return null;
     var cwd_buf: platform_pty_command.CwdBuffer = undefined;
-    const cwd = if (cwd_path.len != 0)
-        platform_pty_command.cwdFromUtf8(&cwd_buf, cwd_path)
+    const cwd = if (req.cwd.len != 0)
+        platform_pty_command.cwdFromUtf8(&cwd_buf, req.cwd)
     else
         getActiveCwd(&cwd_buf);
 
-    const ok = if (command.len != 0) blk: {
-        const command_line = platform_pty_command.allocCommandLineFromUtf8(allocator, command) catch break :blk false;
-        defer platform_pty_command.freeCommandLine(allocator, command_line);
-        break :blk tab.spawnTabWithCommandAndCwd(allocator, term_cols, term_rows, platform_pty_command.commandLineFromOwned(command_line), g_cursor_style, g_cursor_blink, cwd);
-    } else tab.spawnTabWithCwd(allocator, term_cols, term_rows, g_cursor_style, g_cursor_blink, cwd);
+    const surface: ?*Surface = switch (req.split) {
+        .none => blk: {
+            const ok = if (req.command.len != 0) inner: {
+                const command_line = platform_pty_command.allocCommandLineFromUtf8(allocator, req.command) catch break :inner false;
+                defer platform_pty_command.freeCommandLine(allocator, command_line);
+                break :inner tab.spawnTabWithCommandAndCwd(allocator, term_cols, term_rows, platform_pty_command.commandLineFromOwned(command_line), g_cursor_style, g_cursor_blink, cwd);
+            } else tab.spawnTabWithCwd(allocator, term_cols, term_rows, g_cursor_style, g_cursor_blink, cwd);
+            if (!ok) break :blk null;
+            clearUiStateOnTabChange();
+            break :blk activeSurface();
+        },
+        .right, .down => blk: {
+            const direction: SplitTree.Split.Direction = if (req.split == .right) .right else .down;
+            if (req.command.len == 0) break :blk splitFocusedReturningSurface(direction);
+            const command_line = platform_pty_command.allocCommandLineFromUtf8(allocator, req.command) catch break :blk null;
+            defer platform_pty_command.freeCommandLine(allocator, command_line);
+            const s = tab.splitFocusedWithCommandReturningSurface(
+                allocator,
+                direction,
+                font.cell_width,
+                font.cell_height,
+                g_cursor_style,
+                g_cursor_blink,
+                cwd,
+                platform_pty_command.commandLineFromOwned(command_line),
+            ) orelse break :blk null;
+            handleActiveSurfaceChangeWithinTab();
+            overlays.resize.g_resize_active = false;
+            requestImmediateLayoutResize();
+            break :blk s;
+        },
+    };
 
-    if (ok) clearUiStateOnTabChange();
+    if (surface) |s| {
+        if (req.kind.len != 0) s.agent_screen.seed(agent_detector.appFromProcessName(req.kind));
+    }
+    return surface;
 }
 
 /// The Control the agent-control server drives. Backed by process-global state,
@@ -7236,6 +7269,7 @@ fn installAgentToolHost(self: *AppWindow) void {
         .reconnectTerminal = agent_requests.reconnectTerminal,
         .surfaceExitStatus = surface_snapshots.agentSurfaceExitStatus,
         .killSurfaceChild = surface_snapshots.agentKillSurfaceChild,
+        .surfaceAgentState = surface_snapshots.agentSurfaceAgentState,
     });
 }
 

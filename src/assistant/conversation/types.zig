@@ -94,6 +94,13 @@ pub const ToolSurface = struct {
         allocator.free(self.snapshot);
     }
 
+    /// The agent detection captured with this snapshot (UI thread, request
+    /// start). Tools that wait use `ToolHost.surfaceAgentState` for the live
+    /// value when the host provides it.
+    pub fn liveDetection(self: ToolSurface) agent_detector.Detection {
+        return .{ .app = self.agent_app, .state = self.agent_state, .confidence = self.agent_confidence };
+    }
+
     /// The request snapshot is captured on the UI thread. Remove data a
     /// foreign agent must not inherit before the worker starts.
     pub fn redactForForeignAgent(self: *ToolSurface, allocator: std.mem.Allocator) !void {
@@ -305,6 +312,10 @@ pub const ToolHost = struct {
     /// Kill a surface's child process (ACP `terminal/kill`). Only the real
     /// AppWindow host sets this.
     killSurfaceChild: ?*const fn (*anyopaque, []const u8, *anyopaque) anyerror!void = null,
+    /// The surface's live agent detection (hook marker or screen detection),
+    /// readable from the tool worker thread. Only the real AppWindow host sets
+    /// this; without it, agent-app waits fall back to screen-quiet heuristics.
+    surfaceAgentState: ?*const fn (*anyopaque, []const u8, *anyopaque) ?agent_detector.Detection = null,
 };
 
 pub const OwnedReplyContext = struct {
