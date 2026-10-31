@@ -215,6 +215,7 @@ fn sidebarTabNumberWidth() f32 {
 
 pub fn agentBadgeColor(state: agent_detector.State) [3]f32 {
     return switch (state) {
+        .idle => .{ 0.50, 0.56, 0.66 },
         .running => .{ 0.22, 0.72, 0.40 },
         .waiting_approval => .{ 0.95, 0.64, 0.20 },
         .needs_input => .{ 0.95, 0.45, 0.28 },

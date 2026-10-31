@@ -128,7 +128,10 @@ src/                         # Desktop terminal application
 ├── agent/                   # Agent config, access rules, history, and memory
 ├── agent_tools/             # Model tool-call runtime adapters
 ├── terminal_agents/         # External terminal agent detection/prompts/sessions
-│                            #   (Codex / Claude Code / Kimi Code / OpenCode history)
+│                            #   (Codex / Claude Code / Kimi Code / OpenCode history);
+│                            #   screen-state detection = herdr's manifests/*.toml
+│                            #   (Apache-2.0, vendored verbatim) + screen_manifest /
+│                            #   screen_regex / manifest_toml engines + screen_detect
 ├── command/                 # Command center/palette model and registry
 ├── recipe/                  # Named workspace recipes: store, naming form, palette list state
 ├── preview/                 # Preview pane, gallery, diagnostics, PDF/markdown/png

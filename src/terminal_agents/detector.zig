@@ -1,5 +1,9 @@
 const std = @import("std");
 
+/// Terminal agents WispTerm can recognize. The wire labels (`label()`) are the
+/// canonical names herdr uses for the same agents, so the screen-detection
+/// manifests under `manifests/` and the OSC 7748 marker share one vocabulary.
+/// `claude_code` keeps its historical label; "claude" is accepted as an alias.
 pub const App = enum {
     none,
     codex,
@@ -8,6 +12,25 @@ pub const App = enum {
     /// Lets tab badges reuse Detection for those sessions.
     assistant,
     pi,
+    gemini,
+    cursor,
+    devin,
+    agy,
+    cline,
+    opencode,
+    copilot,
+    kimi,
+    kiro,
+    droid,
+    amp,
+    grok,
+    hermes,
+    kilo,
+    qodercli,
+    qwen,
+    letta,
+    maki,
+    muse,
 
     pub fn label(self: App) []const u8 {
         return switch (self) {
@@ -16,6 +39,25 @@ pub const App = enum {
             .claude_code => "claude_code",
             .assistant => "assistant",
             .pi => "pi",
+            .gemini => "gemini",
+            .cursor => "cursor",
+            .devin => "devin",
+            .agy => "agy",
+            .cline => "cline",
+            .opencode => "opencode",
+            .copilot => "copilot",
+            .kimi => "kimi",
+            .kiro => "kiro",
+            .droid => "droid",
+            .amp => "amp",
+            .grok => "grok",
+            .hermes => "hermes",
+            .kilo => "kilo",
+            .qodercli => "qodercli",
+            .qwen => "qwen",
+            .letta => "letta",
+            .maki => "maki",
+            .muse => "muse",
         };
     }
 
@@ -27,12 +69,43 @@ pub const App = enum {
             .claude_code => "Claude Code",
             .assistant => "Copilot",
             .pi => "Pi",
+            .gemini => "Gemini CLI",
+            .cursor => "Cursor Agent",
+            .devin => "Devin CLI",
+            .agy => "Antigravity CLI",
+            .cline => "Cline",
+            .opencode => "OpenCode",
+            .copilot => "Copilot CLI",
+            .kimi => "Kimi Code",
+            .kiro => "Kiro CLI",
+            .droid => "Droid",
+            .amp => "Amp",
+            .grok => "Grok CLI",
+            .hermes => "Hermes Agent",
+            .kilo => "Kilo Code",
+            .qodercli => "Qoder CLI",
+            .qwen => "Qwen Code",
+            .letta => "Letta Code",
+            .maki => "Maki",
+            .muse => "Muse Code",
+        };
+    }
+
+    /// True for agents that run in a PTY and have a screen-detection manifest.
+    pub fn isTerminalAgent(self: App) bool {
+        return switch (self) {
+            .none, .assistant => false,
+            else => true,
         };
     }
 };
 
 pub const State = enum {
     none,
+    /// Agent is at its prompt, ready for input, and nothing has finished
+    /// since the user last looked (screen detection's "idle"; `done` is the
+    /// unseen-completion variant).
+    idle,
     running,
     waiting_approval,
     needs_input,
@@ -43,6 +116,7 @@ pub const State = enum {
     pub fn label(self: State) []const u8 {
         return switch (self) {
             .none => "none",
+            .idle => "idle",
             .running => "running",
             .waiting_approval => "waiting_approval",
             .needs_input => "needs_input",
@@ -55,6 +129,7 @@ pub const State = enum {
     pub fn badge(self: State) []const u8 {
         return switch (self) {
             .none => "",
+            .idle => "idle",
             .running => "run",
             .waiting_approval => "ask",
             .needs_input => "!",
@@ -223,6 +298,7 @@ pub const TAG = "wispterm-agent";
 /// Inverse of State.label().
 pub fn stateFromLabel(s: []const u8) ?State {
     if (std.mem.eql(u8, s, "none")) return .none;
+    if (std.mem.eql(u8, s, "idle")) return .idle;
     if (std.mem.eql(u8, s, "running")) return .running;
     if (std.mem.eql(u8, s, "waiting_approval")) return .waiting_approval;
     if (std.mem.eql(u8, s, "needs_input")) return .needs_input;
@@ -232,23 +308,93 @@ pub fn stateFromLabel(s: []const u8) ?State {
     return null;
 }
 
-/// Inverse of App.label().
+/// Inverse of App.label(). Accepts "claude" for `.claude_code` so the herdr
+/// canonical label round-trips too.
 pub fn appFromLabel(s: []const u8) ?App {
     if (std.mem.eql(u8, s, "none")) return .none;
-    if (std.mem.eql(u8, s, "codex")) return .codex;
-    if (std.mem.eql(u8, s, "claude_code")) return .claude_code;
-    if (std.mem.eql(u8, s, "pi")) return .pi;
     if (std.mem.eql(u8, s, "assistant")) return .assistant;
+    if (std.mem.eql(u8, s, "claude_code")) return .claude_code;
+    inline for (std.meta.fields(App)) |field| {
+        const app: App = @enumFromInt(field.value);
+        if (app != .none and app != .assistant and std.mem.eql(u8, s, app.label())) return app;
+    }
+    if (std.mem.eql(u8, s, "claude")) return .claude_code;
     return null;
+}
+
+/// Executable / process names (and the aliases herdr accepts) for each
+/// terminal agent. Lookups go through `appFromProcessName`.
+const process_aliases = [_]struct { name: []const u8, app: App }{
+    .{ .name = "pi", .app = .pi },
+    .{ .name = "claude", .app = .claude_code },
+    .{ .name = "claude-code", .app = .claude_code },
+    .{ .name = "codex", .app = .codex },
+    .{ .name = "gemini", .app = .gemini },
+    .{ .name = "cursor", .app = .cursor },
+    .{ .name = "cursor-agent", .app = .cursor },
+    .{ .name = "devin", .app = .devin },
+    .{ .name = "devin-cli", .app = .devin },
+    .{ .name = "agy", .app = .agy },
+    .{ .name = "antigravity", .app = .agy },
+    .{ .name = "antigravity-cli", .app = .agy },
+    .{ .name = "cline", .app = .cline },
+    .{ .name = ".cline", .app = .cline },
+    .{ .name = "opencode", .app = .opencode },
+    .{ .name = "opencode2", .app = .opencode },
+    .{ .name = "open-code", .app = .opencode },
+    .{ .name = "copilot", .app = .copilot },
+    .{ .name = "github-copilot", .app = .copilot },
+    .{ .name = "ghcs", .app = .copilot },
+    .{ .name = "kimi", .app = .kimi },
+    .{ .name = "kimi-code", .app = .kimi },
+    .{ .name = "kiro", .app = .kiro },
+    .{ .name = "kiro-cli", .app = .kiro },
+    .{ .name = "droid", .app = .droid },
+    .{ .name = "amp", .app = .amp },
+    .{ .name = "amp-local", .app = .amp },
+    .{ .name = "grok", .app = .grok },
+    .{ .name = "grok-build", .app = .grok },
+    .{ .name = "hermes", .app = .hermes },
+    .{ .name = "hermes-agent", .app = .hermes },
+    .{ .name = "kilo", .app = .kilo },
+    .{ .name = "kilo-code", .app = .kilo },
+    .{ .name = "qodercli", .app = .qodercli },
+    .{ .name = "qoderclicn", .app = .qodercli },
+    .{ .name = "qoder", .app = .qodercli },
+    .{ .name = "qodercn", .app = .qodercli },
+    .{ .name = "qwen", .app = .qwen },
+    .{ .name = "qwen-code", .app = .qwen },
+    .{ .name = "letta", .app = .letta },
+    .{ .name = "letta-code", .app = .letta },
+    .{ .name = "maki", .app = .maki },
+    .{ .name = "muse", .app = .muse },
+    .{ .name = "muse-code", .app = .muse },
+    .{ .name = "muse-cli", .app = .muse },
+};
+
+/// Map a process or executable name to an App: the basename is taken, a
+/// Windows launcher extension (`.exe`, `.cmd`, `.bat`, `.ps1`) is dropped,
+/// and the lookup is case-insensitive. Muse's versioned launcher
+/// (`muse-bin-<version>`) is recognized like herdr does. Unknown → `.none`.
+pub fn appFromProcessName(name: []const u8) App {
+    var buf: [128]u8 = undefined;
+    const trimmed = std.mem.trim(u8, name, " \t\r\n");
+    var base = std.fs.path.basename(trimmed);
+    if (std.mem.lastIndexOfScalar(u8, base, '\\')) |i| base = base[i + 1 ..];
+    if (base.len == 0 or base.len > buf.len) return .none;
+    const lower = std.ascii.lowerString(buf[0..base.len], base);
+    var stem: []const u8 = lower;
+    inline for (.{ ".exe", ".cmd", ".bat", ".ps1" }) |ext| {
+        if (std.mem.endsWith(u8, stem, ext)) stem = stem[0 .. stem.len - ext.len];
+    }
+    for (process_aliases) |alias| if (std.mem.eql(u8, stem, alias.name)) return alias.app;
+    if (std.mem.startsWith(u8, stem, "muse-bin-") and stem.len > "muse-bin-".len and std.ascii.isDigit(stem["muse-bin-".len])) return .muse;
+    return .none;
 }
 
 /// Map a tmux `#{pane_current_command}` (process basename) to an App.
 pub fn appFromCommand(cmd: []const u8) App {
-    const base = std.fs.path.basename(std.mem.trim(u8, cmd, " "));
-    if (std.mem.eql(u8, base, "claude")) return .claude_code;
-    if (std.mem.eql(u8, base, "codex")) return .codex;
-    if (std.mem.eql(u8, base, "pi")) return .pi;
-    return .none;
+    return appFromProcessName(cmd);
 }
 
 pub const AgentCapabilities = packed struct {
@@ -348,11 +494,12 @@ pub fn aggregate(states: []const State) State {
 fn rank(s: State) u8 {
     return switch (s) {
         .none => 0,
-        .done => 1,
-        .running => 2,
-        .halted, .failed => 3,
-        .needs_input => 4,
-        .waiting_approval => 5,
+        .idle => 1,
+        .done => 2,
+        .running => 3,
+        .halted, .failed => 4,
+        .needs_input => 5,
+        .waiting_approval => 6,
     };
 }
 
@@ -412,6 +559,42 @@ test "appFromCommand maps known agents" {
     try std.testing.expectEqual(App.codex, appFromCommand("/usr/bin/codex"));
     try std.testing.expectEqual(App.pi, appFromCommand("pi"));
     try std.testing.expectEqual(App.none, appFromCommand("bash"));
+}
+
+test "appFromProcessName accepts herdr aliases, Windows launchers, and paths" {
+    try std.testing.expectEqual(App.claude_code, appFromProcessName("claude.exe"));
+    try std.testing.expectEqual(App.claude_code, appFromProcessName("C:\\Users\\me\\AppData\\Local\\Programs\\claude\\Claude.exe"));
+    try std.testing.expectEqual(App.codex, appFromProcessName("codex.cmd"));
+    try std.testing.expectEqual(App.cursor, appFromProcessName("cursor-agent"));
+    try std.testing.expectEqual(App.agy, appFromProcessName("antigravity-cli"));
+    try std.testing.expectEqual(App.copilot, appFromProcessName("ghcs"));
+    try std.testing.expectEqual(App.kimi, appFromProcessName("kimi-code"));
+    try std.testing.expectEqual(App.opencode, appFromProcessName("opencode2"));
+    try std.testing.expectEqual(App.muse, appFromProcessName("/opt/muse/muse-bin-0.1.0-R708.1"));
+    try std.testing.expectEqual(App.none, appFromProcessName("muse-binary"));
+    try std.testing.expectEqual(App.none, appFromProcessName("node"));
+    try std.testing.expectEqual(App.none, appFromProcessName(""));
+    try std.testing.expectEqual(App.none, appFromProcessName("pilot"));
+}
+
+test "App labels round-trip for every terminal agent" {
+    inline for (std.meta.fields(App)) |field| {
+        const app: App = @enumFromInt(field.value);
+        try std.testing.expectEqual(app, appFromLabel(app.label()).?);
+        try std.testing.expect(app.displayName().len > 0);
+    }
+    try std.testing.expectEqual(App.claude_code, appFromLabel("claude").?);
+    try std.testing.expect(App.gemini.isTerminalAgent());
+    try std.testing.expect(!App.assistant.isTerminalAgent());
+    try std.testing.expect(!App.none.isTerminalAgent());
+}
+
+test "idle state ranks below every attention state and round-trips its label" {
+    try std.testing.expectEqual(State.idle, stateFromLabel("idle").?);
+    try std.testing.expectEqualStrings("idle", State.idle.badge());
+    try std.testing.expectEqual(State.done, aggregate(&.{ .idle, .done }));
+    try std.testing.expectEqual(State.idle, aggregate(&.{ .none, .idle }));
+    try std.testing.expectEqual(State.running, aggregate(&.{ .idle, .running, .done }));
 }
 
 test "assistant App round-trips its label and has a display name" {

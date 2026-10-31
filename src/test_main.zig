@@ -55,6 +55,8 @@ comptime {
         _ = @import("terminal_agents/sessions/markdown.zig");
         _ = @import("renderer/terminal_agents/sessions.zig");
         _ = @import("terminal_agents/detector.zig");
+        _ = @import("terminal_agents/screen_detect.zig");
+        _ = @import("platform/foreground_process.zig");
         _ = @import("terminal_agents/prompt_answer.zig");
         _ = @import("agent_tools/args.zig");
         _ = @import("agent_tools/mod.zig");

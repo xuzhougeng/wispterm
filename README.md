@@ -47,6 +47,7 @@ English | [简体中文](README.zh-CN.md)
 - **Password store** - a Settings-style page (Command Center → Password Store) for root/mysql/... secrets, encrypted on disk with the key in the macOS Keychain / Windows DPAPI; passwords stay hidden until you reveal or copy one, and the agent types one into a terminal password prompt with `password_input` after an explicit approval prompt, without ever seeing it or leaving it in the chat history
 - **Encrypted sync** - keep the Password Store, Agent history, SSH hosts and AI profiles in sync across computers through WebDAV (坚果云, Nextcloud, Synology, …) or a synced folder (OneDrive, iCloud Drive, Dropbox), end-to-end encrypted with a sync passphrase and merged item by item; see [Sync](docs/sync.md)
 - **AI history browser** - browse local, WSL, and SSH Codex / Claude Code / Kimi Code / OpenCode history and resume sessions from their original project directories
+- **Agent status badges** - every tab running Claude Code, Codex, Gemini CLI, Copilot CLI, Cursor, Kimi, OpenCode, Pi, Qwen and 13 more agents shows idle / run / ask / done, with a desktop notification when an agent stops for an answer or finishes; state comes from the agent's own hook when installed, otherwise from the screen via herdr's detection manifests (`agent-screen-detection`)
 - **Kitty Graphics protocol** - display inline images and PDFs from remote shells via `imgcat.py` / `pdfcat.py`
 - **Opt-in remote access** - share a session key over a Cloudflare-hosted relay (disabled by default)
 

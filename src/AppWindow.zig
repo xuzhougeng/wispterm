@@ -61,6 +61,7 @@ const session_identity = @import("assistant/conversation/identity.zig");
 const ai_chat_types = @import("assistant/conversation/types.zig");
 const ai_history_cache = @import("terminal_agents/sessions/cache.zig");
 const ai_history_resume = @import("terminal_agents/sessions/resume.zig");
+const screen_detect = @import("terminal_agents/screen_detect.zig");
 const ai_history_markdown = @import("terminal_agents/sessions/markdown.zig");
 const ai_loop_store = @import("assistant/loop/store.zig");
 const ai_history_types = @import("terminal_agents/sessions/types.zig");
@@ -3344,7 +3345,10 @@ pub fn spawnResumeTerminal(target: ai_history_source.Target, meta: ai_history_ty
                 }
                 return showAiHistoryResumeToast("Cannot resume: command is too long");
             };
-            if (spawnTabWithCommandUtf8(command)) return true;
+            if (spawnTabWithCommandUtf8ReturningSurface(command)) |surface| {
+                surface.agent_screen.seed(screen_detect.appForProvider(meta.provider));
+                return true;
+            }
             return showAiHistoryResumeToast("Cannot resume: failed to open resume tab");
         },
         .wsl => {
@@ -3354,7 +3358,10 @@ pub fn spawnResumeTerminal(target: ai_history_source.Target, meta: ai_history_ty
                 return showAiHistoryResumeFailure(err, meta);
             };
             const command = platform_pty_command.wslShellCommand(command_buf[0..], user_shell_cmd) orelse return showAiHistoryResumeToast("Cannot resume: command is too long");
-            if (spawnTabWithCommandUtf8(command)) return true;
+            if (spawnTabWithCommandUtf8ReturningSurface(command)) |surface| {
+                surface.agent_screen.seed(screen_detect.appForProvider(meta.provider));
+                return true;
+            }
             return showAiHistoryResumeToast("Cannot resume: failed to open resume tab");
         },
         .ssh => |ssh| {
@@ -3364,7 +3371,12 @@ pub fn spawnResumeTerminal(target: ai_history_source.Target, meta: ai_history_ty
                 return showAiHistoryResumeFailure(err, meta);
             };
             return switch (overlays.aiHistoryConnectSshProfile(ssh.profile_name, user_shell_cmd)) {
-                .connected => true,
+                .connected => |surface| blk: {
+                    // The remote agent's process is invisible from here; the
+                    // launcher knows which agent it started.
+                    surface.agent_screen.seed(screen_detect.appForProvider(meta.provider));
+                    break :blk true;
+                },
                 .not_found => {
                     return showAiHistoryResumeToast("Cannot resume: SSH profile not found");
                 },
@@ -6242,6 +6254,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     link_open.current_mode = cfg.@"url-open-mode";
     g_ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";
     g_desktop_notifications = cfg.@"desktop-notifications";
+    screen_detect.setEnabled(cfg.@"agent-screen-detection");
     g_confirm_close_running_program = cfg.@"confirm-close-running-program";
     g_weixin_notify_forward = cfg.@"weixin-notify-forward";
     tab.g_ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";
@@ -8743,6 +8756,7 @@ fn runMainLoop(self: *AppWindow) !void {
         // Handle bells, notifications, and OSC 52 clipboard writes staged by
         // the IO threads. This runs before the render gate: background-tab
         // output no longer triggers frames, so these must not depend on one.
+        const agent_poll_now_ms = std.time.milliTimestamp();
         for (0..tab.g_tab_count) |ti| {
             if (tab.g_tabs[ti]) |tb| {
                 const tab_active = ti == active_tab_state.g_active_tab;
@@ -8751,12 +8765,15 @@ fn runMainLoop(self: *AppWindow) !void {
                     if (entry.surface.bell_pending.swap(false, .acquire)) {
                         handleBell(entry.surface, win, tab_active);
                     }
-                    pollAgentMarker(entry.surface);
-                    {
-                        const is_active_surface = tab_active and
-                            (if (tb.focusedSurface()) |fs| fs == entry.surface else false);
-                        handleNotification(entry.surface, is_active_surface);
+                    const is_active_surface = tab_active and
+                        (if (tb.focusedSurface()) |fs| fs == entry.surface else false);
+                    // Screen detection (no hook installed): feeds the same
+                    // badge/notification edges as the OSC 7748 marker below.
+                    if (screen_detect.poll(entry.surface, is_active_surface, agent_poll_now_ms)) {
+                        applyUiEffect(.{ .needs_rebuild = true });
                     }
+                    pollAgentMarker(entry.surface);
+                    handleNotification(entry.surface, is_active_surface);
                     if (entry.surface.takeClipboardWrite()) |text| {
                         _ = input.copyTextToClipboard(text);
                         entry.surface.allocator.free(text);

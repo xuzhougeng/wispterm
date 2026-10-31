@@ -574,6 +574,9 @@ test {
     _ = @import("platform/local_path.zig");
     _ = @import("platform/process_group.zig");
     _ = @import("terminal_agents/detector.zig");
+    _ = @import("terminal_agents/screen_regex.zig");
+    _ = @import("terminal_agents/manifest_toml.zig");
+    _ = @import("terminal_agents/screen_manifest.zig");
     _ = @import("terminal_agents/pi_shutdown.zig");
     _ = @import("session_persist.zig");
     _ = @import("terminal_agents/integration_prompt.zig");

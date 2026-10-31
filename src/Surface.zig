@@ -21,6 +21,7 @@ const Renderer = @import("renderer/Renderer.zig");
 const remote = @import("remote_client.zig");
 const threading = @import("platform/threading.zig");
 const agent_detector = @import("terminal_agents/detector.zig");
+const screen_detect = @import("terminal_agents/screen_detect.zig");
 const session_persist = @import("session_persist.zig");
 const window_backend = @import("platform/window_backend.zig");
 const sync_output = @import("sync_output.zig");
@@ -443,8 +444,14 @@ initial_cwd_path: [512]u8 = undefined,
 initial_cwd_path_len: usize = 0,
 
 // Lightweight app/agent state. State transitions come from OSC 7748 hook
-// markers; app identity may also be seeded from the foreground command.
+// markers or, without a hook, from screen detection (`agent_screen`); app
+// identity may also be seeded from the foreground command.
 agent_detection: agent_detector.Detection = .{},
+
+/// Screen-detection bookkeeping (identity source, output epoch, seen state).
+/// Owned by `terminal_agents/screen_detect.zig`; the IO thread only bumps its
+/// output epoch (see `markOutputDirty`).
+agent_screen: screen_detect.SurfaceState = .{},
 
 /// Last agent state seen by the main loop's notification poll (edge detection;
 /// UI thread only — see AppWindow.pollAgentMarker).
@@ -610,6 +617,7 @@ fn finishInit(
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.agent_detection = .{};
+    surface.agent_screen = .{};
     surface.captureInitialCwd(cwd);
 
     // Init bell state
@@ -1339,6 +1347,7 @@ pub fn noteAgentCommand(self: *Surface, app: agent_detector.App) void {
         if (self.agent_osc_active) self.agent_osc_active = false;
         self.agent_session_path_len = 0;
         self.agent_capabilities = .{};
+        self.agent_screen.seed(.none);
         return;
     }
     if (app != .pi) {
@@ -1348,6 +1357,7 @@ pub fn noteAgentCommand(self: *Surface, app: agent_detector.App) void {
     if (!self.agent_osc_active and self.agent_detection.app == .none) {
         self.agent_detection.app = app;
     }
+    self.agent_screen.seed(app);
 }
 
 /// Queue a command into the existing PTY mailbox. This is used only during
@@ -1506,6 +1516,7 @@ pub fn takeClipboardWrite(self: *Surface) ?[]u8 {
 /// exactly one wakeup then, instead of flooding the platform event queue with
 /// one message per output chunk.
 pub fn markOutputDirty(self: *Surface) bool {
+    self.agent_screen.noteOutput();
     return !self.dirty.swap(true, .release);
 }
 
