@@ -203,6 +203,7 @@ fn clearDetection(surface: *Surface, st: *SurfaceState) bool {
     st.clear();
     if (surface.agent_detection.app == .none and surface.agent_detection.state == .none) return false;
     surface.agent_detection = .{};
+    surface.publishAgentDetection();
     return true;
 }
 
@@ -243,6 +244,7 @@ fn classify(surface: *Surface, st: *SurfaceState) bool {
     const next = manifest.mapToDetection(st.app, res, &st.has_worked) orelse return false;
     if (std.meta.eql(next, surface.agent_detection)) return false;
     surface.agent_detection = next;
+    surface.publishAgentDetection();
     return true;
 }
 

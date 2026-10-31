@@ -98,6 +98,18 @@ pub const App = enum {
             else => true,
         };
     }
+
+    /// Executable that starts the agent's interactive session (what
+    /// `wisptermctl spawn --kind` runs). Mirrors herdr's kind → command table.
+    pub fn executable(self: App) []const u8 {
+        return switch (self) {
+            .none, .assistant => "",
+            .claude_code => "claude",
+            .cursor => "cursor-agent",
+            .kiro => "kiro-cli",
+            else => self.label(),
+        };
+    }
 };
 
 pub const State = enum {
@@ -159,6 +171,24 @@ pub const Detection = struct {
 
     pub fn badge(self: Detection) []const u8 {
         return self.state.badge();
+    }
+
+    /// Pack into one word so a Detection can be mirrored through an atomic
+    /// for readers on other threads (ctl server, Copilot tool worker).
+    pub fn pack(self: Detection) u32 {
+        return (@as(u32, @intFromEnum(self.app)) << 16) |
+            (@as(u32, @intFromEnum(self.state)) << 8) |
+            @as(u32, self.confidence);
+    }
+
+    pub fn unpack(word: u32) Detection {
+        const app_raw: u8 = @truncate(word >> 16);
+        const state_raw: u8 = @truncate(word >> 8);
+        return .{
+            .app = std.meta.intToEnum(App, app_raw) catch .none,
+            .state = std.meta.intToEnum(State, state_raw) catch .none,
+            .confidence = @truncate(word),
+        };
     }
 };
 
@@ -587,6 +617,29 @@ test "App labels round-trip for every terminal agent" {
     try std.testing.expect(App.gemini.isTerminalAgent());
     try std.testing.expect(!App.assistant.isTerminalAgent());
     try std.testing.expect(!App.none.isTerminalAgent());
+}
+
+test "Detection packs and unpacks losslessly; garbage unpacks to none" {
+    const det = Detection{ .app = .gemini, .state = .waiting_approval, .confidence = 90 };
+    try std.testing.expectEqual(det, Detection.unpack(det.pack()));
+    try std.testing.expectEqual(Detection{}, Detection.unpack(0));
+    const bogus = Detection.unpack(0x00FF_FF00 | 7);
+    try std.testing.expectEqual(App.none, bogus.app);
+    try std.testing.expectEqual(State.none, bogus.state);
+    try std.testing.expectEqual(@as(u8, 7), bogus.confidence);
+}
+
+test "App.executable names the interactive launcher" {
+    try std.testing.expectEqualStrings("claude", App.claude_code.executable());
+    try std.testing.expectEqualStrings("cursor-agent", App.cursor.executable());
+    try std.testing.expectEqualStrings("kiro-cli", App.kiro.executable());
+    try std.testing.expectEqualStrings("codex", App.codex.executable());
+    try std.testing.expectEqualStrings("", App.none.executable());
+    // Every launcher name maps back to its agent.
+    inline for (std.meta.fields(App)) |field| {
+        const app: App = @enumFromInt(field.value);
+        if (app.isTerminalAgent()) try std.testing.expectEqual(app, appFromProcessName(app.executable()));
+    }
 }
 
 test "idle state ranks below every attention state and round-trips its label" {

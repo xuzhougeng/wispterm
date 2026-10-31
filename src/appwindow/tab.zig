@@ -1389,6 +1389,38 @@ pub fn splitFocusedReturningSurface(
     );
 }
 
+/// Split the focused surface and run an explicit local command in the new
+/// pane (agent-control `spawn --split`). Unlike `splitFocusedReturningSurface`
+/// the new pane does not inherit the focused pane's SSH connection: the
+/// command is the caller's, and it runs here.
+pub fn splitFocusedWithCommandReturningSurface(
+    allocator: std.mem.Allocator,
+    direction: SplitTree.Split.Direction,
+    cell_w: f32,
+    cell_h: f32,
+    cursor_style: CursorStyle,
+    cursor_blink: bool,
+    cwd: platform_pty_command.Cwd,
+    shell_cmd: platform_pty_command.CommandLine,
+) ?*Surface {
+    const t = activeTab() orelse return null;
+    if (t.kind != .terminal) return null;
+    const focused_surface = t.focusedSurface() orelse return null;
+    return splitFocusedSurfaceWithCommand(
+        allocator,
+        t,
+        focused_surface,
+        direction,
+        cell_w,
+        cell_h,
+        cursor_style,
+        cursor_blink,
+        cwd,
+        shell_cmd,
+        false,
+    );
+}
+
 fn splitFocusedSurfaceWithCommand(
     allocator: std.mem.Allocator,
     t: *TabState,

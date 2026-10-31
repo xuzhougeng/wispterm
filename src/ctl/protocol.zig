@@ -4,7 +4,7 @@
 //! '\n'-terminated.
 const std = @import("std");
 
-pub const Cmd = enum { panes, get_text, send_text, ui_state, spawn };
+pub const Cmd = enum { panes, get_text, send_text, ui_state, spawn, agent_state, spawn_result };
 
 pub fn cmdToStr(c: Cmd) []const u8 {
     return switch (c) {
@@ -13,17 +13,41 @@ pub fn cmdToStr(c: Cmd) []const u8 {
         .send_text => "send-text",
         .ui_state => "ui-state",
         .spawn => "spawn",
+        .agent_state => "agent-state",
+        .spawn_result => "spawn-result",
     };
 }
 
 pub fn cmdFromStr(s: []const u8) ?Cmd {
-    if (std.mem.eql(u8, s, "panes")) return .panes;
-    if (std.mem.eql(u8, s, "get-text")) return .get_text;
-    if (std.mem.eql(u8, s, "send-text")) return .send_text;
-    if (std.mem.eql(u8, s, "ui-state")) return .ui_state;
-    if (std.mem.eql(u8, s, "spawn")) return .spawn;
+    inline for (std.meta.fields(Cmd)) |f| {
+        const c: Cmd = @enumFromInt(f.value);
+        if (std.mem.eql(u8, s, cmdToStr(c))) return c;
+    }
     return null;
 }
+
+/// Where `spawn` puts the new terminal: a new tab, or a split of the active
+/// tab's focused pane.
+pub const SpawnSplit = enum {
+    none,
+    right,
+    down,
+
+    pub fn label(self: SpawnSplit) []const u8 {
+        return switch (self) {
+            .none => "",
+            .right => "right",
+            .down => "down",
+        };
+    }
+
+    pub fn parse(s: []const u8) ?SpawnSplit {
+        if (s.len == 0 or std.mem.eql(u8, s, "none")) return .none;
+        if (std.mem.eql(u8, s, "right")) return .right;
+        if (std.mem.eql(u8, s, "down")) return .down;
+        return null;
+    }
+};
 
 pub const Request = struct {
     token: []const u8 = "",
@@ -32,6 +56,12 @@ pub const Request = struct {
     recent: ?u32 = null,
     data: []const u8 = "", // send-text input, or spawn's command line
     cwd: []const u8 = "", // spawn working directory ("" = inherit active tab's)
+    /// spawn: agent kind label ("" = plain command); the UI seeds the new
+    /// surface's agent identity with it.
+    kind: []const u8 = "",
+    split: SpawnSplit = .none,
+    /// spawn-result: the ticket `spawn` returned.
+    ticket: ?u32 = null,
 };
 
 /// Build one newline-terminated JSON request line. Caller owns the result.
@@ -57,6 +87,18 @@ pub fn encodeRequest(allocator: std.mem.Allocator, req: Request) ![]u8 {
     if (req.cwd.len != 0) {
         try out.appendSlice(allocator, ",\"cwd\":");
         try writeJsonString(allocator, &out, req.cwd);
+    }
+    if (req.kind.len != 0) {
+        try out.appendSlice(allocator, ",\"kind\":");
+        try writeJsonString(allocator, &out, req.kind);
+    }
+    if (req.split != .none) {
+        try out.appendSlice(allocator, ",\"split\":");
+        try writeJsonString(allocator, &out, req.split.label());
+    }
+    if (req.ticket) |n| {
+        try out.appendSlice(allocator, ",\"ticket\":");
+        try out.print(allocator, "{d}", .{n});
     }
     try out.appendSlice(allocator, "}\n");
     return out.toOwnedSlice(allocator);
@@ -87,12 +129,18 @@ pub fn parseRequest(allocator: std.mem.Allocator, line: []const u8) !ParsedReque
     req.id = stringField(obj, "id") orelse "";
     req.data = stringField(obj, "data") orelse "";
     req.cwd = stringField(obj, "cwd") orelse "";
+    req.kind = stringField(obj, "kind") orelse "";
+    if (stringField(obj, "split")) |s| req.split = SpawnSplit.parse(s) orelse return error.InvalidRequest;
     if (obj.get("recent")) |v| {
         // Clamp to u32 range: a huge value must not panic (@intCast) the server
         // thread — and parseRequest runs BEFORE token auth, so this is reachable
         // pre-auth by any local client.
         if (v == .integer and v.integer >= 0)
             req.recent = @intCast(@min(v.integer, @as(i64, std.math.maxInt(u32))));
+    }
+    if (obj.get("ticket")) |v| {
+        if (v == .integer and v.integer >= 0)
+            req.ticket = @intCast(@min(v.integer, @as(i64, std.math.maxInt(u32))));
     }
     return .{ .parsed = parsed, .value = req };
 }
@@ -224,6 +272,39 @@ test "spawn with empty cwd omits the field" {
     var pr = try parseRequest(t.allocator, line);
     defer pr.deinit();
     try t.expectEqualStrings("", pr.value.cwd);
+}
+
+test "spawn round-trips kind + split; spawn-result carries its ticket" {
+    const line = try encodeRequest(t.allocator, .{ .token = "x", .cmd = .spawn, .data = "codex -m gpt", .kind = "codex", .split = .right });
+    defer t.allocator.free(line);
+    var pr = try parseRequest(t.allocator, line);
+    defer pr.deinit();
+    try t.expectEqualStrings("codex", pr.value.kind);
+    try t.expectEqual(SpawnSplit.right, pr.value.split);
+
+    const plain = try encodeRequest(t.allocator, .{ .token = "x", .cmd = .spawn, .data = "bash" });
+    defer t.allocator.free(plain);
+    try t.expect(std.mem.indexOf(u8, plain, "kind") == null);
+    try t.expect(std.mem.indexOf(u8, plain, "split") == null);
+
+    const res = try encodeRequest(t.allocator, .{ .token = "x", .cmd = .spawn_result, .ticket = 7 });
+    defer t.allocator.free(res);
+    var rr = try parseRequest(t.allocator, res);
+    defer rr.deinit();
+    try t.expectEqual(Cmd.spawn_result, rr.value.cmd);
+    try t.expectEqual(@as(?u32, 7), rr.value.ticket);
+
+    try t.expectError(error.InvalidRequest, parseRequest(t.allocator, "{\"cmd\":\"spawn\",\"split\":\"sideways\"}"));
+}
+
+test "agent-state command round-trips" {
+    try t.expectEqual(Cmd.agent_state, cmdFromStr("agent-state").?);
+    const line = try encodeRequest(t.allocator, .{ .token = "tok", .cmd = .agent_state, .id = "s1" });
+    defer t.allocator.free(line);
+    var pr = try parseRequest(t.allocator, line);
+    defer pr.deinit();
+    try t.expectEqual(Cmd.agent_state, pr.value.cmd);
+    try t.expectEqualStrings("s1", pr.value.id);
 }
 
 test "ui-state command round-trips through cmd<->str and encode/parse" {

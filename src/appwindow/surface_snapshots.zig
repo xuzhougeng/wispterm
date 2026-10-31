@@ -29,6 +29,17 @@ pub fn appendAgentDetectionJson(
     surface: ?*const Surface,
 ) !void {
     const detection: agent_detector.Detection = if (surface) |s| s.agent_detection else .{};
+    try appendAgentDetectionValuesJson(allocator, out, detection);
+}
+
+/// The `,"agentApp":…,"agentState":…,"agentBadge":…,"agentConfidence":N`
+/// fields for an already-read Detection (thread-neutral; used by the ctl
+/// server with the surface's published mirror).
+pub fn appendAgentDetectionValuesJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    detection: agent_detector.Detection,
+) !void {
     try out.appendSlice(allocator, ",\"agentApp\":\"");
     try remote.appendJsonString(out, allocator, detection.appLabel());
     try out.appendSlice(allocator, "\",\"agentState\":\"");
@@ -211,6 +222,16 @@ fn exitCodeFromInfo(surface: *Surface, info: Surface.ExitInfo) ?u32 {
 
 /// Kill a surface's child process for the ACP `terminal/kill` capability.
 /// Same worker-thread hazard as agentSurfaceSnapshot.
+/// Tool worker thread: the surface's published agent detection, or null when
+/// the surface is gone. Pins the surface like the snapshot path does.
+pub fn agentSurfaceAgentState(ctx: *anyopaque, surface_id: []const u8, surface_ptr: *anyopaque) ?agent_detector.Detection {
+    _ = ctx;
+    if (!surface_registry.acquire(surface_ptr, surface_id)) return null;
+    defer surface_registry.release();
+    const surface: *Surface = @ptrCast(@alignCast(surface_ptr));
+    return surface.agentDetectionShared();
+}
+
 pub fn agentKillSurfaceChild(ctx: *anyopaque, surface_id: []const u8, surface_ptr: *anyopaque) anyerror!void {
     _ = ctx;
     if (!surface_registry.acquire(surface_ptr, surface_id)) return error.SurfaceClosed;
