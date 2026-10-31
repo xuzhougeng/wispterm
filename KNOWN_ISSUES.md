@@ -39,6 +39,27 @@ console release unless the release explicitly includes `remote/`.
   real `debug\test-d3d11-environment-smoke.ps1` artifacts when the environment
   becomes available.
 
+- Kitty graphics emitted by programs running *inside* a Windows session never
+  reach WispTerm. Every local shell and `ssh.exe` tab runs under ConPTY, and
+  conhost's VT parser discards APC strings — the `ESC _ G … ESC \` carrier of
+  the kitty graphics protocol — before it re-renders the output for WispTerm
+  (`StateMachine::_EventSosPmApcString`, every conhost version including the
+  bundled one). WispTerm's own `tools/imgcat.py` / `pdfcat.py` get through with
+  the OSC 7747 `WispTermImage` wrapper, which ConPTY passes on; third-party
+  TUIs do not. yazi is the visible case (#704): because WispTerm advertises
+  `TERM_PROGRAM=ghostty` (the Kitty keyboard protocol allowlist that Claude
+  Code and others use, #302), yazi selects its Ghostty driver — kitty graphics
+  with Unicode placeholders (`a=T,U=1`) — without probing. ConPTY drops the
+  image, so the preview area stays blank; the inbox conhost additionally
+  appears to lay out each U+10EEEE placeholder and its combining diacritics as
+  separate cells, so a preview row overflows and wraps into the next line and
+  overwrites the panes and borders with blank cells (the full-width black
+  bands in the report). The same byte stream renders correctly when it
+  reaches ghostty-vt intact (`src/kitty_graphics_unit.zig`), which is what
+  happens through the macOS/Linux PTY. Workarounds on Windows: preview images
+  with the File Explorer / Ctrl+click viewer, or give `image/*` a non-image
+  previewer in `yazi.toml` so yazi never emits placeholders.
+
 ### Accepted D3D11 Phase V Environment Matrix Gaps
 
 The following matrix classes are explicitly accepted as untested for the
