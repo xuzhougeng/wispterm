@@ -485,6 +485,11 @@ language: i18n.LanguageSetting = .auto,
 /// Fixed loopback port for the agent control API (0 = let the OS assign one).
 @"agent-control-port": u16 = 0,
 
+/// Classify terminal agents (Claude Code, Codex, Gemini CLI, …) from what
+/// they draw on screen when no hook marker is installed, driving the tab
+/// badge and attention notifications. Set to false to rely on hooks only.
+@"agent-screen-detection": bool = true,
+
 /// Show a debug FPS overlay in the bottom-right corner.
 @"wispterm-debug-fps": bool = false,
 @"wispterm-debug-draw-calls": bool = false,
@@ -1146,6 +1151,14 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
             log.warn("invalid agent-control-port: {s}", .{value});
             return;
         };
+    } else if (std.mem.eql(u8, key, "agent-screen-detection")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"agent-screen-detection" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"agent-screen-detection" = false;
+        } else {
+            log.warn("invalid agent-screen-detection: {s}", .{value});
+        }
     } else if (std.mem.eql(u8, key, "wispterm-debug-fps")) {
         if (std.mem.eql(u8, value, "true")) {
             self.@"wispterm-debug-fps" = true;
@@ -1684,6 +1697,7 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --weixin-notify-forward <bool> Forward agent notifications to the bound WeChat owner
         \\  --agent-control-enabled <bool> Enable the local wisptermctl terminal control API (loopback)
         \\  --agent-control-port <n>     Fixed loopback port for the control API (0 = auto)
+        \\  --agent-screen-detection <bool> Detect terminal agent state from the screen when no hook is installed (default: true)
         \\  --quake-mode <bool>          Enable Quake-style drop-down mode (default: true)
         \\
         \\Color Options (override theme):

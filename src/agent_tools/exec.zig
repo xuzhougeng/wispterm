@@ -170,21 +170,14 @@ pub const UnixSessionKind = enum {
 fn agentAppDisplayName(app: agent_detector.App) []const u8 {
     return switch (app) {
         .none => "terminal app",
-        .codex => "Codex",
-        .claude_code => "Claude Code",
-        .pi => "Pi",
-        // In-app sessions never appear on a PTY surface; arm exists for exhaustiveness.
-        .assistant => "Copilot",
+        else => app.displayName(),
     };
 }
 
 fn agentAppReplName(app: agent_detector.App) []const u8 {
     return switch (app) {
         .none => "plain",
-        .codex => "codex",
-        .claude_code => "claude_code",
-        .pi => "pi",
-        .assistant => "assistant",
+        else => app.label(),
     };
 }
 

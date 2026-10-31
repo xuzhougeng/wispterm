@@ -125,3 +125,15 @@ tested passes.
 - Sync updates an Agent conversation that is open in a tab only in the history
   store; the open tab keeps its own copy and saves it again on its next message
   (so the tab's version wins). Reopen the conversation to see the synced one.
+- Screen-based agent status (`agent-screen-detection`) first has to know
+  *which* agent a tab runs. Local tabs read the PTY's foreground process
+  (macOS/Linux) or the shell's descendant processes (Windows). It cannot see
+  through `ssh`, so an agent started by hand in an SSH tab is only recognized
+  when it is Claude Code (its `✳ …` title) or when the tab was opened from the
+  AI History resume action / a tmux pane; the OSC 7748 hook marker remains the
+  authoritative source wherever it is installed. On Windows, agents that run
+  as a bare `node.exe` / `python.exe` script (e.g. Gemini CLI) are not named
+  either, because the process command line is not read. Detection reads only
+  the visible viewport and follows herdr's manifests, so an agent UI redesign
+  can show `idle` until the manifest is refreshed
+  (`src/terminal_agents/manifests/README.md`).

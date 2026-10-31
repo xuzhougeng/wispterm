@@ -40,10 +40,13 @@ test "setTitleOverride: legacy title text does not set agent detection" {
 test "markOutputDirty: only the first mark since the UI consumed it requests a wakeup" {
     var surface: Surface = undefined;
     surface.dirty = std.atomic.Value(bool).init(false);
+    surface.agent_screen = .{};
 
     try std.testing.expect(surface.markOutputDirty());
     try std.testing.expect(!surface.markOutputDirty());
     try std.testing.expect(surface.dirty.load(.acquire));
+    // Every output chunk advances the screen-detection epoch.
+    try std.testing.expectEqual(@as(u32, 2), surface.agent_screen.output_epoch.load(.monotonic));
 
     // UI consumed the dirty flag — next output chunk must post a wakeup again.
     _ = surface.dirty.swap(false, .acq_rel);
