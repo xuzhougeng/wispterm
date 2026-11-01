@@ -4,11 +4,21 @@
 //! JSON buffer). Tests supply a fake. Mirrors weixin/control.zig.
 const std = @import("std");
 const protocol = @import("protocol.zig");
+pub const key_names = @import("key_names.zig");
 
 pub const SpawnOptions = struct {
     /// Agent kind label ("" = plain command); seeds the new surface's identity.
     kind: []const u8 = "",
     split: protocol.SpawnSplit = .none,
+};
+
+/// Outcome of `send_keys`.
+pub const SendKeysResult = enum {
+    ok,
+    surface_not_found,
+    /// A key the surface's encoder produced no bytes for (e.g. a chord the
+    /// legacy encoding cannot express); nothing was sent.
+    unencodable_key,
 };
 
 pub const Control = struct {
@@ -22,6 +32,9 @@ pub const Control = struct {
         get_text: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator, id: []const u8, recent: ?u32) anyerror!?[]u8,
         /// Queue raw bytes to surface `id`. Returns false if no live surface.
         send_text: *const fn (ctx: *anyopaque, id: []const u8, data: []const u8) bool,
+        /// Encode `keys` with surface `id`'s live key encoder (Kitty flags,
+        /// DECCKM, …) and queue the bytes as one write.
+        send_keys: *const fn (ctx: *anyopaque, id: []const u8, keys: []const key_names.Spec) SendKeysResult,
         /// Allocator-owned overlay/UI semantic-state JSON object, or null if not
         /// yet published. Complements list_panes (topology) with the overlay layer.
         ui_state: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8,
@@ -48,6 +61,9 @@ pub const Control = struct {
     }
     pub fn sendText(self: Control, id: []const u8, data: []const u8) bool {
         return self.vtable.send_text(self.ctx, id, data);
+    }
+    pub fn sendKeys(self: Control, id: []const u8, keys: []const key_names.Spec) SendKeysResult {
+        return self.vtable.send_keys(self.ctx, id, keys);
     }
     pub fn uiState(self: Control, allocator: std.mem.Allocator) anyerror!?[]u8 {
         return self.vtable.ui_state(self.ctx, allocator);
@@ -77,6 +93,10 @@ test "Control forwards to the vtable" {
         fn send_text(_: *anyopaque, id: []const u8, _: []const u8) bool {
             return std.mem.eql(u8, id, "live");
         }
+        fn send_keys(_: *anyopaque, id: []const u8, keys: []const key_names.Spec) SendKeysResult {
+            if (!std.mem.eql(u8, id, "live")) return .surface_not_found;
+            return if (keys.len == 0) .unencodable_key else .ok;
+        }
         fn ui_state(_: *anyopaque, a: std.mem.Allocator) anyerror!?[]u8 {
             return try a.dupe(u8, "{\"activeOverlay\":\"none\"}");
         }
@@ -98,6 +118,7 @@ test "Control forwards to the vtable" {
                 .list_panes = list_panes,
                 .get_text = get_text,
                 .send_text = send_text,
+                .send_keys = send_keys,
                 .ui_state = ui_state,
                 .spawn = spawn,
                 .agent_state = agent_state,
@@ -106,6 +127,10 @@ test "Control forwards to the vtable" {
         }
     };
     const c = Fake.iface();
+    const esc = [_]key_names.Spec{.{ .key = .escape }};
+    try t.expectEqual(SendKeysResult.ok, c.sendKeys("live", &esc));
+    try t.expectEqual(SendKeysResult.surface_not_found, c.sendKeys("gone", &esc));
+    try t.expectEqual(SendKeysResult.unencodable_key, c.sendKeys("live", &.{}));
     const panes = (try c.listPanes(t.allocator)).?;
     defer t.allocator.free(panes);
     try t.expectEqualStrings("{\"tabs\":[]}", panes);

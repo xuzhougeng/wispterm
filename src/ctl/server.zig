@@ -9,7 +9,11 @@ const std = @import("std");
 const builtin = @import("builtin");
 const protocol = @import("protocol.zig");
 const control_mod = @import("control.zig");
+const key_names = @import("key_names.zig");
 const transport = @import("transport.zig");
+
+/// Upper bound on keys per `send-keys` request (stack-allocated specs).
+pub const max_send_keys: usize = 64;
 
 const MAX_REQUEST_BYTES = 64 * 1024;
 pub const default_rows: u32 = 1000;
@@ -142,6 +146,24 @@ pub const Server = struct {
                     return protocol.encodeError(self.allocator, "surface not found");
                 return protocol.encodeOk(self.allocator);
             },
+            .send_keys => {
+                if (req.id.len == 0) return protocol.encodeError(self.allocator, "missing id");
+                if (req.keys.len == 0) return protocol.encodeError(self.allocator, "missing keys");
+                if (req.keys.len > max_send_keys) return protocol.encodeError(self.allocator, "too many keys");
+                var specs: [max_send_keys]key_names.Spec = undefined;
+                for (req.keys, 0..) |name, i| {
+                    specs[i] = key_names.parse(name) orelse {
+                        const msg = try std.fmt.allocPrint(self.allocator, "unknown key: {s}", .{name});
+                        defer self.allocator.free(msg);
+                        return protocol.encodeError(self.allocator, msg);
+                    };
+                }
+                return switch (self.control.sendKeys(req.id, specs[0..req.keys.len])) {
+                    .ok => protocol.encodeOk(self.allocator),
+                    .surface_not_found => protocol.encodeError(self.allocator, "surface not found"),
+                    .unencodable_key => protocol.encodeError(self.allocator, "key has no encoding in this terminal mode"),
+                };
+            },
             .spawn => {
                 // Queued for the UI thread (tab creation is not thread-safe here);
                 // the ticket is polled with spawn-result for the new surface id.
@@ -224,6 +246,21 @@ const FakeControl = struct {
         self.sent.appendSlice(t.allocator, data) catch return false;
         return true;
     }
+    /// Records keys as "<name>|" (with mods as c/a/s prefixes) so dispatch
+    /// tests can see what reached the control boundary.
+    fn send_keys(ctx: *anyopaque, id: []const u8, keys: []const key_names.Spec) control_mod.SendKeysResult {
+        const self: *FakeControl = @ptrCast(@alignCast(ctx));
+        if (!std.mem.eql(u8, id, "s1")) return .surface_not_found;
+        for (keys) |k| {
+            if (k.key == .f12) return .unencodable_key;
+            if (k.ctrl) self.sent.append(t.allocator, 'c') catch return .surface_not_found;
+            if (k.alt) self.sent.append(t.allocator, 'a') catch return .surface_not_found;
+            if (k.shift) self.sent.append(t.allocator, 's') catch return .surface_not_found;
+            self.sent.appendSlice(t.allocator, @tagName(k.key)) catch return .surface_not_found;
+            self.sent.append(t.allocator, '|') catch return .surface_not_found;
+        }
+        return .ok;
+    }
     fn spawn(ctx: *anyopaque, cwd: []const u8, command: []const u8, opts: control_mod.SpawnOptions) ?u32 {
         const self: *FakeControl = @ptrCast(@alignCast(ctx));
         if (!self.spawn_ok) return null;
@@ -248,6 +285,7 @@ const FakeControl = struct {
             .list_panes = list_panes,
             .get_text = get_text,
             .send_text = send_text,
+            .send_keys = send_keys,
             .ui_state = ui_state,
             .spawn = spawn,
             .agent_state = agent_state,
@@ -308,6 +346,50 @@ test "dispatch panes / get-text / send-text happy + missing paths" {
     defer t.allocator.free(sr);
     try t.expect(std.mem.indexOf(u8, sr, "\"ok\":true") != null);
     try t.expectEqualStrings("echo hi\n", fc.sent.items);
+}
+
+test "dispatch send-keys parses names, forwards specs in order, and reports each failure" {
+    var fc = FakeControl{};
+    defer fc.sent.deinit(t.allocator);
+    var srv = fakeServer(&fc);
+
+    const ok = try protocol.encodeRequest(t.allocator, .{ .token = "secret", .cmd = .send_keys, .id = "s1", .keys = &.{ "esc", "ctrl+c", "shift+tab", "a" } });
+    defer t.allocator.free(ok);
+    const okr = try srv.dispatch(ok);
+    defer t.allocator.free(okr);
+    try t.expect(std.mem.indexOf(u8, okr, "\"ok\":true") != null);
+    try t.expectEqualStrings("escape|cchar|stab|char|", fc.sent.items);
+
+    const bad = try protocol.encodeRequest(t.allocator, .{ .token = "secret", .cmd = .send_keys, .id = "s1", .keys = &.{ "esc", "hyper+q" } });
+    defer t.allocator.free(bad);
+    const badr = try srv.dispatch(bad);
+    defer t.allocator.free(badr);
+    try t.expect(std.mem.indexOf(u8, badr, "unknown key: hyper+q") != null);
+    try t.expectEqualStrings("escape|cchar|stab|char|", fc.sent.items); // nothing more was sent
+
+    const gone = try protocol.encodeRequest(t.allocator, .{ .token = "secret", .cmd = .send_keys, .id = "ghost", .keys = &.{"esc"} });
+    defer t.allocator.free(gone);
+    const goner = try srv.dispatch(gone);
+    defer t.allocator.free(goner);
+    try t.expect(std.mem.indexOf(u8, goner, "surface not found") != null);
+
+    const unenc = try protocol.encodeRequest(t.allocator, .{ .token = "secret", .cmd = .send_keys, .id = "s1", .keys = &.{"f12"} });
+    defer t.allocator.free(unenc);
+    const unencr = try srv.dispatch(unenc);
+    defer t.allocator.free(unencr);
+    try t.expect(std.mem.indexOf(u8, unencr, "no encoding") != null);
+
+    const none = try protocol.encodeRequest(t.allocator, .{ .token = "secret", .cmd = .send_keys, .id = "s1" });
+    defer t.allocator.free(none);
+    const noner = try srv.dispatch(none);
+    defer t.allocator.free(noner);
+    try t.expect(std.mem.indexOf(u8, noner, "missing keys") != null);
+
+    const noid = try protocol.encodeRequest(t.allocator, .{ .token = "secret", .cmd = .send_keys, .keys = &.{"esc"} });
+    defer t.allocator.free(noid);
+    const noidr = try srv.dispatch(noid);
+    defer t.allocator.free(noidr);
+    try t.expect(std.mem.indexOf(u8, noidr, "missing id") != null);
 }
 
 test "dispatch spawn forwards cwd+command+kind+split, returns a ticket, and reports queue-full" {

@@ -119,6 +119,7 @@ comptime {
         _ = @import("input/preview_source.zig");
         _ = @import("input/preview_image_drag.zig");
         _ = @import("input_shortcuts.zig");
+        _ = @import("appwindow/ctl_key_encode.zig");
         _ = @import("html/server.zig");
         _ = @import("keybind.zig");
         _ = @import("kitty_graphics_unit.zig");

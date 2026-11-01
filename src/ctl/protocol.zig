@@ -4,13 +4,14 @@
 //! '\n'-terminated.
 const std = @import("std");
 
-pub const Cmd = enum { panes, get_text, send_text, ui_state, spawn, agent_state, spawn_result };
+pub const Cmd = enum { panes, get_text, send_text, send_keys, ui_state, spawn, agent_state, spawn_result };
 
 pub fn cmdToStr(c: Cmd) []const u8 {
     return switch (c) {
         .panes => "panes",
         .get_text => "get-text",
         .send_text => "send-text",
+        .send_keys => "send-keys",
         .ui_state => "ui-state",
         .spawn => "spawn",
         .agent_state => "agent-state",
@@ -55,6 +56,9 @@ pub const Request = struct {
     id: []const u8 = "",
     recent: ?u32 = null,
     data: []const u8 = "", // send-text input, or spawn's command line
+    /// send-keys: key names in press order (`key_names.zig` grammar). The
+    /// server encodes them with the surface's live key encoder.
+    keys: []const []const u8 = &.{},
     cwd: []const u8 = "", // spawn working directory ("" = inherit active tab's)
     /// spawn: agent kind label ("" = plain command); the UI seeds the new
     /// surface's agent identity with it.
@@ -83,6 +87,14 @@ pub fn encodeRequest(allocator: std.mem.Allocator, req: Request) ![]u8 {
     if (req.cmd == .send_text or req.cmd == .spawn) {
         try out.appendSlice(allocator, ",\"data\":");
         try writeJsonString(allocator, &out, req.data);
+    }
+    if (req.cmd == .send_keys) {
+        try out.appendSlice(allocator, ",\"keys\":[");
+        for (req.keys, 0..) |k, i| {
+            if (i != 0) try out.append(allocator, ',');
+            try writeJsonString(allocator, &out, k);
+        }
+        try out.append(allocator, ']');
     }
     if (req.cwd.len != 0) {
         try out.appendSlice(allocator, ",\"cwd\":");
@@ -131,6 +143,16 @@ pub fn parseRequest(allocator: std.mem.Allocator, line: []const u8) !ParsedReque
     req.cwd = stringField(obj, "cwd") orelse "";
     req.kind = stringField(obj, "kind") orelse "";
     if (stringField(obj, "split")) |s| req.split = SpawnSplit.parse(s) orelse return error.InvalidRequest;
+    if (obj.get("keys")) |v| {
+        if (v != .array) return error.InvalidRequest;
+        // Backed by the parsed arena, freed with the ParsedRequest.
+        const keys = try parsed.arena.allocator().alloc([]const u8, v.array.items.len);
+        for (v.array.items, 0..) |item, i| {
+            if (item != .string) return error.InvalidRequest;
+            keys[i] = item.string;
+        }
+        req.keys = keys;
+    }
     if (obj.get("recent")) |v| {
         // Clamp to u32 range: a huge value must not panic (@intCast) the server
         // thread — and parseRequest runs BEFORE token auth, so this is reachable
@@ -295,6 +317,31 @@ test "spawn round-trips kind + split; spawn-result carries its ticket" {
     try t.expectEqual(@as(?u32, 7), rr.value.ticket);
 
     try t.expectError(error.InvalidRequest, parseRequest(t.allocator, "{\"cmd\":\"spawn\",\"split\":\"sideways\"}"));
+}
+
+test "send-keys carries its key list and rejects a malformed one" {
+    try t.expectEqual(Cmd.send_keys, cmdFromStr("send-keys").?);
+    const line = try encodeRequest(t.allocator, .{ .token = "tok", .cmd = .send_keys, .id = "s1", .keys = &.{ "esc", "ctrl+c", "\"q\"" } });
+    defer t.allocator.free(line);
+    try t.expect(std.mem.indexOf(u8, line, "\"keys\":[\"esc\",\"ctrl+c\",\"\\\"q\\\"\"]") != null);
+    var pr = try parseRequest(t.allocator, line);
+    defer pr.deinit();
+    try t.expectEqual(Cmd.send_keys, pr.value.cmd);
+    try t.expectEqualStrings("s1", pr.value.id);
+    try t.expectEqual(@as(usize, 3), pr.value.keys.len);
+    try t.expectEqualStrings("ctrl+c", pr.value.keys[1]);
+    try t.expectEqualStrings("\"q\"", pr.value.keys[2]);
+
+    // Other commands never emit the field, and a non-array / non-string
+    // list is a malformed request.
+    const text = try encodeRequest(t.allocator, .{ .token = "tok", .cmd = .send_text, .id = "s1", .data = "x" });
+    defer t.allocator.free(text);
+    try t.expect(std.mem.indexOf(u8, text, "keys") == null);
+    try t.expectError(error.InvalidRequest, parseRequest(t.allocator, "{\"cmd\":\"send-keys\",\"keys\":\"esc\"}"));
+    try t.expectError(error.InvalidRequest, parseRequest(t.allocator, "{\"cmd\":\"send-keys\",\"keys\":[1]}"));
+    var empty = try parseRequest(t.allocator, "{\"cmd\":\"send-keys\",\"id\":\"s1\"}");
+    defer empty.deinit();
+    try t.expectEqual(@as(usize, 0), empty.value.keys.len);
 }
 
 test "agent-state command round-trips" {

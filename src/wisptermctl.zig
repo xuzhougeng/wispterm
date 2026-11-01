@@ -6,6 +6,7 @@
 //!   wisptermctl panes
 //!   wisptermctl get-text    -t <surface-id> [--recent N]
 //!   wisptermctl send-text   -t <surface-id> "<text with \n \t \xNN escapes>"
+//!   wisptermctl send-keys   -t <surface-id> <key>... (esc, enter, ctrl+c, shift+tab, up, f5, …)
 //!   wisptermctl wait-for    -t <surface-id> "<substring|regex>" [--regex] [--lines N] [--timeout SECONDS]
 //!   wisptermctl spawn       [--cwd DIR] [--kind AGENT] [--split right|down] [--wait-ready] [-- program args...]
 //!   wisptermctl agent-state -t <surface-id>
@@ -50,8 +51,9 @@ pub fn main() !void {
     const raw_args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, raw_args);
 
-    const action = client.parseArgs(raw_args[1..]) catch {
-        // Unknown command / bad flags: usage to stderr, non-zero exit.
+    const action = client.parseArgs(raw_args[1..]) catch |err| {
+        // Unknown command / bad flags: the reason, then usage, to stderr.
+        try stderrPrint(allocator, "wisptermctl: {s}\n\n", .{@errorName(err)});
         try stderrAll(USAGE);
         std.process.exit(2);
     };
@@ -75,6 +77,7 @@ pub fn main() !void {
             defer allocator.free(data);
             try runOnce(allocator, info, .{ .token = info.token, .cmd = .send_text, .id = s.id, .data = data }, .ok_only);
         },
+        .send_keys => |k| try runOnce(allocator, info, .{ .token = info.token, .cmd = .send_keys, .id = k.id, .keys = k.keys }, .ok_only),
         .spawn => |sp| try runSpawn(allocator, info, sp),
         .wait_for => |w| try runWaitFor(allocator, info, w),
         .agent_state => |a| try runOnce(allocator, info, .{ .token = info.token, .cmd = .agent_state, .id = a.id }, .raw),
@@ -428,6 +431,13 @@ const USAGE =
     \\      Print a surface's terminal text. --recent N prepends N scrollback rows.
     \\  wisptermctl send-text -t <surface-id> "<text>"
     \\      Send input to a surface. Escapes: \n \r \t \0 \\ \xNN (e.g. "ls\n").
+    \\  wisptermctl send-keys -t <surface-id> <key>...
+    \\      Press named keys in order, encoded exactly as a keypress in that pane
+    \\      would be (Kitty keyboard protocol, application cursor keys). Keys:
+    \\      a single character, enter, tab, esc, backspace, space, delete,
+    \\      insert, home, end, pageup, pagedown, up/down/left/right, f1-f12,
+    \\      named punctuation (minus, plus, backtick, ...), and chords such as
+    \\      ctrl+c, alt+x, shift+tab, ctrl+shift+s (C-c / M-x also work).
     \\  wisptermctl wait-for -t <surface-id> "<pattern>" [--regex] [--lines N] [--timeout SECONDS]
     \\      Poll get-text until the output contains <pattern> (default 60s).
     \\      --regex matches the pattern against each line; --lines N searches

@@ -29,6 +29,9 @@ test "ctl server answers a real loopback request and stops cleanly" {
             @memset(out, 'x');
             return out;
         }
+        fn send_keys(_: *anyopaque, _: []const u8, _: []const control_mod.key_names.Spec) control_mod.SendKeysResult {
+            return .ok;
+        }
         fn send_text(_: *anyopaque, _: []const u8, _: []const u8) bool {
             return false;
         }
@@ -46,7 +49,7 @@ test "ctl server answers a real loopback request and stops cleanly" {
         }
         var dummy: u8 = 0;
         fn iface() control_mod.Control {
-            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text, .ui_state = ui_state, .spawn = spawn, .agent_state = agent_state, .spawn_result = spawn_result } };
+            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text, .send_keys = send_keys, .ui_state = ui_state, .spawn = spawn, .agent_state = agent_state, .spawn_result = spawn_result } };
         }
     };
 
@@ -123,6 +126,9 @@ test "ctl server shutdown does not hang on a stalled (newline-less) connection" 
         fn get_text(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: ?u32) anyerror!?[]u8 {
             return null;
         }
+        fn send_keys(_: *anyopaque, _: []const u8, _: []const control_mod.key_names.Spec) control_mod.SendKeysResult {
+            return .ok;
+        }
         fn send_text(_: *anyopaque, _: []const u8, _: []const u8) bool {
             return false;
         }
@@ -140,7 +146,7 @@ test "ctl server shutdown does not hang on a stalled (newline-less) connection" 
         }
         var dummy: u8 = 0;
         fn iface() control_mod.Control {
-            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text, .ui_state = ui_state, .spawn = spawn, .agent_state = agent_state, .spawn_result = spawn_result } };
+            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text, .send_keys = send_keys, .ui_state = ui_state, .spawn = spawn, .agent_state = agent_state, .spawn_result = spawn_result } };
         }
     };
 
