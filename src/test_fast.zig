@@ -386,6 +386,7 @@ test {
     _ = @import("ctl/control.zig");
     _ = @import("ctl/server.zig");
     _ = @import("ctl/client.zig");
+    _ = @import("ctl/key_names.zig");
     _ = @import("ctl/transport.zig");
     _ = @import("ctl/ui_state.zig");
     _ = @import("preview/png_dimensions.zig");

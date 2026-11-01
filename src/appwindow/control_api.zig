@@ -6,6 +6,7 @@ const remote = @import("../remote_client.zig");
 const remote_snapshot = @import("../remote_snapshot.zig");
 const ctl_control = @import("../ctl/control.zig");
 const ctl_protocol = @import("../ctl/protocol.zig");
+const ctl_key_encode = @import("ctl_key_encode.zig");
 const surface_registry = @import("../surface_registry.zig");
 const window_backend = @import("../platform/window_backend.zig");
 const active_tab_state = @import("active_tab.zig");
@@ -111,6 +112,36 @@ fn ctlSendText(ctx: *anyopaque, id: []const u8, data: []const u8) bool {
         return false;
     };
     return true;
+}
+
+/// `send-keys`: encode with the surface's live key encoder state and queue
+/// the whole sequence as one PTY write, so a chord cannot be split by the
+/// agent's own output between keys.
+fn ctlSendKeys(ctx: *anyopaque, id: []const u8, keys: []const ctl_control.key_names.Spec) ctl_control.SendKeysResult {
+    _ = ctx;
+    const ptr = surface_registry.acquireById(id) orelse return .surface_not_found;
+    defer surface_registry.release();
+    const surface: *Surface = @ptrCast(@alignCast(ptr));
+    // The IO thread mutates terminal modes under render_state.mutex.
+    const opts = blk: {
+        surface.render_state.mutex.lock();
+        defer surface.render_state.mutex.unlock();
+        break :blk ctl_key_encode.optionsForTerminal(&surface.terminal);
+    };
+    var bytes: std.ArrayListUnmanaged(u8) = .empty;
+    defer bytes.deinit(std.heap.page_allocator);
+    ctl_key_encode.encodeAll(std.heap.page_allocator, opts, keys, &bytes) catch |err| switch (err) {
+        error.UnencodableKey => return .unencodable_key,
+        error.OutOfMemory => return .surface_not_found,
+    };
+    surface.queuePtyWrite(bytes.items) catch |err| {
+        std.log.scoped(.control).warn(
+            "dropped control key write ({d} bytes): {s}",
+            .{ bytes.items.len, @errorName(err) },
+        );
+        return .surface_not_found;
+    };
+    return .ok;
 }
 
 fn ctlUiState(ctx: *anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 {
@@ -242,6 +273,7 @@ const ctl_vtable = ctl_control.Control.VTable{
     .list_panes = ctlListPanes,
     .get_text = ctlGetText,
     .send_text = ctlSendText,
+    .send_keys = ctlSendKeys,
     .ui_state = ctlUiState,
     .spawn = ctlSpawn,
     .agent_state = ctlAgentState,
@@ -423,6 +455,8 @@ test "ctl surface callbacks reject an unregistered id without dereferencing" {
     const c = control();
     try std.testing.expect((try c.getText(std.testing.allocator, "missing", null)) == null);
     try std.testing.expect(!c.sendText("missing", "x"));
+    const esc = [_]ctl_control.key_names.Spec{.{ .key = .escape }};
+    try std.testing.expectEqual(ctl_control.SendKeysResult.surface_not_found, c.sendKeys("missing", &esc));
 }
 
 var g_test_spawn_log: std.ArrayListUnmanaged(u8) = .empty;

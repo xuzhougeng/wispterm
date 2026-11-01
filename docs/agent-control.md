@@ -54,6 +54,20 @@ wisptermctl send-text -t <surface-id> "<text>"
     Send input to a surface. C-style escapes are decoded: \n \r \t \0 \\ \xNN.
     To run a command, include a trailing newline, e.g. "cargo test\n".
 
+wisptermctl send-keys -t <surface-id> <key>...
+    Press named keys in order. Each key is encoded the way a keypress in that
+    pane would be — honoring the Kitty keyboard protocol and application
+    cursor-key mode the foreground program enabled — so `shift+enter` reaches
+    Claude Code as "insert newline" and `up` reaches a TUI in the form it
+    expects. Key names (case-insensitive, herdr's grammar): a single
+    character (`a`, `/`, `你`); `enter`, `tab`, `esc`, `backspace`, `space`,
+    `delete`, `insert`, `home`, `end`, `pageup`, `pagedown`, `up`, `down`,
+    `left`, `right`, `f1`..`f12`; named punctuation (`minus`, `plus`,
+    `backtick`, `comma`, `period`, `slash`, ...); and chords joined with `+`:
+    `ctrl+c`, `alt+x`, `shift+tab`, `ctrl+shift+s`. Legacy `C-c` / `M-x`
+    are accepted. All keys go out as one write. An unknown name exits 2
+    before anything is sent.
+
 wisptermctl wait-for -t <surface-id> "<pattern>" [--regex] [--lines N] [--timeout SECONDS]
     Poll get-text until the output contains <pattern> (default 60s). With
     --regex the pattern is matched against each line (the same regex dialect
@@ -116,7 +130,8 @@ wisptermctl get-text -t "$pane" --recent 120
 ```sh
 wisptermctl wait-agent -t "$pane" --until blocked --timeout 120
 wisptermctl get-text -t "$pane"
-wisptermctl send-text -t "$pane" "1\r"     # or "\x1b" to cancel
+wisptermctl send-text -t "$pane" "1\r"     # pick option 1
+wisptermctl send-keys -t "$pane" esc        # or cancel the dialog
 ```
 
 ### Example: jump to a saved session in its own tab
@@ -154,8 +169,8 @@ Linux/SDL).
 ## Limitations
 
 - No per-command exit-status / "last activity" metadata.
-- No named special-key syntax yet (use `\xNN` escapes in `send-text`, e.g.
-  `\x03` for Ctrl-C, `\x1b` for Esc).
+- `send-keys` covers the keys listed above; anything else (e.g. `f13`, a
+  super/cmd chord) still needs raw `\xNN` escapes in `send-text`.
 - No remote (off-machine) mode — local loopback only.
 - One request per connection; `wait-for`, `wait-agent` and `prompt --wait`
   reconnect each poll (every 500 ms for text, 100 ms for agent state).

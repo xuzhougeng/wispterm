@@ -4,6 +4,7 @@
 //! these helpers.
 const std = @import("std");
 const protocol = @import("protocol.zig");
+const key_names = @import("key_names.zig");
 const screen_regex = @import("../terminal_agents/screen_regex.zig");
 const agent_detector = @import("../terminal_agents/detector.zig");
 
@@ -47,6 +48,9 @@ pub const Action = union(enum) {
     panes,
     get_text: struct { id: []const u8, recent: ?u32 },
     send_text: struct { id: []const u8, data: []const u8 }, // data still escaped
+    /// Key names in press order; every one already validated with
+    /// `key_names.parse` so a typo fails before any request is sent.
+    send_keys: struct { id: []const u8, keys: []const []const u8 },
     wait_for: struct {
         id: []const u8,
         pattern: []const u8,
@@ -189,6 +193,13 @@ pub fn parseArgs(args: []const []const u8) !Action {
         const text = positionalAfterFlags(args) orelse return error.MissingText;
         return .{ .send_text = .{ .id = id, .data = text } };
     }
+    if (std.mem.eql(u8, cmd, "send-keys")) {
+        const id = (try flagValue(args, "-t")) orelse return error.MissingTarget;
+        const keys = positionalTailAfterFlags(args);
+        if (keys.len == 0) return error.MissingKeys;
+        for (keys) |k| if (key_names.parse(k) == null) return error.UnknownKey;
+        return .{ .send_keys = .{ .id = id, .keys = keys } };
+    }
     if (std.mem.eql(u8, cmd, "spawn")) {
         const cwd = (try flagValue(args, "--cwd")) orelse "";
         const kind = (try flagValue(args, "--kind")) orelse "";
@@ -278,6 +289,24 @@ fn flagValue(args: []const []const u8, flag: []const u8) !?[]const u8 {
         }
     }
     return null;
+}
+
+/// Everything from the first positional (see `positionalAfterFlags`) to the
+/// end of argv, or everything after a literal `--`. Flags must precede the
+/// list: a flag-looking token inside it is taken as a key name and fails
+/// key parsing with a clear error rather than being silently swallowed.
+fn positionalTailAfterFlags(args: []const []const u8) []const []const u8 {
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--")) return args[i + 1 ..];
+        if (isKnownFlag(args[i])) {
+            i += 1;
+            continue;
+        }
+        if (isKnownSwitch(args[i])) continue;
+        return args[i..];
+    }
+    return args[args.len..];
 }
 
 /// First token (after the command) that is neither a known flag nor a flag's
@@ -473,6 +502,23 @@ test "parseArgs: large --timeout does not overflow u32 (clamps)" {
     try t.expectEqual(@as(u32, std.math.maxInt(u32)), w.wait_for.timeout_ms); // 5_000_000 * 1000 clamped
     // An out-of-u32 seconds value is a clean parse error, not a crash.
     try t.expectError(error.Overflow, parseArgs(&.{ "wait-for", "-t", "s1", "done", "--timeout", "99999999999" }));
+}
+
+test "parseArgs send-keys: key list after flags, validated up front" {
+    const k = try parseArgs(&.{ "send-keys", "-t", "s1", "esc", "ctrl+c", "Enter" });
+    try t.expectEqualStrings("s1", k.send_keys.id);
+    try t.expectEqual(@as(usize, 3), k.send_keys.keys.len);
+    try t.expectEqualStrings("ctrl+c", k.send_keys.keys[1]);
+    // `--` ends options so a key spelled like a flag (none exist today, but
+    // `-t` as a chord part could) is still taken verbatim.
+    const dd = try parseArgs(&.{ "send-keys", "-t", "s1", "--", "up", "down" });
+    try t.expectEqual(@as(usize, 2), dd.send_keys.keys.len);
+    try t.expectEqualStrings("up", dd.send_keys.keys[0]);
+    // Flags after the list are key names, and fail as such.
+    try t.expectError(error.UnknownKey, parseArgs(&.{ "send-keys", "esc", "-t", "s1" }));
+    try t.expectError(error.UnknownKey, parseArgs(&.{ "send-keys", "-t", "s1", "esc", "hyper+q" }));
+    try t.expectError(error.MissingKeys, parseArgs(&.{ "send-keys", "-t", "s1" }));
+    try t.expectError(error.MissingTarget, parseArgs(&.{ "send-keys", "esc" }));
 }
 
 test "parseArgs: -- lets a body equal to a reserved flag through" {
