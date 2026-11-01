@@ -32,6 +32,8 @@ const platform_menu = @import("platform/menu.zig");
 const platform_notifications = @import("platform/notifications.zig");
 const notif_mod = @import("notification.zig");
 const agent_detector = @import("terminal_agents/detector.zig");
+const pi_shutdown_state = @import("terminal_agents/pi_shutdown.zig");
+const close_shortcut_state = @import("ui/close_shortcut_confirm.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const copilot_hint_gate = @import("assistant/sidebar/hint_gate.zig");
 const platform_window_state = @import("platform/window_state.zig");
@@ -44,9 +46,13 @@ const keybind = @import("keybind.zig");
 const thread_message = @import("appwindow/thread_message.zig");
 const skill_center_actions = @import("appwindow/skill_center_actions.zig");
 const copilot_sidebar = @import("appwindow/copilot_sidebar.zig");
+const right_dock = @import("appwindow/right_dock.zig");
+const right_dock_actions = @import("appwindow/right_dock_actions.zig");
 const appwindow_state = @import("appwindow/state.zig");
 const ssh_latency = @import("ssh/latency.zig");
 const render_diagnostics = @import("render_diagnostics.zig");
+const frame_timing = @import("appwindow/frame_timing.zig");
+const frame_damage = @import("renderer/frame_damage.zig");
 const ime_caret = @import("ime_caret.zig");
 const hit_test = @import("input/hit_test.zig");
 pub const ai_chat = @import("assistant/conversation/session.zig");
@@ -55,6 +61,7 @@ const session_identity = @import("assistant/conversation/identity.zig");
 const ai_chat_types = @import("assistant/conversation/types.zig");
 const ai_history_cache = @import("terminal_agents/sessions/cache.zig");
 const ai_history_resume = @import("terminal_agents/sessions/resume.zig");
+const screen_detect = @import("terminal_agents/screen_detect.zig");
 const ai_history_markdown = @import("terminal_agents/sessions/markdown.zig");
 const ai_loop_store = @import("assistant/loop/store.zig");
 const ai_history_types = @import("terminal_agents/sessions/types.zig");
@@ -83,6 +90,7 @@ const skill_diff = @import("skill/diff.zig");
 const scp = @import("ssh/scp.zig");
 const ssh_error = @import("ssh/error.zig");
 const i18n = @import("i18n.zig");
+const update_check = @import("update_check.zig");
 pub const tab = @import("appwindow/tab.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
 const link_open = @import("link_open.zig");
@@ -93,7 +101,7 @@ const conversation_center_session = @import("conversation_center/session.zig");
 pub const font = @import("font/manager.zig");
 pub const cell_renderer = @import("renderer/cell_renderer.zig");
 const cell_pipeline = @import("renderer/cell_pipeline.zig");
-pub const ui_pipeline = @import("renderer/ui_pipeline.zig");
+const ui_pipeline = @import("renderer/ui_pipeline.zig");
 pub const titlebar = @import("renderer/titlebar.zig");
 pub const input = @import("input.zig");
 pub const overlays = @import("renderer/overlays.zig");
@@ -105,6 +113,7 @@ const d3d11_fallback_marker = @import("renderer/gpu/d3d11/fallback_marker.zig");
 pub const gpu = @import("renderer/gpu/gpu.zig");
 pub const split_layout = @import("appwindow/split_layout.zig");
 const render_gate = @import("appwindow/render_gate.zig");
+const ai_stream_gate = @import("appwindow/ai_stream_gate.zig");
 const frame_scheduler = @import("appwindow/frame_scheduler.zig");
 const frame_latency = @import("appwindow/frame_latency.zig");
 const flush_scheduler = @import("appwindow/flush_scheduler.zig");
@@ -125,6 +134,7 @@ const bench_report = @import("benchmark/report.zig");
 pub const background_image = @import("renderer/background_image.zig");
 pub const file_explorer = @import("file_explorer.zig");
 const file_explorer_renderer = @import("renderer/file_explorer_renderer.zig");
+const right_dock_renderer = @import("renderer/right_dock_renderer.zig");
 const markdown_preview_renderer = @import("renderer/markdown_preview_renderer.zig");
 pub const weixin_qr_panel = @import("weixin/qr_panel.zig");
 const weixin_qr_renderer = @import("renderer/weixin_qr_renderer.zig");
@@ -142,6 +152,12 @@ const memory_center_renderer = @import("renderer/memory_center_renderer.zig");
 const conversation_center_renderer = @import("renderer/conversation_center_renderer.zig");
 const skill_center_renderer = @import("renderer/skill_center_renderer.zig");
 const port_forwarding_renderer = @import("renderer/port_forwarding_renderer.zig");
+const password_store_renderer = @import("renderer/password_store_renderer.zig");
+const password_store_page = @import("credential/page.zig");
+const password_store = @import("credential/store.zig");
+const sync_bridge = @import("appwindow/sync_bridge.zig");
+const sync_page = @import("sync/page.zig");
+const input_key = @import("input/key.zig");
 const ai_sidebar = @import("assistant/sidebar/panel.zig");
 pub const ui_perf = @import("ui_perf.zig");
 const log = std.log.scoped(.app_window);
@@ -162,6 +178,7 @@ allocator: std.mem.Allocator,
 app: *App,
 native_handle_bits: std.atomic.Value(usize) = .init(0),
 force_close_requested: std.atomic.Value(bool) = .init(false),
+pi_shutdown: pi_shutdown_state.Coordinator = .{},
 // Recipe staged for this window by App.requestNewWindowWithRecipe; consumed
 // once by the startup branch in runMainLoop.
 initial_recipe_path: [std.fs.max_path_bytes]u8 = undefined,
@@ -233,6 +250,9 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     // Rewind picker `f`: fork the session before the selected user message
     // (the source session stays intact). The payload ordinal is already mapped
     // to record user-message counting by the session layer.
+    // Request threads wake the render loop after each streamed change; the
+    // loop no longer repaints every iteration just because a request is open.
+    ai_chat.setUiWakeTrigger(window_backend.postWakeup);
     ai_chat.setForkAtRewindTrigger(struct {
         fn cb(session: *ai_chat.Session, user_point: usize) void {
             forkAiChatSession(session, user_point);
@@ -241,6 +261,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     app.maybeStartStartupUpdateCheck();
 
     try ensureGlobalAgentHistoryStore(allocator);
+    sync_bridge.startService(allocator, .{ .store = &g_agent_history, .mutex = &g_agent_history_mutex, .mark_dirty = markAgentHistoryDirtyLocked });
     tab.g_ai_history_change_hook = saveAiHistoryChangeEvent;
     installSessionRestoreHooks();
     // Init the scheduler store once per process (guard prevents re-init on
@@ -257,7 +278,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
 
     // Apply config from App to globals
     g_theme = app.theme;
-    g_force_rebuild = true;
+    applyUiEffect(.{ .needs_rebuild = true });
     g_cursor_style = app.cursor_style;
     g_cursor_blink = app.cursor_blink;
     overlays.g_debug_fps = app.debug_fps;
@@ -269,10 +290,14 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     g_focus_follows_mouse = app.focus_follows_mouse;
     g_copy_on_select = app.copy_on_select;
     g_copilot_hint = app.copilot_hint;
+    titlebar.setToolbarMode(app.window_show_toolbar);
+    _ = right_dock_actions.applyPlacement(dockPlacement(app.file_explorer_position));
+    right_dock_actions.restoreWidth(app.allocator);
     g_right_click_action = app.right_click_action;
     link_open.current_mode = app.url_open_mode;
     g_ssh_legacy_algorithms = app.ssh_legacy_algorithms;
     tab.g_ssh_legacy_algorithms = app.ssh_legacy_algorithms;
+    tab.g_ssh_terminal_capabilities = app.ssh_advertise_terminal_capabilities;
     g_weixin_notify_forward = app.weixin_notify_forward;
     overlays.g_split_divider_color = app.split_divider_color;
 
@@ -362,6 +387,12 @@ pub var g_skill_center_open_file_override: ?*const fn (std.mem.Allocator, platfo
 /// Request this window to exit without showing the interactive close prompt.
 pub fn requestForceClose(self: *AppWindow) void {
     self.force_close_requested.store(true, .release);
+}
+
+/// Request a confirmed window close to ask capable Pi sessions to shut down
+/// gracefully before the PTYs are destroyed.
+pub fn requestGracefulClose() void {
+    close_shortcut_state.requestGracefulClose();
 }
 
 fn consumeForceCloseRequest(self: *AppWindow) bool {
@@ -1424,7 +1455,7 @@ test "AppWindow: markdown export target includes visible copilot sidebar" {
         .ai_chat_session = null,
         .ai_history_session = null,
         .copilot_session = &copilot,
-        .copilot_visible = true,
+        .right_dock = .{ .open = true, .panel = .copilot },
     };
     tab.g_tabs[0] = &terminal_tab;
     tab.g_tab_count = 1;
@@ -1689,9 +1720,18 @@ fn syncBackendSurfaceSize(fb_width: c_int, fb_height: c_int) void {
     }
 }
 
-fn presentBackendFrame(win: *window_backend.Window) void {
+fn includeRendererDamage(collector: *frame_damage.Collector, rend: anytype, origin_x: f32, origin_y: f32, width: c_int, height: c_int) void {
+    const damage = cell_renderer.damageForRenderer(rend);
+    if (!damage.valid or damage.full) {
+        collector.markFull();
+        return;
+    }
+    collector.includeRows(origin_x, origin_y, font.cell_width, font.cell_height, damage.row_start, damage.row_end, width, height);
+}
+
+fn presentBackendFrame(win: *window_backend.Window, damage: ?frame_damage.Rect) void {
     if (comptime gpu.active == .d3d11) {
-        gpu.Context.present() catch |err| {
+        gpu.Context.present(damage) catch |err| {
             render_diagnostics.log("gpu-backend=d3d11 present failed: {s}", .{@errorName(err)});
             std.debug.print("D3D11 present failed: {s}\n", .{@errorName(err)});
         };
@@ -2263,6 +2303,45 @@ fn renderPortForwardingFrame(active_tab: *TabState, fb_width: c_int, fb_height: 
     );
 }
 
+fn renderPasswordStoreFrame(fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
+    gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
+    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    clearWithBackground(fb_width, fb_height);
+    titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    const content_w = @max(1, @as(f32, @floatFromInt(fb_width)) - left_panels_w - right_panels_w);
+    const state = password_store_page.state();
+    const geo = password_store_renderer.compute(state, @floatFromInt(fb_height), titlebar_offset, left_panels_w, content_w, font.g_titlebar_cell_height);
+    password_store_renderer.render(.{
+        .bg = g_theme.background,
+        .fg = g_theme.foreground,
+        .accent = g_theme.cursor_color,
+        .cell_h = font.g_titlebar_cell_height,
+        .fillQuadAlpha = ui_pipeline.fillQuadAlpha,
+        .roundedQuadAlpha = overlays.renderRoundedQuadAlpha,
+        .renderTextLimited = titlebar.renderTextLimited,
+        .glyphAdvance = titlebar.titlebarGlyphAdvance,
+    }, state, geo, @floatFromInt(fb_height));
+}
+
+fn renderSyncFrame(fb_width: c_int, fb_height: c_int, titlebar_offset: f32) void {
+    gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
+    ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    clearWithBackground(fb_width, fb_height);
+    titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    sync_bridge.render(.{
+        .bg = g_theme.background,
+        .fg = g_theme.foreground,
+        .accent = g_theme.cursor_color,
+        .cell_h = font.g_titlebar_cell_height,
+        .fillQuadAlpha = ui_pipeline.fillQuadAlpha,
+        .roundedQuadAlpha = overlays.renderRoundedQuadAlpha,
+        .renderTextLimited = titlebar.renderTextLimited,
+        .glyphAdvance = titlebar.titlebarGlyphAdvance,
+    }, syncPageFrame(fb_width, fb_height));
+}
+
 fn renderSettingsFrame(fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
     gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
     ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
@@ -2325,45 +2404,6 @@ fn scInstallPickItemAt(ctx: *anyopaque, i: usize) skill_center_renderer.ListItem
     return .{ .label = label, .marker = "" };
 }
 var g_sc_pick_label_buf: [64][256]u8 = undefined;
-
-fn renderAiCopilotPanel(fb_width: c_int, fb_height: c_int, titlebar_offset: f32) void {
-    if (!aiCopilotVisible()) return;
-    const session = ensureActiveCopilotSession() orelse return;
-    const left = leftPanelsWidth();
-    const bounds = ai_sidebar.boundsForWindow(@intCast(fb_width), @intCast(fb_height), titlebar_offset, left, 0);
-    const chat_x: f32 = @floatFromInt(bounds.left);
-    const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
-    assistant_conversation_renderer.render(session, @floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, chat_x, chat_w, true); // copilot sidebar: status shown as a colored dot
-    renderAiCopilotCloseButton(bounds, @floatFromInt(fb_height));
-}
-
-fn renderAiCopilotCloseButton(bounds: ai_sidebar.Bounds, window_height: f32) void {
-    const layout: hit_test.PanelHeaderLayout = .{
-        .visible = true,
-        .left = @floatFromInt(bounds.left),
-        .right = @floatFromInt(bounds.right),
-        .top = @floatFromInt(bounds.top),
-        .height = assistant_conversation_renderer.HEADER_H,
-    };
-    const close = hit_test.panelCloseButtonRect(layout) orelse return;
-    const close_x: f32 = @floatCast(close.left);
-    const close_w: f32 = @floatCast(close.width);
-    const close_h: f32 = @floatCast(close.height);
-    const close_y = window_height - @as(f32, @floatCast(close.top + close.height));
-
-    const bg = g_theme.background;
-    const fg = g_theme.foreground;
-    const hovered = blk: {
-        const win = g_window orelse break :blk false;
-        const mouse = window_backend.mousePosition(win);
-        if (mouse.x < 0 or mouse.y < 0) break :blk false;
-        break :blk hit_test.panelHeaderCloseButton(layout, @floatFromInt(mouse.x), @floatFromInt(mouse.y));
-    };
-    if (hovered) {
-        ui_pipeline.fillQuadAlpha(close_x + 6, close_y + @round((close_h - 20) / 2), 20, 20, mixColor(bg, fg, 0.14), 0.95);
-    }
-    titlebar.renderCloseIcon(close_x, close_y, close_w, close_h, if (hovered) fg else mixColor(bg, fg, 0.68));
-}
 
 fn mixColor(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
     const clamped = @max(0.0, @min(1.0, t));
@@ -3305,7 +3345,10 @@ pub fn spawnResumeTerminal(target: ai_history_source.Target, meta: ai_history_ty
                 }
                 return showAiHistoryResumeToast("Cannot resume: command is too long");
             };
-            if (spawnTabWithCommandUtf8(command)) return true;
+            if (spawnTabWithCommandUtf8ReturningSurface(command)) |surface| {
+                surface.agent_screen.seed(screen_detect.appForProvider(meta.provider));
+                return true;
+            }
             return showAiHistoryResumeToast("Cannot resume: failed to open resume tab");
         },
         .wsl => {
@@ -3315,7 +3358,10 @@ pub fn spawnResumeTerminal(target: ai_history_source.Target, meta: ai_history_ty
                 return showAiHistoryResumeFailure(err, meta);
             };
             const command = platform_pty_command.wslShellCommand(command_buf[0..], user_shell_cmd) orelse return showAiHistoryResumeToast("Cannot resume: command is too long");
-            if (spawnTabWithCommandUtf8(command)) return true;
+            if (spawnTabWithCommandUtf8ReturningSurface(command)) |surface| {
+                surface.agent_screen.seed(screen_detect.appForProvider(meta.provider));
+                return true;
+            }
             return showAiHistoryResumeToast("Cannot resume: failed to open resume tab");
         },
         .ssh => |ssh| {
@@ -3325,7 +3371,12 @@ pub fn spawnResumeTerminal(target: ai_history_source.Target, meta: ai_history_ty
                 return showAiHistoryResumeFailure(err, meta);
             };
             return switch (overlays.aiHistoryConnectSshProfile(ssh.profile_name, user_shell_cmd)) {
-                .connected => true,
+                .connected => |surface| blk: {
+                    // The remote agent's process is invisible from here; the
+                    // launcher knows which agent it started.
+                    surface.agent_screen.seed(screen_detect.appForProvider(meta.provider));
+                    break :blk true;
+                },
                 .not_found => {
                     return showAiHistoryResumeToast("Cannot resume: SSH profile not found");
                 },
@@ -4030,13 +4081,6 @@ pub fn forkActiveAiChatSession(fork_at_user_point: ?usize) void {
 
 fn forkAiChatSession(session: *ai_chat.Session, fork_at_user_point: ?usize) void {
     const allocator = g_allocator orelse return;
-    // An ACP session's context lives in the external agent process; copying the
-    // local transcript would not fork that state, so refuse up front.
-    if (session.acp_command.len > 0) {
-        overlays.showStatusToast("ACP sessions cannot be forked");
-        markUiDirty();
-        return;
-    }
     if (session.request_inflight) {
         overlays.showStatusToast("Wait for the current reply to finish, then fork");
         markUiDirty();
@@ -4133,28 +4177,124 @@ pub fn aiCopilotVisible() bool {
     return copilot_sidebar.visible();
 }
 
-/// True when a right-docked panel (browser / Jupyter webview) is showing for the
-/// active tab. The Copilot edge handle defers while one is up, since they share
-/// the exclusive right slot.
+/// True when a right-docked webview panel (browser / Jupyter) is showing for
+/// the active tab. It and the right dock are mutually exclusive.
 pub fn anyRightDockPanelVisible() bool {
     return browser_panel.isVisibleForActiveTab();
 }
 
-/// Hide the active tab's copilot panel if visible (used by the right-slot
-/// arbiter when another right panel opens). No-op if already hidden.
+/// Close the Copilot tab of the active tab's dock if it is the panel showing
+/// (Escape in Copilot). No-op otherwise.
 pub fn hideAiCopilot() void {
-    copilot_sidebar.hide(copilotSidebarHost());
+    right_dock_actions.hidePanel(rightDockHost(), .copilot);
 }
 
-pub fn aiCopilotWidth(window_width: i32) f32 {
-    return copilot_sidebar.width(window_width, leftPanelsWidth());
+fn rightDockHost() right_dock_actions.Host {
+    return .{
+        .copilot = copilotSidebarHost(),
+        .sync_explorer = syncVisibleFileExplorerForActiveTab,
+        .relayout = rightDockRelayout,
+    };
+}
+
+fn rightDockRelayout() void {
+    requestImmediateLayoutResize();
+    markUiDirty();
+}
+
+/// True when the active tab's right dock (Copilot / Files) is showing.
+pub fn rightDockVisible() bool {
+    return right_dock_actions.visible();
+}
+
+pub fn rightDockActivePanel() ?right_dock.Panel {
+    return right_dock_actions.activePanel();
+}
+
+pub fn toggleRightDockPanel(panel: right_dock.Panel) void {
+    right_dock_actions.toggle(rightDockHost(), panel);
+}
+
+pub fn selectRightDockPanel(panel: right_dock.Panel) void {
+    right_dock_actions.select(rightDockHost(), panel);
+}
+
+/// Close the active tab's dock (header toggle; another right panel opening).
+pub fn closeRightDock() void {
+    right_dock_actions.close(rightDockHost());
+}
+
+/// Remember the dock width after a resize drag ends.
+pub fn persistRightDockWidth() void {
+    right_dock_actions.persistWidth(g_allocator);
+}
+
+/// Reopen the dock on its last panel (closed-state edge handle).
+pub fn summonRightDock() void {
+    right_dock_actions.summon(rightDockHost());
+}
+
+fn dockPlacement(position: Config.FileExplorerPosition) right_dock.Placement {
+    return switch (position) {
+        .right => .right,
+        .left => .left,
+    };
+}
+
+pub fn rightDockUiScale() f32 {
+    return right_dock.uiScaleForDpi(font.g_dpi);
+}
+
+pub fn rightDockTabRowHeight() f32 {
+    return right_dock.tabRowHeight(font.g_titlebar_cell_height, rightDockUiScale());
+}
+
+/// Whole dock rect (tab row + content) for a framebuffer size, or null when
+/// the active tab's dock is closed.
+pub fn rightDockBounds(window_width: i32, window_height: i32) ?right_dock.Bounds {
+    if (!rightDockVisible()) return null;
+    return right_dock.boundsForWindow(window_width, window_height, currentTitlebarHeight(), leftPanelsWidth(), 0);
+}
+
+/// The dock's panel area below its tab row.
+pub fn rightDockContentBounds(window_width: i32, window_height: i32) ?right_dock.Bounds {
+    const dock = rightDockBounds(window_width, window_height) orelse return null;
+    return right_dock.contentBounds(dock, rightDockTabRowHeight());
+}
+
+/// The Copilot conversation rect (dock content area), only while Copilot is
+/// showing. Every Copilot render/hit-test path uses this one source.
+pub fn copilotPanelBounds(window_width: i32, window_height: i32) ?ai_sidebar.Bounds {
+    if (!aiCopilotVisible()) return null;
+    const c = rightDockContentBounds(window_width, window_height) orelse return null;
+    return .{ .left = c.left, .top = c.top, .right = c.right, .bottom = c.bottom };
+}
+
+/// Where the File Explorer panel sits: beside the tab sidebar (`left`) or in
+/// the right dock's content area (`right`). `top` is where its own header
+/// begins. Null when it is not showing for the active tab.
+pub const ExplorerRect = struct {
+    left: f32,
+    right: f32,
+    top: f32,
+    docked: bool,
+};
+
+pub fn fileExplorerPanelRect(window_width: i32, window_height: i32) ?ExplorerRect {
+    if (!file_explorer.isVisibleForActiveTab()) return null;
+    if (file_explorer.isDocked()) {
+        const c = rightDockContentBounds(window_width, window_height) orelse return null;
+        return .{ .left = @floatFromInt(c.left), .right = @floatFromInt(c.right), .top = @floatFromInt(c.top), .docked = true };
+    }
+    const left = titlebar.sidebarWidth();
+    return .{ .left = left, .right = left + file_explorer.width(), .top = currentTitlebarHeight(), .docked = false };
 }
 
 fn makeCopilotSession() ?*ai_chat.Session {
     return overlays.makeCopilotSessionForDefaultProfile();
 }
 
-fn ensureActiveCopilotSession() ?*ai_chat.Session {
+pub fn ensureActiveCopilotSession() ?*ai_chat.Session {
     return copilot_sidebar.ensureActiveSession(copilotSidebarHost());
 }
 
@@ -4263,8 +4403,7 @@ pub fn appendDroppedPathToChatAtPoint(text: []const u8, x: i32, y: i32) bool {
         return false;
     }
 
-    if (aiCopilotVisible()) {
-        const bounds = ai_sidebar.boundsForWindow(size.width, size.height, currentTitlebarHeight(), leftPanelsWidth(), 0);
+    if (copilotPanelBounds(size.width, size.height)) |bounds| {
         if (x >= bounds.left and x < bounds.right and y >= bounds.top and y < bounds.bottom) {
             const session = activeCopilotSessionForInput() orelse return false;
             session.appendInputText(text);
@@ -4277,17 +4416,18 @@ pub fn appendDroppedPathToChatAtPoint(text: []const u8, x: i32, y: i32) bool {
 }
 
 pub fn toggleAiCopilot() void {
-    copilot_sidebar.toggle(copilotSidebarHost());
+    toggleRightDockPanel(.copilot);
 }
 
 pub fn rightPanelsWidth() f32 {
-    const copilot_w = if (aiCopilotVisible()) ai_sidebar.g_width else 0;
-    return browser_panel.width() + copilot_w;
+    const dock_w = if (rightDockVisible()) right_dock.g_state.width else 0;
+    return browser_panel.width() + dock_w;
 }
 
 pub fn rightPanelsWidthForWindow(window_width: i32) f32 {
     const browser_w = browser_panel.panelWidthForWindow(window_width, leftPanelsWidth(), 0);
-    return browser_w + aiCopilotWidth(window_width);
+    const dock_w = if (rightDockVisible()) right_dock.panelWidthForWindow(window_width, leftPanelsWidth(), 0) else 0;
+    return browser_w + dock_w;
 }
 
 pub fn browserPanelRightOffset() f32 {
@@ -4681,6 +4821,7 @@ fn installSessionRestoreHooks() void {
     tab.g_tmux_active_profiles_hook = tmux_controller.activeProfileNames;
     tab.g_tmux_restore_hook = overlays.connectProfileByNameTmux;
     tab.g_ssh_restore_arm_hook = overlays.armSshPasswordFromProfileForSurface;
+    tab.g_ssh_restore_password_hook = overlays.fillSshPasswordFromProfile;
 }
 
 fn deinitGlobalAgentHistoryStore(allocator: std.mem.Allocator) void {
@@ -4916,14 +5057,14 @@ pub fn spawnAiChatTab(
     system_prompt: []const u8,
     thinking: []const u8,
     reasoning_effort: []const u8,
+    effort_levels: ai_chat.EffortLevels,
     stream_val: []const u8,
     agent_val: []const u8,
     max_tokens: u32,
     vision_val: []const u8,
-    command: []const u8,
 ) bool {
     const allocator = g_allocator orelse return false;
-    if (!tab.spawnAiChatTab(allocator, name, base_url, api_key, model, protocol, system_prompt, thinking, reasoning_effort, stream_val, agent_val, max_tokens, vision_val, command)) return false;
+    if (!tab.spawnAiChatTab(allocator, name, base_url, api_key, model, protocol, system_prompt, thinking, reasoning_effort, effort_levels, stream_val, agent_val, max_tokens, vision_val)) return false;
     clearUiStateOnTabChange();
     return true;
 }
@@ -4999,6 +5140,127 @@ pub fn openSettingsTab() bool {
     clearUiStateOnTabChange();
     markUiDirty();
     return true;
+}
+
+/// Open (or switch to) the Password Store page, reloading the vault from disk.
+pub fn openPasswordStoreTab() bool {
+    const allocator = g_allocator orelse return false;
+    if (!tab.openPasswordStoreTab(allocator)) return false;
+    password_store_page.state().open(allocator);
+    clearUiStateOnTabChange();
+    markUiDirty();
+    return true;
+}
+
+pub fn activePasswordStore() ?*password_store_page.State {
+    const t = tab.activeTab() orelse return null;
+    return if (t.kind == .password_store) password_store_page.state() else null;
+}
+
+pub fn passwordStoreHandleKey(ev: input_key.KeyEvent) UiEffect {
+    const state = activePasswordStore() orelse return .none;
+    if (state.handleKey(ev)) |action| runPasswordStoreAction(state, action);
+    return .repaint;
+}
+
+pub fn passwordStoreCopySelected() UiEffect {
+    const state = activePasswordStore() orelse return .none;
+    if (!state.editing) runPasswordStoreAction(state, .copy_secret);
+    return .repaint;
+}
+
+pub fn passwordStorePaste(text: []const u8) bool {
+    const state = activePasswordStore() orelse return false;
+    return state.paste(text);
+}
+
+fn runPasswordStoreAction(state: *password_store_page.State, action: password_store_page.Action) void {
+    switch (action) {
+        .copy_secret => {
+            const allocator = state.allocator orelse return;
+            const secret = state.revealForCopy() orelse return;
+            defer password_store.wipe(allocator, secret);
+            if (input.copyTextToClipboard(secret)) state.status = .copied;
+        },
+    }
+}
+
+fn passwordStoreGeometry() ?password_store_renderer.Geometry {
+    const win = g_window orelse return null;
+    const fb = window_backend.framebufferSize(win);
+    const left = leftPanelsWidth();
+    const width = @max(1, @as(f32, @floatFromInt(fb.width)) - left - rightPanelsWidthForWindow(fb.width));
+    return password_store_renderer.compute(password_store_page.state(), @floatFromInt(fb.height), currentTitlebarHeight(), left, width, font.g_titlebar_cell_height);
+}
+
+pub fn passwordStoreHandleMousePress(xpos: f64, ypos: f64) bool {
+    const state = activePasswordStore() orelse return false;
+    const geo = passwordStoreGeometry() orelse return false;
+    switch (password_store_renderer.hitTest(geo, @floatCast(xpos), @floatCast(ypos))) {
+        .none => return false,
+        .rail => |index| state.clickRail(index),
+        .row => |row| if (state.clickRow(row)) |action| runPasswordStoreAction(state, action),
+    }
+    markUiDirty();
+    return true;
+}
+
+pub fn passwordStoreHandleMouseWheel(xpos: i32, delta: i32) void {
+    const state = activePasswordStore() orelse return;
+    const geo = passwordStoreGeometry() orelse return;
+    state.scroll(if (delta > 0) -1 else 1, password_store_renderer.overRail(geo, @floatFromInt(xpos)));
+    markUiDirty();
+}
+
+/// Open (or switch to) the Sync page, re-reading the sync settings.
+pub fn openSyncTab() bool {
+    const allocator = g_allocator orelse return false;
+    if (!tab.openSyncTab(allocator)) return false;
+    sync_bridge.openPage(allocator);
+    clearUiStateOnTabChange();
+    markUiDirty();
+    return true;
+}
+
+pub fn activeSyncPage() ?*sync_page.State {
+    const t = tab.activeTab() orelse return null;
+    return if (t.kind == .sync) sync_page.state() else null;
+}
+
+pub fn syncPageHandleKey(ev: input_key.KeyEvent) UiEffect {
+    if (activeSyncPage() == null) return .none;
+    sync_bridge.handleKey(ev);
+    return .repaint;
+}
+
+pub fn syncPagePaste(text: []const u8) bool {
+    return activeSyncPage() != null and sync_bridge.paste(text);
+}
+
+fn syncPageFrame(fb_width: c_int, fb_height: c_int) sync_bridge.Frame {
+    const left = leftPanelsWidth();
+    return .{
+        .window_height = @floatFromInt(fb_height),
+        .top_offset = currentTitlebarHeight(),
+        .content_x = left,
+        .content_width = @max(1, @as(f32, @floatFromInt(fb_width)) - left - rightPanelsWidthForWindow(fb_width)),
+        .cell_h = font.g_titlebar_cell_height,
+    };
+}
+
+pub fn syncPageHandleMousePress(xpos: f64, ypos: f64) bool {
+    if (activeSyncPage() == null) return false;
+    const fb = window_backend.framebufferSize(g_window orelse return false);
+    if (!sync_bridge.mousePress(syncPageFrame(fb.width, fb.height), @floatCast(xpos), @floatCast(ypos))) return false;
+    markUiDirty();
+    return true;
+}
+
+pub fn syncPageHandleMouseWheel(xpos: i32, delta: i32) void {
+    if (activeSyncPage() == null) return;
+    const fb = window_backend.framebufferSize(g_window orelse return);
+    sync_bridge.mouseWheel(syncPageFrame(fb.width, fb.height), @floatFromInt(xpos), delta);
+    markUiDirty();
 }
 
 pub fn reopenAiChatTabFromHistorySessionId(session_id: []const u8) bool {
@@ -5227,6 +5489,10 @@ pub fn switchTab(idx: usize) void {
     else
         false;
     if (deactivating_settings) overlays.settingsPageDidDeactivate();
+    if (activeTab()) |active| {
+        if (active.kind == .password_store and idx != active_tab_state.g_active_tab) password_store_page.state().didDeactivate();
+        if (active.kind == .sync and idx != active_tab_state.g_active_tab) sync_bridge.didDeactivate();
+    }
     tab.switchTab(idx);
     clearUiStateOnTabChange();
 }
@@ -5260,8 +5526,13 @@ pub fn splitFocusedReturningSurface(direction: SplitTree.Split.Direction) ?*Surf
         }
     }
 
+    // Only local splits need a native cwd: WSL splits carry it as `wsl.exe --cd`
+    // (tab.splitSpawnCommand) and SSH cwds are remote. Converting a WSL /home/...
+    // cwd here handed CreateProcess a cold \\wsl.localhost UNC dir — part of the
+    // multi-second UI freeze on the first WSL split.
     var cwd_buf: platform_pty_command.CwdBuffer = undefined;
-    const cwd = getActiveCwd(&cwd_buf);
+    const split_kind = if (activeSurface()) |s| s.launch_kind else .local;
+    const cwd = if (split_kind == .local) getActiveCwd(&cwd_buf) else null;
     const surface = tab.splitFocusedReturningSurface(allocator, direction, font.cell_width, font.cell_height, g_cursor_style, g_cursor_blink, cwd) orelse return null;
     if (surface.ssh_connection) |conn| {
         if (conn.usesPasswordAuth()) {
@@ -5347,8 +5618,7 @@ pub fn equalizeSplits() void {
     if (tab.equalizeSplits(allocator)) {
         overlays.resize.g_split_resize_overlay_until = std.time.milliTimestamp() + overlays.RESIZE_OVERLAY_DURATION_MS;
         requestImmediateLayoutResize();
-        g_force_rebuild = true;
-        g_cells_valid = false;
+        applyUiEffect(.repaint);
     }
 }
 
@@ -5373,8 +5643,7 @@ pub fn swapPanels(a: SplitTree.Node.Handle, b: SplitTree.Node.Handle) bool {
     if (!tab.swapPanels(a, b)) return false;
     split_layout.invalidateCachedRects();
     handleActiveSurfaceChangeWithinTab();
-    g_force_rebuild = true;
-    g_cells_valid = false;
+    applyUiEffect(.repaint);
     return true;
 }
 
@@ -5617,6 +5886,10 @@ fn renderResizeFrame(width: i32, height: i32) void {
                 renderPortForwardingFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .settings) {
                 renderSettingsFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (active_tab.kind == .password_store) {
+                renderPasswordStoreFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (active_tab.kind == .sync) {
+                renderSyncFrame(fb_width, fb_height, titlebar_offset);
             } else if (split_layout.soleTerminalSurface()) |surface| {
                 // Single surface: simple render path
                 const rend = &surface.surface_renderer;
@@ -5723,10 +5996,10 @@ fn renderResizeFrame(width: i32, height: i32) void {
         file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     }
 
-    // Copilot panel draws on top of the reserved right region (terminal tabs only;
-    // renderAiCopilotPanel gates on aiCopilotVisible). Placed after the terminal
-    // content + markdown preview so it occupies the exclusive right slot.
-    renderAiCopilotPanel(fb_width, fb_height, titlebar_offset);
+    // The right dock (Copilot / Files) draws on top of the reserved right
+    // region, after the terminal content + markdown preview so it occupies the
+    // exclusive right slot. It gates on the active tab's dock being open.
+    right_dock_renderer.render(fb_width, fb_height, titlebar_offset);
 
     overlays.renderBrowserUrlBar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderCommandPalette(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -5745,8 +6018,10 @@ fn renderResizeFrame(width: i32, height: i32) void {
     overlays.renderUpdatePrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderWindowCloseConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderRestoreDefaultsConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    overlays.renderUpdateRestartConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderIntegrationPrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderWhatsNew(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    titlebar.renderTextHint();
 
     d3d11_offscreen_smoke.render(fb_width, fb_height);
     d3d11_ui_smoke.render(fb_width, fb_height);
@@ -5755,7 +6030,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
         .{ fb_width, fb_height, term_cols, term_rows, gpu.draw_call_count },
     );
     forceOpaqueBackbufferForPresent();
-    if (g_window) |w| presentBackendFrame(w);
+    if (g_window) |w| presentBackendFrame(w, null);
 }
 
 fn resizeWindowToGrid() void {
@@ -5771,6 +6046,27 @@ fn resizeWindowToGrid() void {
 fn pollUpdateCheck(app: *App) void {
     const result = app.consumeUpdateResult();
     if (result.state != .idle) overlays.showUpdateCheckResult(result);
+    switch (app.pollInPlaceUpdate()) {
+        .none => {},
+        // The titlebar Update pill just appeared.
+        .ready => applyUiEffect(.repaint),
+        .already_ready => {
+            overlays.showStatusToast(i18n.s().update_pill_hint);
+            applyUiEffect(.repaint);
+        },
+        .stage_failed => overlays.showUpdateCheckResult(.{
+            .state = .download_failed,
+            .release_url = update_check.latest_release_page_url,
+        }),
+        .restart_failed => {
+            overlays.showStatusToast(i18n.s().update_restart_failed);
+            applyUiEffect(.repaint);
+        },
+        // The new version is up and took over; this one bows out. Every
+        // window closes without the running-program prompt (the restart was
+        // confirmed), which on Windows is what ends the app.
+        .quit => app.requestImmediateShutdown(),
+    }
 }
 
 /// UI thread: consume a finished skill-center op result and apply it (open the
@@ -5906,6 +6202,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     // Update App's cached config so new windows get the new settings
     if (g_app) |app| {
         app.updateConfig(cfg);
+        tab.g_ssh_terminal_capabilities = app.ssh_advertise_terminal_capabilities;
     }
     syncDefaultShellCommandFromConfig(cfg.shell);
     ai_chat.configureAgent(.{
@@ -5951,10 +6248,13 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     g_focus_follows_mouse = cfg.@"focus-follows-mouse";
     g_copy_on_select = cfg.@"copy-on-select";
     g_copilot_hint = cfg.@"copilot-hint";
+    titlebar.setToolbarMode(cfg.@"window-show-toolbar");
+    if (right_dock_actions.applyPlacement(dockPlacement(cfg.@"file-explorer-position"))) requestImmediateLayoutResize();
     g_right_click_action = cfg.@"right-click-action";
     link_open.current_mode = cfg.@"url-open-mode";
     g_ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";
     g_desktop_notifications = cfg.@"desktop-notifications";
+    screen_detect.setEnabled(cfg.@"agent-screen-detection");
     g_confirm_close_running_program = cfg.@"confirm-close-running-program";
     g_weixin_notify_forward = cfg.@"weixin-notify-forward";
     tab.g_ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";
@@ -5994,18 +6294,20 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     const new_font_size = cfg.@"font-size";
     const new_weight = font_backend.fontWeightFromValue(cfg.@"font-style".value());
     const new_family = cfg.@"font-family";
+    // Must run before the setters below overwrite the CJK/fallback globals.
+    const font_changed = fontReloadNeeded(cfg);
     // Copy into the font module's own buffers: `cfg` is deinit'd right after
     // this returns, and these globals are read lazily on the next fallback
     // lookup. Aliasing the config-owned slices here was a use-after-free.
     font.setCjkFontFamily(cfg.@"font-family-cjk");
     font.setFallbackFontFamilies(cfg.@"font-family-fallback");
 
-    const font_changed = new_font_size != font.g_font_size;
-
     // Only reload font faces when font parameters actually changed.
     // Theme-only changes must not trigger a font reload + window resize.
     if (font_changed) {
         if (reloadFontFaces(allocator, new_family, new_weight, new_font_size, ft_lib)) {
+            setRequestedFont(new_family);
+            g_requested_weight = new_weight;
             if (g_window) |w| {
                 const is_os_sized = window_backend.isFullscreen(w) or window_backend.isMaximized(w);
                 if (is_os_sized) {
@@ -6023,6 +6325,56 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     }
 
     std.debug.print("Config reloaded successfully\n", .{});
+}
+
+/// True when a reloaded config changes anything the glyph faces are built from.
+/// Only `font-size` used to count, so picking a new family or style in Settings
+/// looked applied but took effect only after a restart (#647).
+fn fontReloadNeeded(cfg: *const Config) bool {
+    return cfg.@"font-size" != font.g_font_size or
+        font_backend.fontWeightFromValue(cfg.@"font-style".value()) != g_requested_weight or
+        !std.mem.eql(u8, cfg.@"font-family", g_requested_font) or
+        !optionalStrEql(cfg.@"font-family-cjk", font.g_cjk_font_family) or
+        !optionalStrEql(cfg.@"font-family-fallback", font.g_fallback_font_families);
+}
+
+fn optionalStrEql(a: ?[]const u8, b: ?[]const u8) bool {
+    if (a == null or b == null) return a == null and b == null;
+    return std.mem.eql(u8, a.?, b.?);
+}
+
+test "fontReloadNeeded: family, style, and CJK/fallback changes reload fonts, not just size" {
+    const saved_font = g_requested_font;
+    const saved_weight = g_requested_weight;
+    const saved_size = font.g_font_size;
+    const saved_cjk = font.g_cjk_font_family;
+    const saved_fallback = font.g_fallback_font_families;
+    defer {
+        g_requested_font = saved_font;
+        g_requested_weight = saved_weight;
+        font.g_font_size = saved_size;
+        font.g_cjk_font_family = saved_cjk;
+        font.g_fallback_font_families = saved_fallback;
+    }
+
+    var cfg: Config = .{};
+    g_requested_font = cfg.@"font-family";
+    g_requested_weight = font_backend.fontWeightFromValue(cfg.@"font-style".value());
+    font.g_font_size = cfg.@"font-size";
+    font.g_cjk_font_family = cfg.@"font-family-cjk";
+    font.g_fallback_font_families = cfg.@"font-family-fallback";
+    try std.testing.expect(!fontReloadNeeded(&cfg));
+
+    cfg.@"font-family" = "SimSun";
+    try std.testing.expect(fontReloadNeeded(&cfg));
+    cfg.@"font-family" = g_requested_font;
+
+    cfg.@"font-family-cjk" = "Microsoft YaHei";
+    try std.testing.expect(fontReloadNeeded(&cfg));
+    cfg.@"font-family-cjk" = font.g_cjk_font_family;
+
+    cfg.@"font-size" += 1;
+    try std.testing.expect(fontReloadNeeded(&cfg));
 }
 
 const MemoryDebugTotals = struct {
@@ -6183,13 +6535,14 @@ fn maybePrintMemoryDebug(now: i64) void {
         totals.kitty_pending_cpu_bytes;
 
     std.debug.print(
-        "[memory] font glyphs={} graphemes={} titlebar={} icons={} fallback_faces={} no_fallback={} hb_fallback={} atlas(text/color/icon/titlebar)={}x{}/{}x{}/{}x{}/{}x{} font_atlas(cpu/gpu)={d:.1}/{d:.1}MiB\n",
+        "[memory] font glyphs={} graphemes={} titlebar={} icons={} fallback_faces={} fallback_cps={} no_fallback={} hb_fallback={} atlas(text/color/icon/titlebar)={}x{}/{}x{}/{}x{}/{}x{} font_atlas(cpu/gpu)={d:.1}/{d:.1}MiB\n",
         .{
             font_stats.glyphs,
             font_stats.graphemes,
             font_stats.titlebar_glyphs,
             font_stats.icons,
             font_stats.fallback_faces,
+            font_stats.fallback_codepoints,
             font_stats.no_fallback_entries,
             font_stats.hb_fallback_fonts,
             font_stats.atlas_size,
@@ -6248,7 +6601,7 @@ fn maybePrintMemoryDebug(now: i64) void {
 }
 
 fn markRemoteSyncUiDirty() void {
-    g_force_rebuild = true;
+    applyUiEffect(.{ .needs_rebuild = true });
 }
 
 fn openDefaultAiAgentForRemoteSync() remote_sync.AiAgentOpenStatus {
@@ -6312,7 +6665,7 @@ fn openRemoteAiAgentForClient(ctx: *anyopaque, request_id: []const u8) void {
 }
 
 fn markWeixinUiDirty() void {
-    g_force_rebuild = true;
+    applyUiEffect(.{ .needs_rebuild = true });
 }
 
 fn openDefaultAgentSessionForWeixin() weixin_control.OpenResult {
@@ -6370,23 +6723,56 @@ pub fn enableAgentControl() void {
     control_api.enable();
 }
 
-/// UI-thread handler for `wisptermctl spawn`: open a new terminal tab. `cwd`
-/// empty = inherit the active tab's cwd; `command` empty = the configured shell.
-fn ctlSpawnTab(cwd_path: []const u8, command: []const u8) void {
-    const allocator = g_allocator orelse return;
+/// UI-thread handler for `wisptermctl spawn`: open a new terminal tab, or a
+/// split of the active tab's focused pane. `cwd` empty = inherit the active
+/// tab's cwd; `command` empty = the configured shell. A `kind` seeds the new
+/// surface's agent identity so screen detection classifies it immediately.
+/// Returns the new surface so the caller can report its id.
+fn ctlSpawnTab(req: control_api.SpawnRequest) ?*Surface {
+    const allocator = g_allocator orelse return null;
     var cwd_buf: platform_pty_command.CwdBuffer = undefined;
-    const cwd = if (cwd_path.len != 0)
-        platform_pty_command.cwdFromUtf8(&cwd_buf, cwd_path)
+    const cwd = if (req.cwd.len != 0)
+        platform_pty_command.cwdFromUtf8(&cwd_buf, req.cwd)
     else
         getActiveCwd(&cwd_buf);
 
-    const ok = if (command.len != 0) blk: {
-        const command_line = platform_pty_command.allocCommandLineFromUtf8(allocator, command) catch break :blk false;
-        defer platform_pty_command.freeCommandLine(allocator, command_line);
-        break :blk tab.spawnTabWithCommandAndCwd(allocator, term_cols, term_rows, platform_pty_command.commandLineFromOwned(command_line), g_cursor_style, g_cursor_blink, cwd);
-    } else tab.spawnTabWithCwd(allocator, term_cols, term_rows, g_cursor_style, g_cursor_blink, cwd);
+    const surface: ?*Surface = switch (req.split) {
+        .none => blk: {
+            const ok = if (req.command.len != 0) inner: {
+                const command_line = platform_pty_command.allocCommandLineFromUtf8(allocator, req.command) catch break :inner false;
+                defer platform_pty_command.freeCommandLine(allocator, command_line);
+                break :inner tab.spawnTabWithCommandAndCwd(allocator, term_cols, term_rows, platform_pty_command.commandLineFromOwned(command_line), g_cursor_style, g_cursor_blink, cwd);
+            } else tab.spawnTabWithCwd(allocator, term_cols, term_rows, g_cursor_style, g_cursor_blink, cwd);
+            if (!ok) break :blk null;
+            clearUiStateOnTabChange();
+            break :blk activeSurface();
+        },
+        .right, .down => blk: {
+            const direction: SplitTree.Split.Direction = if (req.split == .right) .right else .down;
+            if (req.command.len == 0) break :blk splitFocusedReturningSurface(direction);
+            const command_line = platform_pty_command.allocCommandLineFromUtf8(allocator, req.command) catch break :blk null;
+            defer platform_pty_command.freeCommandLine(allocator, command_line);
+            const s = tab.splitFocusedWithCommandReturningSurface(
+                allocator,
+                direction,
+                font.cell_width,
+                font.cell_height,
+                g_cursor_style,
+                g_cursor_blink,
+                cwd,
+                platform_pty_command.commandLineFromOwned(command_line),
+            ) orelse break :blk null;
+            handleActiveSurfaceChangeWithinTab();
+            overlays.resize.g_resize_active = false;
+            requestImmediateLayoutResize();
+            break :blk s;
+        },
+    };
 
-    if (ok) clearUiStateOnTabChange();
+    if (surface) |s| {
+        if (req.kind.len != 0) s.agent_screen.seed(agent_detector.appFromProcessName(req.kind));
+    }
+    return surface;
 }
 
 /// The Control the agent-control server drives. Backed by process-global state,
@@ -6883,6 +7269,7 @@ fn installAgentToolHost(self: *AppWindow) void {
         .reconnectTerminal = agent_requests.reconnectTerminal,
         .surfaceExitStatus = surface_snapshots.agentSurfaceExitStatus,
         .killSurfaceChild = surface_snapshots.agentKillSurfaceChild,
+        .surfaceAgentState = surface_snapshots.agentSurfaceAgentState,
     });
 }
 
@@ -6985,7 +7372,18 @@ fn anyTabSurfaceDirty(tb: *const tab.TabState) bool {
     return false;
 }
 
-fn clearTabSurfaceDirty(tb: *const tab.TabState) void {
+/// Consume the PTY-output dirty flags of the tab a frame is about to draw. The
+/// main loop calls this once per frame BEFORE any render branch snapshots
+/// terminal state — never after present. The IO thread feeds output and then
+/// marks dirty (posting the one deduped wakeup) under `render_state.mutex`, so
+/// a chunk the snapshot misses marks after this swap and re-arms the gate with
+/// a fresh wakeup. Clearing after the (vsync-blocking) present instead swallowed
+/// such a chunk: its mark found the flag still set and posted nothing, then the
+/// late clear left it unpainted until an unrelated event (the prompt after
+/// `echo quick` in an unfocused window). Mirrors Ghostty, whose
+/// `RenderState.beginUpdate` resets the terminal's dirty bits inside the same
+/// critical section that copies the screen.
+fn consumeTabSurfaceDirty(tb: *const tab.TabState) void {
     var it = tb.tree.surfaces();
     while (it.next()) |entry| {
         _ = entry.surface.dirty.swap(false, .acq_rel);
@@ -7002,24 +7400,36 @@ fn anyVisibleSurfaceDirty() bool {
     return anyTabSurfaceDirty(tb);
 }
 
-fn clearVisibleSurfaceDirty() void {
-    const tb = activeTab() orelse return;
-    clearTabSurfaceDirty(tb);
-}
-
-fn aiStreamingActive() bool {
+/// Render signal for the displayed AI surfaces (btw overlay, active chat tab,
+/// visible Copilot sidebar): a frame when any of them reported a UI change
+/// since the last frame, plus a slow heartbeat while a request is in flight.
+/// Consumes each session's dirty flag. Replaces the old "inflight ⇒ render
+/// every iteration" rule that spun at display refresh rate for the whole
+/// request (including minutes parked on a tool-approval dialog).
+fn aiStreamingNeedsFrame(now_ms: i64) bool {
+    var inflight = false;
+    var dirty = false;
     if (overlays.btwConversationSession()) |session| {
-        if (session.requestState().inflight) return true;
+        if (session.takeUiDirty()) dirty = true;
+        if (session.requestState().inflight) inflight = true;
     }
     if (activeAiChat()) |session| {
-        if (session.request_inflight) return true;
+        if (session.takeUiDirty()) dirty = true;
+        if (session.request_inflight) inflight = true;
     }
     if (activeTab()) |tb| {
-        if (tb.copilot_session) |session| {
-            if (session.request_inflight) return true;
+        if (tb.right_dock.showing(.copilot)) {
+            if (tb.copilot_session) |session| {
+                if (session.takeUiDirty()) dirty = true;
+                if (session.request_inflight) inflight = true;
+            }
         }
     }
-    return false;
+    return ai_stream_gate.needsFrame(&g_appwindow_state.ai_stream, .{
+        .inflight = inflight,
+        .dirty = dirty,
+        .now_ms = now_ms,
+    });
 }
 
 fn clearIconFont(allocator: std.mem.Allocator) void {
@@ -7055,8 +7465,7 @@ fn rebuildIconFont(allocator: std.mem.Allocator, ft_lib: freetype.Library) void 
 fn clearTitlebarFont(allocator: std.mem.Allocator) void {
     if (font.g_titlebar_face) |old_tb| old_tb.deinit();
     font.g_titlebar_face = null;
-    font.g_titlebar_cache.deinit(allocator);
-    font.g_titlebar_cache = .empty;
+    font.resetTitlebarGlyphCache(allocator);
     if (font.g_titlebar_atlas) |*a| {
         a.deinit(allocator);
         font.g_titlebar_atlas = null;
@@ -7301,7 +7710,7 @@ fn syncImeCaretPosition(win: *window_backend.Window, split_count: usize) void {
         if (activeCopilotSessionForInput()) |session| {
             if (win.ime_composing) return;
             const size = window_backend.clientSize(win);
-            const bounds = ai_sidebar.boundsForWindow(size.width, size.height, currentTitlebarHeight(), leftPanelsWidth(), 0);
+            const bounds = copilotPanelBounds(size.width, size.height) orelse return;
             const chat_x: f32 = @floatFromInt(bounds.left);
             const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
             syncAiChatImeCaret(win, session, chat_x, chat_w);
@@ -7949,8 +8358,8 @@ fn runMainLoop(self: *AppWindow) !void {
         // as icon_cache above.
         if (font.g_titlebar_face) |f| f.deinit();
         font.g_titlebar_face = null;
-        font.g_titlebar_cache.deinit(allocator);
-        font.g_titlebar_cache = .empty;
+        font.resetTitlebarGlyphCache(allocator);
+        assistant_conversation_renderer.deinitMeasureCache(allocator);
         if (font.g_titlebar_atlas) |*a| {
             a.deinit(allocator);
             font.g_titlebar_atlas = null;
@@ -8257,6 +8666,11 @@ fn runMainLoop(self: *AppWindow) !void {
     // Main loop — shared logic with backend-specific window management
     var running = true;
     while (running) {
+        // macOS: one autorelease pool per iteration (popped on every
+        // continue/break/error) — without it AppKit's autoreleased objects
+        // pile up forever, since nothing here runs under NSApplicationMain.
+        const loop_scope = window_backend.beginLoopIteration();
+        defer window_backend.endLoopIteration(loop_scope);
         g_loop_iter +%= 1; // tag each iteration so the latency probe can tell same-iteration paints from stalls
         // Check for config file changes
         if (config_watcher) |*w| checkConfigReload(allocator, w);
@@ -8267,25 +8681,17 @@ fn runMainLoop(self: *AppWindow) !void {
         overlays.tickQuickAiVerify();
         if (file_explorer.tickAsync()) applyUiEffect(.repaint);
         syncTransferToastFromFileExplorer();
-        if (tickAllPreviewPanes()) {
-            g_force_rebuild = true;
-            g_cells_valid = false;
-        }
+        if (tickAllPreviewPanes()) applyUiEffect(.repaint);
         if (weixin_qr_panel.visible()) {
             const qr_allocator = g_allocator orelse allocator;
-            if (weixin_qr_panel.refresh(qr_allocator)) {
-                g_force_rebuild = true;
-                g_cells_valid = false;
-            }
+            if (weixin_qr_panel.refresh(qr_allocator)) applyUiEffect(.repaint);
         }
         maybePrintMemoryDebug(std.time.milliTimestamp());
         flushAgentHistoryStoreIfDirty(false);
         pollUpdateCheck(self.app);
+        if (sync_bridge.poll()) applyUiEffect(.repaint);
         if (activeSkillCenter()) |sc_session| pollSkillCenterOp(sc_session);
-        if (self.app.port_forward_manager.tick() and activePortForwarding() != null) {
-            g_force_rebuild = true;
-            g_cells_valid = false;
-        }
+        if (self.app.port_forward_manager.tick() and activePortForwarding() != null) applyUiEffect(.repaint);
 
         // Process pending resize (coalesced, like Ghostty)
         // We wait for RESIZE_COALESCE_MS after last resize event before applying.
@@ -8305,13 +8711,45 @@ fn runMainLoop(self: *AppWindow) !void {
 
         // Poll platform messages, filling event queues and close state.
         running = window_backend.pollEvents(win) and !g_should_close;
+        if (self.pi_shutdown.isPending() and !g_should_close) {
+            window_backend.clearCloseRequested(win);
+            running = true;
+        }
         if (self.consumeForceCloseRequest()) {
             window_backend.clearCloseRequested(win);
             g_should_close = true;
             running = false;
             continue;
         }
-        if (window_backend.closeRequested(win)) {
+        if (close_shortcut_state.takeGracefulCloseRequest()) {
+            self.pi_shutdown.request();
+        }
+
+        // A confirmed close gives capable Pi sessions a short window to run
+        // `/wispterm-shutdown`; the deadline then falls back to normal PTY teardown.
+        const pi_shutdown_now = std.time.milliTimestamp();
+        if (self.pi_shutdown.hasRequest() and !self.pi_shutdown.isPending()) {
+            const requested = tab.requestPiGracefulShutdown();
+            if (!self.pi_shutdown.begin(pi_shutdown_now, 2500, requested)) {
+                _ = self.pi_shutdown.consumeImmediateClose();
+                g_should_close = true;
+                running = false;
+                continue;
+            }
+        }
+        if (self.pi_shutdown.isPending()) {
+            switch (self.pi_shutdown.tick(pi_shutdown_now, tab.piGracefulShutdownComplete())) {
+                .waiting => {},
+                .ready, .timed_out => {
+                    g_should_close = true;
+                    running = false;
+                    continue;
+                },
+                .idle => unreachable,
+            }
+        }
+
+        if (window_backend.closeRequested(win) and !self.pi_shutdown.isPending()) {
             window_backend.clearCloseRequested(win);
             const running_program = anyTabHasRunningProgram();
             const confirm_for_program = close_confirm.shouldConfirm(g_confirm_close_running_program, running_program);
@@ -8320,14 +8758,12 @@ fn runMainLoop(self: *AppWindow) !void {
                 // Backend tears the window down immediately with no in-app
                 // prompt; closing this window does not necessarily end the app
                 // session (the backend owns process lifecycle).
-                g_should_close = true;
-                running = false;
+                requestGracefulClose();
                 continue;
             }
             const variant: overlays.CloseConfirmVariant = if (confirm_for_program) .running_program else .window_generic;
             overlays.closeConfirmOpen(.window, variant);
-            g_force_rebuild = true;
-            g_cells_valid = false;
+            applyUiEffect(.repaint);
         }
 
         if (window_backend.consumeDpiChanged(win)) {
@@ -8354,6 +8790,7 @@ fn runMainLoop(self: *AppWindow) !void {
         // Handle bells, notifications, and OSC 52 clipboard writes staged by
         // the IO threads. This runs before the render gate: background-tab
         // output no longer triggers frames, so these must not depend on one.
+        const agent_poll_now_ms = std.time.milliTimestamp();
         for (0..tab.g_tab_count) |ti| {
             if (tab.g_tabs[ti]) |tb| {
                 const tab_active = ti == active_tab_state.g_active_tab;
@@ -8362,12 +8799,15 @@ fn runMainLoop(self: *AppWindow) !void {
                     if (entry.surface.bell_pending.swap(false, .acquire)) {
                         handleBell(entry.surface, win, tab_active);
                     }
-                    pollAgentMarker(entry.surface);
-                    {
-                        const is_active_surface = tab_active and
-                            (if (tb.focusedSurface()) |fs| fs == entry.surface else false);
-                        handleNotification(entry.surface, is_active_surface);
+                    const is_active_surface = tab_active and
+                        (if (tb.focusedSurface()) |fs| fs == entry.surface else false);
+                    // Screen detection (no hook installed): feeds the same
+                    // badge/notification edges as the OSC 7748 marker below.
+                    if (screen_detect.poll(entry.surface, is_active_surface, agent_poll_now_ms)) {
+                        applyUiEffect(.{ .needs_rebuild = true });
                     }
+                    pollAgentMarker(entry.surface);
+                    handleNotification(entry.surface, is_active_surface);
                     if (entry.surface.takeClipboardWrite()) |text| {
                         _ = input.copyTextToClipboard(text);
                         entry.surface.allocator.free(text);
@@ -8380,7 +8820,7 @@ fn runMainLoop(self: *AppWindow) !void {
                     if (s.drainPromptQueue()) applyUiEffect(.repaint);
                 }
                 if (tb.copilot_session) |s| {
-                    pollSessionAttention(s, tab_active and tb.copilot_visible);
+                    pollSessionAttention(s, tab_active and tb.right_dock.showing(.copilot));
                     // 同上：copilot 侧栏会话形态。
                     if (s.drainPromptQueue()) applyUiEffect(.repaint);
                 }
@@ -8425,12 +8865,15 @@ fn runMainLoop(self: *AppWindow) !void {
             .interval_ms = CURSOR_BLINK_INTERVAL_MS,
         });
 
+        // Hover-revealed toolbar: sample the pointer every iteration (mouse
+        // moves wake the loop) and keep painting while it fades.
+        const toolbar_animating = titlebar.tickToolbarReveal(gate_now);
         const signals = render_gate.RenderSignals{
             .force_rebuild = g_force_rebuild or !g_cells_valid or pendingResizeActive() or windowState().layout_resize_immediate or agent_requests.hasPendingUiScreenshot(),
             .any_surface_dirty = anyVisibleSurfaceDirty(),
             .cursor_blink_due = blink.due,
-            .ai_streaming = aiStreamingActive(),
-            .overlay_active = overlays.anyOverlayActive(gate_now),
+            .ai_streaming = aiStreamingNeedsFrame(gate_now),
+            .overlay_active = overlays.anyOverlayActive(gate_now) or toolbar_animating,
             .atlas_sync_pending = font.atlasSyncPending(),
         };
 
@@ -8446,8 +8889,19 @@ fn runMainLoop(self: *AppWindow) !void {
         }
         if (blink.due) g_gate_last_blink_render = gate_now;
 
+        frame_timing.beginFrame();
+        var present_damage: frame_damage.Collector = .{};
+        if (signals.force_rebuild or signals.overlay_active or signals.cursor_blink_due or signals.ai_streaming or signals.atlas_sync_pending) {
+            present_damage.markFull();
+        }
+        if (comptime gpu.active == .d3d11) {
+            const frame_gate_stage = frame_timing.beginStage();
+            gpu.Context.waitForFrameSlot();
+            frame_timing.endStage(.frame_gate_wait, frame_gate_stage);
+        }
+
         // In-app GPU benchmark: capture the render-branch start timestamp. The
-        // matching frameEnd (after present + dirty-clear) records the sample and
+        // matching frameEnd (after present) records the sample and
         // feeds the next VT chunk; see driver.zig for the measurement model.
         if (bench_driver.isEnabled()) bench_driver.frameBegin();
 
@@ -8461,10 +8915,13 @@ fn runMainLoop(self: *AppWindow) !void {
         overlays.updateFps();
 
         // Sync atlas textures to GPU if modified
+        const atlas_sync_stage = frame_timing.beginStage();
         if (font.g_atlas != null) font.syncAtlasTexture(&font.g_atlas, &font.g_atlas_texture, &font.g_atlas_modified);
         if (font.g_color_atlas != null) font.syncAtlasTexture(&font.g_color_atlas, &font.g_color_atlas_texture, &font.g_color_atlas_modified);
         if (font.g_icon_atlas != null) font.syncAtlasTexture(&font.g_icon_atlas, &font.g_icon_atlas_texture, &font.g_icon_atlas_modified);
         if (font.g_titlebar_atlas != null) font.syncAtlasTexture(&font.g_titlebar_atlas, &font.g_titlebar_atlas_texture, &font.g_titlebar_atlas_modified);
+        frame_timing.endStage(.atlas_sync, atlas_sync_stage);
+        const draw_stage = frame_timing.beginStage();
 
         // Render padding constants - used for content area and titlebar positioning
         const padding: f32 = 10;
@@ -8490,13 +8947,21 @@ fn runMainLoop(self: *AppWindow) !void {
             control_api.syncPanes(allocator);
             control_api.syncUiState(allocator);
             syncImeCaretPosition(win, split_count);
-            if (active_tab.kind != .ai_chat and active_tab.kind != .ai_history and active_tab.kind != .memory_center and active_tab.kind != .conversation_center and active_tab.kind != .skill_center and active_tab.kind != .port_forwarding and active_tab.kind != .settings and synchronizedOutputPendingForVisibleSplits(split_count)) {
+            if (active_tab.kind != .ai_chat and active_tab.kind != .ai_history and active_tab.kind != .memory_center and active_tab.kind != .conversation_center and active_tab.kind != .skill_center and active_tab.kind != .port_forwarding and active_tab.kind != .settings and active_tab.kind != .password_store and active_tab.kind != .sync and synchronizedOutputPendingForVisibleSplits(split_count)) {
                 // Block instead of spinning at ~1kHz: the IO thread posts a
                 // wakeup when the application ends synchronized output (or new
                 // output arrives), and the timeout bounds the watchdog check.
                 window_backend.pumpAppEvents(@as(f64, @floatFromInt(render_gate.MIN_TIMEOUT_MS)) / 1000.0);
+                frame_timing.abortFrame();
                 continue;
             }
+
+            // Every branch below snapshots terminal state, so consume the PTY
+            // dirty flags first: output processed after this point re-arms the
+            // gate and posts its own wakeup instead of being lost to a
+            // post-present clear. The synchronized-output deferral above keeps
+            // them latched so its watchdog is re-polled next iteration.
+            consumeTabSurfaceDirty(active_tab);
 
             // Debug: print split count on first few frames
             // GL rendering
@@ -8514,6 +8979,10 @@ fn runMainLoop(self: *AppWindow) !void {
                 renderPortForwardingFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .settings) {
                 renderSettingsFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (active_tab.kind == .password_store) {
+                renderPasswordStoreFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (active_tab.kind == .sync) {
+                renderSyncFrame(fb_width, fb_height, titlebar_offset);
             } else if (post_process.g_post_enabled and activeSurface() != null) {
                 // Post-processing path: only render focused surface for now.
                 // (With no focused terminal — e.g. a preview pane focused — fall
@@ -8561,6 +9030,7 @@ fn runMainLoop(self: *AppWindow) !void {
                     titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
                     file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
                     cell_renderer.drawCells(rend, @floatFromInt(fb_height), left_panels_w + @as(f32, @floatFromInt(pad.left)), pad_top);
+                    includeRendererDamage(&present_damage, rend, left_panels_w + @as(f32, @floatFromInt(pad.left)), pad_top, fb_width, fb_height);
                     overlays.renderScrollbar(@floatFromInt(fb_width), @floatFromInt(fb_height), pad_top);
 
                     // Render resize overlay centered in content area (offset for titlebar)
@@ -8617,6 +9087,7 @@ fn runMainLoop(self: *AppWindow) !void {
                                 // Draw cells using the surface's computed padding
                                 const pad = surface.getPadding();
                                 cell_renderer.drawCells(rend, @floatFromInt(rect.height), @floatFromInt(pad.left), @floatFromInt(pad.top));
+                                includeRendererDamage(&present_damage, rend, @floatFromInt(rect.x + @as(i32, @intCast(pad.left))), @floatFromInt(rect.y + @as(i32, @intCast(pad.top))), fb_width, fb_height);
 
                                 // Render scrollbar for this surface within its viewport
                                 overlays.renderScrollbarForSurface(surface, @floatFromInt(rect.width), @floatFromInt(rect.height), @floatFromInt(pad.top));
@@ -8709,14 +9180,14 @@ fn runMainLoop(self: *AppWindow) !void {
 
         gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
         ui_pipeline.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
-        // Copilot panel draws on top of the reserved right region (terminal tabs
-        // only; renderAiCopilotPanel gates on aiCopilotVisible). Placed after the
-        // full-window viewport/projection are restored — so it is unaffected by the
-        // per-split viewport and the post-process framebuffer paths above — and
-        // after terminal content, occupying the exclusive right slot.
-        renderAiCopilotPanel(fb_width, fb_height, titlebar_offset);
+        // The right dock (Copilot / Files) draws on top of the reserved right
+        // region. Placed after the full-window viewport/projection are restored
+        // — so it is unaffected by the per-split viewport and the post-process
+        // framebuffer paths above — and after terminal content, occupying the
+        // exclusive right slot.
+        right_dock_renderer.render(fb_width, fb_height, titlebar_offset);
         overlays.renderBrowserUrlBar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
-        if (copilot_hint_gate.handleEligible(g_copilot_hint, aiCopilotVisible(), isActiveTabTerminal(), anyRightDockPanelVisible())) {
+        if (copilot_hint_gate.handleEligible(g_copilot_hint, rightDockVisible(), isActiveTabTerminal(), anyRightDockPanelVisible())) {
             if (!g_copilot_shimmer_checked) {
                 g_copilot_shimmer_checked = true;
                 const hint_shown = if (g_allocator) |alloc| platform_window_state.copilotHintShown(alloc) else true;
@@ -8749,8 +9220,10 @@ fn runMainLoop(self: *AppWindow) !void {
         overlays.renderUpdatePrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderWindowCloseConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderRestoreDefaultsConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
+        overlays.renderUpdateRestartConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderIntegrationPrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderWhatsNew(@floatFromInt(fb_width), @floatFromInt(fb_height));
+        titlebar.renderTextHint();
         renderImePreedit(win, fb_width, fb_height);
 
         d3d11_offscreen_smoke.render(fb_width, fb_height);
@@ -8759,14 +9232,17 @@ fn runMainLoop(self: *AppWindow) !void {
         logSwapDiagnosticsIfChanged(win, fb_width, fb_height);
         forceOpaqueBackbufferForPresent();
         gpu.state.endFrame();
+        frame_timing.endStage(.draw, draw_stage);
         agent_requests.capturePendingUiScreenshots(agentRequestHost());
-        presentBackendFrame(win);
+        const present_stage = frame_timing.beginStage();
+        presentBackendFrame(win, present_damage.finish());
+        frame_timing.endStage(.present_block, present_stage);
+        frame_timing.finishFrame();
         handleD3D11RecoveryRequest(allocator, fb_width, fb_height);
         if (windowState().takePresentBringupSettlement()) {
             platform_window_state.settleD3dBringup(allocator);
         }
         recordFrameLatencyIfInputDriven();
-        clearVisibleSurfaceDirty();
         g_force_rebuild = false;
         g_cells_valid = true;
         if (bench_driver.isEnabled()) {
@@ -8789,8 +9265,7 @@ fn runMainLoop(self: *AppWindow) !void {
             // seen during that window permanently blank — rebuild the atlas
             // and re-render everything on the GDI path.
             font.clearGlyphCache(allocator);
-            g_force_rebuild = true;
-            g_cells_valid = false;
+            applyUiEffect(.repaint);
             // The in-session GDI switch is best-effort only: this HWND has
             // already flip-presented, and blt presents on such a window are
             // undefined (often blank). Persist the marker so the next launch
@@ -8949,11 +9424,49 @@ test "appwindow: render gate ignores background-tab surface dirty" {
     active_surface.dirty.store(true, .release);
     try std.testing.expect(anyVisibleSurfaceDirty());
 
-    // Frame-end clear consumes only the rendered (active) tab; the background
-    // tab's dirty flag stays latched for its eventual tab switch.
-    clearVisibleSurfaceDirty();
+    // The frame consumes only the rendered (active) tab; the background tab's
+    // dirty flag stays latched for its eventual tab switch.
+    consumeTabSurfaceDirty(activeTab().?);
     try std.testing.expect(!active_surface.dirty.load(.acquire));
     try std.testing.expect(background_surface.dirty.load(.acquire));
+}
+
+test "appwindow: output after the frame's snapshot keeps the render gate armed" {
+    // Regression: the frame cleared surface dirty only after present. A chunk
+    // the IO thread processed between the snapshot and that clear (the prompt
+    // after `echo quick`) found the flag still set, posted no wakeup, and was
+    // then cleared unpainted until an unrelated mouse event.
+    const allocator = std.testing.allocator;
+    for (0..tab.MAX_TABS) |idx| tab.g_tabs[idx] = null;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    defer {
+        for (0..tab.MAX_TABS) |idx| tab.g_tabs[idx] = null;
+        tab.g_tab_count = 0;
+        active_tab_state.g_active_tab = 0;
+    }
+
+    var surface: Surface = undefined;
+    surface.ref_count = 1;
+    surface.dirty = std.atomic.Value(bool).init(false);
+    var tab_v = tab.TabState{ .tree = try SplitTree.init(allocator, &surface) };
+    defer tab_v.tree.deinit();
+    tab.g_tabs[0] = &tab_v;
+    tab.g_tab_count = 1;
+
+    // IO: the first chunk ("quick") marks dirty and posts the frame's wakeup.
+    try std.testing.expect(surface.markOutputDirty());
+    try std.testing.expect(anyVisibleSurfaceDirty());
+
+    // Frame: consume before the terminal snapshot is taken.
+    consumeTabSurfaceDirty(activeTab().?);
+    try std.testing.expect(!anyVisibleSurfaceDirty());
+
+    // IO: the prompt lands after the snapshot, while the frame draws/presents.
+    // It must post a fresh wakeup, and with nothing clearing dirty after
+    // present, the next gate check still renders it.
+    try std.testing.expect(surface.markOutputDirty());
+    try std.testing.expect(anyVisibleSurfaceDirty());
 }
 
 test "appwindow: ui screenshot focused_panel uses focused non-terminal split rect" {
@@ -9064,7 +9577,7 @@ test "appwindow: agent terminal focus activates the owning tab and split" {
     Stub.idx = 0;
     Stub.surfaces = .{ &surface_b, &surface_c };
     var tab1_v = tab.TabState{
-        .tree = try SplitTree.fromSnapshot(allocator, &root, Stub.make),
+        .tree = try SplitTree.fromSnapshot(allocator, &root, Stub.make, null),
         .focused = @enumFromInt(1),
     };
     defer tab1_v.tree.arena.deinit();

@@ -5,6 +5,7 @@ const Surface = @import("../Surface.zig");
 const file_explorer = @import("../file_explorer.zig");
 const markdown_preview = @import("../preview/markdown.zig");
 const platform_remote_file = @import("../platform/remote_file.zig");
+const platform_local_path = @import("../platform/local_path.zig");
 const scp = @import("../ssh/scp.zig");
 const ui_perf = @import("../ui_perf.zig");
 const preview_path = @import("preview_path.zig");
@@ -122,11 +123,14 @@ pub fn readLocalPreviewSource(allocator: std.mem.Allocator, path: []const u8, li
     const perf = ui_perf.begin("preview_source.read_local");
     defer perf.end();
 
+    var native_buf: [4096]u8 = undefined;
+    const open_path = platform_local_path.forLocalOpen(path, &native_buf) orelse path;
+
     var file = blk: {
-        if (std.fs.path.isAbsolute(path)) {
-            break :blk std.fs.openFileAbsolute(path, .{}) catch return error.PreviewFailed;
+        if (std.fs.path.isAbsolute(open_path)) {
+            break :blk std.fs.openFileAbsolute(open_path, .{}) catch return error.PreviewFailed;
         }
-        break :blk std.fs.cwd().openFile(path, .{}) catch return error.PreviewFailed;
+        break :blk std.fs.cwd().openFile(open_path, .{}) catch return error.PreviewFailed;
     };
     defer file.close();
 
@@ -314,6 +318,19 @@ test "preview_source: ssh relative paths require a reported cwd" {
     try std.testing.expectEqualStrings("/srv/project/data/sample.fa", relative);
 }
 
+test "preview_source: local resolve treats OSC 7 drive paths as absolute" {
+    const allocator = std.testing.allocator;
+    const resolved = try resolveLocalPreviewPath(
+        allocator,
+        try allocator.dupe(u8, "/tmp"),
+        "/D:\\wispterm\\docs\\design-qa\\research-journey\\comparison.png",
+    );
+    defer allocator.free(resolved);
+    try std.testing.expect(platform_local_path.isDriveAbsolute(resolved));
+    try std.testing.expect(std.mem.indexOf(u8, resolved, "comparison.png") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resolved, "/tmp") == null);
+}
+
 test "preview_source: parseTmuxPaneCwd accepts a single absolute path and rejects everything else" {
     // Happy path: tmux prints the pane's cwd plus a trailing newline. The
     // surrounding whitespace is trimmed and the absolute path is returned.
@@ -440,6 +457,29 @@ test "preview_source: ssh preview sizes the exec cap to limit+1 and applies the 
     try std.testing.expect(head.truncated);
 }
 
+fn resolveLocalPreviewPath(allocator: std.mem.Allocator, cwd_owned: ?[]u8, path: []const u8) ![]u8 {
+    var path_buf: [4096]u8 = undefined;
+    var cwd_buf: [4096]u8 = undefined;
+    const native_path = platform_local_path.forLocalOpen(path, &path_buf) orelse path;
+
+    if (platform_local_path.isDriveAbsolute(native_path) or std.fs.path.isAbsolute(native_path)) {
+        if (cwd_owned) |c| allocator.free(c);
+        return allocator.dupe(u8, native_path);
+    }
+
+    const cwd = cwd_owned orelse return allocator.dupe(u8, native_path);
+    defer allocator.free(cwd);
+
+    const native_cwd = platform_local_path.forLocalOpen(cwd, &cwd_buf) orelse cwd;
+    const joined = try std.fs.path.join(allocator, &.{ native_cwd, native_path });
+    if (platform_local_path.forLocalOpen(joined, &path_buf)) |native_joined| {
+        if (std.mem.eql(u8, native_joined, joined)) return joined;
+        defer allocator.free(joined);
+        return allocator.dupe(u8, native_joined);
+    }
+    return joined;
+}
+
 pub fn resolveTerminalPreviewPath(allocator: std.mem.Allocator, surface: *Surface, path: []const u8, ls_prefix: ?[]const u8) ![]u8 {
     const joined = try ls_path_context.applyLsPrefix(allocator, path, ls_prefix);
     defer if (joined) |j| allocator.free(j);
@@ -457,19 +497,7 @@ pub fn resolveTerminalPreviewPath(allocator: std.mem.Allocator, surface: *Surfac
             const cwd: ?[]const u8 = if (remote_cwd) |c| c else surface.getCwd();
             break :blk try resolveUnixTerminalPath(allocator, cwd, eff, true);
         },
-        .local => blk: {
-            if (std.fs.path.isAbsolute(eff) or (eff.len >= 2 and eff[1] == ':')) {
-                break :blk try allocator.dupe(u8, eff);
-            }
-            // Resolve relative to the shell's CURRENT cwd, not its launch cwd:
-            // the user may have `cd`'d, and shells like zsh don't emit OSC 7,
-            // so we fall back to a live process-cwd query (see dupeCurrentCwd).
-            const cwd = surface.dupeCurrentCwd(allocator) orelse {
-                break :blk try allocator.dupe(u8, eff);
-            };
-            defer allocator.free(cwd);
-            break :blk try std.fs.path.join(allocator, &.{ cwd, eff });
-        },
+        .local => try resolveLocalPreviewPath(allocator, surface.dupeCurrentCwd(allocator), eff),
     };
 }
 

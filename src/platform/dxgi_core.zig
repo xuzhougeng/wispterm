@@ -56,6 +56,8 @@ pub const IID_IDXGIFactory1 = guid("770aae78-f26f-4dba-a829-253c83d1b387");
 pub const IID_IDXGIFactory2 = guid("50c83a1c-e072-4c48-87b0-3630fa36a6d0");
 pub const IID_IDXGIResource = guid("035f3ab4-482e-4e50-b41f-8a7f8bd8960b");
 pub const IID_ID3D11Texture2D = guid("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
+pub const IID_IDXGISwapChain1 = guid("790a45f7-0d42-4876-983a-0a55cfe6f4aa");
+pub const IID_IDXGISwapChain2 = guid("a8be2ac4-199f-4946-b331-79599fb98de7");
 
 // ============================================================================
 // D3D11 / DXGI ABI structs and constants
@@ -64,6 +66,27 @@ pub const IID_ID3D11Texture2D = guid("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
 pub const DXGI_SAMPLE_DESC = extern struct {
     count: u32,
     quality: u32,
+};
+
+/// Win32 RECT/POINT-compatible types used by DXGI_PRESENT_PARAMETERS.
+pub const RECT = extern struct {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+};
+
+pub const POINT = extern struct {
+    x: i32,
+    y: i32,
+};
+
+/// dxgi1_2.h DXGI_PRESENT_PARAMETERS.
+pub const DXGI_PRESENT_PARAMETERS = extern struct {
+    dirty_rects_count: u32,
+    dirty_rects: ?*RECT,
+    scroll_rect: ?*RECT,
+    scroll_offset: ?*POINT,
 };
 
 /// dxgi1_2.h DXGI_SWAP_CHAIN_DESC1 (BOOL stereo declared as u32).
@@ -228,6 +251,7 @@ pub const DXGI_USAGE_RENDER_TARGET_OUTPUT: u32 = 0x20;
 pub const DXGI_SCALING_NONE: u32 = 1;
 pub const DXGI_SCALING_STRETCH: u32 = 0;
 pub const DXGI_SWAP_EFFECT_FLIP_DISCARD: u32 = 4;
+pub const DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT: u32 = 64;
 pub const DXGI_ALPHA_MODE_IGNORE: u32 = 3;
 pub const DXGI_ADAPTER_FLAG_SOFTWARE: u32 = 2;
 
@@ -489,8 +513,17 @@ pub const slot = struct {
     // IDXGISwapChain: Present(8) GetBuffer(9) SetFullscreenState(10)
     // GetFullscreenState(11) GetDesc(12) ResizeBuffers(13)
     pub const DXGISwapChain_Present: usize = 8;
+    // IDXGISwapChain1 adds GetDesc1(18), GetFullscreenDesc(19), GetHwnd(20),
+    // GetCoreWindow(21), Present1(22).
+    pub const DXGISwapChain1_Present1: usize = 22;
     pub const DXGISwapChain_GetBuffer: usize = 9;
     pub const DXGISwapChain_ResizeBuffers: usize = 13;
+
+    // IDXGISwapChain2 extends IDXGISwapChain1: SetSourceSize(29),
+    // GetSourceSize(30), SetMaximumFrameLatency(31),
+    // GetMaximumFrameLatency(32), GetFrameLatencyWaitableObject(33).
+    pub const DXGISwapChain2_SetMaximumFrameLatency: usize = 31;
+    pub const DXGISwapChain2_GetFrameLatencyWaitableObject: usize = 33;
 
     // IDXGIResource (IDXGIDeviceSubObject + GetSharedHandle first)
     pub const DXGIResource_GetSharedHandle: usize = 8;
@@ -719,6 +752,18 @@ test "well-known interface IIDs round-trip their documented strings" {
     try std.testing.expectEqual(@as(u8, 0x0b), IID_IDXGIResource.data4[7]);
     try std.testing.expectEqual(@as(u32, 0x6f15aaf2), IID_ID3D11Texture2D.data1);
     try std.testing.expectEqual(@as(u8, 0x9c), IID_ID3D11Texture2D.data4[7]);
+    try std.testing.expectEqual(@as(u32, 0x790a45f7), IID_IDXGISwapChain1.data1);
+    try std.testing.expectEqual(@as(u8, 0xaa), IID_IDXGISwapChain1.data4[7]);
+    try std.testing.expectEqual(@as(u32, 0xa8be2ac4), IID_IDXGISwapChain2.data1);
+    try std.testing.expectEqual(@as(u8, 0xe7), IID_IDXGISwapChain2.data4[7]);
+}
+
+test "frame latency swapchain constants match the Windows SDK" {
+    try std.testing.expectEqual(@as(u32, 64), DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
+    try std.testing.expectEqual(@as(usize, 22), slot.DXGISwapChain1_Present1);
+    try std.testing.expectEqual(@as(usize, 31), slot.DXGISwapChain2_SetMaximumFrameLatency);
+    try std.testing.expectEqual(@as(usize, 33), slot.DXGISwapChain2_GetFrameLatencyWaitableObject);
+    try std.testing.expectEqual(@as(usize, 32), @sizeOf(DXGI_PRESENT_PARAMETERS));
 }
 
 test "DXGI_SWAP_CHAIN_DESC1 matches the documented 48-byte layout" {

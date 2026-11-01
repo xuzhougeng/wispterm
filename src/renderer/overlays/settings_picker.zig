@@ -35,6 +35,60 @@ pub const State = struct {
     }
 };
 
+/// Font picker list: the built-in default family first (it is bundled, so it is
+/// usually not an installed system font and could not be picked back), then the
+/// system families sorted case-insensitively without duplicates. DirectWrite
+/// enumerates families in collection order, which only looks sorted (#647).
+/// Takes ownership of `listed` (each string and the slice); the result is owned
+/// the same way.
+pub fn fontFamilyChoices(allocator: std.mem.Allocator, listed: [][]const u8, default_family: []const u8) ![][]const u8 {
+    defer allocator.free(listed);
+    std.sort.pdq([]const u8, listed, {}, lessThanIgnoreCase);
+
+    var out = std.ArrayListUnmanaged([]const u8).initCapacity(allocator, listed.len + 1) catch |err| {
+        for (listed) |name| allocator.free(name);
+        return err;
+    };
+    errdefer {
+        for (out.items) |name| allocator.free(name);
+        out.deinit(allocator);
+    }
+    const default_copy = allocator.dupe(u8, default_family) catch |err| {
+        for (listed) |name| allocator.free(name);
+        return err;
+    };
+    out.appendAssumeCapacity(default_copy);
+    for (listed) |name| {
+        const last = out.items[out.items.len - 1];
+        if (std.ascii.eqlIgnoreCase(name, default_family) or std.ascii.eqlIgnoreCase(name, last)) {
+            allocator.free(name);
+            continue;
+        }
+        out.appendAssumeCapacity(name);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn lessThanIgnoreCase(_: void, a: []const u8, b: []const u8) bool {
+    return std.ascii.lessThanIgnoreCase(a, b);
+}
+
+test "fontFamilyChoices puts the default first, then sorts and dedupes system families" {
+    const gpa = std.testing.allocator;
+    const raw = [_][]const u8{ "Yu Gothic UI", "DengXian", "consolas", "FangSong", "JetBrains Mono", "Consolas", "Arial" };
+    const listed = try gpa.alloc([]const u8, raw.len);
+    for (raw, 0..) |name, i| listed[i] = try gpa.dupe(u8, name);
+
+    const choices = try fontFamilyChoices(gpa, listed, "JetBrains Mono");
+    defer {
+        for (choices) |name| gpa.free(name);
+        gpa.free(choices);
+    }
+    const expected = [_][]const u8{ "JetBrains Mono", "Arial", "consolas", "DengXian", "FangSong", "Yu Gothic UI" };
+    try std.testing.expectEqual(expected.len, choices.len);
+    for (expected, choices) |want, got| try std.testing.expectEqualStrings(want, got);
+}
+
 test "settings picker opens on the current value and returns the selected choice" {
     const choices = [_][]const u8{ "bash", "zsh", "fish" };
     var picker = State{};

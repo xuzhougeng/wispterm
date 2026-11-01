@@ -35,12 +35,18 @@ test "ctl server answers a real loopback request and stops cleanly" {
         fn ui_state(_: *anyopaque, a: std.mem.Allocator) anyerror!?[]u8 {
             return try a.dupe(u8, "{\"activeOverlay\":\"none\"}");
         }
-        fn spawn(_: *anyopaque, cwd: []const u8, _: []const u8) bool {
-            return std.mem.eql(u8, cwd, "/work"); // accept only the expected request
+        fn spawn(_: *anyopaque, cwd: []const u8, _: []const u8, _: control_mod.SpawnOptions) ?u32 {
+            return if (std.mem.eql(u8, cwd, "/work")) 1 else null; // accept only the expected request
+        }
+        fn agent_state(_: *anyopaque, _: std.mem.Allocator, _: []const u8) anyerror!?[]u8 {
+            return null;
+        }
+        fn spawn_result(_: *anyopaque, _: std.mem.Allocator, _: u32) anyerror!?[]u8 {
+            return null;
         }
         var dummy: u8 = 0;
         fn iface() control_mod.Control {
-            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text, .ui_state = ui_state, .spawn = spawn } };
+            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text, .ui_state = ui_state, .spawn = spawn, .agent_state = agent_state, .spawn_result = spawn_result } };
         }
     };
 
@@ -123,12 +129,18 @@ test "ctl server shutdown does not hang on a stalled (newline-less) connection" 
         fn ui_state(_: *anyopaque, _: std.mem.Allocator) anyerror!?[]u8 {
             return null;
         }
-        fn spawn(_: *anyopaque, _: []const u8, _: []const u8) bool {
-            return false;
+        fn spawn(_: *anyopaque, _: []const u8, _: []const u8, _: control_mod.SpawnOptions) ?u32 {
+            return null;
+        }
+        fn agent_state(_: *anyopaque, _: std.mem.Allocator, _: []const u8) anyerror!?[]u8 {
+            return null;
+        }
+        fn spawn_result(_: *anyopaque, _: std.mem.Allocator, _: u32) anyerror!?[]u8 {
+            return null;
         }
         var dummy: u8 = 0;
         fn iface() control_mod.Control {
-            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text, .ui_state = ui_state, .spawn = spawn } };
+            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text, .ui_state = ui_state, .spawn = spawn, .agent_state = agent_state, .spawn_result = spawn_result } };
         }
     };
 

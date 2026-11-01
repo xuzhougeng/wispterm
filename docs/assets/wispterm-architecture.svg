@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200" role="img" aria-labelledby="title description">
+  <title id="title">WispTerm architecture</title>
+  <desc id="description">Native Win32, AppKit, and experimental SDL3 hosts expose windows and events through window_backend.zig. The shared Zig integration layer coordinates feature domains and independent terminal surfaces. Terminal IO feeds libghostty-vt for VT parsing and terminal state, then WispTerm's renderer and font pipeline draw the result. Narrow platform services select operating-system implementations. Optional remote access links the desktop client to a Cloudflare or Node.js relay and an xterm.js browser console. This is a responsibility overview, not an exhaustive dependency graph.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 1 1 L 9 5 L 1 9" fill="none" stroke="#8fa6c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="arrow-start" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 9 1 L 1 5 L 9 9" fill="none" stroke="#8fa6c1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="remote-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 1 1 L 9 5 L 1 9" fill="none" stroke="#bcafff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      text { font-family: "DejaVu Sans", "Segoe UI", Arial, sans-serif; fill: #edf3fc; }
+      .heading { font-size: 22px; font-weight: 650; }
+      .body { font-size: 18px; }
+      .small { font-size: 16px; }
+      .muted { fill: #afbed2; }
+      .eyebrow { font-size: 14px; font-weight: 700; letter-spacing: 1.8px; }
+      .mono { font-family: "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace; font-size: 16px; }
+      .teal { fill: #79e4cf; }
+      .gold { fill: #f3cf8a; }
+      .violet { fill: #c6baff; }
+      .panel { fill: #172437; stroke: #35475f; stroke-width: 1.3; }
+      .inset { fill: #101c2d; stroke: #35475f; stroke-width: 1.2; }
+      .wire { fill: none; stroke: #8fa6c1; stroke-width: 1.6; marker-end: url(#arrow); }
+      .two-way { marker-start: url(#arrow-start); }
+    </style>
+  </defs>
+
+  <rect width="1200" height="1200" rx="22" fill="#0c1524"/>
+  <path d="M 42 42 L 55 53 L 42 64 M 63 65 H 79" fill="none" stroke="#79e4cf" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="96" y="66" font-size="34" font-weight="700">WispTerm</text>
+  <text x="312" y="66" font-size="34" font-weight="400" class="muted">/ Architecture</text>
+  <text x="40" y="96" class="body muted">Shared Zig core · Native desktop hosts · Optional web remote</text>
+  <text x="1160" y="63" text-anchor="end" class="eyebrow teal">SYSTEM OVERVIEW</text>
+
+  <!-- Native hosts own window lifecycle, event loops, input, IME, and DPI. -->
+  <g aria-label="Native desktop hosts">
+    <rect x="40" y="124" width="1120" height="110" rx="14" class="panel"/>
+    <text x="60" y="151" class="eyebrow muted">NATIVE HOSTS</text>
+    <path d="M 410 166 V 216 M 790 166 V 216" stroke="#35475f"/>
+    <text x="60" y="185" class="heading">Windows</text>
+    <rect x="186" y="167" width="86" height="24" rx="12" fill="#1c453f"/>
+    <text x="229" y="184" text-anchor="middle" font-size="12" font-weight="700" class="teal">PRIMARY</text>
+    <text x="60" y="213" class="body muted">Win32 · window + event loop</text>
+    <text x="438" y="185" class="heading">macOS</text>
+    <text x="438" y="213" class="body muted">AppKit · window + event loop</text>
+    <text x="818" y="185" class="heading">Linux</text>
+    <text x="896" y="185" class="small gold">experimental</text>
+    <text x="818" y="213" class="body muted">SDL3 · window + event loop</text>
+  </g>
+
+  <path d="M 600 238 V 260" class="wire two-way"/>
+  <rect x="180" y="266" width="840" height="42" rx="10" fill="#132e34" stroke="#39736e"/>
+  <text x="600" y="292" text-anchor="middle" class="body teal">window_backend.zig · events, window state &amp; rendering surface</text>
+  <path d="M 600 312 V 332" class="wire two-way"/>
+
+  <!-- Coordination is separate from terminal core and feature-owned state. -->
+  <g aria-label="Shared application integration layer">
+    <rect x="40" y="340" width="1120" height="122" rx="14" class="panel"/>
+    <text x="60" y="368" class="eyebrow teal">SHARED ZIG · APPLICATION INTEGRATION</text>
+    <text x="60" y="402" class="heading">App + AppWindow</text>
+    <text x="316" y="402" class="body muted">Lifecycle, config, tabs, splits, input and render routing</text>
+    <path d="M 60 418 H 1140" stroke="#35475f"/>
+    <text x="60" y="444" class="mono">input.zig · overlays.zig · appwindow/</text>
+    <text x="1140" y="444" text-anchor="end" class="body teal">UiEffect → render gate → repaint</text>
+  </g>
+
+  <path d="M 225 466 V 510" class="wire"/>
+  <text x="246" y="494" class="small muted">Actions + context</text>
+  <path d="M 800 466 V 510" class="wire"/>
+  <text x="822" y="494" class="small muted">Surface lifecycle + IO</text>
+
+  <g aria-label="Feature domains own their state and APIs">
+    <rect x="40" y="518" width="370" height="244" rx="14" class="panel"/>
+    <text x="60" y="550" class="heading gold">Feature domains</text>
+    <text x="60" y="578" class="small muted">Own state, query/action APIs and tests</text>
+    <text x="60" y="615" class="body">Assistant, agents &amp; tool runtime</text>
+    <text x="60" y="645" class="body">External terminal agent sessions</text>
+    <text x="60" y="675" class="body">Files, previews &amp; embedded browser</text>
+    <text x="60" y="705" class="body">SSH, port forwarding &amp; skills</text>
+    <text x="60" y="741" class="small muted">Explicit context · UiEffect for UI changes</text>
+  </g>
+
+  <g aria-label="Shared terminal core and output flow">
+    <rect x="438" y="518" width="722" height="244" rx="14" fill="#142b32" stroke="#39736e" stroke-width="1.3"/>
+    <text x="458" y="550" class="heading teal">Terminal core</text>
+    <text x="458" y="578" class="small muted">Surface.zig · independent terminal session, PTY and selection</text>
+
+    <rect x="458" y="600" width="190" height="108" rx="10" class="inset"/>
+    <text x="553" y="629" text-anchor="middle" class="body" font-weight="650">Terminal IO</text>
+    <text x="553" y="658" text-anchor="middle" class="mono muted">termio/ + PTY</text>
+    <text x="553" y="686" text-anchor="middle" class="small muted">Read / write mailbox</text>
+
+    <path d="M 652 652 H 672" class="wire"/>
+    <rect x="678" y="600" width="202" height="108" rx="10" fill="#153c3c" stroke="#4c9a8a"/>
+    <text x="779" y="629" text-anchor="middle" class="body teal" font-weight="700">libghostty-vt</text>
+    <text x="779" y="658" text-anchor="middle" class="small">VT parsing</text>
+    <text x="779" y="686" text-anchor="middle" class="small">Terminal state</text>
+
+    <path d="M 884 652 H 904" class="wire"/>
+    <rect x="910" y="600" width="230" height="108" rx="10" class="inset"/>
+    <text x="1025" y="629" text-anchor="middle" class="body" font-weight="650">WispTerm renderer</text>
+    <text x="1025" y="658" text-anchor="middle" class="small muted">Cells, images &amp; UI</text>
+    <text x="1025" y="686" text-anchor="middle" class="small muted">FreeType + glyph atlas</text>
+    <text x="458" y="741" class="small muted">Output → VT state → pixels · input returns through PTY writes</text>
+  </g>
+
+  <!-- OS capabilities stay behind narrow facades; implementations vary by target. -->
+  <path d="M 225 766 V 795" class="wire"/>
+  <path d="M 800 766 V 795" class="wire"/>
+  <g aria-label="Platform capability interfaces">
+    <rect x="40" y="802" width="1120" height="66" rx="12" class="panel"/>
+    <text x="60" y="829" class="eyebrow teal">PLATFORM SERVICES · src/platform/</text>
+    <text x="60" y="855" class="body muted">PTY / process · fonts · clipboard · files / dialogs · networking · webview · notifications</text>
+  </g>
+  <path d="M 220 872 V 892 M 600 872 V 892 M 980 872 V 892" class="wire"/>
+
+  <g aria-label="Platform backend matrix">
+    <rect x="40" y="900" width="360" height="108" rx="12" class="panel"/>
+    <text x="60" y="929" class="body" font-weight="700">Windows backends</text>
+    <text x="60" y="958" class="body muted">ConPTY · D3D11 · DirectWrite</text>
+    <text x="60" y="987" class="small muted">OpenGL compatibility build available</text>
+    <rect x="420" y="900" width="360" height="108" rx="12" class="panel"/>
+    <text x="440" y="929" class="body" font-weight="700">macOS backends</text>
+    <text x="440" y="958" class="body muted">POSIX PTY · Metal · CoreText</text>
+    <text x="440" y="987" class="small muted">Apple Silicon + Intel</text>
+    <rect x="800" y="900" width="360" height="108" rx="12" class="panel"/>
+    <text x="820" y="929" class="body" font-weight="700">Linux backends</text>
+    <text x="820" y="958" class="body muted">POSIX PTY · OpenGL · fontconfig</text>
+    <text x="820" y="987" class="small gold">Experimental AppImage</text>
+  </g>
+
+  <!-- Optional network path, separate from the desktop rendering pipeline. -->
+  <g aria-label="Optional WispTerm Remote network flow">
+    <rect x="40" y="1040" width="1120" height="128" rx="14" fill="#201e36" stroke="#7665a6" stroke-width="1.3" stroke-dasharray="6 5"/>
+    <text x="60" y="1070" class="eyebrow violet">WISPTERM REMOTE · OPTIONAL</text>
+    <text x="1140" y="1070" text-anchor="end" class="small muted">Disabled by default · remote/</text>
+    <text x="60" y="1113" class="body" font-weight="650">Desktop remote client</text>
+    <text x="60" y="1141" class="mono muted">src/remote_client.zig</text>
+    <path d="M 322 1124 H 454" fill="none" stroke="#bcafff" stroke-width="1.6" marker-start="url(#remote-arrow)" marker-end="url(#remote-arrow)"/>
+    <text x="388" y="1108" text-anchor="middle" class="small violet">WebSocket</text>
+    <text x="620" y="1113" text-anchor="middle" class="body" font-weight="650">Relay</text>
+    <text x="620" y="1141" text-anchor="middle" class="small muted">Cloudflare Worker + DO / Node.js</text>
+    <path d="M 790 1124 H 922" fill="none" stroke="#bcafff" stroke-width="1.6" marker-start="url(#remote-arrow)" marker-end="url(#remote-arrow)"/>
+    <text x="856" y="1108" text-anchor="middle" class="small violet">WebSocket</text>
+    <text x="1140" y="1113" text-anchor="end" class="body" font-weight="650">Browser console</text>
+    <text x="1140" y="1141" text-anchor="end" class="small muted">xterm.js · tabs &amp; splits</text>
+  </g>
+</svg>

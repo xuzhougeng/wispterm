@@ -54,9 +54,17 @@ fn backendProgram(self: Pipeline) c.GLuint {
     return @intCast(self.program);
 }
 
+/// Called with the program about to be used (mirrors the OpenGL backend). The
+/// UI glyph batcher registers its flush here: any pipeline other than the
+/// batch's own means a foreign draw is coming, so pending batched UI draws
+/// must be encoded first to preserve draw order. Stays null when batching is
+/// disabled.
+pub threadlocal var pre_use_hook: ?*const fn (program: types.ProgramHandle) void = null;
+
 pub fn use(self: Pipeline) void {
-    _ = self;
-    // Bound on the render command encoder when draw calls are encoded.
+    if (pre_use_hook) |hook| hook(self.program);
+    // The pipeline state itself is set on the render command encoder when
+    // draw calls are encoded.
 }
 pub fn bindVao(self: Pipeline) void {
     _ = self;

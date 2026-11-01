@@ -38,8 +38,8 @@ field to `chat_completions` (default), `responses`, or `anthropic`:
 
 The built-in defaults target DeepSeek:
 
-- Base URL `https://api.deepseek.com`, model `deepseek-v4-pro`,
-  protocol `chat_completions`.
+- Base URL `https://api.deepseek.com`, model `deepseek-flash`,
+  protocol `chat_completions`, Vision on.
 - DeepSeek thinking enabled, `reasoning_effort = high`, non-streaming.
 - A platform-aware system prompt is compiled into the binary; clear the System
   field on an existing profile to pick up the current embedded default.
@@ -68,8 +68,9 @@ right-side AI copilot bound to the focused terminal (terminal tabs only).
 
 ## Pasting images (Vision)
 
-Each AI profile has a **Vision** toggle (off by default). Enable it on a profile
-that uses a vision-capable model, then press `Ctrl+Shift+V` (`Cmd+Shift+V` on
+Each AI profile has a **Vision** toggle. It starts on for a new profile on
+`deepseek-flash` (the default model) and off for other models; enable it on a
+profile that uses a vision-capable model, then press `Ctrl+Shift+V` (`Cmd+Shift+V` on
 macOS) to paste a clipboard image into the chat composer. The image is sent as a
 multimodal block and re-sent on each follow-up turn so the model keeps seeing it.
 Pasting an image into a non-vision profile is ignored with a log and a toast.

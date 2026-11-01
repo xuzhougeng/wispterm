@@ -21,6 +21,10 @@
 //!     than waiting for pipe EOF. A grandchild that inherited the stdout fd
 //!     (phase-1 limitation, see process_group / kill_tree) therefore cannot
 //!     hang the run: we grab what is buffered and reap the direct child.
+//!   • Hitting the stored-output cap is a separate stopping reason, gated by
+//!     `kill_on_output_cap` (default true). Agent exec turns this off so a
+//!     chatty child is truncated, not killed, while timeout/cancel still bound
+//!     the run.
 //!
 //! No second thread, no lock held across a blocking wait, no busy-spin (the
 //! poll itself blocks up to the step), no deadlock. The one matching reap is in
@@ -35,8 +39,16 @@ const process_group = @import("platform/process_group.zig");
 /// the user aborts an AI turn) and `runCapture` terminates+reaps the child.
 /// Self-contained and atomic so it is portable and trivially testable; it does
 /// not depend on ai_chat's ToolContext.
+/// Optional extra cancel source polled alongside the atomic flag. Agent exec
+/// uses this to watch `ToolContext.isCancelled` without a second thread.
+pub const CancelProbe = struct {
+    ctx: *const anyopaque,
+    is_cancelled: *const fn (*const anyopaque) bool,
+};
+
 pub const CancelToken = struct {
     flag: std.atomic.Value(bool) = .init(false),
+    probe: ?CancelProbe = null,
 
     pub fn init() CancelToken {
         return .{};
@@ -47,7 +59,9 @@ pub const CancelToken = struct {
     }
 
     pub fn isCancelled(self: *const CancelToken) bool {
-        return self.flag.load(.acquire);
+        if (self.flag.load(.acquire)) return true;
+        if (self.probe) |p| return p.is_cancelled(p.ctx);
+        return false;
     }
 };
 
@@ -78,10 +92,17 @@ pub const RunOptions = struct {
     timeout_ms: ?u64 = null,
     /// Cooperative cancel switch, polled by the monitor. null = not cancellable.
     cancel: ?*const CancelToken = null,
-    /// Bytes of stdout/stderr retained; the rest is read-to-EOF and discarded
-    /// so the child can always make progress, but not stored.
+    /// Bytes of stdout/stderr retained. When `kill_on_output_cap` is true
+    /// (default), hitting either cap stops the run and terminates the child.
+    /// When false, extra bytes are discarded and the run continues until the
+    /// child exits, times out, or is cancelled.
     max_stdout_bytes: usize,
     max_stderr_bytes: usize,
+    /// When true, reaching `max_stdout_bytes` / `max_stderr_bytes` is a
+    /// stopping reason and the child is terminated. When false, extra output
+    /// is discarded so the poller buffer cannot grow without bound, and the
+    /// child is allowed to finish (or hit timeout/cancel).
+    kill_on_output_cap: bool = true,
     /// Best-effort request to kill the whole process tree on
     /// timeout/cancel. PHASE 1 kills only the direct child (the child itself is
     /// always reaped); tree killing is a process_group phase-2 TODO. Accepted
@@ -119,6 +140,14 @@ fn terminate(id: std.process.Child.Id, kill_tree: bool, hard: bool) void {
 /// Copy at most `max` bytes of `src` (truncating the rest) into an owned slice.
 fn dupeCapped(allocator: std.mem.Allocator, src: []const u8, max: usize) RunError![]u8 {
     return allocator.dupe(u8, src[0..@min(src.len, max)]);
+}
+
+/// Keep the first `max` buffered bytes and drop the rest so a long-running
+/// chatty child cannot grow the poller buffer without bound.
+fn capStoredOutput(r: *std.Io.Reader, max: usize) void {
+    if (r.bufferedLen() > max) {
+        r.end = r.seek + max;
+    }
 }
 
 /// POSIX poll can report POLLHUP without POLLIN while final pipe bytes are still
@@ -201,10 +230,15 @@ pub fn runCapture(
     var poll_open = true;
 
     while (true) {
-        // Cap reached on either stream: we have enough; stop draining. (The
-        // child may keep writing; we terminate+reap below if it has not exited.)
-        if (poller.reader(.stdout).bufferedLen() >= options.max_stdout_bytes or
-            poller.reader(.stderr).bufferedLen() >= options.max_stderr_bytes)
+        capStoredOutput(poller.reader(.stdout), options.max_stdout_bytes);
+        capStoredOutput(poller.reader(.stderr), options.max_stderr_bytes);
+
+        // Cap reached: default is to stop and terminate the child. Callers
+        // that must let a chatty child finish (agent exec) set
+        // kill_on_output_cap=false and keep draining, discarding extra.
+        if (options.kill_on_output_cap and
+            (poller.reader(.stdout).bufferedLen() >= options.max_stdout_bytes or
+                poller.reader(.stderr).bufferedLen() >= options.max_stderr_bytes))
         {
             break;
         }
@@ -386,6 +420,24 @@ fn shArgv(script: []const u8) [3][]const u8 {
 
 test "CancelToken flips and is observed across threads" {
     var tok = CancelToken.init();
+    try testing.expect(!tok.isCancelled());
+    tok.cancel();
+    try testing.expect(tok.isCancelled());
+}
+
+test "CancelToken probe is observed without flipping the flag" {
+    const Probe = struct {
+        fn yes(_: *const anyopaque) bool {
+            return true;
+        }
+        fn no(_: *const anyopaque) bool {
+            return false;
+        }
+    };
+    var dummy: u8 = 0;
+    var tok = CancelToken{ .probe = .{ .ctx = &dummy, .is_cancelled = Probe.yes } };
+    try testing.expect(tok.isCancelled());
+    tok = CancelToken{ .probe = .{ .ctx = &dummy, .is_cancelled = Probe.no } };
     try testing.expect(!tok.isCancelled());
     tok.cancel();
     try testing.expect(tok.isCancelled());
@@ -584,6 +636,44 @@ test "runCapture types: options carry the documented lifecycle knobs" {
     try testing.expectEqual(@as(?u64, null), opts.timeout_ms);
     try testing.expectEqual(@as(?*const CancelToken, null), opts.cancel);
     try testing.expect(opts.kill_tree);
+    try testing.expect(opts.kill_on_output_cap);
     _ = RunResult;
     _ = &runCapture;
+}
+
+test "runCapture with kill_on_output_cap=false truncates without killing a finite child" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = testing.allocator;
+    // Fast child: writes 5000 bytes then exits. Cap storage at 100 bytes, but
+    // do not treat the cap as a kill reason — the child must be reported
+    // `.exited`.
+    var argv = shArgv("printf 'O%.0s' $(seq 1 5000)");
+    var res = try runCapture(a, &argv, .{
+        .max_stdout_bytes = 100,
+        .max_stderr_bytes = 100,
+        .kill_on_output_cap = false,
+    });
+    defer res.deinit(a);
+    try testing.expectEqual(@as(usize, 100), res.stdout.len);
+    try testing.expectEqual(Termination{ .exited = 0 }, res.termination);
+    try testing.expect(!res.timed_out);
+}
+
+test "runCapture with kill_on_output_cap=false still times out a never-ending child" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = testing.allocator;
+    var argv = shArgv("while true; do printf 'xxxxxxxxxxxxxxxx'; done");
+    const started = std.time.milliTimestamp();
+    var res = try runCapture(a, &argv, .{
+        .timeout_ms = 200,
+        .max_stdout_bytes = 64,
+        .max_stderr_bytes = 64,
+        .kill_on_output_cap = false,
+    });
+    defer res.deinit(a);
+    const elapsed = std.time.milliTimestamp() - started;
+    try testing.expect(res.timed_out);
+    try testing.expectEqual(Termination.killed, res.termination);
+    try testing.expectEqual(@as(usize, 64), res.stdout.len);
+    try testing.expect(elapsed < 5000);
 }

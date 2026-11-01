@@ -17,7 +17,18 @@ pub fn keyCodeFromScancode(scancode: u32) ?ev.KeyCode {
         44 => ev.key_space, // SPACE
         40 => ev.key_enter, // RETURN
         41 => ev.key_escape, // ESCAPE
+        58 => ev.key_f1, // F1
+        59 => ev.key_f2, // F2
+        60 => ev.key_f3, // F3
+        61 => ev.key_f4, // F4
         62 => ev.key_f5, // F5
+        63 => ev.key_f6, // F6
+        64 => ev.key_f7, // F7
+        65 => ev.key_f8, // F8
+        66 => ev.key_f9, // F9
+        67 => ev.key_f10, // F10
+        68 => ev.key_f11, // F11
+        69 => ev.key_f12, // F12
         73 => ev.key_insert, // INSERT
         74 => ev.key_home, // HOME
         75 => ev.key_page_up, // PAGEUP
@@ -96,6 +107,9 @@ test "special scancodes map to neutral key codes" {
     try std.testing.expectEqual(@as(?ev.KeyCode, ev.key_enter), keyCodeFromScancode(40)); // SDL_SCANCODE_RETURN
     try std.testing.expectEqual(@as(?ev.KeyCode, ev.key_escape), keyCodeFromScancode(41)); // SDL_SCANCODE_ESCAPE
     try std.testing.expectEqual(@as(?ev.KeyCode, ev.key_delete), keyCodeFromScancode(76)); // SDL_SCANCODE_DELETE
+    try std.testing.expectEqual(@as(?ev.KeyCode, ev.key_f1), keyCodeFromScancode(58)); // SDL_SCANCODE_F1
+    try std.testing.expectEqual(@as(?ev.KeyCode, ev.key_f2), keyCodeFromScancode(59)); // SDL_SCANCODE_F2
+    try std.testing.expectEqual(@as(?ev.KeyCode, ev.key_f12), keyCodeFromScancode(69)); // SDL_SCANCODE_F12
     try std.testing.expectEqual(@as(?ev.KeyCode, ev.key_left_shift), keyCodeFromScancode(225)); // SDL_SCANCODE_LSHIFT
     // A printable key has no special mapping (text arrives via TEXT_INPUT).
     try std.testing.expectEqual(@as(?ev.KeyCode, null), keyCodeFromScancode(4)); // SDL_SCANCODE_A

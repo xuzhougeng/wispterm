@@ -1,8 +1,11 @@
 //! File Explorer state and directory tree model.
 //!
-//! Manages the left-side file explorer sidebar: visibility, width, directory
-//! scanning, tree expand/collapse, selection, scroll, and file operations.
-//! Supports local (std.fs), WSL, and remote SSH/SCP modes.
+//! Manages the file explorer panel: visibility, width, directory scanning,
+//! tree expand/collapse, selection, scroll, and file operations. Supports
+//! local (std.fs), WSL, and remote SSH/SCP modes. With
+//! `file-explorer-position = right` the panel is a tab in the right dock and
+//! the dock owns its visibility (see `setDockVisibilityQuery`); with `left` it
+//! is the original panel beside the tab sidebar, owned by one tab at a time.
 
 const std = @import("std");
 const ssh_connection = @import("ssh/connection.zig");
@@ -227,13 +230,37 @@ pub const FlatEntry = struct {
     path_len: u16 = 0,
 };
 
+// Set while the explorer is hosted in the right dock: the dock's per-tab
+// state is then the only visibility source, so every path that switches the
+// dock (shortcut, tab row, Copilot reopening a chat) hides the explorer too.
+threadlocal var g_dock_visibility_query: ?*const fn () bool = null;
+
+/// Hand visibility to the right dock (`query`), or back to the left-panel
+/// `g_visible`/`g_owner_tab` model (`null`).
+pub fn setDockVisibilityQuery(query: ?*const fn () bool) void {
+    g_dock_visibility_query = query;
+}
+
+pub fn isDocked() bool {
+    return g_dock_visibility_query != null;
+}
+
+/// Width reserved on the LEFT edge. A docked explorer lives inside the right
+/// dock's shared width instead, so it reserves nothing here.
 pub fn width() f32 {
+    if (isDocked()) return 0;
     return if (isVisibleForActiveTab()) g_width else 0;
 }
 
 pub fn isVisibleForActiveTab() bool {
+    if (g_dock_visibility_query) |dock_visible| return dock_visible();
     const owner = g_owner_tab orelse return false;
     return g_visible and owner == active_tab_state.g_active_tab;
+}
+
+/// True when the explorer has no root directory yet (shell reported no cwd).
+pub fn hasRoot() bool {
+    return g_root_path_len > 0;
 }
 
 /// Narrow, read-only queries used by the input layer so it does not have to

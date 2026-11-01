@@ -173,6 +173,15 @@ pub fn pumpAppEvents(timeout_seconds: f64) void {
 
 pub fn postWakeup() void {}
 
+/// No per-iteration platform scope here; see window_macos.zig.
+pub fn beginLoopIteration() ?*anyopaque {
+    return null;
+}
+
+pub fn endLoopIteration(token: ?*anyopaque) void {
+    _ = token;
+}
+
 pub fn registerEventWindow(hwnd: NativeHandle) void {
     _ = hwnd;
 }

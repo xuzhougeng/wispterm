@@ -10,6 +10,7 @@ pub const MAX = 120;
 
 // Order matters: first match wins. More specific / user-visible phrases first.
 const known = [_][]const u8{
+    "WispTerm SSH proxy:",
     "Permission denied",
     "Connection timed out",
     "Connection refused",
@@ -80,4 +81,11 @@ test "summarize caps very long lines" {
     @memset(&buf, 'x');
     const out = summarize(&buf).?;
     try std.testing.expectEqual(MAX, out.len);
+}
+
+test "proxy setup errors stay visible instead of the later OpenSSH close message" {
+    const auth = "WispTerm SSH proxy: ProxyAuthenticationRequired\nkex_exchange_identification: Connection closed by remote host\nConnection closed by UNKNOWN port 65535\n";
+    try std.testing.expectEqualStrings("WispTerm SSH proxy: ProxyAuthenticationRequired", summarize(auth).?);
+    const offline = "WispTerm SSH proxy: ConnectionRefused\nkex_exchange_identification: Connection closed by remote host\n";
+    try std.testing.expectEqualStrings("WispTerm SSH proxy: ConnectionRefused", summarize(offline).?);
 }

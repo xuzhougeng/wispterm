@@ -24,24 +24,26 @@ pub threadlocal var quad: Buffer = .{ .handle = 0, .target = 0 };
 pub threadlocal var solid: Texture = .{ .handle = 0 };
 
 // ---------------------------------------------------------------------------
-// Batched UI glyph/quad path (OpenGL only).
+// Batched UI glyph/quad path (OpenGL and Metal).
 //
 // drawGlyph/fillQuad calls accumulate per-texture instance runs and submit
 // them as one instanced draw instead of one use+bind+upload+draw per glyph —
-// the dominant CPU cost of chrome/panel text on weak machines. Draw order is
-// preserved by flushing before anything foreign happens: the gpu.state
-// pre_change_hook (viewport/scissor/blend/clear/colormask/endFrame/FBO bind)
-// and the Pipeline pre_use_hook (any non-batch program about to draw). The
-// Metal backend keeps the immediate path (its shader set has no batch mirror).
+// the dominant CPU cost of chrome/panel text on weak machines, and on Metal a
+// fresh MTLBuffer per glyph. Draw order is preserved by flushing before
+// anything foreign happens: the gpu.state pre_change_hook
+// (viewport/scissor/blend/clear/colormask/endFrame/FBO bind) and the Pipeline
+// pre_use_hook (any non-batch program about to draw). Like Ghostty's text
+// pass, one frame's glyph run becomes a single instanced triangle-strip draw.
+// D3D11 keeps the immediate path.
 // ---------------------------------------------------------------------------
-const batching_supported = gpu.active == .opengl;
+const batching_supported = gpu.active == .opengl or gpu.active == .metal;
 
 threadlocal var batch: Pipeline = .{ .program = 0, .vao = 0 };
 threadlocal var batch_instances: Buffer = .{ .handle = 0, .target = 0 };
 threadlocal var batch_quad: Buffer = .{ .handle = 0, .target = 0 };
-// GL-only UI glyph batcher, heap-allocated on first use (~180 KB — kept out
-// of the TLS template, which Windows commits privately for every thread; on
-// non-GL backends it never allocates at all).
+// UI glyph batcher, heap-allocated on first use (~180 KB — kept out of the
+// TLS template, which Windows commits privately for every thread; on backends
+// without batching it never allocates at all).
 threadlocal var g_batcher: ?*ui_batch.Batcher = null;
 
 fn batcher() *ui_batch.Batcher {
@@ -63,15 +65,15 @@ threadlocal var batch_projection: [16]f32 = .{
     0, 0, 0, 1,
 };
 
-const GlSink = struct {
-    pub fn draw(_: GlSink, texture: u32, instances: []const ui_batch.Instance) void {
+const BatchSink = struct {
+    pub fn draw(_: BatchSink, texture: u32, instances: []const ui_batch.Instance) void {
         const p = batch;
         p.use(); // own program: the pre_use_hook ignores it (no recursion)
         p.setMat4("projection", &batch_projection);
         Texture.fromHandle(texture).bind(0);
         p.setInt("text", 0);
         p.bindVao();
-        batch_instances.upload(std.mem.sliceAsBytes(instances));
+        batch_instances.uploadTransient(std.mem.sliceAsBytes(instances));
         p.drawArraysInstanced(.triangle_strip, 0, 4, @intCast(instances.len));
         drawCallTick();
     }
@@ -80,7 +82,7 @@ const GlSink = struct {
 /// Submit any pending batched UI draws. Registered into the gpu hooks; also
 /// called directly by frame tails that present without an endFrame (resize).
 pub fn flushBatch() void {
-    batcher().flush(GlSink{});
+    batcher().flush(BatchSink{});
 }
 
 fn pipelineUseHook(program: gpu.ProgramHandle) void {
@@ -288,7 +290,7 @@ pub fn fillQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha_in: f3
                 .r = r,
                 .g = g,
                 .b = b,
-            }, GlSink{});
+            }, BatchSink{});
             return;
         }
     }
@@ -297,7 +299,7 @@ pub fn fillQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha_in: f3
     text.bindVao();
     text.setVec3("textColor", r, g, b);
     solid.bind(0);
-    quad.upload(std.mem.sliceAsBytes(verts[0..]));
+    quad.uploadTransient(std.mem.sliceAsBytes(verts[0..]));
     text.drawArrays(.triangles, 0, 6);
     drawCallTick();
 }
@@ -319,7 +321,7 @@ pub fn drawGlyph(rect: Rect, uv: Uv, tex: Texture, color_in: [3]f32) void {
                 .r = color[0],
                 .g = color[1],
                 .b = color[2],
-            }, GlSink{});
+            }, BatchSink{});
             return;
         }
     }
@@ -328,7 +330,7 @@ pub fn drawGlyph(rect: Rect, uv: Uv, tex: Texture, color_in: [3]f32) void {
     text.bindVao();
     text.setVec3("textColor", color[0], color[1], color[2]);
     tex.bind(0);
-    quad.upload(std.mem.sliceAsBytes(verts[0..]));
+    quad.uploadTransient(std.mem.sliceAsBytes(verts[0..]));
     text.drawArrays(.triangles, 0, 6);
     drawCallTick();
 }
@@ -344,7 +346,7 @@ pub fn drawColorGlyph(rect: Rect, uv: Uv, tex: Texture, opacity: f32) void {
     emoji.setFloat("opacity", opacity * g_ui_fade);
     gpu.state.setBlendMode(.premultiplied);
     tex.bind(0);
-    quad.upload(std.mem.sliceAsBytes(verts[0..]));
+    quad.uploadTransient(std.mem.sliceAsBytes(verts[0..]));
     emoji.drawArrays(.triangles, 0, 6);
     drawCallTick();
     gpu.state.setBlendMode(.alpha);
@@ -361,7 +363,7 @@ pub fn drawTextureQuad(verts: [6][4]f32, tex: Texture, opacity: f32) void {
     emoji.setFloat("opacity", opacity);
     emoji.setInt("text", 0);
     tex.bind(0);
-    quad.upload(std.mem.sliceAsBytes(verts[0..]));
+    quad.uploadTransient(std.mem.sliceAsBytes(verts[0..]));
     emoji.drawArrays(.triangles, 0, 6);
     drawCallTick();
 }
@@ -375,7 +377,7 @@ pub fn fillOverlay(verts: [6][4]f32, color: [4]f32) void {
     overlay.bindVao();
     overlay.setProjection();
     overlay.setVec4("overlayColor", color[0], color[1], color[2], color[3]);
-    quad.upload(std.mem.sliceAsBytes(verts[0..]));
+    quad.uploadTransient(std.mem.sliceAsBytes(verts[0..]));
     overlay.drawArrays(.triangles, 0, 6);
     drawCallTick();
 }

@@ -63,6 +63,13 @@ pub fn isProxyJumpSafe(spec: []const u8) bool {
     return true;
 }
 
+/// Password rows are search-only: match the entry name, or any 2+ char
+/// prefix of "password" ("pa", "pass", ...) lists every entry.
+pub fn passwordNameMatchesFilter(name: []const u8, filter: []const u8) bool {
+    if (filter.len == 0) return false;
+    return containsIgnoreCase(name, filter) or (filter.len >= 2 and std.ascii.startsWithIgnoreCase("password", filter));
+}
+
 /// True when a non-empty filter should surface an AI profile launch row.
 /// Any filter that is a substring of "ai" (i.e. "a", "i", or "ai") lists
 /// every profile; otherwise the filter must match part of the name.
@@ -142,6 +149,15 @@ test "command palette model matches recipe names case-insensitively, hidden on e
     try std.testing.expect(recipeNameMatchesFilter("DevSetup", "setup"));
     try std.testing.expect(!recipeNameMatchesFilter("DevSetup", ""));
     try std.testing.expect(!recipeNameMatchesFilter("DevSetup", "prod"));
+}
+
+test "password row matches the name or a password prefix, hidden on empty" {
+    try std.testing.expect(passwordNameMatchesFilter("root", "ROO"));
+    try std.testing.expect(passwordNameMatchesFilter("mysql", "pass"));
+    try std.testing.expect(passwordNameMatchesFilter("mysql", "PA"));
+    try std.testing.expect(!passwordNameMatchesFilter("mysql", "p"));
+    try std.testing.expect(!passwordNameMatchesFilter("mysql", "root"));
+    try std.testing.expect(!passwordNameMatchesFilter("mysql", ""));
 }
 
 test "ai profile label matches the ai token and the name" {

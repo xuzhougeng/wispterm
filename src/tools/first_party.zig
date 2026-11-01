@@ -59,6 +59,7 @@ const static_definitions = [_]Definition{
     .{ .name = "subagent", .label = "subagent", .description = "Delegate a self-contained research task to a background subagent.", .category = .agent },
     .{ .name = "send_attachment", .label = "send_attachment", .description = "Send a local file back to the active chat conversation (WeChat or Feishu).", .category = .integration },
     .{ .name = "get_system_time", .label = "get_system_time", .description = "Read the current local system time on demand.", .category = .agent },
+    .{ .name = "password_input", .label = "password_input", .description = "Type a stored password into a terminal password prompt after user approval; the agent never sees it.", .category = .agent },
     .{ .name = "memory_save", .label = "memory_save", .description = "Save a durable long-term memory.", .category = .memory },
     .{ .name = "memory_recall", .label = "memory_recall", .description = "Read a durable long-term memory.", .category = .memory },
     .{ .name = "memory_delete", .label = "memory_delete", .description = "Delete a durable long-term memory.", .category = .memory },
@@ -173,6 +174,18 @@ fn catalogContains(defs: []const Definition, name: []const u8) bool {
     return false;
 }
 
+/// Tools that were renamed. An opt-out saved under the old name carries over.
+const renamed_tools = [_]struct { old: []const u8, new: []const u8 }{
+    .{ .old = "password_get", .new = "password_input" },
+};
+
+fn currentName(name: []const u8) []const u8 {
+    for (renamed_tools) |renamed| {
+        if (std.mem.eql(u8, renamed.old, name)) return renamed.new;
+    }
+    return name;
+}
+
 pub fn isDisabledName(disabled_names: []const []const u8, name: []const u8) bool {
     for (disabled_names) |disabled| {
         if (std.mem.eql(u8, disabled, name)) return true;
@@ -200,10 +213,11 @@ fn parseDisabledToolsJsonWithLookup(allocator: std.mem.Allocator, bytes: []const
 
     for (disabled_value.array.items) |item| {
         if (item != .string) continue;
-        const disableable = lookup.disableable(item.string) orelse continue;
+        const name = currentName(item.string);
+        const disableable = lookup.disableable(name) orelse continue;
         if (!disableable) continue;
-        if (isDisabledName(list.items, item.string)) continue;
-        const owned = try allocator.dupe(u8, item.string);
+        if (isDisabledName(list.items, name)) continue;
+        const owned = try allocator.dupe(u8, name);
         list.append(allocator, owned) catch |err| {
             allocator.free(owned);
             return err;
@@ -314,6 +328,18 @@ test "first_party_tools: disabled state json filters unknown and duplicate names
     try std.testing.expect(disabled.contains("pubmed"));
     try std.testing.expect(!disabled.contains("missing_tool"));
     try std.testing.expectEqual(@as(usize, 2), disabled.names.len);
+}
+
+test "first_party_tools: an opt-out saved under a renamed tool carries over" {
+    const a = std.testing.allocator;
+    var disabled = try parseDisabledToolsJson(a,
+        \\{"disabled":["password_get","password_input"]}
+    );
+    defer disabled.deinit(a);
+
+    try std.testing.expect(disabled.contains("password_input"));
+    try std.testing.expect(!disabled.contains("password_get"));
+    try std.testing.expectEqual(@as(usize, 1), disabled.names.len);
 }
 
 test "first_party_tools: disabled state json filters non-disableable definitions" {

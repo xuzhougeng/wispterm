@@ -18,6 +18,19 @@
 const build_options = @import("build_options");
 const std = @import("std");
 const app_metadata = @import("app_metadata.zig");
+const frame_damage = @import("renderer/frame_damage.zig");
+
+test "frame timing aggregate is included in the fast suite" {
+    var aggregate: @import("appwindow/frame_timing.zig").Aggregate = .{};
+    aggregate.add(.{ .present_block_ns = 1 });
+    try std.testing.expectEqual(@as(u64, 1), aggregate.frames);
+}
+
+test "frame damage collector is included in the fast suite" {
+    var damage: frame_damage.Collector = .{};
+    damage.includeRows(0, 0, 10, 10, 1, 2, 100, 100);
+    try std.testing.expect(damage.finish() != null);
+}
 
 test "App joinAllWindowThreads pumps the macOS main queue (issue 611)" {
     const source = @embedFile("App.zig");
@@ -40,10 +53,8 @@ test "input routes AI History selected action shortcuts through AppWindow action
     try std.testing.expect(std.mem.indexOf(u8, source, "aiHistoryExportSelectedMarkdown") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "aiHistoryAttachSelectedToCopilot") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "!search_focused") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "command_char_suppressors.ai_history") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "command_char_suppressors.ai_history = 'd'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "command_char_suppressors.ai_history = 'm'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "command_char_suppressors.ai_history = 'a'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "fn suppressCommandCharForKey") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "suppressCommandCharForKey(&command_char_suppressors.ai_history, ev)") != null);
     const dispatch_char = source[std.mem.indexOf(u8, source, "fn dispatchChar") orelse return error.MissingDispatchChar ..];
     const suppress_index = std.mem.indexOf(u8, dispatch_char, "if (command_char_suppressors.ai_history)") orelse return error.MissingAiHistorySuppressor;
     const assistant_index = std.mem.indexOf(u8, dispatch_char, "if (assistant_conversation.current(aiCopilotFocused()))") orelse return error.MissingAssistantCharRoute;
@@ -127,6 +138,16 @@ test "remote file capture helpers use process_runner" {
     try std.testing.expect(std.mem.indexOf(u8, remote_file_source, "child_output") == null);
 }
 
+test "agent exec runArgv uses process_runner instead of drain threads" {
+    const exec_source = @embedFile("agent_tools/exec.zig");
+    const raw_spawn = "std.process." ++ "Child.init";
+    const runner_call = "process_runner." ++ "runCapture";
+    const drain_thread = "captureOutput" ++ "Thread";
+    try std.testing.expect(std.mem.indexOf(u8, exec_source, runner_call) != null);
+    try std.testing.expect(std.mem.indexOf(u8, exec_source, raw_spawn) == null);
+    try std.testing.expect(std.mem.indexOf(u8, exec_source, drain_thread) == null);
+}
+
 test "SSH profile persistence is owned by ssh_profile_store" {
     const overlays_source = @embedFile("renderer/overlays.zig");
     try std.testing.expect(std.mem.indexOf(u8, overlays_source, "ssh_profile_store.loadProfiles") != null);
@@ -191,6 +212,16 @@ test "agent SSH connection resolver uses the surface registry, not tab threadloc
     try std.testing.expect(std.mem.indexOf(u8, body, "tab.g_") == null);
 }
 
+test "btw child session inherits source agent tools" {
+    const source = @embedFile("assistant/conversation/session.zig");
+    const start = std.mem.indexOf(u8, source, "pub fn createBtwSession") orelse return error.MissingCreateBtw;
+    const rest = source[start..];
+    const end = std.mem.indexOf(u8, rest, "pub fn thinkingConfigValue") orelse return error.MissingCreateBtwEnd;
+    const body = rest[0..end];
+    try std.testing.expect(std.mem.indexOf(u8, body, "self.agentConfigValue()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "You may use tools") != null);
+}
+
 test "agent request disables worker snapshot fallback when UI capture fails" {
     const source = @embedFile("assistant/conversation/session.zig");
     const start = std.mem.indexOf(u8, source, "fn buildRequestLocked") orelse return error.MissingBuildRequestLocked;
@@ -239,8 +270,10 @@ test {
     _ = @import("renderer/overlays/command_palette_layout.zig");
     _ = @import("renderer/overlays/btw_conversation.zig");
     _ = @import("renderer/ui_patterns.zig");
+    _ = @import("renderer/text_hint.zig");
     _ = @import("renderer/overlays/startup_shortcuts_layout.zig");
     _ = @import("renderer/overlays/settings_page_layout.zig");
+    _ = @import("renderer/settings_page_renderer.zig");
     _ = @import("renderer/overlays/settings_page.zig");
     _ = @import("renderer/overlays/settings_picker.zig");
     _ = @import("memory_digest/source_selection.zig");
@@ -276,10 +309,15 @@ test {
     _ = @import("source_guards/d3d11_phase4_guard.zig");
     _ = @import("source_guards/overlay_boundary_guard.zig");
     _ = @import("source_guards/input_feature_boundary_guard.zig");
+    _ = @import("source_guards/objc_autorelease_guard.zig");
     _ = @import("renderer/overlays/transfer_toast_model.zig");
     _ = @import("renderer/overlays/update_prompt_model.zig");
+    _ = @import("update_stage.zig");
+    _ = @import("update_pill_state.zig");
+    _ = @import("update_inplace.zig");
     _ = @import("renderer/overlays/whats_new_model.zig");
     _ = @import("renderer/ui_batch.zig");
+    _ = @import("renderer/assistant/transcript_wrap.zig");
     _ = @import("renderer/background_image_layout.zig");
     _ = @import("renderer/qr_panel_layout.zig");
     _ = @import("renderer/file_explorer_layout.zig");
@@ -295,6 +333,7 @@ test {
     _ = @import("command/palette_model.zig");
     _ = @import("command/center_state.zig");
     _ = @import("command/palette_history_view.zig");
+    _ = @import("font/fallback_cache.zig");
     _ = @import("recipe/store.zig");
     _ = @import("recipe/form_state.zig");
     _ = @import("platform/window_state_codec.zig");
@@ -303,6 +342,7 @@ test {
     _ = @import("whats_new_gate.zig");
     _ = @import("startup_tabs.zig");
     _ = @import("config.zig");
+    _ = @import("platform/http_proxy.zig");
     _ = @import("agent/config.zig");
     _ = @import("agent/terminal_lease.zig");
     _ = @import("agent/access.zig");
@@ -310,6 +350,8 @@ test {
     _ = @import("agent/remote_filetool.zig");
     _ = @import("agent/file_copy.zig");
     _ = @import("ssh/connection.zig");
+    _ = @import("ssh/network_proxy.zig");
+    _ = @import("ssh/proxy_protocol.zig");
     _ = @import("tmux/control.zig");
     _ = @import("tmux/layout.zig");
     _ = @import("tmux/protocol_test.zig");
@@ -324,8 +366,10 @@ test {
     _ = @import("appwindow/active_tab.zig");
     _ = @import("appwindow/frame_latency.zig");
     _ = @import("appwindow/frame_scheduler.zig");
+    _ = @import("appwindow/right_dock.zig");
     _ = @import("appwindow/png_writer.zig");
     _ = @import("appwindow/render_gate.zig");
+    _ = @import("appwindow/ai_stream_gate.zig");
     _ = @import("appwindow/ui_screenshot.zig");
     _ = @import("appwindow/ui_effect.zig");
     _ = @import("appwindow/window_state.zig");
@@ -333,6 +377,7 @@ test {
     _ = @import("appwindow/state.zig");
     _ = @import("appwindow/state_guard.zig");
     _ = @import("appwindow/p3_1_guard.zig");
+    _ = @import("appwindow/frame_dirty_guard.zig");
     _ = @import("appwindow/thread_join.zig");
     _ = @import("ssh/scp.zig");
     _ = @import("surface_registry.zig");
@@ -358,11 +403,17 @@ test {
     _ = @import("assistant/conversation/composer_layout.zig");
     _ = @import("assistant/conversation/input_text.zig");
     _ = @import("assistant/conversation/prompt_queue.zig");
+    _ = @import("assistant/conversation/table_hscroll.zig");
+    _ = @import("assistant/conversation/question_hscroll.zig");
+    _ = @import("assistant/conversation/question_select.zig");
+    _ = @import("assistant/conversation/question_answer.zig");
+    _ = @import("assistant/conversation/turn_stats.zig");
     _ = @import("assistant/conversation/composer.zig");
     _ = @import("composer_detail_wrap.zig");
     _ = @import("assistant/conversation/presentation.zig");
-    _ = @import("acp/schema.zig");
-    _ = @import("acp/client.zig");
+    _ = @import("assistant/oauth/codec.zig");
+    _ = @import("assistant/oauth/store.zig");
+    _ = @import("assistant/oauth/client.zig");
     _ = @import("agent_tools/args.zig");
     _ = @import("agent_tools/mod.zig");
     _ = @import("agent_tools/mcp_config.zig");
@@ -372,6 +423,21 @@ test {
     _ = @import("agent_tools/research.zig");
     _ = @import("agent_tools/knowledge.zig");
     _ = @import("agent_tools/memory.zig");
+    _ = @import("agent_tools/credential.zig");
+    _ = @import("credential/store.zig");
+    _ = @import("credential/page.zig");
+    _ = @import("credential/redact.zig");
+    _ = @import("renderer/password_store_renderer.zig");
+    _ = @import("sync/crypto.zig");
+    _ = @import("sync/merge.zig");
+    _ = @import("sync/transport.zig");
+    _ = @import("sync/settings.zig");
+    _ = @import("sync/kinds.zig");
+    _ = @import("sync/wiping_allocator.zig");
+    _ = @import("sync/engine.zig");
+    _ = @import("sync/service.zig");
+    _ = @import("sync/page.zig");
+    _ = @import("renderer/sync_page_renderer.zig");
     _ = @import("agent_tools/memory_search.zig");
     _ = @import("agent_tools/output.zig");
     _ = @import("agent_tools/schedule.zig");
@@ -459,11 +525,14 @@ test {
     _ = @import("benchmark/scenarios.zig");
     _ = @import("renderer/cell_geometry.zig");
     _ = @import("renderer/titlebar_layout.zig");
+    _ = @import("renderer/toolbar_reveal.zig");
     _ = @import("renderer/chrome_icons.zig");
     _ = @import("assistant/conversation/layout.zig");
     _ = @import("assistant/conversation/types.zig");
     _ = @import("assistant/conversation/identity.zig");
     _ = @import("assistant/profile/store.zig");
+    _ = @import("assistant/profile/magpie.zig");
+    _ = @import("assistant/conversation/effort_levels.zig");
     _ = @import("assistant/sidebar/panel.zig");
     _ = @import("assistant/sidebar/hint_gate.zig");
     _ = @import("appwindow/flush_scheduler.zig");
@@ -502,8 +571,14 @@ test {
     // reap-exactly-once. Spawn-based tests gate on non-Windows; type guards run
     // everywhere.
     _ = @import("process_runner.zig");
+    _ = @import("platform/local_path.zig");
     _ = @import("platform/process_group.zig");
     _ = @import("terminal_agents/detector.zig");
+    _ = @import("terminal_agents/screen_regex.zig");
+    _ = @import("terminal_agents/manifest_toml.zig");
+    _ = @import("terminal_agents/screen_manifest.zig");
+    _ = @import("terminal_agents/pi_shutdown.zig");
+    _ = @import("session_persist.zig");
     _ = @import("terminal_agents/integration_prompt.zig");
     _ = @import("jupyter/detect.zig");
     _ = @import("jupyter/picker.zig");
@@ -529,4 +604,6 @@ test {
     if (@import("builtin").os.tag != .windows) {
         _ = @import("platform/pty_command_unsupported.zig");
     }
+    // Pure holder for the `env = KEY=VALUE` config applied to PTY children.
+    _ = @import("platform/shell_env.zig");
 }

@@ -260,9 +260,9 @@ pub const Pty = struct {
         self.size = s;
     }
 
-    pub fn startCommand(self: *Pty, command: *pty_command.Command, command_line: pty_command.CommandLine, cwd: pty_command.Cwd) !void {
+    pub fn startCommand(self: *Pty, command: *pty_command.Command, command_line: pty_command.CommandLine, cwd: pty_command.Cwd, advertise_terminal_capabilities: bool) !void {
         if (self.is_virtual) return error.VirtualPtyHasNoProcess;
-        return pty_command_windows.startInPseudoConsole(command, self.pseudo_console, command_line, cwd);
+        return pty_command_windows.startInPseudoConsole(command, self.pseudo_console, command_line, cwd, advertise_terminal_capabilities);
     }
 
     pub fn readOutput(self: *Pty, buffer: []u8) ReadError!usize {

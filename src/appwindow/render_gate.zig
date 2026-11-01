@@ -14,7 +14,7 @@ pub const RenderSignals = struct {
     force_rebuild: bool, // g_force_rebuild（交互/UI 变更，一票通过）
     any_surface_dirty: bool, // 任一可见 surface.dirty（PTY 输出）
     cursor_blink_due: bool, // 到达光标翻转点（仅聚焦且开启闪烁）
-    ai_streaming: bool, // 任一相关 AI session.request_inflight
+    ai_streaming: bool, // AI 会话有新内容，或请求进行中到达心跳（appwindow/ai_stream_gate.zig）
     overlay_active: bool, // 任一 overlay/面板/时间动画活动
     // 上一渲染帧把新字形（如首个 emoji）光栅化进了 atlas，但 GPU 纹理是在
     // 帧首同步的——那一帧采样的是旧纹理。必须再渲染一帧让帧首同步把新

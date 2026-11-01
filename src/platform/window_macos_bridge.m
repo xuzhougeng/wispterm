@@ -78,6 +78,8 @@ typedef struct WispTermMacWindowState WispTermMacWindowState;
 
 @interface WispTermMacContentView : NSView <NSTextInputClient>
 @property(nonatomic, assign) WispTermMacWindowState *state;
+// Owned by the view's trackingAreas; kept only to install it once.
+@property(nonatomic, assign) NSTrackingArea *pointerTrackingArea;
 @end
 
 @interface WispTermMacWindowDelegate : NSObject <NSWindowDelegate>
@@ -90,12 +92,27 @@ struct WispTermMacWindowState {
     CAMetalLayer *layer;
     WispTermMacWindowDelegate *delegate;
     bool close_requested;
+    // Cached -[NSWindow isZoomed]. Written on the main thread by the delegate
+    // callbacks (and after create/show/zoom/set_frame); read by every window
+    // loop — including worker-thread windows — through
+    // wispterm_macos_window_is_zoomed. See wispterm_macos_refresh_zoomed.
+    atomic_bool is_zoomed;
     int32_t ime_caret_x;
     int32_t ime_caret_y;
     int32_t ime_caret_height;
+    // UTF-8 copy of the marked text for the renderer. Written on the main
+    // thread, read by the window's loop thread: guarded by input_lock.
     char ime_preedit[1024];
     size_t ime_preedit_len;
+    // The same marked text in NSTextInputClient units. NSRange counts UTF-16
+    // code units, so the UTF-8 byte length above is not a valid range to hand
+    // back to the input method. Main thread only.
+    NSUInteger ime_marked_length;
+    NSRange ime_marked_selection;
     NSEventModifierFlags insert_text_modifier_flags;
+    // True while -keyDown: runs -interpretKeyEvents:. Text input outside it
+    // (dictation, voice input methods) has no NSEvent to wake the loop.
+    bool in_key_down;
     // Guards the key/char/mouse/file-drop rings below. For windows running on
     // a worker thread (every window past the first: Dock reopen / new-window),
     // AppKit dispatches input on the main thread while that window's worker
@@ -116,6 +133,10 @@ struct WispTermMacWindowState {
     WispTermMacMouseMoveEvent mouse_move_events[64];
     size_t mouse_move_head;
     size_t mouse_move_count;
+    // The pointer left the content view. Mouse-moved events stop at the window
+    // edge, so without the tracking-area exit the last in-window position
+    // would stick and hover state (the hover-revealed toolbar) never clears.
+    bool pointer_outside;
     WispTermMacMouseWheelEvent mouse_wheel_events[16];
     size_t mouse_wheel_head;
     size_t mouse_wheel_count;
@@ -138,6 +159,26 @@ struct WispTermMacWindowState {
 // need it early so a worker window blocked in its idle wait notices
 // close_requested promptly instead of sleeping out its full timeout.
 static void wispterm_macos_worker_wakeup_signal(void);
+void wispterm_macos_post_wakeup(void);
+
+// menu_macos_bridge.m: performs ⌘Q / ⌘H / ⌥⌘H through the main menu's system
+// items, which have no WispTerm keybind.
+bool wispterm_macos_menu_perform_system_key_equivalent(NSEvent *event);
+
+// -[NSWindow isZoomed] is not a cheap getter: AppKit recomputes the window's
+// standard frame on every call (-_standardFrameForScreen: walks the drawers
+// into fresh autoreleased NSArrays). The render loop and titlebar used to ask
+// for it every frame, and with no drained autorelease pool on the main thread
+// that leaked tens of millions of empty arrays over a day. Recompute it only
+// where the answer can change — frame, screen, or full-screen transitions —
+// and let the hot path read the cached flag. Main thread only (AppKit).
+static void wispterm_macos_refresh_zoomed(WispTermMacWindowState *state) {
+    if (state == NULL || state->window == nil) return;
+    @autoreleasepool {
+        const bool zoomed = [state->window isZoomed] ? true : false;
+        atomic_store_explicit(&state->is_zoomed, zoomed, memory_order_relaxed);
+    }
+}
 
 @implementation WispTermMacWindowDelegate
 - (BOOL)windowShouldClose:(id)sender {
@@ -151,6 +192,49 @@ static void wispterm_macos_worker_wakeup_signal(void);
     (void)notification;
     if (self.state != NULL) self.state->close_requested = true;
     wispterm_macos_worker_wakeup_signal();
+}
+
+- (void)windowDidResize:(NSNotification *)notification {
+    (void)notification;
+    wispterm_macos_refresh_zoomed(self.state);
+}
+
+- (void)windowDidMove:(NSNotification *)notification {
+    (void)notification;
+    wispterm_macos_refresh_zoomed(self.state);
+}
+
+- (void)windowDidEndLiveResize:(NSNotification *)notification {
+    (void)notification;
+    wispterm_macos_refresh_zoomed(self.state);
+}
+
+- (void)windowDidEnterFullScreen:(NSNotification *)notification {
+    (void)notification;
+    wispterm_macos_refresh_zoomed(self.state);
+}
+
+- (void)windowDidExitFullScreen:(NSNotification *)notification {
+    (void)notification;
+    wispterm_macos_refresh_zoomed(self.state);
+}
+
+- (void)windowDidChangeScreen:(NSNotification *)notification {
+    (void)notification;
+    wispterm_macos_refresh_zoomed(self.state);
+}
+
+- (void)windowDidDeminiaturize:(NSNotification *)notification {
+    (void)notification;
+    wispterm_macos_refresh_zoomed(self.state);
+}
+
+// NSApplicationDidChangeScreenParametersNotification (registered in
+// wispterm_macos_window_create): a Dock/menu-bar or resolution change moves
+// the screen's visible frame, which can flip isZoomed without a frame change.
+- (void)screenParametersDidChange:(NSNotification *)notification {
+    (void)notification;
+    wispterm_macos_refresh_zoomed(self.state);
 }
 @end
 
@@ -434,6 +518,13 @@ static bool wispterm_macos_pop_mouse_button_event(WispTermMacWindowState *state,
     return has_event;
 }
 
+static void wispterm_macos_set_pointer_outside(WispTermMacWindowState *state, bool outside) {
+    if (state == NULL) return;
+    os_unfair_lock_lock(&state->input_lock);
+    state->pointer_outside = outside;
+    os_unfair_lock_unlock(&state->input_lock);
+}
+
 static void wispterm_macos_push_mouse_move_event(WispTermMacWindowState *state, WispTermMacMouseMoveEvent event) {
     if (state == NULL) return;
     const size_t capacity = sizeof(state->mouse_move_events) / sizeof(state->mouse_move_events[0]);
@@ -663,6 +754,22 @@ static uintptr_t wispterm_macos_map_key_code(unsigned short key_code, NSString *
         case 124: return 0x27; // Right
         case 125: return 0x28; // Down
         case 126: return 0x26; // Up
+        // Carbon F-keys must win before the character fallback. AppKit reports
+        // NSF1FunctionKey–NSF12FunctionKey (U+F704…), which miss the shared
+        // Win32 VK_F1–VK_F12 encoder. Ghostty classifies the same physical keys
+        // as f1–f12 in its macOS apprt before encoding.
+        case 122: return 0x70; // kVK_F1
+        case 120: return 0x71; // kVK_F2
+        case 99: return 0x72;  // kVK_F3
+        case 118: return 0x73; // kVK_F4
+        case 96: return 0x74;  // kVK_F5
+        case 97: return 0x75;  // kVK_F6
+        case 98: return 0x76;  // kVK_F7
+        case 100: return 0x77; // kVK_F8
+        case 101: return 0x78; // kVK_F9
+        case 109: return 0x79; // kVK_F10
+        case 103: return 0x7A; // kVK_F11
+        case 111: return 0x7B; // kVK_F12
         default: break;
     }
 
@@ -772,7 +879,21 @@ void wispterm_macos_window_test_insert_text_after_key(void *handle, uint32_t cod
     }
 }
 
-static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_or_attributed) {
+// Wake the window's render loop after committed text or the marked text
+// changed. Inside -keyDown: the main loop is already handling that key's
+// NSEvent, but dictation and voice input methods (e.g. 豆包) deliver text from a
+// run-loop source with no key event at all, and nothing else would break the
+// main thread out of -nextEventMatchingMask: until its idle timeout. Worker
+// windows only need their wakeup condition signalled.
+static void wispterm_macos_wake_for_text_input(WispTermMacWindowState *state) {
+    if (state != NULL && state->in_key_down) {
+        wispterm_macos_worker_wakeup_signal();
+    } else {
+        wispterm_macos_post_wakeup();
+    }
+}
+
+static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_or_attributed, NSRange selection) {
     if (state == NULL) return;
     NSString *string = nil;
     if (string_or_attributed != nil) {
@@ -780,17 +901,35 @@ static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_
             ? [(NSAttributedString *)string_or_attributed string]
             : (NSString *)string_or_attributed;
     }
-    if (string == nil || string.length == 0) {
-        state->ime_preedit_len = 0;
-        state->ime_preedit[0] = 0;
-        return;
+
+    const NSUInteger marked_length = string != nil ? string.length : 0;
+    NSData *data = marked_length > 0 ? [string dataUsingEncoding:NSUTF8StringEncoding] : nil;
+    const uint8_t *bytes = (const uint8_t *)data.bytes;
+    NSUInteger len = data.length < sizeof(state->ime_preedit) ? data.length : sizeof(state->ime_preedit) - 1;
+    // Long dictation can overflow the buffer; never cut a UTF-8 sequence in
+    // half, or the renderer rejects the whole preedit as invalid UTF-8.
+    if (len < data.length) {
+        while (len > 0 && (bytes[len] & 0xC0) == 0x80) len -= 1;
     }
 
-    NSData *data = [string dataUsingEncoding:NSUTF8StringEncoding];
-    NSUInteger len = data.length < sizeof(state->ime_preedit) ? data.length : sizeof(state->ime_preedit) - 1;
-    memcpy(state->ime_preedit, data.bytes, len);
+    if (selection.location == NSNotFound || selection.location > marked_length) {
+        selection = NSMakeRange(marked_length, 0);
+    }
+    if (selection.length > marked_length - selection.location) {
+        selection.length = marked_length - selection.location;
+    }
+    state->ime_marked_length = marked_length;
+    state->ime_marked_selection = selection;
+
+    os_unfair_lock_lock(&state->input_lock);
+    const bool changed = len != state->ime_preedit_len ||
+        (len > 0 && memcmp(state->ime_preedit, bytes, len) != 0);
+    if (len > 0) memcpy(state->ime_preedit, bytes, len);
     state->ime_preedit[len] = 0;
     state->ime_preedit_len = len;
+    os_unfair_lock_unlock(&state->input_lock);
+
+    if (changed) wispterm_macos_wake_for_text_input(state);
 }
 
 @implementation WispTermMacContentView
@@ -801,6 +940,26 @@ static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
     [self.window makeFirstResponder:self];
+    // NSTrackingInVisibleRect follows resizes, so one area covers the view.
+    if (self.window != nil && self.pointerTrackingArea == nil) {
+        NSTrackingArea *area = [[NSTrackingArea alloc]
+            initWithRect:NSZeroRect
+                 options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect | NSTrackingAssumeInside
+                   owner:self
+                userInfo:nil];
+        [self addTrackingArea:area];
+        self.pointerTrackingArea = area;
+        [area release];
+    }
+}
+
+- (void)mouseEntered:(NSEvent *)event {
+    wispterm_macos_set_pointer_outside(self.state, false);
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    wispterm_macos_set_pointer_outside(self.state, true);
+    wispterm_macos_worker_wakeup_signal();
 }
 
 - (void)keyDown:(NSEvent *)event {
@@ -812,14 +971,20 @@ static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_
     // arrives separately via -insertText:, so the raw Return must not also reach
     // the app. Only push the raw key event when there is no composition; let
     // -interpretKeyEvents: route composing keystrokes to the IME.
-    if (self.state != NULL) self.state->insert_text_modifier_flags = event.modifierFlags;
+    if (self.state != NULL) {
+        self.state->insert_text_modifier_flags = event.modifierFlags;
+        self.state->in_key_down = true;
+    }
     if (self.state != NULL && ![self hasMarkedText]) {
         NSString *characters = wispterm_macos_key_characters(event);
         uintptr_t key_code = wispterm_macos_map_key_code(event.keyCode, characters);
         wispterm_macos_push_key_event(self.state, wispterm_macos_key_event(key_code, event.modifierFlags));
     }
     [self interpretKeyEvents:@[event]];
-    if (self.state != NULL) self.state->insert_text_modifier_flags = 0;
+    if (self.state != NULL) {
+        self.state->insert_text_modifier_flags = 0;
+        self.state->in_key_down = false;
+    }
 }
 
 - (BOOL)performKeyEquivalent:(NSEvent *)event {
@@ -828,6 +993,10 @@ static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_
     // emitting the unhandled-shortcut system beep.
     if ((event.modifierFlags & NSEventModifierFlagCommand) == 0) return NO;
     if (self.state == NULL) return NO;
+    // Quit / Hide / Hide Others have no WispTerm keybind; claiming them here
+    // would keep AppKit from offering them to the main menu (see
+    // menu_macos_bridge.m).
+    if (wispterm_macos_menu_perform_system_key_equivalent(event)) return YES;
     NSString *characters = wispterm_macos_key_characters(event);
     uintptr_t key_code = wispterm_macos_map_key_code(event.keyCode, characters);
     wispterm_macos_push_key_event(self.state, wispterm_macos_key_event(key_code, event.modifierFlags));
@@ -835,10 +1004,13 @@ static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_
 }
 
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
+    // The only text a replacement range can address is the marked text this
+    // commit replaces; the terminal has no editable document behind it.
     (void)replacementRange;
     NSEventModifierFlags flags = self.state != NULL ? self.state->insert_text_modifier_flags : 0;
     wispterm_macos_push_string(self.state, string, flags);
-    wispterm_macos_set_preedit(self.state, nil);
+    wispterm_macos_set_preedit(self.state, nil, NSMakeRange(NSNotFound, 0));
+    if (self.state != NULL && !self.state->in_key_down) wispterm_macos_wake_for_text_input(self.state);
 }
 
 - (void)doCommandBySelector:(SEL)selector {
@@ -846,26 +1018,33 @@ static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_
 }
 
 - (void)setMarkedText:(id)string selectedRange:(NSRange)selectedRange replacementRange:(NSRange)replacementRange {
-    (void)selectedRange;
     (void)replacementRange;
-    wispterm_macos_set_preedit(self.state, string);
+    wispterm_macos_set_preedit(self.state, string, selectedRange);
 }
 
 - (void)unmarkText {
-    wispterm_macos_set_preedit(self.state, nil);
+    wispterm_macos_set_preedit(self.state, nil, NSMakeRange(NSNotFound, 0));
 }
 
 - (BOOL)hasMarkedText {
-    return self.state != NULL && self.state->ime_preedit_len > 0;
+    return self.state != NULL && self.state->ime_marked_length > 0;
 }
 
 - (NSRange)markedRange {
     if (![self hasMarkedText]) return NSMakeRange(NSNotFound, 0);
-    return NSMakeRange(0, self.state->ime_preedit_len);
+    return NSMakeRange(0, self.state->ime_marked_length);
 }
 
+// Dictation, and voice input methods built on the same input-method path,
+// probe -selectedRange before they start and refuse to run when the client
+// reports no insertion point. {NSNotFound, 0} says exactly that, so dictation
+// never started and nothing was inserted (issue #671; the same bug kitty,
+// Emacs 30 and others hit). The terminal has no editable document, so report
+// an empty caret at 0 as Ghostty does, or while composing, the input method's
+// own selection inside the marked text, which starts at 0.
 - (NSRange)selectedRange {
-    return NSMakeRange(NSNotFound, 0);
+    if (![self hasMarkedText]) return NSMakeRange(0, 0);
+    return self.state->ime_marked_selection;
 }
 
 - (NSArray<NSAttributedStringKey> *)validAttributesForMarkedText {
@@ -950,6 +1129,7 @@ static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_
         .super = false,
     };
     wispterm_macos_mods(event.modifierFlags, &out.ctrl, &out.shift, &out.alt, &out.super);
+    wispterm_macos_set_pointer_outside(self.state, false);
     wispterm_macos_push_mouse_move_event(self.state, out);
 }
 
@@ -1081,6 +1261,11 @@ void *wispterm_macos_window_create(
             WispTermMacWindowDelegate *delegate = [[WispTermMacWindowDelegate alloc] init];
             delegate.state = state;
             [window setDelegate:delegate];
+            [[NSNotificationCenter defaultCenter]
+                addObserver:delegate
+                   selector:@selector(screenParametersDidChange:)
+                       name:NSApplicationDidChangeScreenParametersNotification
+                     object:nil];
 
             state->window = window;
             state->view = view;
@@ -1094,6 +1279,9 @@ void *wispterm_macos_window_create(
             state->ime_caret_height = 16;
             state->ime_preedit[0] = 0;
             state->ime_preedit_len = 0;
+            state->ime_marked_length = 0;
+            state->ime_marked_selection = NSMakeRange(0, 0);
+            state->in_key_down = false;
             view.state = state;
             wispterm_macos_sync_layer(state);
 
@@ -1102,6 +1290,7 @@ void *wispterm_macos_window_create(
             [window makeFirstResponder:view];
             [NSApp activateIgnoringOtherApps:NO];
             if (maximize) [window zoom:nil];
+            wispterm_macos_refresh_zoomed(state);
             result = state;
         }
     };
@@ -1127,6 +1316,8 @@ void wispterm_macos_window_destroy(void *handle) {
     if (state == NULL) return;
     wispterm_macos_run_on_main(^{
         @autoreleasepool {
+            [[NSNotificationCenter defaultCenter] removeObserver:state->delegate];
+            state->delegate.state = NULL;
             [state->window setDelegate:nil];
             [state->window orderOut:nil];
             [state->layer release];
@@ -1149,17 +1340,21 @@ void *wispterm_macos_window_ns_window(void *handle) {
 bool wispterm_macos_window_visible(void *handle) {
     WispTermMacWindowState *state = wispterm_macos_state(handle);
     if (state == NULL || state->window == NULL) return true;
-    NSWindowOcclusionState occ = [state->window occlusionState];
-    bool visible = (occ & NSWindowOcclusionStateVisible) != 0;
-    bool miniaturized = [state->window isMiniaturized];
-    return visible && !miniaturized;
+    @autoreleasepool {
+        NSWindowOcclusionState occ = [state->window occlusionState];
+        bool visible = (occ & NSWindowOcclusionStateVisible) != 0;
+        bool miniaturized = [state->window isMiniaturized];
+        return visible && !miniaturized;
+    }
 }
 
 // True iff the window is the key window (has keyboard focus).
 bool wispterm_macos_window_is_key(void *handle) {
     WispTermMacWindowState *state = wispterm_macos_state(handle);
     if (state == NULL || state->window == NULL) return true;
-    return [state->window isKeyWindow] ? true : false;
+    @autoreleasepool {
+        return [state->window isKeyWindow] ? true : false;
+    }
 }
 
 void wispterm_macos_window_poll(void *handle) {
@@ -1230,6 +1425,28 @@ void wispterm_macos_app_pump_events(double timeout_seconds) {
     }
 }
 
+// libobjc's autorelease-pool entry points — what clang lowers @autoreleasepool
+// {} to. objc/objc-internal.h is not in the public SDK, so declare them here
+// (zig-objc, which Ghostty uses for the same job, binds the same symbols).
+extern void *objc_autoreleasePoolPush(void);
+extern void objc_autoreleasePoolPop(void *context);
+
+// Per-main-loop-iteration autorelease pool (window_backend.beginLoopIteration /
+// endLoopIteration). WispTerm does not start through NSApplicationMain, so
+// neither the main thread nor the per-window worker threads have an outer pool
+// that AppKit drains each event-loop pass: anything autoreleased outside an
+// explicit @autoreleasepool lands in a pool page that is never popped. Zig
+// brackets every loop iteration with these, mirroring Ghostty's renderer,
+// which wraps each drawFrame in an objc.AutoreleasePool. Push/pop are LIFO
+// per thread; the token is only meaningful on the thread that pushed it.
+void *wispterm_macos_autorelease_pool_push(void) {
+    return objc_autoreleasePoolPush();
+}
+
+void wispterm_macos_autorelease_pool_pop(void *token) {
+    if (token != NULL) objc_autoreleasePoolPop(token);
+}
+
 // Wake any blocked idle pump from any thread: posts an application-defined
 // NSEvent for the main thread's -nextEventMatchingMask: and signals the
 // worker-window wakeup condition. Safe off-main.
@@ -1270,6 +1487,15 @@ bool wispterm_macos_window_pop_mouse_move_event(void *handle, WispTermMacMouseMo
     return wispterm_macos_pop_mouse_move_event(wispterm_macos_state(handle), out);
 }
 
+bool wispterm_macos_window_pointer_outside(void *handle) {
+    WispTermMacWindowState *state = wispterm_macos_state(handle);
+    if (state == NULL) return false;
+    os_unfair_lock_lock(&state->input_lock);
+    const bool outside = state->pointer_outside;
+    os_unfair_lock_unlock(&state->input_lock);
+    return outside;
+}
+
 bool wispterm_macos_window_pop_mouse_wheel_event(void *handle, WispTermMacMouseWheelEvent *out) {
     return wispterm_macos_pop_mouse_wheel_event(wispterm_macos_state(handle), out);
 }
@@ -1285,8 +1511,10 @@ bool wispterm_macos_window_pop_file_drop_event(void *handle, WispTermMacFileDrop
 size_t wispterm_macos_window_copy_ime_preedit(void *handle, char *out, size_t out_len) {
     WispTermMacWindowState *state = wispterm_macos_state(handle);
     if (state == NULL || out == NULL || out_len == 0) return 0;
+    os_unfair_lock_lock(&state->input_lock);
     size_t len = state->ime_preedit_len < out_len ? state->ime_preedit_len : out_len;
     memcpy(out, state->ime_preedit, len);
+    os_unfair_lock_unlock(&state->input_lock);
     return len;
 }
 
@@ -1305,6 +1533,28 @@ void wispterm_macos_window_test_push_key(void *handle, uintptr_t key_code, bool 
         .shift = shift,
         .alt = alt,
     });
+}
+
+// Offers a synthetic key-down to the content view's -performKeyEquivalent:,
+// the hop NSWindow makes for every ⌘ key before the main menu sees it.
+// Returns whether the view claimed the event.
+bool wispterm_macos_window_test_perform_key_equivalent(void *handle, const char *characters_utf8, uint16_t native_key_code, bool shift, bool alt) {
+    WispTermMacWindowState *state = wispterm_macos_state(handle);
+    if (state == NULL || state->view == nil || characters_utf8 == NULL) return false;
+    @autoreleasepool {
+        NSString *characters = [NSString stringWithUTF8String:characters_utf8];
+        NSEvent *event = [NSEvent keyEventWithType:NSEventTypeKeyDown
+                                          location:NSZeroPoint
+                                     modifierFlags:wispterm_macos_flags_from_bools(false, shift, alt, true)
+                                         timestamp:0
+                                      windowNumber:state->window.windowNumber
+                                           context:nil
+                                        characters:characters
+                       charactersIgnoringModifiers:characters
+                                         isARepeat:NO
+                                           keyCode:native_key_code];
+        return [state->view performKeyEquivalent:event] ? true : false;
+    }
 }
 
 uintptr_t wispterm_macos_window_test_map_key_code(uint16_t native_key_code, const char *characters_utf8) {
@@ -1357,6 +1607,10 @@ void wispterm_macos_window_test_push_mouse_move(void *handle, int32_t x, int32_t
     });
 }
 
+void wispterm_macos_window_test_set_pointer_outside(void *handle, bool outside) {
+    wispterm_macos_set_pointer_outside(wispterm_macos_state(handle), outside);
+}
+
 void wispterm_macos_window_test_push_mouse_wheel(
     void *handle,
     int16_t delta,
@@ -1379,11 +1633,74 @@ void wispterm_macos_window_test_push_mouse_wheel(
 void wispterm_macos_window_test_set_ime_preedit(void *handle, const char *text) {
     WispTermMacWindowState *state = wispterm_macos_state(handle);
     if (state == NULL || text == NULL) return;
-    wispterm_macos_set_preedit(state, [NSString stringWithUTF8String:text]);
+    @autoreleasepool {
+        wispterm_macos_set_preedit(state, [NSString stringWithUTF8String:text], NSMakeRange(NSNotFound, 0));
+    }
+}
+
+// Test-only: drive the real NSTextInputClient methods the way dictation and
+// voice input methods do: from outside -keyDown:, with no key event.
+void wispterm_macos_window_test_set_marked_text(void *handle, const char *text, uint64_t selection_location, uint64_t selection_length) {
+    WispTermMacWindowState *state = wispterm_macos_state(handle);
+    if (state == NULL || text == NULL) return;
+    @autoreleasepool {
+        [state->view setMarkedText:[NSString stringWithUTF8String:text]
+                     selectedRange:NSMakeRange((NSUInteger)selection_location, (NSUInteger)selection_length)
+                  replacementRange:NSMakeRange(NSNotFound, 0)];
+    }
+}
+
+void wispterm_macos_window_test_insert_text(void *handle, const char *text) {
+    WispTermMacWindowState *state = wispterm_macos_state(handle);
+    if (state == NULL || text == NULL) return;
+    @autoreleasepool {
+        [state->view insertText:[NSString stringWithUTF8String:text] replacementRange:NSMakeRange(NSNotFound, 0)];
+    }
+}
+
+void wispterm_macos_window_test_selected_range(void *handle, uint64_t *location, uint64_t *length) {
+    WispTermMacWindowState *state = wispterm_macos_state(handle);
+    if (state == NULL || location == NULL || length == NULL) return;
+    @autoreleasepool {
+        NSRange range = [state->view selectedRange];
+        *location = range.location;
+        *length = range.length;
+    }
+}
+
+void wispterm_macos_window_test_marked_range(void *handle, uint64_t *location, uint64_t *length) {
+    WispTermMacWindowState *state = wispterm_macos_state(handle);
+    if (state == NULL || location == NULL || length == NULL) return;
+    @autoreleasepool {
+        NSRange range = [state->view markedRange];
+        *location = range.location;
+        *length = range.length;
+    }
 }
 
 void wispterm_macos_window_test_push_file_drop(void *handle, const char *path, int32_t x, int32_t y) {
     wispterm_macos_push_file_drop_event(wispterm_macos_state(handle), path, x, y);
+}
+
+// Test-only: an object whose -dealloc flips a caller-owned flag, so a test can
+// observe exactly when the enclosing autorelease pool drains.
+@interface WispTermAutoreleaseProbe : NSObject
+@property(nonatomic, assign) bool *deallocated;
+@end
+
+@implementation WispTermAutoreleaseProbe
+- (void)dealloc {
+    if (self.deallocated != NULL) *self.deallocated = true;
+    [super dealloc];
+}
+@end
+
+// Deliberately autoreleases into the CALLER's pool (no @autoreleasepool here —
+// allowlisted in src/source_guards/objc_autorelease_guard.zig) so the
+// loop-iteration scope test can prove endLoopIteration frees it.
+void wispterm_macos_test_autorelease_into_caller_pool(bool *deallocated) {
+    WispTermAutoreleaseProbe *probe = [[[WispTermAutoreleaseProbe alloc] init] autorelease];
+    probe.deallocated = deallocated;
 }
 
 void wispterm_macos_window_request_close(void *handle) {
@@ -1466,8 +1783,10 @@ bool wispterm_macos_window_get_content_frame(void *handle, WispTermMacRect *out)
 }
 
 uint32_t wispterm_macos_window_dpi(void *handle) {
-    const double scale = wispterm_macos_scale(wispterm_macos_state(handle));
-    return (uint32_t)wispterm_macos_round_double(96.0 * scale);
+    @autoreleasepool {
+        const double scale = wispterm_macos_scale(wispterm_macos_state(handle));
+        return (uint32_t)wispterm_macos_round_double(96.0 * scale);
+    }
 }
 
 void wispterm_macos_window_show(void *handle) {
@@ -1476,6 +1795,7 @@ void wispterm_macos_window_show(void *handle) {
     wispterm_macos_run_on_main(^{
         @autoreleasepool {
             [state->window makeKeyAndOrderFront:nil];
+            wispterm_macos_refresh_zoomed(state);
         }
     });
 }
@@ -1501,9 +1821,13 @@ void wispterm_macos_window_make_key(void *handle) {
     });
 }
 
+// Reads the flag wispterm_macos_refresh_zoomed maintains instead of asking
+// AppKit: this is polled every frame (titlebar, windowed-position tracking),
+// sometimes from worker-thread windows where -isZoomed is not even safe.
 bool wispterm_macos_window_is_zoomed(void *handle) {
     WispTermMacWindowState *state = wispterm_macos_state(handle);
-    return state != NULL && state->window != nil && [state->window isZoomed];
+    if (state == NULL || state->window == nil) return false;
+    return atomic_load_explicit(&state->is_zoomed, memory_order_relaxed);
 }
 
 void wispterm_macos_window_zoom(void *handle) {
@@ -1512,6 +1836,7 @@ void wispterm_macos_window_zoom(void *handle) {
     wispterm_macos_run_on_main(^{
         @autoreleasepool {
             [state->window zoom:nil];
+            wispterm_macos_refresh_zoomed(state);
         }
     });
 }
@@ -1524,6 +1849,7 @@ bool wispterm_macos_window_set_frame(void *handle, int32_t x, int32_t y, int32_t
             NSRect frame = NSMakeRect(x, y, width > 0 ? width : 1, height > 0 ? height : 1);
             [state->window setFrame:frame display:YES];
             wispterm_macos_sync_layer(state);
+            wispterm_macos_refresh_zoomed(state);
         }
     });
     return true;

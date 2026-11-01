@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
+const window_backend = @import("../platform/window_backend.zig");
 const file_explorer = AppWindow.file_explorer;
 const browser_panel = AppWindow.browser_panel;
 const overlays = AppWindow.overlays;
@@ -12,6 +13,7 @@ const Surface = @import("../Surface.zig");
 const ghostty_vt = @import("ghostty-vt");
 const file_drop_path = @import("file_drop_path.zig");
 const ai_chat_composer_layout = @import("../assistant/conversation/composer_layout.zig");
+const i18n = @import("../i18n.zig");
 
 fn isPasteStripByte(byte: u8) bool {
     return switch (byte) {
@@ -353,7 +355,7 @@ fn createDeferredSshDropPaste(surface: *Surface, text: []const u8) ?*DeferredSsh
 }
 
 pub fn handleFileDrop(local_path: []const u8, x: i32, y: i32) bool {
-    if (handleFileExplorerDrop(local_path, x)) return true;
+    if (handleFileExplorerDrop(local_path, x, y)) return true;
     if (handleAiChatFileDrop(local_path, x, y)) return true;
     return handleSshTerminalFileDrop(local_path);
 }
@@ -365,13 +367,16 @@ fn handleAiChatFileDrop(local_path: []const u8, x: i32, y: i32) bool {
     return AppWindow.appendDroppedPathToChatAtPoint(text, x, y);
 }
 
-fn handleFileExplorerDrop(local_path: []const u8, x: i32) bool {
+fn handleFileExplorerDrop(local_path: []const u8, x: i32, y: i32) bool {
     const win = AppWindow.g_window orelse return false;
-    if (!file_explorer.isVisibleForActiveTab() or file_explorer.g_mode != .remote) return false;
+    if (file_explorer.g_mode != .remote) return false;
 
-    const panel_x: i32 = win.sidebar_width;
-    const panel_right: i32 = panel_x + @as(i32, @intFromFloat(file_explorer.width()));
-    if (x < panel_x or x >= panel_right) return false;
+    // Beside the sidebar or in the right dock: one shared panel rect.
+    const size = window_backend.clientSize(win);
+    const rect = AppWindow.fileExplorerPanelRect(size.width, size.height) orelse return false;
+    const fx: f32 = @floatFromInt(x);
+    const fy: f32 = @floatFromInt(y);
+    if (fx < rect.left or fx >= rect.right or fy < rect.top) return false;
 
     file_explorer.uploadFile(local_path);
     return true;
@@ -621,15 +626,20 @@ pub fn copySelectionToClipboard() void {
 }
 
 pub fn pasteFromClipboard() void {
-    const surface = AppWindow.activeSurface() orelse return;
-    const allocator = AppWindow.g_allocator orelse return;
-    const text = readClipboardText(allocator) orelse return;
+    _ = pasteClipboardTextToActiveSurface();
+}
+
+/// Returns false when the clipboard held no text to paste.
+fn pasteClipboardTextToActiveSurface() bool {
+    const surface = AppWindow.activeSurface() orelse return false;
+    const allocator = AppWindow.g_allocator orelse return false;
+    const text = readClipboardText(allocator) orelse return false;
     defer allocator.free(text);
 
-    if (text.len > 0) {
-        std.debug.print("Pasting {} UTF-8 bytes from clipboard\n", .{text.len});
-        writePasteToPty(surface, allocator, text);
-    }
+    if (text.len == 0) return false;
+    std.debug.print("Pasting {} UTF-8 bytes from clipboard\n", .{text.len});
+    writePasteToPty(surface, allocator, text);
+    return true;
 }
 
 pub fn pasteClipboardIntoBrowserUrlBar() bool {
@@ -657,18 +667,55 @@ pub fn pasteClipboardIntoMcpForm() bool {
     return overlays.mcpServersPasteText(text);
 }
 
+pub fn pasteClipboardIntoPasswordStore() bool {
+    const allocator = AppWindow.g_allocator orelse return false;
+    const text = readClipboardText(allocator) orelse return false;
+    defer {
+        // The clipboard often holds the password being pasted.
+        std.crypto.secureZero(u8, text);
+        allocator.free(text);
+    }
+    return AppWindow.passwordStorePaste(text);
+}
+
+pub fn pasteClipboardIntoSyncPage() bool {
+    const allocator = AppWindow.g_allocator orelse return false;
+    const text = readClipboardText(allocator) orelse return false;
+    defer {
+        // Often the WebDAV app password or the sync passphrase.
+        std.crypto.secureZero(u8, text);
+        allocator.free(text);
+    }
+    return AppWindow.syncPagePaste(text);
+}
+
 pub fn pasteFromClipboardIntoAiChat(chat: *AppWindow.ai_chat.Session) void {
-    const allocator = AppWindow.g_allocator orelse return;
-    const text = readClipboardText(allocator) orelse return;
+    _ = appendClipboardTextToAiChat(chat);
+}
+
+/// Returns false when the clipboard held no text to paste.
+fn appendClipboardTextToAiChat(chat: *AppWindow.ai_chat.Session) bool {
+    const allocator = AppWindow.g_allocator orelse return false;
+    const text = readClipboardText(allocator) orelse return false;
     defer allocator.free(text);
 
+    if (text.len == 0) return false;
     chat.appendInputText(text);
     AppWindow.g_force_rebuild = true;
     AppWindow.g_cells_valid = false;
+    return true;
 }
 
 /// Outcome of routing a pasted clipboard image to an AI chat composer.
-pub const PastedImageOutcome = enum { attached, ignored_no_vision, too_large };
+pub const PastedImageOutcome = enum {
+    attached,
+    ignored_no_vision,
+    too_large,
+    /// The clipboard held an image, but it could not be read or attached.
+    failed,
+    /// The clipboard held no image; the caller falls back to text paste.
+    no_image,
+};
 
 /// Decide what to do with a pasted image given the model's vision flag and the
 /// decoded byte size. The size cap takes precedence so an oversized payload is
@@ -694,19 +741,55 @@ fn encodeImageBase64(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
     return out;
 }
 
+/// Toast for a Paste Image press in an AI chat composer, or null when the
+/// composer already shows the result (the attached image's placeholder). Every
+/// other outcome leaves the composer unchanged or holding text, so without a
+/// toast an image-less clipboard looked exactly like a key that never landed.
+pub fn pastedImageToast(outcome: PastedImageOutcome, pasted_text: bool, strings: *const i18n.Strings) ?[]const u8 {
+    return switch (outcome) {
+        .attached => null,
+        .ignored_no_vision => strings.toast_paste_image_no_vision,
+        .too_large => strings.toast_paste_image_too_large,
+        .failed => strings.toast_paste_image_failed,
+        .no_image => if (pasted_text) strings.toast_paste_image_pasted_text else strings.toast_paste_image_empty,
+    };
+}
+
+test "pastedImageToast reports every outcome the composer does not show" {
+    defer i18n.setLang(.en);
+    i18n.setLang(.en);
+    const en = i18n.s();
+    try std.testing.expectEqual(@as(?[]const u8, null), pastedImageToast(.attached, false, en));
+    try std.testing.expectEqualStrings(en.toast_paste_image_empty, pastedImageToast(.no_image, false, en).?);
+    try std.testing.expectEqualStrings(en.toast_paste_image_pasted_text, pastedImageToast(.no_image, true, en).?);
+    try std.testing.expectEqualStrings(en.toast_paste_image_failed, pastedImageToast(.failed, false, en).?);
+    try std.testing.expectEqualStrings(en.toast_paste_image_too_large, pastedImageToast(.too_large, false, en).?);
+    try std.testing.expectEqualStrings(en.toast_paste_image_no_vision, pastedImageToast(.ignored_no_vision, false, en).?);
+
+    i18n.setLang(.zh_CN);
+    try std.testing.expectEqualStrings("剪贴板里没有图片或文本", pastedImageToast(.no_image, false, i18n.s()).?);
+}
+
 test "encodeImageBase64 produces standard base64" {
     const out = try encodeImageBase64(std.testing.allocator, "ABC");
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("QUJD", out);
 }
 
-/// Returns false only when the clipboard does not contain an image, allowing
-/// Ctrl+Shift+V to fall back to ordinary text paste.
-pub fn pasteImageIntoAiChat(chat: *AppWindow.ai_chat.Session) bool {
-    const allocator = AppWindow.g_allocator orelse return false;
-    const owner = clipboardOwner() orelse return false;
+/// Paste Image (Ctrl/Cmd+Shift+V) in an AI chat composer: attach the clipboard
+/// image, else fall back to ordinary text paste, and toast whatever the
+/// composer does not show by itself.
+pub fn pasteImageOrTextIntoAiChat(chat: *AppWindow.ai_chat.Session) void {
+    const outcome = pasteImageIntoAiChat(chat);
+    const pasted_text = outcome == .no_image and appendClipboardTextToAiChat(chat);
+    if (pastedImageToast(outcome, pasted_text, i18n.s())) |message| overlays.showStatusToast(message);
+}
 
-    const image_path = platform_clipboard.readImageAsPngTemp(allocator, owner) orelse return false;
+fn pasteImageIntoAiChat(chat: *AppWindow.ai_chat.Session) PastedImageOutcome {
+    const allocator = AppWindow.g_allocator orelse return .no_image;
+    const owner = clipboardOwner() orelse return .no_image;
+
+    const image_path = platform_clipboard.readImageAsPngTemp(allocator, owner) orelse return .no_image;
     defer allocator.free(image_path);
     // The temp PNG belongs to us once read; remove it either way.
     defer std.fs.deleteFileAbsolute(image_path) catch {};
@@ -714,25 +797,24 @@ pub fn pasteImageIntoAiChat(chat: *AppWindow.ai_chat.Session) bool {
     const max_bytes = AppWindow.ai_chat.MAX_PASTED_IMAGE_BYTES;
     const bytes = std.fs.cwd().readFileAlloc(allocator, image_path, max_bytes + 1) catch |err| {
         std.debug.print("Chat image paste: could not read {s}: {s}\n", .{ image_path, @errorName(err) });
-        return true;
+        return .failed;
     };
     defer allocator.free(bytes);
 
-    switch (classifyPastedImage(chat.vision_enabled, bytes.len, max_bytes)) {
+    const outcome = classifyPastedImage(chat.vision_enabled, bytes.len, max_bytes);
+    switch (outcome) {
         .too_large => {
             std.debug.print("Chat image paste: image is {d} bytes, exceeds {d} cap — ignored\n", .{ bytes.len, max_bytes });
-            overlays.showStatusToast("Image too large \xe2\x80\x94 ignored");
         },
         .ignored_no_vision => {
             std.debug.print("Chat image paste: vision disabled for this model \xe2\x80\x94 image ignored ({d} bytes)\n", .{bytes.len});
-            overlays.showStatusToast("Vision off for this model \xe2\x80\x94 image ignored");
         },
         .attached => {
-            const b64 = encodeImageBase64(allocator, bytes) catch return true;
+            const b64 = encodeImageBase64(allocator, bytes) catch return .failed;
             defer allocator.free(b64);
             chat.addPendingImage(b64, "image/png") catch {
                 std.debug.print("Chat image paste: out of memory attaching image\n", .{});
-                return true;
+                return .failed;
             };
             std.debug.print("Chat image paste: attached image ({d} bytes, {d} pending)\n", .{ bytes.len, chat.pendingImageCount() });
             var placeholder_buf: [32]u8 = undefined;
@@ -742,8 +824,20 @@ pub fn pasteImageIntoAiChat(chat: *AppWindow.ai_chat.Session) bool {
             AppWindow.g_force_rebuild = true;
             AppWindow.g_cells_valid = false;
         },
+        .failed, .no_image => unreachable,
     }
-    return true;
+    return outcome;
+}
+
+/// Paste Image in a terminal: paste the clipboard image's path, else fall back
+/// to clipboard text. Ctrl+Shift+V doubles as a plain-text paste chord in many
+/// terminals, so the text fallback stays quiet; only a press that pastes
+/// nothing at all gets a toast.
+pub fn pasteImageOrTextIntoTerminal() void {
+    if (AppWindow.activeSurface() == null) return;
+    if (pasteImageFromClipboard()) return;
+    if (pasteClipboardTextToActiveSurface()) return;
+    overlays.showStatusToast(i18n.s().toast_paste_image_empty);
 }
 
 /// Returns false only when the clipboard does not contain an image, allowing

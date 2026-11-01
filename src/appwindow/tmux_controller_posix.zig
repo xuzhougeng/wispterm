@@ -234,7 +234,7 @@ pub const TmuxController = struct {
             return;
         };
         var command: pty_command.Command = .{};
-        pty.startCommand(&command, pty_command.commandLineFromOwned(owned), null) catch {
+        pty.startCommand(&command, pty_command.commandLineFromOwned(owned), null, false) catch {
             pty.deinit();
             self.scheduleRetry();
             return;
@@ -334,7 +334,7 @@ pub fn start(
     var pty = Pty.open(.{ .ws_col = cols, .ws_row = rows }) catch return false;
     var command: pty_command.Command = .{};
     // POSIX spawn entry (fork/setsid/exec); populates command.pid for deinit.
-    pty.startCommand(&command, pty_command.commandLineFromOwned(owned), null) catch |err| {
+    pty.startCommand(&command, pty_command.commandLineFromOwned(owned), null, false) catch |err| {
         std.debug.print("tmux: startCommand failed: {}\n", .{err});
         pty.deinit();
         return false;

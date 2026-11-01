@@ -11,6 +11,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ghostty_vt = @import("ghostty-vt");
+const build_options = @import("build_options");
 const Pty = @import("pty.zig").Pty;
 const Command = @import("Command.zig");
 const renderer = @import("renderer.zig");
@@ -21,12 +22,15 @@ const remote = @import("remote_client.zig");
 const threading = @import("platform/threading.zig");
 const agent_detector = @import("terminal_agents/detector.zig");
 const live_transcript = @import("terminal_agents/live_transcript.zig");
+const screen_detect = @import("terminal_agents/screen_detect.zig");
+const session_persist = @import("session_persist.zig");
 const window_backend = @import("platform/window_backend.zig");
 const sync_output = @import("sync_output.zig");
 const notification = @import("notification.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const surface_registry = @import("surface_registry.zig");
 const platform_process = @import("platform/process.zig");
+const platform_local_path = @import("platform/local_path.zig");
 const ssh_connection_mod = @import("ssh/connection.zig");
 const clipboard_osc52 = @import("clipboard_osc52.zig");
 const osc_title = @import("osc_title.zig");
@@ -123,7 +127,8 @@ const WISPTERM_IMAGE_OSC_MAX = 16 * 1024;
 const WISPTERM_PRIVATE_OSC_SHARED = "774";
 /// Maximum agent marker payload size (bytes after "7748;"); sequences longer
 /// than this are silently discarded via the overflow states.
-const WISPTERM_AGENT_OSC_MAX = 512; // room for an optional transcript=<path> field
+const WISPTERM_AGENT_OSC_MAX = 4096;
+const WISPTERM_AGENT_SESSION_PATH_MAX = 4096;
 
 /// Coarse launch environment for terminal-side integrations such as path paste.
 pub const LaunchKind = platform_pty_command.LaunchKind;
@@ -142,6 +147,18 @@ pub const VtHandler = struct {
     /// The inner readonly handler type, obtained via Terminal.vtHandler's return type.
     const InnerHandler = @typeInfo(@TypeOf(ghostty_vt.Terminal.vtHandler)).@"fn".return_type.?;
 
+    /// ghostty-vt's device-attributes reply type, derived from the effect
+    /// callback signature so it tracks the dependency without a re-export.
+    const DeviceAttributes = blk: {
+        const Fn = @typeInfo(@FieldType(InnerHandler.Effects, "device_attributes")).optional.child;
+        break :blk @typeInfo(@typeInfo(Fn).pointer.child).@"fn".return_type.?;
+    };
+
+    /// XTVERSION (`CSI > 0 q`) reply. Identifies the real emulator; apps that
+    /// branch on this string (VTE/xterm.js workarounds) must not mistake us
+    /// for those.
+    const xtversion_string = "WispTerm " ++ build_options.app_version;
+
     inner: InnerHandler,
     surface: *Surface,
 
@@ -153,10 +170,28 @@ pub const VtHandler = struct {
         // and, without a reply, conclude it is unsupported and never enable it —
         // leaving Shift+Enter indistinguishable from Enter. See issue #302.
         inner.effects.write_pty = &writePtyResponse;
+        // Primary/secondary/tertiary device attributes (`CSI c`, `CSI > c`,
+        // `CSI = c`). ghostty-vt's readonly handler leaves this effect null, so
+        // DA1 went unanswered. TUIs that probe `CSI ? u` + `CSI c` together
+        // (grok) treat the Kitty reply as proof the terminal responds and then
+        // wait for DA1 without a timeout — a blank alternate screen forever.
+        // Newer Windows pseudo-console hosts also send DA1 to the terminal
+        // hosting them and gate scroll optimizations on the reply. Same answer as Ghostty's
+        // termio/stream_handler.zig: `CSI ? 62 ; 22 c` (VT220 + ANSI color).
+        inner.effects.device_attributes = &deviceAttributes;
+        inner.effects.xtversion = &xtversion;
         return .{
             .inner = inner,
             .surface = surface,
         };
+    }
+
+    fn deviceAttributes(_: *InnerHandler) DeviceAttributes {
+        return .{};
+    }
+
+    fn xtversion(_: *InnerHandler) []const u8 {
+        return xtversion_string;
     }
 
     /// Forward a terminal-generated response (Kitty keyboard query, DSR, mode
@@ -240,6 +275,7 @@ command: Command,
 selection: Selection,
 render_state: renderer.State,
 launch_kind: LaunchKind,
+advertise_terminal_capabilities: bool,
 ssh_connection: ?SshConnection,
 remote_client: ?*remote.Client,
 remote_id: [16]u8,
@@ -392,6 +428,9 @@ wispterm_image_osc_buf: std.ArrayListUnmanaged(u8) = .empty,
 /// WISPTERM_AGENT_OSC_MAX; no heap allocation needed for these small sequences.
 wispterm_agent_osc_buf: [WISPTERM_AGENT_OSC_MAX]u8 = undefined,
 wispterm_agent_osc_buf_len: usize = 0,
+agent_session_path_buf: [WISPTERM_AGENT_SESSION_PATH_MAX]u8 = undefined,
+agent_session_path_len: usize = 0,
+agent_capabilities: agent_detector.AgentCapabilities = .{},
 
 /// True once this surface has received an authoritative OSC 7748 agent-state
 /// marker. Reset when the foreground command is no longer a known agent.
@@ -406,12 +445,23 @@ initial_cwd_path: [512]u8 = undefined,
 initial_cwd_path_len: usize = 0,
 
 // Lightweight app/agent state. State transitions come from OSC 7748 hook
-// markers; app identity may also be seeded from the foreground command.
+// markers or, without a hook, from screen detection (`agent_screen`); app
+// identity may also be seeded from the foreground command.
 agent_detection: agent_detector.Detection = .{},
 
 /// Session log of the agent running in this pane, rendered for remote clients
 /// (see terminal_agents/live_transcript.zig). Main thread only.
 agent_transcript: live_transcript.LiveTranscript = .{},
+
+/// Screen-detection bookkeeping (identity source, output epoch, seen state).
+/// Owned by `terminal_agents/screen_detect.zig`; the IO thread only bumps its
+/// output epoch (see `markOutputDirty`).
+agent_screen: screen_detect.SurfaceState = .{},
+
+/// Packed mirror of `agent_detection` for readers on other threads (the ctl
+/// server's `agent-state`, the Copilot tool worker). Writers of
+/// `agent_detection` call `publishAgentDetection` afterwards.
+agent_detection_shared: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
 /// Last agent state seen by the main loop's notification poll (edge detection;
 /// UI thread only — see AppWindow.pollAgentMarker).
@@ -451,6 +501,7 @@ pub fn init(
     cursor_style: Config.CursorStyle,
     cursor_blink: bool,
     cwd: platform_pty_command.Cwd,
+    advertise_terminal_capabilities: bool,
 ) !*Surface {
     const surface = try allocator.create(Surface);
     errdefer allocator.destroy(surface);
@@ -486,10 +537,10 @@ pub fn init(
     errdefer surface.pty.deinit();
 
     surface.command = .{};
-    try surface.command.start(&surface.pty, shell_cmd, cwd);
+    try surface.command.start(&surface.pty, shell_cmd, cwd, advertise_terminal_capabilities);
     errdefer surface.command.deinit();
 
-    const ready = try finishInit(surface, allocator, cols, rows, platform_pty_command.launchKindForCommand(shell_cmd), cwd);
+    const ready = try finishInit(surface, allocator, cols, rows, platform_pty_command.launchKindForCommand(shell_cmd), cwd, advertise_terminal_capabilities);
     ready.setRespawnTarget(allocator, shell_cmd, cwd);
     return ready;
 }
@@ -505,12 +556,14 @@ fn finishInit(
     rows: u16,
     launch_kind: LaunchKind,
     cwd: platform_pty_command.Cwd,
+    advertise_terminal_capabilities: bool,
 ) !*Surface {
     // Init remaining fields
     surface.allocator = allocator;
     surface.selection = .{};
     surface.render_state = renderer.State.init(&surface.terminal);
     surface.launch_kind = launch_kind;
+    surface.advertise_terminal_capabilities = advertise_terminal_capabilities;
     surface.ssh_connection = null;
     surface.ssh_autofill_due_ms = 0;
     surface.ssh_autofill_deadline_ms = 0;
@@ -568,10 +621,14 @@ fn finishInit(
     surface.wispterm_image_osc_state = .ground;
     surface.wispterm_image_osc_buf = .empty;
     surface.wispterm_agent_osc_buf_len = 0;
+    surface.agent_session_path_len = 0;
+    surface.agent_capabilities = .{};
     surface.agent_osc_active = false;
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.agent_detection = .{};
+    surface.agent_screen = .{};
+    surface.agent_detection_shared = std.atomic.Value(u32).init(0);
     surface.captureInitialCwd(cwd);
 
     // Init bell state
@@ -675,7 +732,7 @@ pub fn initVirtual(
     surface.command = .{};
     errdefer surface.command.deinit();
 
-    return finishInit(surface, allocator, cols, rows, .ssh, null);
+    return finishInit(surface, allocator, cols, rows, .ssh, null, false);
 }
 
 /// Deinitialize and free a Surface.
@@ -998,7 +1055,7 @@ pub fn respawn(self: *Surface) void {
     var new_pty = Pty.open(.{ .ws_col = cols, .ws_row = rows }) catch |err|
         return self.respawnFailed(err);
     var new_command: Command = .{};
-    new_command.start(&new_pty, cmd, cwd) catch |err| {
+    new_command.start(&new_pty, cmd, cwd, self.advertise_terminal_capabilities) catch |err| {
         new_pty.deinit();
         return self.respawnFailed(err);
     };
@@ -1300,11 +1357,66 @@ pub fn setCwdPath(self: *Surface, path: []const u8) void {
 pub fn noteAgentCommand(self: *Surface, app: agent_detector.App) void {
     if (app == .none) {
         if (self.agent_osc_active) self.agent_osc_active = false;
+        self.agent_session_path_len = 0;
+        self.agent_capabilities = .{};
+        self.agent_screen.seed(.none);
         return;
+    }
+    if (app != .pi) {
+        self.agent_session_path_len = 0;
+        self.agent_capabilities = .{};
     }
     if (!self.agent_osc_active and self.agent_detection.app == .none) {
         self.agent_detection.app = app;
+        self.publishAgentDetection();
     }
+    self.agent_screen.seed(app);
+}
+
+/// Refresh the cross-thread mirror after `agent_detection` changed.
+pub fn publishAgentDetection(self: *Surface) void {
+    self.agent_detection_shared.store(self.agent_detection.pack(), .release);
+}
+
+/// `agent_detection` as last published, readable from any thread.
+pub fn agentDetectionShared(self: *const Surface) agent_detector.Detection {
+    return agent_detector.Detection.unpack(self.agent_detection_shared.load(.acquire));
+}
+
+/// Queue a command into the existing PTY mailbox. This is used only during
+/// startup restore, before the shell/remote login is ready to read it.
+pub fn queueInput(self: *Surface, data: []const u8) bool {
+    const msg = termio.Message.writeReq(self.allocator, data) catch return false;
+    if (self.mailbox.sendWrite(msg) == .full) {
+        msg.deinit();
+        return false;
+    }
+    self.mailbox.notify();
+    return true;
+}
+
+/// Start Pi from a restored local/WSL shell using a shell-neutral quoted path.
+/// Paths containing shell interpolation/quote characters are rejected rather
+/// than turned into an unsafe startup command.
+pub fn queuePiSessionResume(self: *Surface, path: []const u8) bool {
+    var buf: [8192]u8 = undefined;
+    const command = session_persist.formatPiSessionResumeCommand(&buf, path) orelse return false;
+    return self.queueInput(command);
+}
+
+/// Return the launch context of this surface.
+pub fn launchKind(self: *const Surface) platform_pty_command.LaunchKind {
+    return self.launch_kind;
+}
+
+/// Return the current Pi JSONL session path reported by the companion, if any.
+pub fn piSessionPath(self: *const Surface) ?[]const u8 {
+    if (self.agent_detection.app != .pi or self.agent_session_path_len == 0) return null;
+    return self.agent_session_path_buf[0..self.agent_session_path_len];
+}
+
+pub fn piSupportsGracefulExit(self: *const Surface) bool {
+    return self.agent_detection.app == .pi and self.agent_capabilities.graceful_exit;
 }
 
 /// Get the current working directory path (from OSC 7), or null if not set.
@@ -1427,6 +1539,7 @@ pub fn takeClipboardWrite(self: *Surface) ?[]u8 {
 /// exactly one wakeup then, instead of flooding the platform event queue with
 /// one message per output chunk.
 pub fn markOutputDirty(self: *Surface) bool {
+    self.agent_screen.noteOutput();
     return !self.dirty.swap(true, .release);
 }
 
@@ -1741,10 +1854,13 @@ fn replayNonImageOscPrefix(self: *Surface) void {
 fn handleWispTermAgentOsc(self: *Surface) void {
     const payload = self.wispterm_agent_osc_buf[0..self.wispterm_agent_osc_buf_len];
     self.wispterm_agent_osc_buf_len = 0;
-    if (agent_detector.parseMarker(payload)) |det| {
-        self.agent_detection = det;
+    if (agent_detector.parseMarkerInfo(payload, self.agent_session_path_buf[0..])) |info| {
+        self.agent_detection = info.detection;
+        self.agent_capabilities = info.capabilities;
+        self.agent_session_path_len = @min(info.session_path.len, self.agent_session_path_buf.len);
         self.agent_osc_active = true;
-        if (agent_detector.markerField(payload, "transcript")) |path| self.agent_transcript.setPath(self.allocator, path);
+        if (info.session_path.len > 0) self.agent_transcript.setPath(self.allocator, info.session_path);
+        self.publishAgentDetection();
     }
 }
 
@@ -1788,34 +1904,34 @@ fn updateTitle(self: *Surface, title: []const u8, osc_num: u8) void {
     if (osc_num == 7) {
         // OSC 7: file://host/path — extract the path
         self.got_osc7_this_batch = true;
-        const prefix = "file://";
-        if (std.mem.startsWith(u8, title, prefix)) {
-            const after_prefix = title[prefix.len..];
-            if (std.mem.indexOfScalar(u8, after_prefix, '/')) |slash| {
-                const path = after_prefix[slash..];
+        if (platform_local_path.pathFromFileUri(title)) |raw_path| {
+            var native_buf: [512]u8 = undefined;
+            const path = if (builtin.os.tag == .windows)
+                platform_local_path.forLocalOpen(raw_path, &native_buf) orelse raw_path
+            else
+                raw_path;
 
-                // Store raw path for CWD inheritance
-                const raw_len = @min(path.len, self.cwd_path.len);
-                @memcpy(self.cwd_path[0..raw_len], path[0..raw_len]);
-                self.cwd_path_len = raw_len;
+            // Store raw path for CWD inheritance
+            const raw_len = @min(path.len, self.cwd_path.len);
+            @memcpy(self.cwd_path[0..raw_len], path[0..raw_len]);
+            self.cwd_path_len = raw_len;
 
-                // Format for display (with ~ for home)
-                const home_prefix = "/home/";
-                if (std.mem.startsWith(u8, path, home_prefix)) {
-                    const after_home = path[home_prefix.len..];
-                    const user_end = std.mem.indexOfScalar(u8, after_home, '/') orelse after_home.len;
-                    const home_len = home_prefix.len + user_end;
+            // Format for display (with ~ for home)
+            const home_prefix = "/home/";
+            if (std.mem.startsWith(u8, path, home_prefix)) {
+                const after_home = path[home_prefix.len..];
+                const user_end = std.mem.indexOfScalar(u8, after_home, '/') orelse after_home.len;
+                const home_len = home_prefix.len + user_end;
 
-                    const rest = path[home_len..];
-                    self.osc7_title[0] = '~';
-                    const rest_len = @min(rest.len, self.osc7_title.len - 1);
-                    @memcpy(self.osc7_title[1 .. 1 + rest_len], rest[0..rest_len]);
-                    self.osc7_title_len = 1 + rest_len;
-                } else {
-                    const path_len = @min(path.len, self.osc7_title.len);
-                    @memcpy(self.osc7_title[0..path_len], path[0..path_len]);
-                    self.osc7_title_len = path_len;
-                }
+                const rest = path[home_len..];
+                self.osc7_title[0] = '~';
+                const rest_len = @min(rest.len, self.osc7_title.len - 1);
+                @memcpy(self.osc7_title[1 .. 1 + rest_len], rest[0..rest_len]);
+                self.osc7_title_len = 1 + rest_len;
+            } else {
+                const path_len = @min(path.len, self.osc7_title.len);
+                @memcpy(self.osc7_title[0..path_len], path[0..path_len]);
+                self.osc7_title_len = path_len;
             }
         }
     } else {
@@ -1891,6 +2007,41 @@ test "kitty keyboard query is answered back to the PTY (issue #302)" {
     surface.vt_stream.nextSlice("\x1b[>1u");
     surface.vt_stream.nextSlice("\x1b[?u");
     try expectPtyResponse(&surface, "\x1b[?1u");
+}
+
+test "primary device attributes query is answered back to the PTY" {
+    var surface: Surface = undefined;
+    try vtResponseHarness(&surface);
+    defer vtResponseHarnessDeinit(&surface);
+
+    // grok sends `CSI ? u` then `CSI c` and, once the Kitty reply proves the
+    // terminal answers queries, waits for DA1 with no timeout. Without this
+    // reply it sits on a blank alternate screen forever.
+    surface.vt_stream.nextSlice("\x1b[?u\x1b[c");
+    try expectPtyResponse(&surface, "\x1b[?0u");
+    try expectPtyResponse(&surface, "\x1b[?62;22c");
+
+    // Secondary DA (`CSI > c`) is part of the same probe family and must not
+    // stay silent either.
+    surface.vt_stream.nextSlice("\x1b[>c");
+    const msg = surface.mailbox.popWrite() orelse return error.NoPtyResponse;
+    switch (msg) {
+        .write_small => |*w| {
+            const reply = w.data[0..w.len];
+            try std.testing.expect(std.mem.startsWith(u8, reply, "\x1b[>"));
+            try std.testing.expect(std.mem.endsWith(u8, reply, "c"));
+        },
+        else => return error.UnexpectedMessage,
+    }
+}
+
+test "XTVERSION query reports WispTerm and its version" {
+    var surface: Surface = undefined;
+    try vtResponseHarness(&surface);
+    defer vtResponseHarnessDeinit(&surface);
+
+    surface.vt_stream.nextSlice("\x1b[>0q");
+    try expectPtyResponse(&surface, "\x1bP>|WispTerm " ++ build_options.app_version ++ "\x1b\\");
 }
 
 // queuePtyWrite needs surface.allocator, surface.mailbox, and the IO lifecycle

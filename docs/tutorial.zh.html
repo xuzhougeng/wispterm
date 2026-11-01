@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WispTerm 使用教程 — 从第一次连接到日常工作</title>
-  <meta name="description" content="WispTerm 中文上手教程：配置模型 API、登录 SSH 服务器、使用 Copilot 与对话中心、管理长期记忆和摘要、设置端口转发，以及文件预览、技能和日常终端操作。">
+  <meta name="description" content="WispTerm 中文上手教程：通过实机截图学习新建与编辑 LLM 提供方、配置模型 API、登录 SSH 服务器、使用 Copilot 与对话中心、管理记忆、端口转发和文件预览。">
   <meta property="og:title" content="WispTerm 中文使用教程">
   <meta property="og:description" content="一步步配置 AI、连接服务器、找回对话、管理记忆，让终端成为日常工作台。">
   <meta property="og:image" content="assets/wispterm.png">
@@ -13,7 +13,7 @@
   <link rel="icon" href="assets/favicon.ico">
   <script src="theme.js?v=2"></script>
   <link rel="stylesheet" href="style.css?v=11">
-  <link rel="stylesheet" href="tutorial.css?v=2">
+  <link rel="stylesheet" href="tutorial.css?v=3">
 </head>
 <body class="tutorial-page">
   <a class="skip-link" href="#guide-content">跳到教程正文</a>
@@ -37,16 +37,17 @@
       <p class="guide-nav-title">使用教程 <span>中文</span></p>
       <nav aria-label="章节导航">
         <a href="#start"><span>01</span>认识工作台</a>
-        <a href="#api"><span>02</span>配置模型 API</a>
-        <a href="#ssh"><span>03</span>登录服务器</a>
-        <a href="#copilot"><span>04</span>与 Copilot 协作</a>
-        <a href="#conversations"><span>05</span>对话中心</a>
-        <a href="#memory"><span>06</span>记忆中心</a>
-        <a href="#ports"><span>07</span>端口转发</a>
-        <a href="#files"><span>08</span>文件与预览</a>
-        <a href="#skills"><span>09</span>技能与工具</a>
-        <a href="#workspace"><span>10</span>整理工作环境</a>
-        <a href="#help"><span>11</span>常见问题</a>
+        <a href="#api"><span>02</span>新建与编辑 LLM</a>
+        <a href="#subscriptions"><span>03</span>订阅登录</a>
+        <a href="#ssh"><span>04</span>登录服务器</a>
+        <a href="#copilot"><span>05</span>与 Copilot 协作</a>
+        <a href="#conversations"><span>06</span>对话中心</a>
+        <a href="#memory"><span>07</span>记忆中心</a>
+        <a href="#ports"><span>08</span>端口转发</a>
+        <a href="#files"><span>09</span>文件与预览</a>
+        <a href="#skills"><span>10</span>技能与工具</a>
+        <a href="#workspace"><span>11</span>整理工作环境</a>
+        <a href="#help"><span>12</span>常见问题</a>
       </nav>
       <a class="guide-download" href="./zh.html#install">下载与安装 <span aria-hidden="true">↗</span></a>
     </aside>
@@ -56,7 +57,7 @@
         <p class="eyebrow">WISPTERM / 使用指南</p>
         <h1>从第一次连接，<br>到每天的工作。</h1>
         <p class="guide-lead">在一个终端里连接服务器、使用 AI、找回对话和积累记忆。按顺序完成首次配置，也可以从左侧目录直接找到需要的功能。</p>
-        <p class="guide-photo-note">配图均为 Windows 实机截图，使用演示服务器与示例记录。点击图片可查看原图。</p>
+        <p class="guide-photo-note">配图为 WispTerm 实机截图：LLM 新建与编辑步骤使用 macOS，其余截图使用 Windows 演示环境。点击图片可查看原图。</p>
         <div class="guide-routes" aria-label="推荐阅读路线">
           <a href="#api"><strong>先用 AI</strong><span>配置 API → 开始对话 → 保存记忆</span></a>
           <a href="#ssh"><strong>先连服务器</strong><span>SSH 登录 → 端口转发 → 查看文件</span></a>
@@ -68,43 +69,61 @@
         <h2>先认识三个常用入口</h2>
         <p>安装并打开 WispTerm 后，可以直接使用本地终端。SSH 登录、标签页、分屏和文件浏览不需要模型 API；使用内置 Copilot 时再配置 AI。</p>
         <dl class="guide-definitions">
-          <div><dt>命令中心</dt><dd><kbd>Ctrl+Shift+P</kbd> 打开，输入功能名称筛选，再按 <kbd>Enter</kbd> 执行。记忆中心、对话中心、端口转发和设置都从这里进入。</dd></div>
-          <div><dt>新建会话</dt><dd>点击标签栏的 <strong>＋</strong> 或按 <kbd>Ctrl+Shift+T</kbd>，选择本地 Shell、WSL、SSH、副驾或历史会话。</dd></div>
+          <div><dt>命令中心</dt><dd><kbd>Ctrl+Shift+P</kbd> 打开，输入功能名称筛选，再按 <kbd>Enter</kbd> 执行。记忆中心、对话中心、端口转发和设置也可以从这里打开。</dd></div>
+          <div><dt>新建会话</dt><dd>点击标签栏的 <strong>＋</strong> 或按 <kbd>Ctrl+Shift+T</kbd>，选择本地 Shell、WSL、SSH、tmux、副驾、历史会话，或打开端口转发、记忆中心和设置。</dd></div>
           <div><dt>终端旁的 Copilot</dt><dd>在终端标签页按 <kbd>Ctrl+Shift+A</kbd>，打开与当前终端关联的 AI 侧栏，一边查看输出，一边提问。</dd></div>
         </dl>
         <figure class="guide-shot guide-shot--form">
-          <a href="assets/tutorial/session-launcher.png" target="_blank" rel="noopener" aria-label="查看新建会话截图原图"><img src="assets/tutorial/session-launcher.png" alt="WispTerm 新建会话菜单，可选择本地终端、SSH、WSL、tmux、副驾和历史会话" width="524" height="390" loading="lazy" decoding="async"></a>
-          <figcaption>新建会话：先选择本地终端、远程连接或副驾。</figcaption>
+          <a href="assets/tutorial/session-launcher.png" target="_blank" rel="noopener" aria-label="查看新建会话截图原图"><img src="assets/tutorial/session-launcher.png" alt="WispTerm 新建会话菜单，可选择本地终端、SSH、WSL、tmux、副驾、历史会话、端口转发、记忆中心和设置" width="524" height="390" loading="lazy" decoding="async"></a>
+          <figcaption>新建会话：选择终端、远程连接、副驾，或打开端口转发、记忆中心和设置。</figcaption>
         </figure>
         <div class="guide-note">下文快捷键以 Windows 为例。macOS 通常将 <kbd>Ctrl</kbd> 换为 <kbd>Cmd</kbd>、<kbd>Alt</kbd> 换为 <kbd>Opt</kbd>；切换标签页仍使用 <kbd>Ctrl+Tab</kbd>。自定义过快捷键时，以自己的配置为准。</div>
       </section>
 
       <section id="api" class="guide-section">
-        <p class="guide-number">02 / 首次配置</p>
-        <h2>配置模型 API</h2>
-        <p>AI 配置把服务地址、密钥和模型保存成一个可重复使用的组合。你可以保存多个配置，在对话中切换。</p>
+        <p class="guide-number">02 / 模型配置</p>
+        <h2>新建与编辑 LLM 提供方</h2>
+        <p>界面中的「LLM 提供方」就是一份 AI 配置，把服务地址、密钥和模型保存成一个可重复使用的组合。你可以为不同服务或模型分别新建配置，也可以修改已有配置。</p>
+        <p>直接跳到：<a href="#llm-new">新建 LLM</a> · <a href="#llm-fields">字段怎么填</a> · <a href="#llm-edit">编辑已有 LLM</a>。</p>
         <h3>最快的方式：配置 DeepSeek</h3>
         <ol class="guide-steps">
           <li>前往 <a href="https://platform.deepseek.com">DeepSeek 开放平台</a>创建 API Key，并确认账号有可用额度。</li>
           <li>打开命令中心，选择<strong>设置：快速配置 AI</strong>（Settings: Quick Configure AI）。</li>
-          <li>粘贴密钥并选择<strong>校验并保存</strong>。验证成功后，WispTerm 会保存 DeepSeek 主模型和 Flash 子代理配置。</li>
+          <li>粘贴密钥并选择<strong>校验并保存</strong>。验证成功后，WispTerm 会保存一个 DeepSeek Flash 配置（模型 <code>deepseek-flash</code>，开启视觉），同时用作主模型和子代理。</li>
           <li>打开<strong>新建会话 → 副驾（Copilot）</strong>，发送“你好，请介绍一下你能帮我完成哪些终端任务”。能收到回复就表示基本连接成功。</li>
         </ol>
-        <h3>使用其他服务或自定义模型</h3>
-        <p>在命令中心选择<strong>管理 AI 配置</strong>（Manage AI Profiles），或进入<strong>设置 → AI 配置</strong>，新建或编辑配置。</p>
+        <h3 id="llm-manage">先打开「管理 AI 配置」</h3>
+        <p>按 <kbd>Ctrl+Shift+P</kbd>（macOS 为 <kbd>Cmd+Shift+P</kbd>）打开命令中心，选择<strong>管理 AI 配置</strong>（Manage AI Profiles），按 <kbd>Enter</kbd> 进入。也可以从<strong>设置 → AI 配置</strong>进入。</p>
         <figure class="guide-shot guide-shot--form">
-          <a href="assets/tutorial/api-profile.png" target="_blank" rel="noopener" aria-label="查看 API 配置截图原图"><img src="assets/tutorial/api-profile.png" alt="副驾配置表单中的接口地址、API 密钥、模型、智能体和协议字段，演示中密钥留空" width="520" height="790" loading="lazy" decoding="async"></a>
-          <figcaption>自定义 AI 配置。图中 API 密钥留空；实际使用时填写自己的密钥。</figcaption>
+          <a href="assets/tutorial/llm-manage-command-macos.jpg" target="_blank" rel="noopener" aria-label="查看管理 AI 配置入口截图原图"><img src="assets/tutorial/llm-manage-command-macos.jpg" alt="macOS 命令中心，已选中管理 AI 配置" width="680" height="600" loading="lazy" decoding="async"></a>
+          <figcaption>共同入口：在命令中心选择「管理 AI 配置」，打开 LLM 提供方列表。</figcaption>
         </figure>
+        <h3 id="llm-new">新建一个 LLM 提供方</h3>
+        <ol class="guide-steps">
+          <li>在 LLM 提供方列表中选择<strong>新建 LLM 提供方</strong>，按 <kbd>Enter</kbd>。已有配置会显示在这些管理操作上方。</li>
+          <li>打开的表单标题为「副驾」。填写<strong>配置名称</strong>，例如「日常助手」，方便以后从列表中辨认。</li>
+          <li>按服务商文档选择<strong>协议</strong>，再核对<strong>接口地址</strong>、<strong>模型</strong>并填写自己的 <strong>API 密钥</strong>。切换协议可能带入默认地址和模型，因此应在切换后检查这两项。</li>
+          <li>按 <kbd>Tab</kbd> 或 <kbd>↑</kbd> <kbd>↓</kbd> 在各行移动；选中「协议」后用 <kbd>←</kbd> <kbd>→</kbd> 切换。订阅登录方式见下一节<a href="#subscriptions">订阅登录</a>。</li>
+          <li>只想存好备用，选择<strong>保存</strong>；要立即试用，选择<strong>保存并打开</strong>，再发送一条「你好」检查连接。</li>
+        </ol>
+        <figure class="guide-shot guide-shot--form">
+          <a href="assets/tutorial/llm-new-entry-macos.jpg" target="_blank" rel="noopener" aria-label="查看新建 LLM 提供方入口截图原图"><img src="assets/tutorial/llm-new-entry-macos.jpg" alt="LLM 提供方列表中选中新建 LLM 提供方，上方显示已有配置" width="680" height="600" loading="lazy" decoding="async"></a>
+          <figcaption>新建入口：选择「新建 LLM 提供方」。上方的 Opencode 是已有配置的名称。</figcaption>
+        </figure>
+        <figure class="guide-shot">
+          <a href="assets/tutorial/llm-new-form-macos.jpg" target="_blank" rel="noopener" aria-label="查看新建 LLM 配置表单截图原图"><img src="assets/tutorial/llm-new-form-macos.jpg" alt="新建副驾配置表单，包含配置名称、接口地址、API 密钥、模型、协议，以及底部的保存并打开、保存和返回" width="1100" height="920" loading="lazy" decoding="async"></a>
+          <figcaption>新建表单（macOS）：API 密钥留空。预填地址、模型和默认值可能随版本变化，实际使用时按服务商提供的信息填写。</figcaption>
+        </figure>
+        <h3 id="llm-fields">配置字段怎么填</h3>
         <div class="guide-table" role="region" aria-label="AI 配置字段" tabindex="0"><table>
           <thead><tr><th scope="col">字段</th><th scope="col">怎么填</th></tr></thead>
           <tbody>
-            <tr><th scope="row">名称 / Name</th><td>便于区分的名字，例如“日常助手”或“代码助手”。</td></tr>
-            <tr><th scope="row">Base URL</th><td>服务商提供的 API 基础地址，不是网页版聊天地址。DeepSeek 示例：<code>https://api.deepseek.com</code>。</td></tr>
-            <tr><th scope="row">API Key</th><td>该服务的密钥。只填在应用的配置表单里，不要发到对话或截图中。</td></tr>
-            <tr><th scope="row">Model</th><td>服务商实际提供、且你的账号有权限调用的模型 ID，不是自定义昵称。</td></tr>
-            <tr><th scope="row">Protocol</th><td>按服务商文档选择协议，见下表。地址相似不代表协议相同。</td></tr>
-            <tr><th scope="row">System / Agent</th><td>System 留空可使用内置提示词；需要执行命令、读写文件等工具时启用 Agent。</td></tr>
+            <tr><th scope="row">配置名称 / Name</th><td>便于区分的名字，例如“日常助手”或“代码助手”。</td></tr>
+            <tr><th scope="row">接口地址 / Base URL</th><td>服务商提供的 API 基础地址，不是网页版聊天地址。DeepSeek 示例：<code>https://api.deepseek.com</code>。</td></tr>
+            <tr><th scope="row">API 密钥 / API Key</th><td>该服务的密钥。只填在应用的配置表单里，不要发到对话或截图中。</td></tr>
+            <tr><th scope="row">模型 / Model</th><td>服务商实际提供、且你的账号有权限调用的模型 ID，不是自定义昵称。</td></tr>
+            <tr><th scope="row">协议 / Protocol</th><td>按服务商文档选择协议，见下表。地址相似不代表协议相同；选中这一行后用左右键切换，不能手打。</td></tr>
+            <tr><th scope="row">系统提示 / 智能体</th><td>系统提示可保留默认值；需要执行命令、读写文件等工具时，将智能体设为 <code>true</code>。</td></tr>
           </tbody>
         </table></div>
         <div class="guide-table" role="region" aria-label="模型协议选择" tabindex="0"><table>
@@ -113,14 +132,78 @@
             <tr><td>OpenAI 兼容聊天接口</td><td><code>chat_completions</code></td><td>DeepSeek 等服务使用此方式；Base URL 按服务商要求填写。</td></tr>
             <tr><td>OpenAI Responses</td><td><code>responses</code></td><td>例如 <code>https://api.openai.com/v1</code>，也支持以 <code>/responses</code> 结尾的完整地址。</td></tr>
             <tr><td>Anthropic Messages</td><td><code>anthropic</code></td><td>官方地址用 <code>https://api.anthropic.com</code>；第三方兼容服务需显式选择此协议，并填写 Max Tokens。</td></tr>
+            <tr><td>ChatGPT / Kimi / xAI / OpenCode Go</td><td><code>codex</code>、<code>kimi</code>、<code>xai</code>、<code>opencode-go</code></td><td>用订阅或订阅配套的密钥，不要按普通 API 手填地址。步骤见<a href="#subscriptions">订阅登录</a>。</td></tr>
             <tr><td>外部 Agent</td><td><code>acp</code></td><td>填写启动 Command，使用外部 Agent 自己的登录与模型配置，见<a href="#skills">技能与工具</a>。</td></tr>
           </tbody>
         </table></div>
-        <p class="guide-result"><strong>检查结果：</strong>保存后启动一个新 Copilot 对话进行验证。已有对话可点击顶部模型名称，或输入 <code>/model</code> 选择配置；这只切换当前对话，不会改写全局默认配置。</p>
+        <p class="guide-result"><strong>检查结果：</strong>保存后启动一个新 Copilot 对话进行验证。已有对话可点击顶部模型名称，或输入 <code>/model</code> 选择配置；这只切换当前对话，不会改写全局默认配置。ChatGPT、Kimi、xAI 和 OpenCode Go 不要走上面的密钥地址，按<a href="#subscriptions">订阅登录</a>配置。</p>
+        <h3 id="llm-edit">编辑已有的 LLM 提供方</h3>
+        <ol class="guide-steps">
+          <li>再次打开<strong>管理 AI 配置</strong>，选择<strong>编辑 LLM 提供方</strong>，按 <kbd>Enter</kbd>。</li>
+          <li>在标题为「编辑 LLM 提供方」的列表里，选择要修改的配置名称，再按 <kbd>Enter</kbd>。例如截图中的 <code>Opencode</code>。</li>
+          <li>表单会带入这份配置的现有内容。移到要修改的字段，使用 <kbd>Backspace</kbd> 删除旧内容后输入新值；协议仍用左右键切换。只修改需要调整的项目，密钥显示为星号时表示已填有内容。</li>
+          <li>选择底部的<strong>保存</strong>，更新原配置；需要马上验证则选择<strong>保存并打开</strong>。放弃本次改动时，选择<strong>返回</strong>或按 <kbd>Esc</kbd>，不要保存。</li>
+        </ol>
+        <div class="guide-note"><strong>点了名称却打开了对话？</strong>管理列表中直接选择已有配置名称会启动对话。编辑需要先进入「编辑 LLM 提供方」，再选择名称。</div>
+        <figure class="guide-shot guide-shot--form">
+          <a href="assets/tutorial/llm-edit-entry-macos.jpg" target="_blank" rel="noopener" aria-label="查看编辑 LLM 提供方入口截图原图"><img src="assets/tutorial/llm-edit-entry-macos.jpg" alt="LLM 提供方管理列表中选中编辑 LLM 提供方" width="680" height="600" loading="lazy" decoding="async"></a>
+          <figcaption>编辑第 1 步：先选「编辑 LLM 提供方」。</figcaption>
+        </figure>
+        <figure class="guide-shot guide-shot--form">
+          <a href="assets/tutorial/llm-edit-select-macos.jpg" target="_blank" rel="noopener" aria-label="查看选择待编辑 LLM 配置截图原图"><img src="assets/tutorial/llm-edit-select-macos.jpg" alt="编辑 LLM 提供方选择页，提示选择要编辑的配置，当前选中 Opencode" width="680" height="600" loading="lazy" decoding="async"></a>
+          <figcaption>编辑第 2 步：确认标题已变为「编辑 LLM 提供方」，再选择要修改的配置。</figcaption>
+        </figure>
+        <figure class="guide-shot">
+          <a href="assets/tutorial/llm-edit-form-macos.jpg" target="_blank" rel="noopener" aria-label="查看已有 LLM 配置的编辑与保存截图原图"><img src="assets/tutorial/llm-edit-form-macos.jpg" alt="已有 Opencode 配置的副驾表单，原有字段已填入，API 密钥显示星号，底部保存一行已选中" width="1100" height="920" loading="lazy" decoding="async"></a>
+          <figcaption>编辑第 3 步：修改后选「保存」。图中的已有配置仅用于演示编辑位置，地址和模型请以自己的服务为准；密钥由应用遮蔽为星号。</figcaption>
+        </figure>
+        <p class="guide-result"><strong>检查结果：</strong>重新进入编辑列表，打开同一份配置，确认修改已保存。要让已有对话使用更新后的配置，在该对话中通过顶部模型名称或 <code>/model</code> 重新选择它；也可以从管理列表打开一个新对话测试。</p>
+      </section>
+
+      <section id="subscriptions" class="guide-section">
+        <p class="guide-number">03 / 订阅</p>
+        <h2>使用 Codex、Kimi、xAI 和 OpenCode Go</h2>
+        <p>这四个协议走各自的订阅，而不是再买一份按量 API。在<strong>管理 AI 配置</strong>里新建或编辑配置，把焦点移到「协议」，用 <kbd>←</kbd> <kbd>→</kbd> 切换。协议不能手打。从默认值切过去时，接口地址和模型会换成下表里的默认值；已经改成别的地址或模型时不会被覆盖。</p>
+        <div class="guide-table" role="region" aria-label="订阅协议" tabindex="0"><table>
+          <thead><tr><th scope="col">协议</th><th scope="col">需要的账号</th><th scope="col">默认地址</th><th scope="col">默认模型</th><th scope="col">怎么认证</th></tr></thead>
+          <tbody>
+            <tr><td><code>codex</code></td><td>ChatGPT Plus 或 Pro</td><td><code>https://chatgpt.com/backend-api</code></td><td><code>gpt-5.4</code></td><td>必须登录</td></tr>
+            <tr><td><code>kimi</code></td><td>Kimi Code</td><td><code>https://api.kimi.com/coding</code></td><td><code>kimi-for-coding</code></td><td>登录，或填写 API 密钥</td></tr>
+            <tr><td><code>xai</code></td><td>SuperGrok 或 X Premium</td><td><code>https://api.x.ai/v1</code></td><td><code>grok-4</code></td><td>登录，或填写 API 密钥</td></tr>
+            <tr><td><code>opencode-go</code></td><td>OpenCode Go</td><td><code>https://opencode.ai/zen/go/v1</code></td><td><code>glm-5.3-flash</code></td><td>粘贴 API 密钥</td></tr>
+          </tbody>
+        </table></div>
+        <h3>登录 Codex、Kimi 或 xAI</h3>
+        <ol class="guide-steps">
+          <li>选好协议，确认接口地址和模型。模型可以改成该订阅实际提供的 ID。</li>
+          <li>Codex 的 API 密钥留空。Kimi 和 xAI 的密钥显示为「可选」：已经登录就用订阅令牌；没登录时才会把这里的密钥当作 Bearer 令牌。</li>
+          <li>焦点移到最下方的「登录」，按 <kbd>Enter</kbd>。这一行先显示「正在连接…」。</li>
+          <li>设备码申请成功后，WispTerm 打开浏览器，这一行显示一次性验证码和「在浏览器中确认」。在浏览器里批准。</li>
+          <li>这一行变成「已登录」后，选择<strong>保存并打开</strong>，发一条「你好」做测试。</li>
+        </ol>
+        <div class="guide-note">浏览器只在拿到验证码之后才打开。失败时这一行显示「登录失败，回车重试」，并带上 HTTP 状态或错误名，再按 <kbd>Enter</kbd> 即可重试。令牌保存在 AI 配置旁边的 <code>oauth.json</code>，过期后自动刷新；不要把这个文件发到对话或截图里。Codex 没有登录成功就不能对话。Kimi 的登录主机可用环境变量 <code>KIMI_CODE_OAUTH_HOST</code>（或 <code>KIMI_OAUTH_HOST</code>）覆盖。</div>
+        <h3>使用 OpenCode Go</h3>
+        <p>OpenCode Go 不走设备码。「登录」这一行显示为「—」，不用按。到 <a href="https://opencode.ai/auth">OpenCode Zen</a> 订阅 Go，复制 API 密钥，贴进配置的 API 密钥。</p>
+        <ol class="guide-steps">
+          <li>协议选 <code>opencode-go</code>。默认模型是 <code>glm-5.3-flash</code>，地址是 <code>https://opencode.ai/zen/go/v1</code>。</li>
+          <li>要换模型时只改「模型」，地址保持这一条。WispTerm 按模型 ID 选择接口，见下表。</li>
+          <li>保存并打开一个新对话。每个对话会自动带上稳定的 <code>x-opencode-session</code>，请求也会标明自己是 WispTerm。这两项不用手填。</li>
+        </ol>
+        <div class="guide-table" role="region" aria-label="OpenCode Go 模型接口" tabindex="0"><table>
+          <thead><tr><th scope="col">模型示例</th><th scope="col">实际接口</th></tr></thead>
+          <tbody>
+            <tr><td><code>glm-5.3-flash</code>、<code>kimi-k2.7-code</code>、<code>deepseek-v4-flash</code></td><td><code>/chat/completions</code></td></tr>
+            <tr><td><code>grok-4.7</code>、<code>grok-4.6</code>、<code>gpt-5.6-luna</code>、以 <code>muse-spark-</code> 开头</td><td><code>/responses</code></td></tr>
+            <tr><td>以 <code>minimax-</code> 或 <code>qwen</code> 开头，例如 <code>minimax-m3</code>、<code>qwen3.7-plus</code></td><td><code>/messages</code>，回复整段返回，不流式显示</td></tr>
+          </tbody>
+        </table></div>
+        <p>可用模型会变，完整列表以 <a href="https://opencode.ai/docs/go/">OpenCode Go 文档</a>为准。已经把接口地址设成 <code>https://opencode.ai/zen/go</code> 的旧配置，也会自动补上 <code>x-opencode-session</code>。</p>
+        <div class="guide-note">本机需要代理时，打开<strong>设置 → AI 与集成</strong>，打开「使用代理」。地址留空则走系统代理；要指定某一个本地代理时，把「代理」填成 <code>127.0.0.1:6789</code> 或 <code>http://主机:端口</code>。登录和之后的模型请求都走这条代理。Kimi，以及 OpenCode Go 里走 Messages 的模型，不使用流式输出。</div>
+        <p class="guide-result"><strong>检查结果：</strong>新开一个副驾对话并发送「你好」。Codex、Kimi、xAI 的「登录」行应是「已登录」，或 Kimi / xAI 已填了可用密钥。OpenCode Go 应返回模型正文，而不是 <code>MissingSessionID</code>。</p>
       </section>
 
       <section id="ssh" class="guide-section">
-        <p class="guide-number">03 / 远程工作</p>
+        <p class="guide-number">04 / 远程工作</p>
         <h2>登录 SSH 服务器</h2>
         <p>将服务器保存为 SSH 配置后，连接、文件浏览和端口转发都可以复用它。开始前准备好主机地址、用户名、SSH 端口及密码或密钥。</p>
         <ol class="guide-steps">
@@ -140,7 +223,7 @@
       </section>
 
       <section id="copilot" class="guide-section">
-        <p class="guide-number">04 / AI 协作</p>
+        <p class="guide-number">05 / AI 协作</p>
         <h2>让 Copilot 带着终端上下文工作</h2>
         <p>独立副驾标签页适合完整任务；终端侧栏适合解释当前输出、排查报错，以及辅助本地或远程操作。</p>
         <ol class="guide-steps">
@@ -154,7 +237,7 @@
       </section>
 
       <section id="conversations" class="guide-section">
-        <p class="guide-number">05 / 找回工作</p>
+        <p class="guide-number">06 / 找回工作</p>
         <h2>在对话中心继续上次的任务</h2>
         <p>对话中心集中浏览 WispTerm 自己保存的副驾侧栏和 AI Chat 标签页记录，适合查找“前几天那段分析”并接着做。</p>
         <ol class="guide-steps">
@@ -173,7 +256,7 @@
       </section>
 
       <section id="memory" class="guide-section">
-        <p class="guide-number">06 / 积累上下文</p>
+        <p class="guide-number">07 / 积累上下文</p>
         <h2>用记忆中心保留有用的信息</h2>
         <p>对话中心保留“说过什么”；记忆中心帮助你查看长期事实与从历史对话生成的摘要。长期记忆适合稳定的项目背景、工作偏好和环境约定。</p>
         <h3>先保存一条长期记忆</h3>
@@ -210,7 +293,7 @@ memory-digest-run-after = 04:00</code></pre>
       </section>
 
       <section id="ports" class="guide-section">
-        <p class="guide-number">07 / 连接服务</p>
+        <p class="guide-number">08 / 连接服务</p>
         <h2>把服务器上的服务带到本机</h2>
         <p>端口转发通过 SSH 连接两个端口。先保存并验证一个可用的 <a href="#ssh">SSH 配置</a>，再从命令中心打开<strong>端口转发</strong>（Port Forwarding）。</p>
         <div class="guide-flow" aria-label="两种端口转发方向">
@@ -256,7 +339,7 @@ export HTTPS_PROXY=http://127.0.0.1:7890</code></pre>
       </section>
 
       <section id="files" class="guide-section">
-        <p class="guide-number">08 / 查看产物</p>
+        <p class="guide-number">09 / 查看产物</p>
         <h2>浏览、传输与预览文件</h2>
         <ol class="guide-steps">
           <li>切到本地、WSL 或 SSH 终端，按 <kbd>Ctrl+Shift+Alt+E</kbd> 打开文件浏览器。</li>
@@ -269,7 +352,7 @@ export HTTPS_PROXY=http://127.0.0.1:7890</code></pre>
       </section>
 
       <section id="skills" class="guide-section">
-        <p class="guide-number">09 / 扩展工作方式</p>
+        <p class="guide-number">10 / 扩展工作方式</p>
         <h2>用技能和工具复用经验</h2>
         <h3>技能中心：管理可重复使用的操作说明</h3>
         <p>从命令中心打开<strong>技能中心</strong>（Skill Center），查看本机与远程位置的技能，选中条目查看详情，再按页面操作导入或同步到需要的位置。技能通过 <code>SKILL.md</code> 描述用途和步骤；在 Copilot 中可以用 <code>$技能名</code> 引用。</p>
@@ -281,7 +364,7 @@ export HTTPS_PROXY=http://127.0.0.1:7890</code></pre>
       </section>
 
       <section id="workspace" class="guide-section">
-        <p class="guide-number">10 / 日常操作</p>
+        <p class="guide-number">11 / 日常操作</p>
         <h2>把终端整理成顺手的工作环境</h2>
         <div class="guide-table" role="region" aria-label="常用终端快捷键" tabindex="0"><table>
           <thead><tr><th scope="col">想做什么</th><th scope="col">Windows / Linux</th><th scope="col">macOS</th></tr></thead>
@@ -306,9 +389,11 @@ right-click-action = paste</code></pre>
       </section>
 
       <section id="help" class="guide-section">
-        <p class="guide-number">11 / 排查问题</p>
+        <p class="guide-number">12 / 排查问题</p>
         <h2>卡住时，从这里检查</h2>
         <details class="guide-detail"><summary>AI 配置保存了，但没有回复</summary><p>先检查界面中的 API 错误：401/403 通常与密钥或权限有关，429 可能是额度或限流；404 要核对 Base URL、Protocol 和模型 ID。连接超时则检查网络与代理。确认服务商允许该账号调用所填模型后，再开一个新对话测试。</p></details>
+        <details class="guide-detail"><summary>订阅登录没有打开浏览器</summary><p>看「登录」这一行。它停在「正在连接…」或显示失败和 HTTP 状态时，浏览器还不会打开。Codex 必须显示「已登录」之后才能对话；Kimi 和 xAI 也可以改填 API 密钥。本机有代理时，到<strong>设置 → AI 与集成</strong>打开「使用代理」。OpenCode Go 不使用这一行，把密钥贴进 API 密钥即可。</p></details>
+        <details class="guide-detail"><summary>OpenCode Go 返回 MissingSessionID</summary><p>这表示请求没有带 <code>x-opencode-session</code>。把协议设为 <code>opencode-go</code>，或把接口地址保持为 <code>https://opencode.ai/zen/go/v1</code>，更新到会自动带上这个请求头的版本，再新开一个对话。</p></details>
         <details class="guide-detail"><summary>SSH 连接失败</summary><p>核对主机、端口、用户和认证方式。先在本机终端用 <code>ssh -p 22 user@host</code>（替换为实际信息）检查是否能连接；使用密钥时确认私钥路径和文件权限。需要 VPN 或跳板机的环境，先确保网络路径可达。</p></details>
         <details class="guide-detail"><summary>端口转发显示 Error，或网页打不开</summary><p>查看规则旁的具体 SSH 错误。依次确认 SSH 配置可连接、转发规则处于 Running、目标服务正在监听预期端口、本地端口未被占用。Jupyter 等应用仍可能要求 token 或密码；转发不会绕过应用登录。</p></details>
         <details class="guide-detail"><summary>记忆中心没有摘要</summary><p>先确认所选位置上有对应工具的真实历史记录，再检查“来源配置”是否同时启用了位置和工具。确认摘要使用的 AI 配置可用，手动运行一次并查看结果。尚未采集、没有可读记录或模型请求失败时，都可能没有摘要。</p></details>

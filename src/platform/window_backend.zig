@@ -216,6 +216,13 @@ pub fn imePreeditText(window: *const Window) []const u8 {
     return window.imePreeditText();
 }
 
+/// One-shot: true when the IME preedit changed since the last call, so the
+/// input loop can repaint it even when no key event came with the change.
+pub fn takeImePreeditChanged(window: *Window) bool {
+    if (comptime @hasDecl(Window, "takeImePreeditChanged")) return window.takeImePreeditChanged();
+    return false;
+}
+
 pub fn clientSize(window: *const Window) Size {
     return .{ .width = window.width, .height = window.height };
 }
@@ -295,6 +302,27 @@ pub fn postWakeup() void {
     platform_window.postWakeup();
 }
 
+/// Platform scope around one window main-loop iteration; pass it back to
+/// `endLoopIteration` on the same thread.
+pub const LoopIteration = struct {
+    token: ?*anyopaque,
+};
+
+/// Open the per-iteration platform scope. On macOS this pushes an Objective-C
+/// autorelease pool so objects AppKit autoreleases during the iteration (e.g.
+/// from -[NSWindow occlusionState] or event dispatch) are freed every pass —
+/// WispTerm does not run under NSApplicationMain, so nothing else drains them.
+/// Mirrors Ghostty's Metal renderer, which wraps each drawFrame in an
+/// AutoreleasePool. No-op on Windows/Linux.
+pub fn beginLoopIteration() LoopIteration {
+    return .{ .token = platform_window.beginLoopIteration() };
+}
+
+/// Close the scope `beginLoopIteration` opened. Scopes nest LIFO per thread.
+pub fn endLoopIteration(iteration: LoopIteration) void {
+    platform_window.endLoopIteration(iteration.token);
+}
+
 pub fn refreshClientSizeFromNative(window: *Window) bool {
     const rect = clientRect(window) orelse return false;
     setClientSize(window, rect.right - rect.left, rect.bottom - rect.top);
@@ -345,6 +373,15 @@ pub fn mousePosition(window: *const Window) Point {
 
 pub fn hoveredCaptionButton(window: *const Window) CaptionButton {
     return window.hovered_button;
+}
+
+/// The pointer is over the titlebar strip but in a region the host treats as
+/// non-client (Windows' draggable caption, caption buttons, top resize edge),
+/// where `mousePosition` reads -1. Hosts whose titlebar is client area (macOS
+/// full-size content view) always report false and use the mouse position.
+pub fn pointerOverHostTitlebar(window: *const Window) bool {
+    if (comptime @hasField(Window, "titlebar_nc_hover")) return window.titlebar_nc_hover;
+    return false;
 }
 
 pub fn setTabCloseButtonBounds(window: *Window, tab_index: usize, start_x: i32, end_x: i32) void {

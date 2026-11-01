@@ -29,6 +29,7 @@ extern fn wispterm_coretext_font_release(handle: *anyopaque) void;
 extern fn wispterm_coretext_font_has_character(handle: *anyopaque, codepoint: u32) bool;
 extern fn wispterm_coretext_font_glyph_index(handle: *anyopaque, codepoint: u32) u16;
 extern fn wispterm_coretext_font_copy_path(handle: *anyopaque) ?[*:0]u8;
+extern fn wispterm_coretext_font_copy_postscript_name(handle: *anyopaque) ?[*:0]u8;
 extern fn wispterm_coretext_font_copy_table_data(handle: *anyopaque, out_len: *usize) ?[*]u8;
 extern fn wispterm_coretext_family_count() usize;
 extern fn wispterm_coretext_copy_family_name(index: usize) ?[*:0]u8;
@@ -175,6 +176,14 @@ pub fn fontFilePathAlloc(allocator: std.mem.Allocator, font: *FallbackFont) ?Fon
         .face_index = 0,
         .allocator = allocator,
     };
+}
+
+/// PostScript name of the font (e.g. "PingFangSC-Regular"). Unlike the file
+/// path it distinguishes faces inside one .ttc. Caller owns the result.
+pub fn fontPostScriptNameAlloc(allocator: std.mem.Allocator, font: *FallbackFont) ?[]u8 {
+    const raw = wispterm_coretext_font_copy_postscript_name(font.handle) orelse return null;
+    defer wispterm_coretext_free(raw);
+    return allocator.dupe(u8, std.mem.span(raw)) catch null;
 }
 
 /// Copy the font's sfnt bytes (reconstructed from CoreText tables) into an

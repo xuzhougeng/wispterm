@@ -42,14 +42,18 @@ pub fn colorTexture(self: Framebuffer) Texture {
     return Texture.fromHandle(self.color);
 }
 
-/// Bind this framebuffer and set the viewport to its full size.
+/// Bind this framebuffer and set the viewport to its full size. Pending
+/// batched UI draws are flushed first (via the state hook) so they land in
+/// the render target they were issued against.
 pub fn bind(self: Framebuffer) void {
+    if (render_state.pre_change_hook) |hook| hook();
     bound_handle = self.handle;
     render_state.setViewport(0, 0, self.width, self.height);
 }
 
 /// Bind the default (window) framebuffer.
 pub fn unbind() void {
+    if (render_state.pre_change_hook) |hook| hook();
     bound_handle = 0;
 }
 

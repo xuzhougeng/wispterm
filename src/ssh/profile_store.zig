@@ -5,7 +5,7 @@ const platform_dirs = @import("../platform/dirs.zig");
 const platform_atomic_file = @import("../platform/atomic_file.zig");
 const command_palette_model = @import("../command/palette_model.zig");
 
-const SSH_PROFILES_HEADER = "# WispTerm SSH profiles. Fields are hex encoded: name, host, user, password, port, proxy_jump, auth_method, identity_file.\n";
+pub const SSH_PROFILES_HEADER = "# WispTerm SSH profiles. Fields are hex encoded: name, host, user, password, port, proxy_jump, auth_method, identity_file, proxy_type, proxy_host, proxy_port.\n";
 
 pub fn profilesPath(allocator: std.mem.Allocator) ![]const u8 {
     return platform_dirs.sshHostsPath(allocator);
@@ -34,6 +34,13 @@ pub fn loadProfilesFromContent(content: []const u8, out: []profile_codec.SshProf
 }
 
 pub fn saveProfiles(allocator: std.mem.Allocator, profiles: []const profile_codec.SshProfile) bool {
+    return saveProfilesKeepingNew(allocator, profiles, null);
+}
+
+/// Save a cached list without dropping profiles that appeared on disk since it
+/// was loaded (a sync or another window wrote them). `known` = hashes of every
+/// name the cache has seen (`profile_codec.profileNameHash`); null overwrites.
+pub fn saveProfilesKeepingNew(allocator: std.mem.Allocator, profiles: []const profile_codec.SshProfile, known: ?[]const u64) bool {
     const path = profilesPath(allocator) catch return false;
     defer allocator.free(path);
     if (std.fs.path.dirname(path)) |dir| {
@@ -45,6 +52,17 @@ pub fn saveProfiles(allocator: std.mem.Allocator, profiles: []const profile_code
     out.appendSlice(allocator, SSH_PROFILES_HEADER) catch return false;
     for (profiles) |*profile| {
         appendProfileLine(allocator, &out, profile) catch return false;
+    }
+    if (known) |seen| {
+        const disk = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch |err| switch (err) {
+            error.FileNotFound => @as([]u8, &.{}),
+            else => return false,
+        };
+        defer allocator.free(disk);
+        const names = allocator.alloc([]const u8, profiles.len) catch return false;
+        defer allocator.free(names);
+        for (profiles, names) |*profile, *name| name.* = profile_codec.profileField(profile, .name);
+        profile_codec.appendNewDiskLines(allocator, &out, disk, names, seen) catch return false;
     }
     platform_atomic_file.writeFileReplaceSafe(path, out.items) catch return false;
     return true;
@@ -131,6 +149,12 @@ pub fn connectionFromProfile(profile: *const profile_codec.SshProfile, legacy_al
     conn.password_len = copyBounded(conn.password_buf[0..], password);
     conn.proxy_jump_len = copyBounded(conn.proxy_jump_buf[0..], proxy_jump);
     conn.identity_file_len = copyBounded(conn.identity_file_buf[0..], identity_file);
+    conn.network_proxy = ssh_connection.network_proxy.Config.fromFields(
+        profile_codec.profileField(profile, .proxy_type),
+        profile_codec.profileField(profile, .proxy_host),
+        profile_codec.profileField(profile, .proxy_port),
+    ) orelse return null;
+    if (!conn.network_proxy.allowsJump(proxy_jump)) return null;
     conn.auth_method = auth_method;
     conn.password_auth = conn.usesPasswordAuth();
     conn.legacy_algorithms = legacy_algorithms;
@@ -398,4 +422,19 @@ test "ssh_profile_store: listProfileNames respects destination cap and skips emp
     try appendEncodedProfileForTest(std.testing.allocator, &content, &.{ "b", "10.0.0.2", "u", "", "22", "" });
     try std.testing.expectEqual(@as(usize, 1), listProfileNames(content.items, names[0..], lens[0..]));
     try std.testing.expectEqualStrings("a", names[0][0..lens[0]]);
+}
+
+test "profile network routes validate endpoints and reject jump plus proxy" {
+    var p = profile_codec.makeSshProfile("Proxy", "host.test", "alice", "22");
+    profile_codec.copySshProfileField(&p, .proxy_type, "socks5");
+    profile_codec.copySshProfileField(&p, .proxy_host, "127.0.0.1");
+    profile_codec.copySshProfileField(&p, .proxy_port, "7897");
+    const conn = connectionFromProfile(&p, false).?;
+    try std.testing.expectEqual(ssh_connection.network_proxy.Kind.socks5, conn.network_proxy.kind);
+    try std.testing.expect(std.mem.startsWith(u8, conn.network_proxy.option(), "ProxyCommand="));
+    profile_codec.copySshProfileField(&p, .proxy_jump, "bastion");
+    try std.testing.expect(connectionFromProfile(&p, false) == null);
+    profile_codec.copySshProfileField(&p, .proxy_jump, "");
+    profile_codec.copySshProfileField(&p, .proxy_port, "0");
+    try std.testing.expect(connectionFromProfile(&p, false) == null);
 }

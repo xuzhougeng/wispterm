@@ -1,9 +1,10 @@
 //! Pure state + logic for the "Quick Configure AI" overlay: the single-key form
-//! state, the DeepSeek constants, and the two-profile upsert. No I/O, no threads,
+//! state, the DeepSeek constants, and the profile upsert. No I/O, no threads,
 //! no drawing — those live in overlays.zig / quick_verify.zig so this stays
 //! unit-tested in the fast suite.
 const std = @import("std");
 const profile_codec = @import("profile_codec.zig");
+const ai_chat_protocol = @import("../../assistant/conversation/protocol.zig");
 
 const AiProfile = profile_codec.AiProfile;
 
@@ -21,10 +22,11 @@ pub const REGISTER_URL = "https://platform.deepseek.com";
 pub const TUTORIAL_URL = "https://github.com/xuzhougeng/wispterm/wiki/AI-Copilot-zh";
 pub const BASE_URL = "https://api.deepseek.com";
 
-pub const MAIN_PROFILE_NAME = "DeepSeek";
-pub const MAIN_MODEL = "deepseek-v4-pro";
-pub const SUB_PROFILE_NAME = "DeepSeek Flash";
-pub const SUB_MODEL = "deepseek-v4-flash";
+// One profile serves both the main session (`ai-default-profile`) and the
+// subagent (`ai-subagent-profile`). A "DeepSeek" pro profile from an older
+// quick-config run is left untouched; it is just no longer created.
+pub const PROFILE_NAME = "DeepSeek Flash";
+pub const MODEL = "deepseek-flash";
 
 pub const VerifyStatus = enum { idle, verifying, ok, empty, invalid, network, store_full };
 
@@ -76,12 +78,14 @@ fn indexByName(profiles: []const AiProfile, count: usize, name: []const u8) ?usi
     return null;
 }
 
-fn writeConnectionFields(p: *AiProfile, name: []const u8, model: []const u8, api_key: []const u8) void {
-    profile_codec.setProfileDefault(p, .name, name);
+fn writeConnectionFields(p: *AiProfile, api_key: []const u8) void {
+    profile_codec.setProfileDefault(p, .name, PROFILE_NAME);
     profile_codec.setProfileDefault(p, .base_url, BASE_URL);
     profile_codec.setProfileDefault(p, .api_key, api_key);
-    profile_codec.setProfileDefault(p, .model, model);
+    profile_codec.setProfileDefault(p, .model, MODEL);
     profile_codec.setProfileDefault(p, .protocol, "chat_completions");
+    // Vision follows the model just written: deepseek-flash accepts images.
+    profile_codec.setProfileDefault(p, .vision, ai_chat_protocol.defaultVisionForModel(MODEL));
 }
 
 fn fillNewProfileDefaults(p: *AiProfile) void {
@@ -90,34 +94,26 @@ fn fillNewProfileDefaults(p: *AiProfile) void {
     profile_codec.setProfileDefault(p, .stream, "false");
     profile_codec.setProfileDefault(p, .agent, "true");
     profile_codec.setProfileDefault(p, .max_tokens, "8192");
-    profile_codec.setProfileDefault(p, .vision, "off");
 }
 
-fn upsertOne(profiles: []AiProfile, count: usize, name: []const u8, model: []const u8, api_key: []const u8) usize {
-    if (indexByName(profiles, count, name)) |idx| {
-        writeConnectionFields(&profiles[idx], name, model, api_key); // keep other fields as-is
+/// True if the quick-config DeepSeek profile is present by name in profiles[0..count].
+pub fn profilePresent(profiles: []const AiProfile, count: usize) bool {
+    return indexByName(profiles, count, PROFILE_NAME) != null;
+}
+
+/// Upsert the quick-config DeepSeek profile by name into `profiles[0..count]`.
+/// An existing same-named profile has only its connection fields refreshed; a
+/// new one is appended with documented defaults. Returns the new count.
+pub fn upsertProfiles(profiles: []AiProfile, count: usize, api_key: []const u8) usize {
+    if (indexByName(profiles, count, PROFILE_NAME)) |idx| {
+        writeConnectionFields(&profiles[idx], api_key); // keep other fields as-is
         return count;
     }
     if (count >= profiles.len) return count; // store full — skip rather than overflow
     profiles[count] = .{};
-    writeConnectionFields(&profiles[count], name, model, api_key);
+    writeConnectionFields(&profiles[count], api_key);
     fillNewProfileDefaults(&profiles[count]);
     return count + 1;
-}
-
-/// True only if BOTH quick-config DeepSeek profiles are present by name in profiles[0..count].
-pub fn bothProfilesPresent(profiles: []const AiProfile, count: usize) bool {
-    return indexByName(profiles, count, MAIN_PROFILE_NAME) != null and
-        indexByName(profiles, count, SUB_PROFILE_NAME) != null;
-}
-
-/// Upsert the two DeepSeek quick-config profiles by name into `profiles[0..count]`.
-/// Existing same-named profiles have only their connection fields refreshed; new
-/// ones are appended with documented defaults. Returns the new count.
-pub fn upsertProfiles(profiles: []AiProfile, count: usize, api_key: []const u8) usize {
-    var n = upsertOne(profiles, count, MAIN_PROFILE_NAME, MAIN_MODEL, api_key);
-    n = upsertOne(profiles, n, SUB_PROFILE_NAME, SUB_MODEL, api_key);
-    return n;
 }
 
 test "State: append, key, backspace, reset" {
@@ -159,19 +155,19 @@ test "State: focus navigation clamps within rows" {
     try std.testing.expectEqual(ROW_VERIFY, s.focus);
 }
 
-test "upsertProfiles: appends two profiles into an empty store" {
+test "upsertProfiles: appends one vision-enabled flash profile into an empty store" {
     const profiles = try std.testing.allocator.alloc(AiProfile, 8);
     defer std.testing.allocator.free(profiles);
     const n = upsertProfiles(profiles, 0, "sk-key-1");
-    try std.testing.expectEqual(@as(usize, 2), n);
-    try std.testing.expectEqualStrings("DeepSeek", profile_codec.aiProfileField(&profiles[0], .name));
-    try std.testing.expectEqualStrings("deepseek-v4-pro", profile_codec.aiProfileField(&profiles[0], .model));
+    try std.testing.expectEqual(@as(usize, 1), n); // no pro profile any more
+    try std.testing.expectEqualStrings("DeepSeek Flash", profile_codec.aiProfileField(&profiles[0], .name));
+    try std.testing.expectEqualStrings("deepseek-flash", profile_codec.aiProfileField(&profiles[0], .model));
     try std.testing.expectEqualStrings("https://api.deepseek.com", profile_codec.aiProfileField(&profiles[0], .base_url));
     try std.testing.expectEqualStrings("sk-key-1", profile_codec.aiProfileField(&profiles[0], .api_key));
     try std.testing.expectEqualStrings("chat_completions", profile_codec.aiProfileField(&profiles[0], .protocol));
-    try std.testing.expectEqualStrings("DeepSeek Flash", profile_codec.aiProfileField(&profiles[1], .name));
-    try std.testing.expectEqualStrings("deepseek-v4-flash", profile_codec.aiProfileField(&profiles[1], .model));
-    try std.testing.expectEqualStrings("true", profile_codec.aiProfileField(&profiles[1], .agent));
+    try std.testing.expectEqualStrings("on", profile_codec.aiProfileField(&profiles[0], .vision));
+    try std.testing.expectEqualStrings("true", profile_codec.aiProfileField(&profiles[0], .agent));
+    try std.testing.expect(profilePresent(profiles, n));
 }
 
 test "upsertProfiles: full store does not overflow and reports incomplete" {
@@ -183,20 +179,41 @@ test "upsertProfiles: full store does not overflow and reports incomplete" {
     profile_codec.setProfileDefault(&profiles[1], .name, "Other B");
     const n = upsertProfiles(profiles, 2, "sk-key");
     try std.testing.expectEqual(@as(usize, 2), n); // no overflow, count unchanged
-    try std.testing.expect(!bothProfilesPresent(profiles, n)); // neither DeepSeek landed
+    try std.testing.expect(!profilePresent(profiles, n)); // DeepSeek Flash did not land
 }
 
 test "upsertProfiles: updates an existing same-named profile in place" {
     const profiles = try std.testing.allocator.alloc(AiProfile, 8);
     defer std.testing.allocator.free(profiles);
-    // Seed an existing "DeepSeek" profile with an old key and a custom system prompt.
+    // Seed an older quick-config "DeepSeek Flash" profile: legacy model id,
+    // vision off, an old key and a custom system prompt.
     profiles[0] = .{};
-    profile_codec.setProfileDefault(&profiles[0], .name, "DeepSeek");
+    profile_codec.setProfileDefault(&profiles[0], .name, "DeepSeek Flash");
+    profile_codec.setProfileDefault(&profiles[0], .model, "deepseek-v4-flash");
+    profile_codec.setProfileDefault(&profiles[0], .vision, "off");
     profile_codec.setProfileDefault(&profiles[0], .api_key, "sk-old");
     profile_codec.setProfileDefault(&profiles[0], .system_prompt, "keep me");
     const n = upsertProfiles(profiles, 1, "sk-new");
-    try std.testing.expectEqual(@as(usize, 2), n); // DeepSeek updated, DeepSeek Flash appended
+    try std.testing.expectEqual(@as(usize, 1), n); // updated in place, nothing appended
     try std.testing.expectEqualStrings("sk-new", profile_codec.aiProfileField(&profiles[0], .api_key));
-    try std.testing.expectEqualStrings("deepseek-v4-pro", profile_codec.aiProfileField(&profiles[0], .model));
+    try std.testing.expectEqualStrings("deepseek-flash", profile_codec.aiProfileField(&profiles[0], .model));
+    try std.testing.expectEqualStrings("on", profile_codec.aiProfileField(&profiles[0], .vision));
     try std.testing.expectEqualStrings("keep me", profile_codec.aiProfileField(&profiles[0], .system_prompt)); // preserved
+}
+
+test "upsertProfiles: leaves an existing DeepSeek pro profile untouched" {
+    const profiles = try std.testing.allocator.alloc(AiProfile, 8);
+    defer std.testing.allocator.free(profiles);
+    // A pro profile written by an older quick-config run stays as the user has it.
+    profiles[0] = .{};
+    profile_codec.setProfileDefault(&profiles[0], .name, "DeepSeek");
+    profile_codec.setProfileDefault(&profiles[0], .model, "deepseek-v4-pro");
+    profile_codec.setProfileDefault(&profiles[0], .api_key, "sk-old");
+    const n = upsertProfiles(profiles, 1, "sk-new");
+    try std.testing.expectEqual(@as(usize, 2), n); // DeepSeek kept, DeepSeek Flash appended
+    try std.testing.expectEqualStrings("DeepSeek", profile_codec.aiProfileField(&profiles[0], .name));
+    try std.testing.expectEqualStrings("deepseek-v4-pro", profile_codec.aiProfileField(&profiles[0], .model));
+    try std.testing.expectEqualStrings("sk-old", profile_codec.aiProfileField(&profiles[0], .api_key));
+    try std.testing.expectEqualStrings("DeepSeek Flash", profile_codec.aiProfileField(&profiles[1], .name));
+    try std.testing.expectEqualStrings("deepseek-flash", profile_codec.aiProfileField(&profiles[1], .model));
 }

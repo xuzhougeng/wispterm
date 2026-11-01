@@ -17,7 +17,8 @@ unrelated work apart, and splits to see related terminals side by side.
 
 - **Open a new tab:** click the **`+`** button at the end of the tab strip, or
   press `Ctrl+Shift+T` (`new_session`) to open the session launcher and pick a
-  shell, Copilot, or a saved SSH profile.
+  shell, Copilot, SSH, tmux, Sessions, or a workbench page (Port Forwarding,
+  Memory Center, Settings).
 - **Switch tabs:** `Ctrl+Tab` / `Ctrl+Shift+Tab` move to the next / previous tab;
   `Alt+1` … `Alt+9` (`switch_tab_1` … `switch_tab_9`) jump straight to tab N.
 - **Rename a tab:** **double-click the tab's title**, type a new name, then press

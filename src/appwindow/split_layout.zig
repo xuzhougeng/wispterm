@@ -82,6 +82,28 @@ pub fn soleTerminalSurface() ?*Surface {
     return g_split_rects[0].surface();
 }
 
+/// Window-pixel origin of a terminal surface's cell grid.
+pub const GridOrigin = struct {
+    x: i32,
+    y: i32,
+};
+
+/// Where the render loop draws a surface's cell grid, in window pixels, so
+/// mouse hit-testing maps onto the cells the user actually sees.
+///
+/// Split panes draw inside their rect's viewport at `rect + padding`. The lone
+/// terminal pane instead draws at `titlebar + pad.top` (see the single-surface
+/// path in `AppWindow`). `computeSplitLayout` extends an edge rect to the
+/// window's left edge but not to the top, so a lone pane's `rect.y` sits
+/// `DEFAULT_PADDING` below the titlebar; subtract it to land on the drawn grid.
+pub fn gridOrigin(rect: SplitRect, pad: renderer.size.Padding, single_pane: bool) GridOrigin {
+    const top_inset: i32 = if (single_pane) @intCast(DEFAULT_PADDING) else 0;
+    return .{
+        .x = rect.x + @as(i32, @intCast(pad.left)),
+        .y = rect.y - top_inset + @as(i32, @intCast(pad.top)),
+    };
+}
+
 /// Find the terminal surface under a given point (window coordinates).
 /// Returns null if no terminal surface is found at that position (non-terminal
 /// panes such as previews are skipped).
@@ -214,6 +236,12 @@ pub fn computeSplitLayout(
     ch: f32, // font.cell_height
 ) usize {
     g_split_rect_count = 0;
+    // Consume the one-shot immediate-resize request before any early return.
+    // Tab switches always request it, and the render gate treats a pending
+    // request as "must render". Paneless tabs (AI Chat, Settings, …) have an
+    // empty tree; returning before the consume latched the flag and re-rendered
+    // every loop iteration until a terminal tab was shown (issue #675).
+    const immediate_resize = AppWindow.consumeImmediateLayoutResize();
     if (active_tab.tree.isEmpty()) return 0;
     const safe_content_w = @max(content_w, 1);
     const safe_content_h = @max(content_h, 1);
@@ -226,7 +254,7 @@ pub fn computeSplitLayout(
     _ = cw;
     _ = ch;
 
-    const resize_policy: Surface.ResizePolicy = if (AppWindow.consumeImmediateLayoutResize())
+    const resize_policy: Surface.ResizePolicy = if (immediate_resize)
         .immediate
     else
         .coalesced;
@@ -393,4 +421,45 @@ test "split_layout: soleTerminalSurface only for a single terminal rect" {
     g_split_rects[0] = terminal_rect;
     g_split_rect_count = 2;
     try std.testing.expect(soleTerminalSurface() == null);
+}
+
+test "split_layout: paneless tab consumes the immediate-resize request" {
+    // Issue #675: a tab switch requests an immediate layout resize, and the
+    // render gate re-renders while it is pending. A paneless tab (AI Chat,
+    // Settings, …) must still consume it, or the loop never goes idle.
+    defer _ = AppWindow.consumeImmediateLayoutResize();
+    const ai_chat_tab = TabState{ .kind = .ai_chat, .tree = SplitTree.empty };
+
+    AppWindow.requestImmediateLayoutResize();
+    try std.testing.expectEqual(@as(usize, 0), computeSplitLayout(&ai_chat_tab, 0, 0, 800, 600, 8, 16));
+    try std.testing.expect(!AppWindow.consumeImmediateLayoutResize());
+}
+
+test "split_layout: gridOrigin matches the drawn grid for single and split panes" {
+    var surface: Surface = undefined;
+    const titlebar_h: i32 = 34;
+    const left_panels_w: i32 = 40;
+    // A lone pane's rect as computeSplitLayout builds it: x extended to the
+    // left panels edge, y left at DEFAULT_PADDING below the titlebar.
+    const rect = SplitRect{
+        .x = left_panels_w,
+        .y = titlebar_h + @as(i32, @intCast(DEFAULT_PADDING)),
+        .width = 800,
+        .height = 600,
+        .cols = 80,
+        .rows = 24,
+        .pane = .{ .terminal = &surface },
+        .handle = .root,
+    };
+    const pad = renderer.size.Padding{ .top = 13, .bottom = 13, .left = 11, .right = 24 };
+
+    // Single pane: the render loop draws at (left_panels_w + pad.left, titlebar + pad.top).
+    const single = gridOrigin(rect, pad, true);
+    try std.testing.expectEqual(left_panels_w + 11, single.x);
+    try std.testing.expectEqual(titlebar_h + 13, single.y);
+
+    // Split pane: drawn inside the rect viewport at rect + padding.
+    const split = gridOrigin(rect, pad, false);
+    try std.testing.expectEqual(rect.x + 11, split.x);
+    try std.testing.expectEqual(rect.y + 13, split.y);
 }

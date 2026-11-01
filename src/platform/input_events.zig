@@ -18,7 +18,18 @@ pub const key_left: KeyCode = 0x25;
 pub const key_up: KeyCode = 0x26;
 pub const key_right: KeyCode = 0x27;
 pub const key_down: KeyCode = 0x28;
+pub const key_f1: KeyCode = 0x70;
+pub const key_f2: KeyCode = 0x71;
+pub const key_f3: KeyCode = 0x72;
+pub const key_f4: KeyCode = 0x73;
 pub const key_f5: KeyCode = 0x74;
+pub const key_f6: KeyCode = 0x75;
+pub const key_f7: KeyCode = 0x76;
+pub const key_f8: KeyCode = 0x77;
+pub const key_f9: KeyCode = 0x78;
+pub const key_f10: KeyCode = 0x79;
+pub const key_f11: KeyCode = 0x7A;
+pub const key_f12: KeyCode = 0x7B;
 pub const key_insert: KeyCode = 0x2D;
 pub const key_delete: KeyCode = 0x2E;
 pub const key_left_shift: KeyCode = 0xA0;
@@ -96,4 +107,7 @@ test "platform input events expose key code constants used by input logic" {
     try std.testing.expectEqual(@as(KeyCode, 0x25), key_left);
     try std.testing.expectEqual(@as(KeyCode, 0x26), key_up);
     try std.testing.expectEqual(@as(KeyCode, 0x2E), key_delete);
+    try std.testing.expectEqual(@as(KeyCode, 0x70), key_f1);
+    try std.testing.expectEqual(@as(KeyCode, 0x71), key_f2);
+    try std.testing.expectEqual(@as(KeyCode, 0x7B), key_f12);
 }

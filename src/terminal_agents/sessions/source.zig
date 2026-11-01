@@ -15,6 +15,7 @@ pub const ProviderFlags = packed struct {
     claude: bool = true,
     kimi: bool = true,
     opencode: bool = true,
+    pi: bool = true,
 };
 
 pub const ProviderRoot = struct {
@@ -31,6 +32,7 @@ pub const Source = struct {
     claude_root_override: ?[]const u8 = null,
     kimi_root_override: ?[]const u8 = null,
     opencode_root_override: ?[]const u8 = null,
+    pi_root_override: ?[]const u8 = null,
     extra_roots: []const ProviderRoot = &.{},
 };
 
@@ -40,6 +42,7 @@ pub fn defaultRoot(provider: types.ProviderId, home: []const u8, out: []u8) ?[]c
         .claude => ".claude",
         .kimi => ".kimi-code",
         .opencode => ".local/share/opencode",
+        .pi => ".pi/agent/sessions",
     };
     return std.fmt.bufPrint(out, "{s}/{s}", .{ home, suffix }) catch null;
 }
@@ -50,4 +53,5 @@ test "ai_history_source: default provider roots use target home" {
     try std.testing.expectEqualStrings("/home/me/.claude", defaultRoot(.claude, "/home/me", &buf).?);
     try std.testing.expectEqualStrings("/home/me/.kimi-code", defaultRoot(.kimi, "/home/me", &buf).?);
     try std.testing.expectEqualStrings("/home/me/.local/share/opencode", defaultRoot(.opencode, "/home/me", &buf).?);
+    try std.testing.expectEqualStrings("/home/me/.pi/agent/sessions", defaultRoot(.pi, "/home/me", &buf).?);
 }

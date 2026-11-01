@@ -79,6 +79,8 @@ pub const consumeQuitRequest = impl.consumeQuitRequest;
 pub const requestQuit = impl.requestQuit;
 pub const pumpAppEvents = impl.pumpAppEvents;
 pub const postWakeup = impl.postWakeup;
+pub const beginLoopIteration = impl.beginLoopIteration;
+pub const endLoopIteration = impl.endLoopIteration;
 pub const registerEventWindow = impl.registerEventWindow;
 pub const unregisterEventWindow = impl.unregisterEventWindow;
 
@@ -146,6 +148,22 @@ test "platform window exposes message and dpi helpers" {
     try std.testing.expectEqual(@as(LongParam, @bitCast(@as(isize, 42))), longParamFromPtrValue(42));
     try std.testing.expectEqual(@as(usize, 42), ptrValueFromLongParam(longParamFromPtrValue(42)));
     try std.testing.expect(nativeHandleFromBits(0) == null);
+}
+
+test "platform window exposes a nestable loop-iteration scope" {
+    try std.testing.expect(@typeInfo(@TypeOf(beginLoopIteration)).@"fn".return_type.? == ?*anyopaque);
+    try std.testing.expect(@typeInfo(@TypeOf(endLoopIteration)).@"fn".params[0].type.? == ?*anyopaque);
+    const outer = beginLoopIteration();
+    const inner = beginLoopIteration();
+    if (backendForOs(builtin.os.tag) == .macos) {
+        try std.testing.expect(outer != null);
+        try std.testing.expect(inner != null);
+    } else {
+        try std.testing.expect(outer == null);
+        try std.testing.expect(inner == null);
+    }
+    endLoopIteration(inner);
+    endLoopIteration(outer);
 }
 
 test "platform window selects backend by target OS" {

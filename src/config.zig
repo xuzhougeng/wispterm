@@ -22,6 +22,7 @@ const builtin = @import("builtin");
 const ai_agent_config = @import("agent/config.zig");
 const keybind = @import("keybind.zig");
 const link_open = @import("link_open.zig");
+const toolbar_reveal = @import("renderer/toolbar_reveal.zig");
 const console_host_policy = @import("platform/console_host_policy.zig");
 const platform_atomic_file = @import("platform/atomic_file.zig");
 const platform_dirs = @import("platform/dirs.zig");
@@ -143,6 +144,36 @@ pub const CursorStyle = enum {
     block_hollow,
 };
 
+/// What to do when a newer release is out. Same key and values as Ghostty's
+/// `auto-update` (Ghostty: macOS only, via Sparkle).
+pub const AutoUpdate = enum {
+    /// Never check by itself.
+    off,
+    /// Check after startup and say when a release is out.
+    check,
+    /// Check, download and verify it in the background, then offer a
+    /// restart from the titlebar. Quitting installs it. Only a signed
+    /// Windows portable install updates itself; elsewhere this is `check`.
+    download,
+
+    pub fn parse(s: []const u8) ?AutoUpdate {
+        return std.meta.stringToEnum(AutoUpdate, s);
+    }
+};
+
+/// Where the File Explorer lives. Shaped like Ghostty's
+/// `quick-terminal-position` / `gtk-tabs-location` enums.
+pub const FileExplorerPosition = enum {
+    /// A tab in the right dock, beside Copilot.
+    right,
+    /// The original left-side panel next to the tab sidebar.
+    left,
+
+    pub fn parse(s: []const u8) ?FileExplorerPosition {
+        return std.meta.stringToEnum(FileExplorerPosition, s);
+    }
+};
+
 pub const RightClickAction = enum {
     ignore,
     copy,
@@ -168,6 +199,9 @@ pub const RightClickAction = enum {
 };
 
 pub const UrlOpenMode = link_open.Mode;
+
+/// `window-show-toolbar`: when WispTerm's own titlebar/sidebar buttons show.
+pub const WindowShowToolbar = toolbar_reveal.Mode;
 
 // ============================================================================
 // Background Image
@@ -269,6 +303,14 @@ theme: ?[]const u8 = null,
 /// Initial terminal width in cells (min: 10, 0 = auto).
 @"window-width": u16 = 0,
 
+/// When WispTerm's own titlebar and sidebar buttons (sidebar toggle,
+/// settings, help, Copilot, command center, new tab) are drawn. `hover`
+/// reveals them while the pointer is over the titlebar or tab sidebar of the
+/// focused window; `always` keeps them visible. Native window controls, the
+/// title and the Update pill always show. Named after Ghostty's
+/// `window-show-tab-bar`.
+@"window-show-toolbar": WindowShowToolbar = .hover,
+
 /// Scrollback buffer limit in bytes.
 @"scrollback-limit": u32 = 10_000_000,
 
@@ -283,6 +325,9 @@ theme: ?[]const u8 = null,
 
 /// Add legacy OpenSSH algorithms for older bastion/servers.
 @"ssh-legacy-algorithms": bool = false,
+
+/// Advertise WispTerm terminal capabilities to remote SSH sessions.
+@"ssh-advertise-terminal-capabilities": bool = false,
 
 /// Enable agent tools for AI Chat profiles by default.
 @"ai-agent-enabled": bool = false,
@@ -307,6 +352,20 @@ theme: ?[]const u8 = null,
 /// a skill?" prompt after tool-heavy turns. Off by default so the suggestion
 /// never appears unless the user opts in (see settings page / issue #184).
 @"ai-distill-suggest": bool = false,
+
+/// When true, AI provider HTTP uses the AI Proxy settings. Research tools have
+/// their own `research-use-proxy` / `research-proxy` settings below.
+@"http-use-system-proxy": bool = false,
+
+/// AI Proxy address when `http-use-system-proxy` is on. Empty selects the system
+/// proxy. Otherwise `host:port` or `http://host:port`.
+@"http-proxy": []const u8 = "",
+
+/// Enable the independent research-tool proxy. An empty `research-proxy` still uses the `http-proxy` address.
+@"research-use-proxy": bool = false,
+
+/// Custom research proxy; empty inherits `http-proxy` when research proxy is enabled.
+@"research-proxy": []const u8 = "",
 
 /// Agent command permission mode: ask, auto, or full.
 @"ai-agent-permission": ai_agent_config.AgentPermission = .confirm,
@@ -339,6 +398,12 @@ shell: []const u8 = "",
 
 /// Working directory for the first local terminal surface (unset = inherit app cwd).
 @"working-directory": ?[]const u8 = null,
+
+/// Extra environment variables for every local PTY child, Ghostty's `env`
+/// key: repeat `env = KEY=VALUE`; `env =` resets the map, `env = KEY=` drops
+/// KEY, a later KEY overwrites an earlier one. Strings are owned by
+/// `_owned_strings`; the map itself is freed in `deinit`.
+env: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
 
 /// Name of the saved AI profile used as the default for startup auto-open,
 /// remote auto-open, and the "New Agent" command. Empty falls back to the
@@ -420,6 +485,11 @@ language: i18n.LanguageSetting = .auto,
 /// Fixed loopback port for the agent control API (0 = let the OS assign one).
 @"agent-control-port": u16 = 0,
 
+/// Classify terminal agents (Claude Code, Codex, Gemini CLI, …) from what
+/// they draw on screen when no hook marker is installed, driving the tab
+/// badge and attention notifications. Set to false to rely on hooks only.
+@"agent-screen-detection": bool = true,
+
 /// Show a debug FPS overlay in the bottom-right corner.
 @"wispterm-debug-fps": bool = false,
 @"wispterm-debug-draw-calls": bool = false,
@@ -455,19 +525,27 @@ language: i18n.LanguageSetting = .auto,
 /// When true, moving the mouse into a split pane focuses it.
 @"focus-follows-mouse": bool = false,
 
-/// When true, persist tab/split layout to the platform config directory on
-/// close, and restore it on next launch (unless CLI args specify otherwise).
+/// When true, persist tab/split layout and replayable Pi session paths to the
+/// platform config directory on close, then restore them on next launch (unless
+/// CLI args specify otherwise).
 /// Default false: the file is neither written nor read when this is off.
 @"restore-tabs-on-startup": bool = false,
 
 /// Check GitHub Releases for a newer WispTerm version after startup.
+/// Older spelling of `auto-update`: false turns updates off.
 @"auto-update-check": bool = true,
+
+/// off | check | download. See AutoUpdate.
+@"auto-update": AutoUpdate = .download,
 
 /// Show the "What's New" changelog once after upgrading to a newer build.
 /// Disables only the automatic popup; the command-center entry always works.
 @"whats-new-on-update": bool = true,
 /// Show the Copilot discovery hint to new users. Set to false to suppress permanently.
 @"copilot-hint": bool = true,
+/// right | left. `right` hosts the File Explorer as a tab in the right dock
+/// beside Copilot; `left` keeps it as a panel next to the tab sidebar.
+@"file-explorer-position": FileExplorerPosition = .right,
 
 // ============================================================================
 // Memory Digest (scheduler)
@@ -568,8 +646,9 @@ fullscreen: bool = false,
 /// from the `toggle_quake` keybind, which is global by default.
 @"quake-mode": bool = false,
 
-/// Application-level keyboard shortcuts. Values use Ghostty-style
-/// `keybind = trigger=action` syntax; `global:` registers a native hotkey.
+/// Application and workbench keyboard shortcuts. Values use Ghostty-style
+/// `keybind = trigger=action` syntax; `global:` registers a native hotkey and
+/// a page prefix such as `file-explorer:` scopes an operation to that page.
 keybinds: keybind.Set = keybind.Set.defaults(),
 
 // ============================================================================
@@ -600,6 +679,8 @@ pub fn deinit(self: *const Config, allocator: std.mem.Allocator) void {
     // We need a mutable copy to deinit the list itself
     var list = self._owned_strings;
     list.deinit(allocator);
+    var env = self.env;
+    env.deinit(allocator);
 }
 
 // ============================================================================
@@ -885,6 +966,27 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         } else {
             log.warn("invalid ai-distill-suggest: {s}", .{value});
         }
+    } else if (std.mem.eql(u8, key, "http-use-system-proxy")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"http-use-system-proxy" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"http-use-system-proxy" = false;
+        } else {
+            log.warn("invalid http-use-system-proxy: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "http-proxy")) {
+        const trimmed = std.mem.trim(u8, value, " \t\r\n");
+        if (trimmed.len > 255) {
+            log.warn("invalid http-proxy: {s}", .{value});
+            return;
+        }
+        self.@"http-proxy" = self.dupeString(allocator, trimmed) orelse return;
+    } else if (std.mem.eql(u8, key, "window-show-toolbar")) {
+        if (WindowShowToolbar.parse(value)) |mode| {
+            self.@"window-show-toolbar" = mode;
+        } else {
+            log.warn("invalid window-show-toolbar: {s}", .{value});
+        }
     } else if (std.mem.eql(u8, key, "right-click-action")) {
         if (RightClickAction.parse(value)) |action| {
             self.@"right-click-action" = action;
@@ -911,6 +1013,14 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         } else {
             log.warn("invalid ssh-legacy-algorithms: {s}", .{value});
         }
+    } else if (std.mem.eql(u8, key, "ssh-advertise-terminal-capabilities")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"ssh-advertise-terminal-capabilities" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"ssh-advertise-terminal-capabilities" = false;
+        } else {
+            log.warn("invalid ssh-advertise-terminal-capabilities: {s}", .{value});
+        }
     } else if (std.mem.eql(u8, key, "ai-agent-enabled")) {
         if (std.mem.eql(u8, value, "true")) {
             self.@"ai-agent-enabled" = true;
@@ -919,6 +1029,17 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         } else {
             log.warn("invalid ai-agent-enabled: {s}", .{value});
         }
+    } else if (std.mem.eql(u8, key, "research-use-proxy")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"research-use-proxy" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"research-use-proxy" = false;
+        } else {
+            log.warn("invalid research-use-proxy: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "research-proxy")) {
+        const trimmed = std.mem.trim(u8, value, " \t\r\n");
+        self.@"research-proxy" = self.dupeString(allocator, trimmed) orelse return;
     } else if (std.mem.eql(u8, key, "ai-agent-permission")) {
         if (ai_agent_config.AgentPermission.parse(value)) |permission| {
             self.@"ai-agent-permission" = permission;
@@ -1030,6 +1151,14 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
             log.warn("invalid agent-control-port: {s}", .{value});
             return;
         };
+    } else if (std.mem.eql(u8, key, "agent-screen-detection")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"agent-screen-detection" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"agent-screen-detection" = false;
+        } else {
+            log.warn("invalid agent-screen-detection: {s}", .{value});
+        }
     } else if (std.mem.eql(u8, key, "wispterm-debug-fps")) {
         if (std.mem.eql(u8, value, "true")) {
             self.@"wispterm-debug-fps" = true;
@@ -1098,6 +1227,12 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         } else {
             log.warn("invalid restore-tabs-on-startup: {s}", .{value});
         }
+    } else if (std.mem.eql(u8, key, "auto-update")) {
+        if (AutoUpdate.parse(value)) |mode| {
+            self.@"auto-update" = mode;
+        } else {
+            log.warn("invalid auto-update: {s}", .{value});
+        }
     } else if (std.mem.eql(u8, key, "auto-update-check")) {
         if (std.mem.eql(u8, value, "true")) {
             self.@"auto-update-check" = true;
@@ -1113,6 +1248,12 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
             self.@"whats-new-on-update" = false;
         } else {
             log.warn("invalid whats-new-on-update: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "file-explorer-position")) {
+        if (FileExplorerPosition.parse(value)) |position| {
+            self.@"file-explorer-position" = position;
+        } else {
+            log.warn("invalid file-explorer-position: {s}", .{value});
         }
     } else if (std.mem.eql(u8, key, "copilot-hint")) {
         if (std.mem.eql(u8, value, "true")) {
@@ -1260,6 +1401,8 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         } else {
             log.warn("invalid quake-mode value: {s}", .{value});
         }
+    } else if (std.mem.eql(u8, key, "env")) {
+        self.applyEnv(allocator, value);
     } else if (std.mem.eql(u8, key, "keybind")) {
         self.keybinds.apply(value) catch |err| {
             log.warn("invalid keybind '{s}': {}", .{ value, err });
@@ -1268,6 +1411,35 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         // Silently ignore unknown keys (theme files reuse the same format
         // and may contain keys we don't handle, like palette).
     }
+}
+
+/// Ghostty `RepeatableStringMap.parseCLI` semantics for `env`.
+fn applyEnv(self: *Config, allocator: std.mem.Allocator, value: []const u8) void {
+    if (value.len == 0) {
+        self.env.clearRetainingCapacity();
+        return;
+    }
+    const eq = std.mem.indexOfScalar(u8, value, '=') orelse {
+        log.warn("invalid env '{s}': expected KEY=VALUE", .{value});
+        return;
+    };
+    const key = std.mem.trim(u8, value[0..eq], &std.ascii.whitespace);
+    const val = std.mem.trim(u8, value[eq + 1 ..], &std.ascii.whitespace);
+    if (key.len == 0) {
+        log.warn("invalid env '{s}': empty key", .{value});
+        return;
+    }
+    if (val.len == 0) {
+        _ = self.env.orderedRemove(key);
+        return;
+    }
+    const owned_val = self.dupeString(allocator, val) orelse return;
+    if (self.env.getPtr(key)) |slot| {
+        slot.* = owned_val;
+        return;
+    }
+    const owned_key = self.dupeString(allocator, key) orelse return;
+    self.env.put(allocator, owned_key, owned_val) catch {};
 }
 
 /// Handle the `config-file` directive: load an additional config file.
@@ -1499,6 +1671,7 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --url-open-mode <mode>       embedded | system-browser
         \\  --language <lang>            UI language: auto | en | zh-CN (default: auto)
         \\  --ssh-legacy-algorithms <bool> Enable legacy ssh-rsa/ssh-dss OpenSSH options
+        \\  --ssh-advertise-terminal-capabilities <bool> Advertise WispTerm capabilities to SSH sessions
         \\  --ai-agent-enabled <bool>    Enable AI Chat agent tools by default
         \\  --ai-agent-permission <mode> Agent tool permission: ask | auto | full
         \\  --ai-agent-command-timeout-ms <ms> Agent command timeout budget
@@ -1507,7 +1680,9 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --working-directory <path>  Working directory for the first terminal
         \\  --jina-api-key <key>         API key for Jina web search/read ($websearch, $webread)
         \\  --windows-conpty <mode>      Windows pseudo console host: auto | system
+        \\  --auto-update <mode>        Updates: off | check | download
         \\  --auto-update-check <bool>  Check GitHub Releases after startup
+        \\  --file-explorer-position <pos> File Explorer: right (dock tab) | left
         \\  --config-file <path>         Include another config file (prefix ? for optional)
         \\  --keybind <binding>          Configure a shortcut, e.g. global:ctrl+backquote=toggle_quake
         \\  --remote-enabled <bool>      Enable opt-in remote access foundation
@@ -1522,6 +1697,7 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --weixin-notify-forward <bool> Forward agent notifications to the bound WeChat owner
         \\  --agent-control-enabled <bool> Enable the local wisptermctl terminal control API (loopback)
         \\  --agent-control-port <n>     Fixed loopback port for the control API (0 = auto)
+        \\  --agent-screen-detection <bool> Detect terminal agent state from the screen when no hook is installed (default: true)
         \\  --quake-mode <bool>          Enable Quake-style drop-down mode (default: true)
         \\
         \\Color Options (override theme):
@@ -1781,6 +1957,10 @@ pub const settings_reset_keys = [_][]const u8{
     "language",
     "restore-tabs-on-startup",
     "ai-distill-suggest",
+    "http-use-system-proxy",
+    "http-proxy",
+    "research-use-proxy",
+    "research-proxy",
 };
 
 /// Revert every settings-page option to its built-in default by removing its
@@ -1851,7 +2031,7 @@ const default_config_template =
     \\# restore-tabs-on-startup = false
     \\
     \\# Keyboard shortcuts
-    \\# Syntax: keybind = [global:]modifier+key=action
+    \\# Syntax: keybind = [scope:]modifier+key=action (or global:modifier+key=action)
     \\# keybind = ctrl+shift+p=toggle_command_palette
     \\# keybind = global:ctrl+backquote=toggle_quake
     \\# keybind = alt+f10=toggle_command_palette
@@ -1888,6 +2068,7 @@ const default_config_template =
     \\# SSH compatibility for older bastions/servers.
     \\# Adds ssh-rsa/ssh-dss and legacy KEX/cipher options to profile/helper SSH.
     \\# ssh-legacy-algorithms = false
+    \\# ssh-advertise-terminal-capabilities = false
     \\
     \\# AI Chat agent tools (disabled by default)
     \\# ai-agent-enabled = false
@@ -1896,6 +2077,10 @@ const default_config_template =
     \\# ai-agent-output-limit = 16384
     \\# ai-agent-working-dir =          # default dir for downloads/clones (empty = unset)
     \\# ai-distill-suggest = false      # auto-suggest distilling reusable tasks into a skill
+    \\# http-use-system-proxy = false  # send AI provider HTTP through a proxy
+    \\# http-proxy =                   # empty = system proxy; or 127.0.0.1:6789
+    \\# research-use-proxy = false  # research tools use inherited/custom proxy
+    \\# research-proxy =          # empty = inherit http-proxy
     \\
     \\# Jina API key — used by $websearch / websearch and $webread / webread
     \\# (optional for $webread: r.jina.ai reads anonymously)
@@ -1905,8 +2090,14 @@ const default_config_template =
     \\# OpenConsole.exe next to wispterm.exe; system forces the OS inbox one
     \\# windows-conpty = auto
     \\
-    \\# Updates
-    \\# auto-update-check = true
+    \\# File Explorer placement: right (a tab in the right dock beside Copilot)
+    \\# or left (next to the tab sidebar)
+    \\# file-explorer-position = right
+    \\
+    \\# Updates: off | check | download. download fetches and verifies a new
+    \\# release in the background, then offers a restart from the titlebar
+    \\# (signed Windows portable installs; elsewhere it behaves like check)
+    \\# auto-update = download
     \\
     \\# Debug
     \\# wispterm-debug-fps = false
@@ -2109,6 +2300,30 @@ test "config: working-directory defaults unset and parses paths" {
     try std.testing.expect(cfg.@"working-directory" == null);
 }
 
+test "config: env follows ghostty repeatable map semantics" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+    defer cfg.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), cfg.env.count());
+
+    cfg.parseContent(allocator,
+        \\env = MSYSTEM=CLANG64
+        \\env = "MSYS = winsymlinks:nativestrict"
+        \\env = PI_NO_GLYPH_PROTOCOL=1
+        \\env = MSYSTEM=UCRT64
+        \\env = PI_NO_GLYPH_PROTOCOL=
+        \\env = broken
+    , ".");
+    try std.testing.expectEqual(@as(usize, 2), cfg.env.count());
+    try std.testing.expectEqualStrings("UCRT64", cfg.env.get("MSYSTEM").?);
+    try std.testing.expectEqualStrings("winsymlinks:nativestrict", cfg.env.get("MSYS").?);
+    try std.testing.expect(cfg.env.get("PI_NO_GLYPH_PROTOCOL") == null);
+
+    cfg.applyKeyValue(allocator, "env", "", ".");
+    try std.testing.expectEqual(@as(usize, 0), cfg.env.count());
+}
+
 test "config: help lists working-directory CLI option" {
     const allocator = std.testing.allocator;
     var out = std.ArrayList(u8){};
@@ -2160,6 +2375,30 @@ test "config: auto update check option parses true false" {
 
     cfg.applyKeyValue(allocator, "auto-update-check", "maybe", ".");
     try std.testing.expectEqual(true, cfg.@"auto-update-check");
+}
+
+test "config: auto-update defaults to download and parses Ghostty's values" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+    try std.testing.expectEqual(AutoUpdate.download, cfg.@"auto-update");
+    cfg.applyKeyValue(allocator, "auto-update", "check", ".");
+    try std.testing.expectEqual(AutoUpdate.check, cfg.@"auto-update");
+    cfg.applyKeyValue(allocator, "auto-update", "off", ".");
+    try std.testing.expectEqual(AutoUpdate.off, cfg.@"auto-update");
+    cfg.applyKeyValue(allocator, "auto-update", "sometimes", ".");
+    try std.testing.expectEqual(AutoUpdate.off, cfg.@"auto-update");
+}
+
+test "config: file-explorer-position defaults to right and parses left/right" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+    try std.testing.expectEqual(FileExplorerPosition.right, cfg.@"file-explorer-position");
+    cfg.applyKeyValue(allocator, "file-explorer-position", "left", ".");
+    try std.testing.expectEqual(FileExplorerPosition.left, cfg.@"file-explorer-position");
+    cfg.applyKeyValue(allocator, "file-explorer-position", "bottom", ".");
+    try std.testing.expectEqual(FileExplorerPosition.left, cfg.@"file-explorer-position");
+    cfg.applyKeyValue(allocator, "file-explorer-position", "right", ".");
+    try std.testing.expectEqual(FileExplorerPosition.right, cfg.@"file-explorer-position");
 }
 
 test "config: quake mode defaults disabled and parses true false" {
@@ -2322,6 +2561,19 @@ test "config: ai agent options parse" {
     try std.testing.expectEqual(@as(u32, 4096), cfg.@"ai-agent-output-limit");
 }
 
+test "config: window-show-toolbar parses hover and always" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+
+    try std.testing.expectEqual(WindowShowToolbar.hover, cfg.@"window-show-toolbar");
+    cfg.applyKeyValue(allocator, "window-show-toolbar", "always", ".");
+    try std.testing.expectEqual(WindowShowToolbar.always, cfg.@"window-show-toolbar");
+    cfg.applyKeyValue(allocator, "window-show-toolbar", "sometimes", ".");
+    try std.testing.expectEqual(WindowShowToolbar.always, cfg.@"window-show-toolbar");
+    cfg.applyKeyValue(allocator, "window-show-toolbar", "hover", ".");
+    try std.testing.expectEqual(WindowShowToolbar.hover, cfg.@"window-show-toolbar");
+}
+
 test "config: copy and right click options parse" {
     const allocator = std.testing.allocator;
     var cfg: Config = .{};
@@ -2352,6 +2604,15 @@ test "config: ssh legacy algorithm option parses" {
     try std.testing.expectEqual(false, cfg.@"ssh-legacy-algorithms");
     cfg.applyKeyValue(allocator, "ssh-legacy-algorithms", "true", ".");
     try std.testing.expectEqual(true, cfg.@"ssh-legacy-algorithms");
+}
+
+test "config: SSH terminal capability advertisement defaults off and parses" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+
+    try std.testing.expectEqual(false, cfg.@"ssh-advertise-terminal-capabilities");
+    cfg.applyKeyValue(allocator, "ssh-advertise-terminal-capabilities", "true", ".");
+    try std.testing.expectEqual(true, cfg.@"ssh-advertise-terminal-capabilities");
 }
 
 test "config: remote session key parses" {
@@ -2470,6 +2731,35 @@ test "ai-distill-suggest parses true/false and defaults off" {
     // unknown value leaves it unchanged (still false)
     cfg.applyKeyValue(allocator, "ai-distill-suggest", "maybe", ".");
     try std.testing.expect(!cfg.@"ai-distill-suggest");
+}
+
+test "research proxy defaults off and parses independent settings" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+    defer cfg.deinit(allocator);
+
+    try std.testing.expect(!cfg.@"research-use-proxy");
+    try std.testing.expectEqualStrings("", cfg.@"research-proxy");
+    cfg.applyKeyValue(allocator, "research-use-proxy", "true", ".");
+    cfg.applyKeyValue(allocator, "research-proxy", " 127.0.0.1:10808 ", ".");
+    try std.testing.expect(cfg.@"research-use-proxy");
+    try std.testing.expectEqualStrings("127.0.0.1:10808", cfg.@"research-proxy");
+}
+
+test "http-use-system-proxy parses true/false and defaults off" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{};
+    defer cfg.deinit(allocator);
+    try std.testing.expect(!cfg.@"http-use-system-proxy");
+    try std.testing.expectEqualStrings("", cfg.@"http-proxy");
+    cfg.applyKeyValue(allocator, "http-use-system-proxy", "true", ".");
+    try std.testing.expect(cfg.@"http-use-system-proxy");
+    cfg.applyKeyValue(allocator, "http-proxy", " 127.0.0.1:6789 ", ".");
+    try std.testing.expectEqualStrings("127.0.0.1:6789", cfg.@"http-proxy");
+    cfg.applyKeyValue(allocator, "http-proxy", "", ".");
+    try std.testing.expectEqualStrings("", cfg.@"http-proxy");
+    cfg.applyKeyValue(allocator, "http-use-system-proxy", "false", ".");
+    try std.testing.expect(!cfg.@"http-use-system-proxy");
 }
 
 test "config: wispterm-d3d-present defaults on and parses false" {

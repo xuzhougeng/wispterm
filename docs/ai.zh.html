@@ -89,7 +89,7 @@
         <div class="feature-grid">
           <div class="feature">
             <h3>DeepSeek V4 Profile</h3>
-            <p>默认 Profile 面向 OpenAI 兼容的 Chat Completions，Base URL 为 <code>https://api.deepseek.com</code>，模型为 <code>deepseek-v4-pro</code>。需要更轻快时可使用 <code>deepseek-v4-flash</code>。</p>
+            <p>默认 Profile 面向 OpenAI 兼容的 Chat Completions，Base URL 为 <code>https://api.deepseek.com</code>，模型为 <code>deepseek-flash</code>。它支持图片输入，所以默认开启 Vision。</p>
           </div>
           <div class="feature">
             <h3>会话内切换模型</h3>
@@ -127,12 +127,13 @@
                 <tr><th>Profile name</th><td><code>DeepSeek</code></td></tr>
                 <tr><th>Base URL</th><td><code>https://api.deepseek.com</code></td></tr>
                 <tr><th>API key</th><td>你的 DeepSeek API Key；如果设置了 <code>DEEPSEEK_API_KEY</code>，可以留空</td></tr>
-                <tr><th>Model</th><td><code>deepseek-v4-pro</code></td></tr>
+                <tr><th>Model</th><td><code>deepseek-flash</code></td></tr>
                 <tr><th>Protocol</th><td><code>chat_completions</code>；OpenAI Responses API Provider 使用 <code>responses</code></td></tr>
                 <tr><th>Thinking</th><td><code>enabled</code></td></tr>
                 <tr><th>Effort</th><td>重度编码 Agent 建议 <code>max</code>；WispTerm 内置默认值是 <code>high</code></td></tr>
                 <tr><th>Stream</th><td><code>false</code></td></tr>
                 <tr><th>Agent</th><td><code>true</code></td></tr>
+                <tr><th>Vision</th><td><code>on</code>；<code>deepseek-flash</code> 支持图片输入</td></tr>
               </tbody>
             </table>
           </div>
@@ -362,7 +363,7 @@ ai-agent-output-limit       = 16384</code></pre>
           </div>
           <div class="feature">
             <h3>模型别名</h3>
-            <p>请使用当前 DeepSeek V4 模型 ID，例如 <code>deepseek-v4-pro</code> 或 <code>deepseek-v4-flash</code>，不要继续依赖旧别名。要把正在进行的对话切到另一个已保存 profile，可用 <code>/model</code> 或点击模型标签。</p>
+            <p>请使用当前 DeepSeek 模型 ID <code>deepseek-flash</code>；<code>deepseek-v4-flash</code> 是旧别名。<code>deepseek-v4-pro</code> 只支持文本，WispTerm 不再自动添加，需要时请自行新建一个 profile。要把正在进行的对话切到另一个已保存 profile，可用 <code>/model</code> 或点击模型标签。</p>
           </div>
         </div>
         <p class="section-foot">参考：<a href="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/" target="_blank" rel="noopener">DeepSeek 模型详情</a> 与 <a href="https://api-docs.deepseek.com/zh-cn/guides/thinking_mode" target="_blank" rel="noopener">DeepSeek 思考模式</a>。</p>

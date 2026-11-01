@@ -74,11 +74,9 @@ fn guestPathToHostPath(guest_path: []const u8, out: *[260]u16) ?usize {
 
 /// Convert a surface's reported cwd to a native Windows cwd, but ONLY for WSL
 /// surfaces. SSH surfaces report REMOTE paths (e.g. `/home/...`) that must never
-/// be treated as WSL guest paths: doing so calls `defaultDistroName()`, which
-/// spawns `wsl.exe --list` to resolve a `\\wsl.localhost\<distro>\` path. On a
-/// machine without WSL that pops a blocking "install WSL" window (freeze); on a
-/// machine with WSL it adds first-call latency. Local surfaces already carry
-/// native paths and need no guest conversion here.
+/// be treated as WSL guest paths: they would resolve to a bogus
+/// `\\wsl.localhost\<distro>\...` path. Local surfaces already carry native
+/// paths and need no guest conversion here.
 pub fn nativeCwdForLaunchKind(
     launch_kind: platform_pty_command.LaunchKind,
     guest_path: []const u8,
@@ -105,54 +103,11 @@ pub fn guestPathToLocalPathUtf8(
 }
 
 fn defaultDistroName() ?[]const u8 {
+    // ponytail: registry read, cheap enough to skip caching; also follows `wsl --set-default` live.
     const Static = struct {
-        threadlocal var cached: bool = false;
-        threadlocal var distro_buf: [64]u8 = undefined;
-        threadlocal var distro_len: usize = 0;
+        threadlocal var buf: [192]u8 = undefined;
     };
-
-    if (Static.cached) {
-        if (Static.distro_len > 0) return Static.distro_buf[0..Static.distro_len];
-        return null;
-    }
-    Static.cached = true;
-
-    var child = std.process.Child.init(&.{ "wsl.exe", "--list", "--quiet" }, std.heap.page_allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-    child.spawn() catch return null;
-
-    const stdout = child.stdout orelse {
-        _ = child.wait() catch {};
-        return null;
-    };
-    var buf: [256]u8 = undefined;
-    const n = stdout.read(&buf) catch 0;
-    _ = child.wait() catch {};
-    if (n == 0) return null;
-
-    var i: usize = 0;
-    var out_idx: usize = 0;
-    while (i + 1 < n and out_idx < Static.distro_buf.len) {
-        const lo = buf[i];
-        const hi = buf[i + 1];
-
-        if (i == 0 and lo == 0xFF and hi == 0xFE) {
-            i += 2;
-            continue;
-        }
-        if (lo == '\r' or lo == '\n' or lo == 0) break;
-
-        if (hi == 0 and lo >= 0x20 and lo < 0x7F) {
-            Static.distro_buf[out_idx] = lo;
-            out_idx += 1;
-        }
-        i += 2;
-    }
-
-    if (out_idx == 0) return null;
-    Static.distro_len = out_idx;
-    return Static.distro_buf[0..out_idx];
+    return platform_pty_command.wslDefaultDistroName(&Static.buf);
 }
 
 test "platform WSL converts Windows paths for WSL sessions" {
@@ -190,12 +145,11 @@ test "platform WSL only converts cwd for WSL surfaces" {
     var buf: platform_pty_command.CwdBuffer = undefined;
 
     // SSH surfaces report REMOTE paths (e.g. /home/...). Treating them as WSL
-    // guest paths would call defaultDistroName() -> spawn `wsl.exe --list`,
-    // which freezes on machines without WSL and lags on machines with it.
+    // guest paths would map them onto a bogus \\wsl.localhost\<distro>\ path.
     try std.testing.expect(nativeCwdForLaunchKind(.ssh, "/home/xzg/project", &buf) == null);
     try std.testing.expect(nativeCwdForLaunchKind(.local, "/home/xzg/project", &buf) == null);
 
     // A genuine WSL surface still converts a mounted path (the /mnt/ branch
-    // needs no distro probe, so this is spawn-free).
+    // needs no distro lookup).
     try std.testing.expect(nativeCwdForLaunchKind(.wsl, "/mnt/c/Users/me", &buf) != null);
 }

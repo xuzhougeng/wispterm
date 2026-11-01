@@ -46,8 +46,9 @@ Structural debt is frozen mechanically by source-scanning ratchet tests (the sam
 |---|---|---|---|
 | `file_size_guard` | lines in any `src/**/*.zig` | < **10,000** (also `zig build check-sizes`) | split by responsibility; never raise the limit |
 | `global_state_guard` | top-level `g_*` / `threadlocal` in the watched integration/session files | AppWindow **66**, input **48**, overlays **30**, assistant/conversation/session **15** | put new state in a state struct (`appwindow/state.zig`, …) |
-| `import_hub_guard` | `pub const X = @import(...)` re-exports in `AppWindow.zig` | **17** | import the real module directly, not via `AppWindow.X` |
-| `side_effect_guard` | direct `g_force_rebuild` / `g_cells_valid` writes in the watched integration/session files | AppWindow **41**, input **79**, overlays **0**, assistant/conversation/session **0** | return a `UiEffect`, land it through `AppWindow.applyUiEffect` |
+| `import_hub_guard` | `pub const X = @import(...)` re-exports in `AppWindow.zig` | **16** | import the real module directly, not via `AppWindow.X` |
+| `side_effect_guard` | direct `g_force_rebuild` / `g_cells_valid` writes in the watched integration/session files | AppWindow **26**, input **23**, overlays **0**, assistant/conversation/session **0** | return a `UiEffect`, land it through `AppWindow.applyUiEffect` |
+| `objc_autorelease_guard` | exported `.m` bridge functions that send Objective-C messages outside `@autoreleasepool` (macOS has no outer pool: no `NSApplicationMain`) | **0** (allowlist: one deliberate test probe) | wrap the Objective-C part in `@autoreleasepool { }` |
 
 The 10,000-line guard is a **runaway tripwire, not a health metric**: `check-sizes` prevents uncontrolled growth, it does not certify architectural health. A file under it can still be tangled; treat any file over **5,000 lines** as a signal to review responsibility, dependency direction, state ownership, and test boundaries. The boundary ratchets — not the line count — are the primary enforcement mechanism.
 
@@ -127,7 +128,10 @@ src/                         # Desktop terminal application
 ├── agent/                   # Agent config, access rules, history, and memory
 ├── agent_tools/             # Model tool-call runtime adapters
 ├── terminal_agents/         # External terminal agent detection/prompts/sessions
-│                            #   (Codex / Claude Code / Kimi Code / OpenCode history)
+│                            #   (Codex / Claude Code / Kimi Code / OpenCode history);
+│                            #   screen-state detection = herdr's manifests/*.toml
+│                            #   (Apache-2.0, vendored verbatim) + screen_manifest /
+│                            #   screen_regex / manifest_toml engines + screen_detect
 ├── command/                 # Command center/palette model and registry
 ├── recipe/                  # Named workspace recipes: store, naming form, palette list state
 ├── preview/                 # Preview pane, gallery, diagnostics, PDF/markdown/png

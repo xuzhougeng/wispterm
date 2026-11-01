@@ -48,9 +48,6 @@ pub const SessionRecord = struct {
     /// Working directory captured when the record was serialized. Empty for
     /// records written before this field existed.
     cwd: []const u8 = "",
-    /// ACP external-agent launch command. Empty for non-ACP sessions and for
-    /// records written before this field existed.
-    acp_command: []const u8 = "",
     messages: []MessageRecord,
 };
 
@@ -284,9 +281,6 @@ pub fn cloneRecord(allocator: std.mem.Allocator, input: anytype) !SessionRecord 
     const cwd_input = if (@hasField(@TypeOf(input), "cwd")) input.cwd else "";
     const cwd = try allocator.dupe(u8, cwd_input);
     errdefer allocator.free(cwd);
-    const acp_command_input = if (@hasField(@TypeOf(input), "acp_command")) input.acp_command else "";
-    const acp_command = try allocator.dupe(u8, acp_command_input);
-    errdefer allocator.free(acp_command);
 
     const messages = try cloneMessages(allocator, input.messages);
     errdefer {
@@ -313,7 +307,6 @@ pub fn cloneRecord(allocator: std.mem.Allocator, input: anytype) !SessionRecord 
         .created_at = input.created_at,
         .updated_at = input.updated_at,
         .cwd = cwd,
-        .acp_command = acp_command,
         .messages = messages,
     };
 }
@@ -328,7 +321,6 @@ pub fn freeOwnedRecord(allocator: std.mem.Allocator, record: *SessionRecord) voi
     allocator.free(record.system_prompt);
     allocator.free(record.reasoning_effort);
     allocator.free(record.cwd);
-    allocator.free(record.acp_command);
     for (record.messages) |*message| freeOwnedMessage(allocator, message);
     allocator.free(record.messages);
     record.* = undefined;
@@ -1377,48 +1369,18 @@ test "agent_history: cwd and message ts round-trip through JSON" {
     try std.testing.expectEqual(@as(i64, 2000), parsed.records.items[0].messages[1].ts);
 }
 
-test "agent_history: acp_command round-trips through JSON" {
-    const allocator = std.testing.allocator;
-    var store = Store.init(allocator);
-    defer store.deinit();
-
-    try store.upsertRecord(.{
-        .session_id = "s-acp",
-        .title = "ACP",
-        .base_url = "",
-        .api_key = "",
-        .model = "codex",
-        .system_prompt = "",
-        .thinking_enabled = false,
-        .reasoning_effort = "low",
-        .stream = true,
-        .agent_enabled = true,
-        .created_at = 1,
-        .updated_at = 2,
-        .acp_command = "npx @zed-industries/claude-code-acp",
-        .messages = &.{},
-    });
-
-    const json = try store.toJsonString(allocator);
-    defer allocator.free(json);
-    var parsed = try Store.fromJsonString(allocator, json);
-    defer parsed.deinit();
-
-    try std.testing.expectEqual(@as(usize, 1), parsed.records.items.len);
-    try std.testing.expectEqualStrings("npx @zed-industries/claude-code-acp", parsed.records.items[0].acp_command);
-}
-
-test "agent_history: old record without acp_command defaults to empty" {
+test "agent_history: legacy acp_command field is ignored" {
     const allocator = std.testing.allocator;
     const json =
         \\{"records":[{"session_id":"old","title":"T","base_url":"u","api_key":"k",
         \\"model":"m","system_prompt":"s","thinking_enabled":false,"reasoning_effort":"low",
-        \\"stream":true,"agent_enabled":true,"created_at":1,"updated_at":2,"messages":[]}]}
+        \\"stream":true,"agent_enabled":true,"created_at":1,"updated_at":2,
+        \\"acp_command":"npx @zed-industries/claude-code-acp","messages":[]}]}
     ;
     var store = try Store.fromJsonString(allocator, json);
     defer store.deinit();
     try std.testing.expectEqual(@as(usize, 1), store.records.items.len);
-    try std.testing.expectEqualStrings("", store.records.items[0].acp_command);
+    try std.testing.expectEqualStrings("old", store.records.items[0].session_id);
 }
 
 test "agent_history: old record without cwd/ts fields defaults to empty/zero" {

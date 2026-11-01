@@ -159,7 +159,21 @@ jobs:
 
           codesign --verify --strict --verbose=2 "zig-out/bin/WispTerm.app"
           hdiutil verify "$dmg_path"
-          xcrun stapler validate "$dmg_path"
+          # stapler validate contacts Apple even after a successful staple.
+          # Retry transient CloudKit disconnects, but require validation to pass.
+          for attempt in 1 2 3 4 5; do
+            if xcrun stapler validate "$dmg_path"; then
+              break
+            else
+              validation_status=$?
+            fi
+            if (( attempt == 5 )); then
+              exit "$validation_status"
+            fi
+            delay=$((15 * attempt))
+            echo "::warning::Notarization ticket validation failed (exit ${validation_status}); retrying in ${delay}s"
+            sleep "$delay"
+          done
           spctl -a -vv --type open "$dmg_path" || true
 
       - name: Prepare release asset

@@ -15,7 +15,7 @@ pub const Target = struct {
     via_jump: bool,
 
     pub fn fromConnection(session: usize, conn: *const connection.SshConnection) Target {
-        var result = Target{ .session = session, .host_buf = undefined, .host_len = conn.host().len, .via_jump = conn.proxyJump().len != 0 };
+        var result = Target{ .session = session, .host_buf = undefined, .host_len = conn.host().len, .via_jump = conn.proxyJump().len != 0 or conn.network_proxy.kind != .none };
         @memcpy(result.host_buf[0..result.host_len], conn.host());
         return result;
     }
@@ -247,4 +247,10 @@ fn finishJob(monitor: *Monitor, target: Target, now_ms: i64) !void {
         std.Thread.sleep(std.time.ns_per_ms);
     }
     try std.testing.expect(monitor.job == null);
+}
+
+test "network proxy route is not measured using a misleading direct ping" {
+    const route = connection.network_proxy.Config.forHelper(.socks5, "127.0.0.1", "7897", "helper").?;
+    const conn = connection.SshConnection.fromParts(.{ .user = "alice", .host = "host.test", .network_proxy = route });
+    try std.testing.expect(Target.fromConnection(1, &conn).via_jump);
 }

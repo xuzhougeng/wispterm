@@ -232,14 +232,18 @@ pub const HistoryToolbar = struct {
 /// Right-aligned source chip and Conversation Center button in the history
 /// picker filter row. `filter_w` is the remaining width for the search field.
 pub fn historyToolbar(box_x: f32, box_w: f32, pad_x: f32, open_w: f32, source_w: f32, gap: f32) HistoryToolbar {
-    const source_x = box_x + box_w - pad_x - source_w;
-    const open_x = source_x - gap - open_w;
+    const available = @max(0, box_w - pad_x * 2);
+    const toolbar_w = @max(0, available - @min(80, available * 0.3) - gap);
+    const columns = ui_patterns.textColumns(toolbar_w, open_w, source_w, gap);
+    const open_draw_w = @min(open_w, columns.left_w);
+    const source_x = box_x + box_w - pad_x - columns.right_w;
+    const open_x = source_x - @min(gap, toolbar_w) - open_draw_w;
     const filter_w = @max(0, open_x - (box_x + pad_x) - gap);
     return .{
         .open_x = open_x,
-        .open_w = open_w,
+        .open_w = open_draw_w,
         .source_x = source_x,
-        .source_w = source_w,
+        .source_w = columns.right_w,
         .filter_w = filter_w,
     };
 }
@@ -374,4 +378,14 @@ test "scrollbar geometry tracks visible row window" {
     try std.testing.expectEqual(l.row_h * @as(f32, @floatFromInt(l.rendered_rows)), sb.track.h);
     try std.testing.expect(sb.thumb.h >= 24);
     try std.testing.expect(sb.thumb.y < sb.track.y + sb.track.h);
+}
+
+test "history toolbar bounds long localized labels in a narrow palette" {
+    for ([_]f32{ 180, 300, 500 }) |width| {
+        const bar = historyToolbar(50, width, 16, 290, 180, 16);
+        try std.testing.expect(bar.open_x >= 66);
+        try std.testing.expect(bar.open_x + bar.open_w <= bar.source_x);
+        try std.testing.expect(bar.source_x + bar.source_w <= 50 + width - 16);
+        try std.testing.expect(bar.filter_w >= 0);
+    }
 }

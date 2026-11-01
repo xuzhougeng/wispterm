@@ -5,15 +5,16 @@ This folder is the source for the WispTerm GitHub Pages site.
 ## Files
 
 - `index.html` — landing page (hero, features, install, config, shortcuts).
-- `tutorial.zh.html` / `tutorial.css` — Chinese step-by-step guide to AI setup, SSH, conversations, memory, forwarding, files, skills, and workspace basics.
+- `tutorial.zh.html` / `tutorial.css` — Chinese step-by-step guide to creating and editing LLM providers, AI setup, Codex/Kimi/xAI/OpenCode Go subscriptions, SSH, conversations, memory, forwarding, files, skills, and workspace basics.
 - `theme.js` — shared light/dark theme toggle; follows the OS until the reader chooses a theme, persists that choice, and synchronizes open pages.
-- `assets/tutorial/` — real Windows app screenshots using isolated demonstration profiles and records; see the capture notes in that folder.
+- `assets/tutorial/` — real Windows demonstration screenshots and macOS LLM configuration screenshots; see the capture notes in that folder.
 - `ai.html` / `ai.zh.html` — DeepSeek-first Copilot workflow pages.
 - `use-cases.html` / `use-cases.zh.html` — practical Copilot use cases such as SSH profile setup.
 - `themes.html` — built-in theme gallery.
 - `configuration.md` — desktop app config reference.
 - `file-explorer.md` — File Explorer, preview panel, browser panel, and SSH cwd notes.
 - `ai-agent.md` — desktop Copilot, Agent skills, and Markdown export workflow notes.
+- `sync.md` — encrypted WebDAV / synced-folder sync of passwords, agent history, SSH hosts and AI profiles.
 - `media.md` — background images, shaders, and Kitty Graphics helper scripts.
 - `development.md` — build, architecture, packaging, and GitHub release notes.
 - `faq.md` — desktop and remote FAQ entries that are too detailed for the root README.

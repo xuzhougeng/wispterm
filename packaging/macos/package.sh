@@ -34,6 +34,12 @@ codesign_args=(--force --sign "$sign_identity" --options runtime --entitlements 
 if [[ "$sign_identity" != "-" ]]; then
   codesign_args+=(--timestamp)
 fi
+proxy_helper="$app_path/Contents/MacOS/wispterm-ssh-proxy"
+if [[ ! -f "$proxy_helper" ]]; then
+  echo "missing SSH proxy helper: $proxy_helper" >&2
+  exit 1
+fi
+codesign "${codesign_args[@]}" "$proxy_helper"
 codesign "${codesign_args[@]}" "$app_path"
 codesign --verify --strict --verbose=2 "$app_path"
 
@@ -41,6 +47,24 @@ mkdir -p "$dist_dir"
 staging="$(mktemp -d "${TMPDIR:-/tmp}/wispterm-macos-dmg.XXXXXX")"
 notarize_workdir="$(mktemp -d "${TMPDIR:-/tmp}/wispterm-macos-notarize.XXXXXX")"
 trap 'rm -rf "$staging" "$notarize_workdir"' EXIT
+
+# stapler fetches the ticket from Apple's CloudKit, which drops the connection
+# on GitHub's macOS runners often enough to sink most x86_64 release runs
+# (NSURLErrorDomain -1005, "Error 68"). Retry just the stapler call: it costs
+# seconds, whereas the workflow-level retry re-signs and re-notarizes everything.
+stapler_retry() {
+  local attempt
+  for attempt in 1 2 3 4 5 6; do
+    if xcrun stapler "$@"; then
+      return 0
+    fi
+    if (( attempt < 6 )); then
+      echo "stapler $1 failed (attempt ${attempt}/6); retrying in $(( 5 * attempt ))s" >&2
+      sleep $(( 5 * attempt ))
+    fi
+  done
+  return 1
+}
 
 # Notarize and staple the .app FIRST, then ditto the stapled copy into the DMG.
 # Otherwise the .app inside the DMG carries no ticket (it was copied before
@@ -52,8 +76,8 @@ if [[ -n "$notary_profile" ]]; then
   # bundle structure, which is what notarytool expects for a .app submission.
   ditto -c -k --keepParent "$app_path" "$app_zip"
   xcrun notarytool submit "$app_zip" --keychain-profile "$notary_profile" --wait
-  xcrun stapler staple "$app_path"
-  xcrun stapler validate "$app_path"
+  stapler_retry staple "$app_path"
+  stapler_retry validate "$app_path"
 else
   echo "notarization skipped: set WISPTERM_MACOS_NOTARY_PROFILE to submit with notarytool" >&2
 fi
@@ -87,7 +111,7 @@ hdiutil create -volname "WispTerm" -srcfolder "$staging" -ov -format UDZO "$dmg_
 # a ticket onto the disk image itself for Gatekeeper to find at mount time.
 if [[ -n "$notary_profile" ]]; then
   xcrun notarytool submit "$dmg_path" --keychain-profile "$notary_profile" --wait
-  xcrun stapler staple "$dmg_path"
+  stapler_retry staple "$dmg_path"
 fi
 
 verified=0

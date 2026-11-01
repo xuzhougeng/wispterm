@@ -91,13 +91,23 @@ test "parseLsDirArg: rejects zero, multiple, and non-dir args" {
     try std.testing.expect(parseLsDirArg("ls Ath") == null);
 }
 
+fn gridSkipsSpacer(grid: anytype, row: usize, col: usize) bool {
+    const Grid = @TypeOf(grid);
+    if (!@hasDecl(Grid, "isSpacer")) return false;
+    return grid.isSpacer(row, col);
+}
+
 /// Encode one grid row into UTF-8 bytes in `buf`. Empty cells (codepoint 0)
-/// become spaces so tokenization sees word boundaries. Truncates at `buf` len.
+/// become spaces so tokenization sees word boundaries. Wide-character spacer
+/// cells are omitted when the grid reports them. Truncates at `buf` len.
 fn encodeRow(grid: anytype, row: usize, buf: []u8) []const u8 {
     const cols = grid.colCount(row);
     var n: usize = 0;
     var col: usize = 0;
     while (col < cols) : (col += 1) {
+        // Spacer tails are codepoint 0 but belong to the previous wide glyph.
+        // Turning them into spaces would split a Chinese directory (`分析/`).
+        if (gridSkipsSpacer(grid, row, col)) continue;
         var cp = grid.codepoint(row, col);
         if (cp == 0) cp = ' ';
         var tmp: [4]u8 = undefined;
@@ -188,6 +198,30 @@ test "inferPrefixForClick: no ls above returns null" {
     } };
     var buf: [256]u8 = undefined;
     try std.testing.expect(inferPrefixForClick(grid, 1, &buf) == null);
+}
+
+test "inferPrefixForClick: wide CJK in the ls directory is not split by spacers" {
+    const Wide = struct {
+        fn rowCount(_: @This()) usize {
+            return 2;
+        }
+        fn colCount(_: @This(), row: usize) usize {
+            return if (row == 0) 8 else 4;
+        }
+        fn codepoint(_: @This(), row: usize, col: usize) u21 {
+            if (row == 0) {
+                const line = [_]u21{ 'l', 's', ' ', '分', 0, '析', 0, '/' };
+                return line[col];
+            }
+            const file = [_]u21{ 'a', '.', 'm', 'd' };
+            return file[col];
+        }
+        fn isSpacer(_: @This(), row: usize, col: usize) bool {
+            return row == 0 and (col == 4 or col == 6);
+        }
+    };
+    var buf: [256]u8 = undefined;
+    try std.testing.expectEqualStrings("分析/", inferPrefixForClick(Wide{}, 1, &buf).?);
 }
 
 test "inferPrefixForClick: empty grid returns null" {

@@ -39,6 +39,22 @@ Requires macOS 13+ and Zig 0.15.2. The build produces a `.app` bundle at
 `zig-out/bin/WispTerm.app`. For distribution, run the packaging script
 (`packaging/macos/package.sh`) which signs and creates a `.dmg`.
 
+The app's minimum macOS is `macos_minimum_version` in `build.zig` (12.0, with
+macOS 12 best-effort). A macOS `-Dtarget` without a version is pinned to it,
+and the generated `Info.plist` `LSMinimumSystemVersion` follows the binary's
+deployment target. No hosted CI runner can launch macOS 12, so two build
+steps guard the minimum statically. CI runs both:
+
+```bash
+zig build check-macos-availability                         # Objective-C API newer than the minimum without @available
+zig build check-macos-minimum -Dtarget=aarch64-macos       # built .app: binary minos and Info.plist match the minimum
+```
+
+When a bridge needs a newer API, wrap it in `if (@available(macOS 13.0, *))`
+with a fallback. A message sent to an `id` or `__kindof` receiver (such as
+`NSApp`) can match an older method with the same name and slip past the
+check, so give the receiver its concrete type.
+
 ### Zig Toolchain
 
 Use Zig 0.15.2 and make sure `zig` (or `zig.exe` on Windows) is available on
@@ -46,6 +62,15 @@ Use Zig 0.15.2 and make sure `zig` (or `zig.exe` on Windows) is available on
 
 ```bash
 zig version
+```
+
+When the checkout and Zig's global package cache are on different Windows drives,
+set `ZIG_GLOBAL_CACHE_DIR` to a cache directory on the checkout drive before
+running `zig build test-full`. Zig 0.15.2 dependency build steps can otherwise
+pass an absolute cross-drive child path to `convertPathArg`. For an E: checkout:
+
+```powershell
+$env:ZIG_GLOBAL_CACHE_DIR = "$(Get-Location)\.zig-global-cache"
 ```
 
 On Windows, `build.zig` defaults to `x86_64-windows-gnu`, so a normal
@@ -238,9 +263,19 @@ revision, memory sizes, output count, feature level, and swap effect, a Win32
 environment line for remote session, session id, monitor count, mixed-DPI state,
 primary DPI, and system DPI, a
 successful `d3d11-ui-smoke` probe, an offscreen round-trip marker, and no D3D11
-recovery request in the healthy path. It is a Phase IV and Phase V
-diagnostics/policy/recovery-coordination evidence tool only; it does not change
-the Windows default renderer.
+recovery request in the healthy path. With diagnostics enabled, the log also
+records whether the D3D11 frame-latency waitable object was configured (or why
+the swapchain fell back) and emits one-second `frame-timing` aggregates for
+frame-gate wait, atlas sync, snapshot, rebuild, draw, and Present blocking.
+On a native D3D11 swapchain that exposes `IDXGISwapChain1`, terminal-only frames
+with proven dirty-row damage may additionally log `present1-capable=true` and
+`present1 dirty-rect=...`; frames involving cursor/atlas/layout/overlay uncertainty
+fall back to legacy full-frame `Present`. Scroll metadata is intentionally not
+claimed yet. A capability log line alone is not proof that a frame used Present1;
+look for the dirty-rect line in the same diagnostic session.
+These are performance evidence, not a claim of visual equivalence with Windows
+Terminal. It is a Phase IV and Phase V diagnostics/policy/recovery-coordination
+evidence tool only; it does not change the Windows default renderer.
 
 Use `debug\test-d3d11-environment-smoke.ps1` after a D3D11 build to wrap the
 normal-session smoke into a matrix evidence package:
@@ -503,7 +538,7 @@ When changing SSH/SCP code paths (`src/ssh/scp.zig`, SSH clipboard image paste,
 remote file explorer listing/upload/download, or SSH session metadata), test
 against the existing real SSH profile in `%APPDATA%\wispterm\ssh_hosts` whenever
 it is available. The profile fields are hex encoded as
-`name, host, user, password, port, proxy_jump, auth_method, identity_file`;
+`name, host, user, password, port, proxy_jump, auth_method, identity_file, proxy_type, proxy_host, proxy_port`;
 decode them locally for the test, but never print or commit passwords or private
 key material. At minimum, verify:
 
@@ -535,11 +570,37 @@ WispTerm supports three portable Windows packages:
 - `portable-compat` - native D3D11 build for older Windows 10 machines: `WebView2Loader.dll` for the embedded browser plus a bundled modern ConPTY (`conpty.dll` + `OpenConsole.exe`) so TUI apps like Codex get mouse scrolling and scrollbars on old inbox conhosts
 - `portable-opengl` - renderer fallback for systems where native D3D11 cannot start or render correctly
 
+and, since v1.45.0, a per-user installer built from the `portable` tree:
+
+- `installer\wispterm-windows-setup-vX.Y.Z.exe` - NSIS setup
+  (`packaging/windows/installer/wispterm.nsi`) that installs the same files as
+  the portable zip into `%LOCALAPPDATA%\Programs\WispTerm`, writes the Start
+  menu shortcut `replace-install.ps1` also uses, adds an Add/Remove Programs
+  entry, and optionally registers the Explorer context menu. `/S` installs
+  silently, `/D=<dir>` picks the folder (last argument, unquoted), `/MENU` and
+  `/DESKTOP` select the optional components. Its uninstaller runs the shipped
+  `uninstall.ps1`, so removal logic lives in one place and the user's
+  configuration and plugins stay. citebox ships Windows the same way; Ghostty
+  has no Windows packaging to compare with.
+
 Build the artifacts with:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\packaging\windows\package.ps1
+powershell -ExecutionPolicy Bypass -File .\packaging\windows\build-installer.ps1 -Version v1.45.0
 ```
+
+`build-installer.ps1` needs NSIS 3 (`choco install nsis`; it looks on `PATH`,
+under `Program Files\NSIS`, and in the Chocolatey lib folder). On a tag
+release it runs after `sign-esigner.ps1` has signed the portable tree, so the
+embedded binaries keep their signatures; the setup exe is then signed with
+`sign-esigner.ps1 -File`. `installer/installer.test.ps1` builds the setup from
+a stub payload and silently installs and uninstalls it; CI's Windows smoke job
+runs it.
+
+Tag releases then Authenticode-sign the first-party binaries in those dist
+folders **before** the zip archives are created. See
+[Windows Authenticode (SSL.com eSigner)](#windows-authenticode-sslcom-esigner).
 
 Key outputs include:
 
@@ -556,6 +617,7 @@ zig-out\dist\portable-compat\plugins\...
 zig-out\dist\portable-opengl\wispterm.exe
 zig-out\dist\portable-opengl\version.txt
 zig-out\dist\portable-opengl\plugins\...
+zig-out\dist\installer\wispterm-windows-setup-vX.Y.Z.exe
 ```
 
 The portable app can add or remove its native Start menu shortcut and enable or
@@ -599,12 +661,130 @@ Several GitHub Actions workflows publish release assets whenever a tag matching
 - `wispterm-windows-portable-compat-vX.Y.Z.zip`
 - `wispterm-windows-portable-opengl-vX.Y.Z.zip`
 - `wispterm-windows-debug-vX.Y.Z.zip`
+- `wispterm-windows-setup-vX.Y.Z.exe`
 
-When WispTerm detects a newer release on Windows, it downloads the matching
-portable zip to the Downloads folder and reveals it in Explorer. Unzip the
-archive and double-click `Replace-WispTerm.cmd` to overwrite the Start-menu
-install (or to copy into `%LOCALAPPDATA%\Programs\WispTerm` and create that
-shortcut). You can still unzip over the existing folder by hand.
+The tag workflow (`.github/workflows/windows-release.yml`) signs
+`wispterm.exe`, `wispterm-ssh-askpass.exe`, and `wispterm-shell-extension.dll`
+in each of those folders with SSL.com eSigner, then zips the folders and
+builds the installer from the signed `portable` tree and signs that setup exe
+too (`sign-esigner.ps1 -File`). The zip archives are not signed. A missing eSigner secret or a failed signature fails
+the tag release before any zip is uploaded. Manual debug builds
+(`windows-debug.yml`) and the Windows beta workflow do not sign.
+
+`wisptermctl.exe` is published from `wisptermctl-release.yml` in its own zip and
+is outside this Authenticode step.
+
+### Windows Authenticode (SSL.com eSigner)
+
+Ghostty's tagged releases codesign and notarize the macOS app and publish
+minisign signatures for source archives. Ghostty does not ship a Windows
+Authenticode step (Windows packaging is still tracked separately from the macOS
+`codesign` path). WispTerm's Windows tag releases sign the portable binaries
+with SSL.com eSigner instead.
+
+`packaging/windows/sign-esigner.ps1` downloads CodeSignTool 1.3.2 and runs
+`sign` once per distinct file (byte-identical copies in several bundles are
+signed once and copied). `sign` uploads the file, so an eSigner credential with
+Malware Blocker enabled scans it before signing; `batch_sign` only submits
+hashes and is rejected by such a credential with "hash needs to be scanned
+first before submitting for signing". citebox signs the same way. CodeSignTool
+1.3.2's Java `main` discards picocli's exit code, so `java -jar ... sign` exits
+0 on authentication errors, invalid OTPs, and bad arguments. The script accepts
+a file only when that process exits 0, the combined stdout, stderr, and
+`logs/code_signing_tool.log` contain `Code signed successfully`, that text does
+not contain `Error:` or an exception, and the signed copy was
+written. A failure prints those streams with the eSigner secret values removed.
+An invalid OTP is retried up to four times, waiting 35 seconds so the next try
+is in a later TOTP window, including when the process exits 0. The tag job
+runs the script with PowerShell 7 so each secret stays one process argument.
+The PE signer timestamps with `TSA_URL` as an RFC3161 (`SPC_RFC3161`)
+attribute. The script sets that
+to `http://ts.ssl.com/legacy`, SSL.com's RSA timestamp authority. The default
+`http://ts.ssl.com` endpoint issues ECDSA timestamps, and Windows rejects
+those timestamp certificates when the key is shorter than its minimum.
+Microsoft binaries that ship inside `portable-compat` (`WebView2Loader.dll`,
+`conpty.dll`, `OpenConsole.exe`) keep the signatures they already have.
+
+Configure these repository secrets. Store the values only in GitHub Actions
+secrets. Do not commit them, print them, or echo them in a workflow log:
+
+| Secret | Role |
+|---|---|
+| `ESIGNER_CREDENTIAL_ID` | eSigner signing credential id |
+| `ESIGNER_USERNAME` | SSL.com account username |
+| `ESIGNER_PASSWORD` | SSL.com account password |
+| `ESIGNER_TOTP_SECRET` | TOTP seed. CodeSignTool turns it into the signing OTP |
+| `ESIGNER_PIN` | 4-digit PIN created when the certificate was enrolled in eSigner |
+
+CodeSignTool 1.3.2 `sign` has no PIN argument. The tag workflow still
+requires `ESIGNER_PIN` to be set so the credential set is complete. The script
+checks that it is non-empty, then leaves it off the CodeSignTool command line.
+
+`WINDOWS_SIGNING_PFX_BASE64` and `WINDOWS_SIGNING_PFX_PASSWORD` are deprecated.
+They only import a certificate so `build-package.ps1` can sign the context-menu
+identity package (`.msix`). They do not sign `wispterm.exe`. CodeSignTool 1.3.2
+does not sign `.msix`, and the package Publisher has to match the certificate
+subject, so the MSIX path is unchanged. See `docs/windows-context-menu.md`.
+
+A valid Authenticode signature does not by itself clear Microsoft SmartScreen.
+SmartScreen reputation is tied to the certificate and to how widely the signed
+files have been run. A new eSigner certificate can still show "Windows protected
+your PC" until that reputation exists. The RFC3161 timestamp lets Windows keep
+trusting the signature after the code-signing certificate expires; it does not
+add reputation.
+
+After a signed build, verify a binary (not the zip):
+
+```powershell
+Get-AuthenticodeSignature .\wispterm.exe | Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
+```
+
+`Status` is `Valid`, `SignerCertificate` is the eSigner certificate, and
+`TimeStamperCertificate` is present (the RFC3161 timestamp). The same check
+applies to `wispterm-ssh-askpass.exe` and `wispterm-shell-extension.dll`.
+With the Windows SDK installed:
+
+```powershell
+signtool verify /pa /v .\wispterm.exe
+```
+
+To list the files a dist tree would sign, without calling eSigner:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\packaging\windows\sign-esigner.ps1 -DistRoot .\zig-out\dist -ListOnly
+```
+
+#### Windows in-place updates
+
+A signed portable install updates itself (`src/update_inplace.zig`, after
+magpie's updater; Ghostty only auto-updates on macOS, through Sparkle, and
+shares the `auto-update = off | check | download` key and its titlebar
+`UpdatePill`). With `auto-update = download` (the default):
+
+1. A newer release's matching portable zip is downloaded in the background
+   into `<install>\.update\`, checked against the asset's SHA-256 `digest`
+   from the GitHub Releases API, and unpacked to `<install>\.update\<tag>\`.
+2. Every `.exe`/`.dll` in it must have a valid Authenticode signature, and
+   WispTerm's own (`wispterm*`) must be signed by the same publisher as the
+   running `wispterm.exe`. A running copy that is not signed (a dev build)
+   never updates itself.
+3. The titlebar shows an **Update** button. After a confirmation it moves each
+   current file aside (`<name>.wispterm-old`; Windows will rename a running exe
+   or a loaded dll but not overwrite one), moves the new file in, starts the
+   new `wispterm.exe` with `WISPTERM_UPDATE_STARTED` / `WISPTERM_UPDATE_REPLACES`,
+   and waits up to 20 s for it to report that it started. If it does not, the
+   swap is rolled back and the running version stays.
+4. Quitting with an update staged installs it, so the next launch runs it.
+5. The next launch waits for the old process to exit, then deletes the
+   `*.wispterm-old` files and `.update\`.
+
+Only installs with `version.txt` next to a signed `wispterm.exe`, in a folder
+WispTerm can write to, take part. Otherwise, and with `auto-update = check`,
+Download Update saves the matching portable zip to the Downloads folder and
+reveals it in Explorer. Unzip the archive and double-click
+`Replace-WispTerm.cmd` to overwrite the Start-menu install (or to copy into
+`%LOCALAPPDATA%\Programs\WispTerm` and create that shortcut). You can still
+unzip over the existing folder by hand.
 
 WispTerm does not build or publish a Windows installer. Use the default portable
 zip release asset; the `portable-compat` zip when using the embedded browser panel

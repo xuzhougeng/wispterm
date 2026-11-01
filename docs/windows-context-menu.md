@@ -58,10 +58,17 @@ The identity package is timestamped when signed. Without a signing certificate,
 packaging produces an explicitly unsigned developer identity package; it does
 not create or trust a self-signed certificate automatically.
 
-The release workflow accepts optional `WINDOWS_SIGNING_PFX_BASE64` and
-`WINDOWS_SIGNING_PFX_PASSWORD` repository secrets. It imports the certificate only
-on the release runner and removes it afterward. Configure these before shipping
-an end-user-enabled context menu. No Windows release certificate is checked in.
+`WINDOWS_SIGNING_PFX_BASE64` and `WINDOWS_SIGNING_PFX_PASSWORD` are deprecated.
+The tag workflow still imports them when they are set, uses that certificate
+only for this identity package, and removes it from the runner afterward. Those
+secrets do not Authenticode-sign `wispterm.exe`. Tag releases sign
+`wispterm.exe`, `wispterm-ssh-askpass.exe`, and `wispterm-shell-extension.dll`
+with SSL.com eSigner before the portable zips are created. CodeSignTool does
+not sign the `.msix`, so an end-user context menu still needs this deprecated
+PFX (or a local `WISPTERM_WINDOWS_SIGN_THUMBPRINT`) until the package publisher
+is taken from the eSigner certificate. No Windows release certificate or eSigner
+secret is checked in. See `docs/development.md` for the eSigner secret names,
+the RFC3161 timestamp, and SmartScreen reputation.
 
 Each package registers `IExplorerCommand` using `windows.comServer` and
 `windows.fileExplorerContextMenus`. A sparse identity package points to the

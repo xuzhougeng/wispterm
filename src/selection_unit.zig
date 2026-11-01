@@ -51,6 +51,17 @@ pub fn isWordCodepoint(cp: u21) bool {
     return !isBlankCodepoint(cp) and !isWordDelimiter(cp);
 }
 
+/// Copy the wide character into each following spacer-tail column.
+/// Ghostty stores that tail as codepoint 0, which word selection would treat
+/// as a blank and which would cut a Chinese word after every glyph.
+pub fn bridgeWideSpacers(row: []u21, spacer_tail: []const bool) void {
+    const n = @min(row.len, spacer_tail.len);
+    var i: usize = 1;
+    while (i < n) : (i += 1) {
+        if (spacer_tail[i]) row[i] = row[i - 1];
+    }
+}
+
 fn isWordDelimiter(cp: u21) bool {
     if (cp > 0x7f) return false;
     for (default_word_delimiters) |delimiter| {
@@ -61,6 +72,22 @@ fn isWordDelimiter(cp: u21) bool {
 
 fn isBlankCodepoint(cp: u21) bool {
     return cp == 0 or cp <= 0x20;
+}
+
+test "selection unit: wide spacer tails stay inside a Chinese word" {
+    var row = [_]u21{ '分', 0, '析', 0, '.', 'd', 'o', 'c', 'x' };
+    const tails = [_]bool{ false, true, false, true, false, false, false, false, false };
+    bridgeWideSpacers(&row, &tails);
+    try std.testing.expectEqual(ColRange{ .start = 0, .end = 8 }, wordRange(&row, 1).?);
+    try std.testing.expectEqual(ColRange{ .start = 0, .end = 8 }, wordRange(&row, 6).?);
+}
+
+test "selection unit: a real empty cell still splits a word" {
+    var row = [_]u21{ '分', 0, '析' };
+    const tails = [_]bool{ false, false, false };
+    bridgeWideSpacers(&row, &tails);
+    try std.testing.expectEqual(ColRange{ .start = 0, .end = 0 }, wordRange(&row, 0).?);
+    try std.testing.expect(wordRange(&row, 1) == null);
 }
 
 test "selection unit: word range selects an alphanumeric token" {

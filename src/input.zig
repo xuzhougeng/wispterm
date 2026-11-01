@@ -23,6 +23,9 @@ const browser_panel = AppWindow.browser_panel;
 const html_server = @import("html/server.zig");
 const html_server_model = @import("html/server_model.zig");
 const ai_sidebar = @import("assistant/sidebar/panel.zig");
+const right_dock = @import("appwindow/right_dock.zig");
+const right_dock_renderer = @import("renderer/right_dock_renderer.zig");
+const file_explorer_renderer = @import("renderer/file_explorer_renderer.zig");
 const copilot_hint_gate = @import("assistant/sidebar/hint_gate.zig");
 const ui_perf = AppWindow.ui_perf;
 const render_diagnostics = @import("render_diagnostics.zig");
@@ -39,11 +42,14 @@ const platform_input = @import("platform/input_events.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const platform_wsl = @import("platform/wsl.zig");
 const window_backend = @import("platform/window_backend.zig");
+const update_pill_state = @import("update_pill_state.zig");
 const window_metrics = @import("ui/window_metrics.zig");
 const WindowMetrics = window_metrics.WindowMetrics;
 const input_key = @import("input/key.zig");
 const feishu_reg_panel = @import("feishu/registration_panel.zig");
 const assistant_conversation = @import("input/assistant_conversation.zig");
+const session_effort = @import("assistant/conversation/session_effort.zig");
+const session_question_select = @import("assistant/conversation/session_question_select.zig");
 const command_dispatch = @import("input/command_dispatch.zig");
 const file_explorer_keymap = @import("input/file_explorer_keymap.zig");
 const input_effects = @import("input/effects.zig");
@@ -90,8 +96,11 @@ pub const pasteFromClipboard = clipboard.pasteFromClipboard;
 const pasteClipboardIntoBrowserUrlBar = clipboard.pasteClipboardIntoBrowserUrlBar;
 const pasteClipboardIntoSessionLauncher = clipboard.pasteClipboardIntoSessionLauncher;
 const pasteClipboardIntoMcpForm = clipboard.pasteClipboardIntoMcpForm;
+const pasteClipboardIntoPasswordStore = clipboard.pasteClipboardIntoPasswordStore;
+const pasteClipboardIntoSyncPage = clipboard.pasteClipboardIntoSyncPage;
 const pasteFromClipboardIntoAiChat = clipboard.pasteFromClipboardIntoAiChat;
-const pasteImageIntoAiChat = clipboard.pasteImageIntoAiChat;
+const pasteImageOrTextIntoAiChat = clipboard.pasteImageOrTextIntoAiChat;
+const pasteImageOrTextIntoTerminal = clipboard.pasteImageOrTextIntoTerminal;
 pub const pasteImageFromClipboard = clipboard.pasteImageFromClipboard;
 pub const writeTextToActivePty = clipboard.writeTextToActivePty;
 pub const writeTextToSurfacePty = clipboard.writeTextToSurfacePty;
@@ -361,8 +370,7 @@ test "input: command palette arrow navigation requests a repaint" {
     overlays.commandPaletteOpen();
     try std.testing.expect(overlays.commandPaletteVisible());
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(arrow_down_event);
 
     try std.testing.expect(AppWindow.g_force_rebuild);
@@ -431,8 +439,7 @@ test "input: command palette text filtering requests a repaint" {
     overlays.commandPaletteOpen();
     try std.testing.expect(overlays.commandPaletteVisible());
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleChar(.{ .codepoint = 'a' });
 
     try std.testing.expect(AppWindow.g_force_rebuild);
@@ -473,8 +480,7 @@ test "input: session launcher arrow navigation requests a repaint" {
     overlays.sessionLauncherOpen();
     try std.testing.expect(overlays.sessionLauncherVisible());
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(arrow_down_event);
 
     try std.testing.expect(AppWindow.g_force_rebuild);
@@ -548,8 +554,7 @@ test "input: settings page arrow navigation requests a repaint" {
     overlays.settingsPageOpen();
     try std.testing.expect(overlays.settingsPageVisible());
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(arrow_down_event);
 
     try std.testing.expect(AppWindow.g_force_rebuild);
@@ -590,6 +595,79 @@ test "input: settings page dispatchKey returns repaint effect" {
     try std.testing.expect(effect.cells_invalid);
 }
 
+test "input: password store page keys and typing request a repaint" {
+    try skipUnlessInputRendererShard();
+    const previous_keybinds = AppWindow.g_keybinds;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    var page_tab = tab.TabState{ .kind = .password_store, .tree = .empty };
+    defer {
+        AppWindow.g_keybinds = previous_keybinds;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+    }
+
+    AppWindow.g_keybinds = keybind.Set.defaults();
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tabs[0] = &page_tab;
+    tab.g_tab_count = 1;
+    active_tab_state.g_active_tab = 0;
+    const page = AppWindow.activePasswordStore() orelse return error.ExpectedPasswordStore;
+    page.open(std.testing.allocator); // test builds never touch the real vault
+    defer page.close();
+
+    const nav = dispatchKey(arrow_down_event);
+    try std.testing.expect(nav.consumed and nav.needs_rebuild and nav.cells_invalid);
+
+    // Enter on "New entry" creates one and starts editing its name.
+    _ = dispatchKey(enter_event);
+    try std.testing.expect(page.editing);
+    const typed = dispatchChar(.{ .codepoint = 'k' });
+    try std.testing.expect(typed.needs_rebuild and typed.cells_invalid);
+    try std.testing.expectEqualStrings("k", page.draftText());
+}
+
+test "input: sync page keys and typing request a repaint" {
+    try skipUnlessInputRendererShard();
+    const previous_keybinds = AppWindow.g_keybinds;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    var page_tab = tab.TabState{ .kind = .sync, .tree = .empty };
+    defer {
+        AppWindow.g_keybinds = previous_keybinds;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+    }
+
+    AppWindow.g_keybinds = keybind.Set.defaults();
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tabs[0] = &page_tab;
+    tab.g_tab_count = 1;
+    active_tab_state.g_active_tab = 0;
+    const page = AppWindow.activeSyncPage() orelse return error.ExpectedSyncPage;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir);
+    page.open(std.testing.allocator, dir); // never the real sync settings
+    defer page.close();
+
+    const nav = dispatchKey(arrow_down_event);
+    try std.testing.expect(nav.consumed and nav.needs_rebuild and nav.cells_invalid);
+    try std.testing.expectEqual(.data, page.section);
+
+    page.section = .connection;
+    page.focus = .detail;
+    page.row_index = 1; // WebDAV URL
+    const typed = dispatchChar(.{ .codepoint = 'h' });
+    try std.testing.expect(typed.needs_rebuild and typed.cells_invalid);
+    try std.testing.expectEqualStrings("h", page.draftText());
+}
+
 test "input: port forwarding arrow navigation requests a repaint" {
     try skipUnlessInputRendererShard();
     const allocator = std.testing.allocator;
@@ -609,8 +687,7 @@ test "input: port forwarding arrow navigation requests a repaint" {
         active_tab_state.g_active_tab = previous_active;
     }
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(arrow_down_event);
 
     try std.testing.expect(AppWindow.g_force_rebuild);
@@ -703,8 +780,7 @@ test "input: skill center tool toggle requests a repaint" {
     skill_path_owned = false;
     session.mutex.unlock();
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{ .key_code = 0x45, .ctrl = false, .shift = false, .alt = false, .super = false });
 
     try std.testing.expect(AppWindow.g_force_rebuild);
@@ -782,8 +858,7 @@ test "input: skill center first-party tool toggle writes state and requests a re
     description_owned = false;
     session.mutex.unlock();
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{ .key_code = 0x45, .ctrl = false, .shift = false, .alt = false, .super = false });
 
     try std.testing.expect(AppWindow.g_force_rebuild);
@@ -925,8 +1000,7 @@ test "input: skill center tool toggle is blocked while selection overlay is acti
     picker_target_0_owned = false;
     session.mutex.unlock();
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{ .key_code = 0x45, .ctrl = false, .shift = false, .alt = false, .super = false });
 
     const persisted_manifest = try tmp.dir.readFileAlloc(allocator, "tools/fake_tool/manifest.json", 4096);
@@ -979,8 +1053,7 @@ test "input: empty skill center library import shortcut opens picker" {
 
     const session = AppWindow.activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{ .key_code = 0x49, .ctrl = false, .shift = false, .alt = false, .super = false });
 
     try std.testing.expect(AppWindow.g_force_rebuild);
@@ -1059,22 +1132,19 @@ test "input: skill center deploy and import keys ignore selected tool rows" {
     skill_path_owned = false;
     session.mutex.unlock();
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{ .key_code = 0x44, .ctrl = false, .shift = false, .alt = false, .super = false });
     try std.testing.expect(!AppWindow.g_force_rebuild);
     try std.testing.expect(AppWindow.g_cells_valid);
     try std.testing.expect(!AppWindow.skillCenterOverlayActive());
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{ .key_code = 0x49, .ctrl = false, .shift = false, .alt = false, .super = false });
     try std.testing.expect(!AppWindow.g_force_rebuild);
     try std.testing.expect(AppWindow.g_cells_valid);
     try std.testing.expect(!AppWindow.skillCenterOverlayActive());
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{ .key_code = platform_input.key_enter, .ctrl = false, .shift = false, .alt = false, .super = false });
     try std.testing.expect(!AppWindow.g_force_rebuild);
     try std.testing.expect(AppWindow.g_cells_valid);
@@ -1125,8 +1195,7 @@ test "input: skill center tool import shortcut is a no-op when no file is select
         }
     }.open;
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{ .key_code = 0x54, .ctrl = false, .shift = false, .alt = false, .super = false });
 
     try std.testing.expect(!AppWindow.g_force_rebuild);
@@ -1202,8 +1271,7 @@ test "input: skill center tool import preview keys import-scroll-cancel while te
     });
     session.mutex.unlock();
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{ .key_code = platform_input.key_down, .ctrl = false, .shift = false, .alt = false, .super = false });
     try std.testing.expect(AppWindow.g_force_rebuild);
     try std.testing.expect(!AppWindow.g_cells_valid);
@@ -1211,8 +1279,7 @@ test "input: skill center tool import preview keys import-scroll-cancel while te
     try std.testing.expectEqual(@as(usize, 1), session.model.overlay.tool_import_preview.scroll);
     session.mutex.unlock();
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{ .key_code = platform_input.key_enter, .ctrl = false, .shift = false, .alt = false, .super = false });
     try std.testing.expect(AppWindow.g_force_rebuild);
     try std.testing.expect(!AppWindow.g_cells_valid);
@@ -1222,8 +1289,7 @@ test "input: skill center tool import preview keys import-scroll-cancel while te
     session.mutex.unlock();
     try std.fs.accessAbsolute(stage_root, .{});
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{ .key_code = platform_input.key_escape, .ctrl = false, .shift = false, .alt = false, .super = false });
     try std.testing.expect(AppWindow.g_force_rebuild);
     try std.testing.expect(!AppWindow.g_cells_valid);
@@ -1235,8 +1301,7 @@ test "input: skill center tool import preview keys import-scroll-cancel while te
     session.mutex.lock();
     try session.model.openTextPreview("docx / SKILL.md", "preview");
     session.mutex.unlock();
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{ .key_code = platform_input.key_enter, .ctrl = false, .shift = false, .alt = false, .super = false });
     try std.testing.expect(AppWindow.g_force_rebuild);
     try std.testing.expect(!AppWindow.g_cells_valid);
@@ -1331,8 +1396,7 @@ test "input: skill center deploy and import keys are blocked while picker overla
     picker_target_0_owned = false;
     session.mutex.unlock();
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{ .key_code = 0x44, .ctrl = false, .shift = false, .alt = false, .super = false });
     try std.testing.expect(!AppWindow.g_force_rebuild);
     try std.testing.expect(AppWindow.g_cells_valid);
@@ -1345,8 +1409,7 @@ test "input: skill center deploy and import keys are blocked while picker overla
         }
     }
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{ .key_code = 0x49, .ctrl = false, .shift = false, .alt = false, .super = false });
     try std.testing.expect(!AppWindow.g_force_rebuild);
     try std.testing.expect(AppWindow.g_cells_valid);
@@ -1484,8 +1547,7 @@ test "input: skill center main actions are blocked while import list overlay is 
     import_markers_owned = false;
     session.mutex.unlock();
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{ .key_code = 0x44, .ctrl = false, .shift = false, .alt = false, .super = false });
     try std.testing.expect(!AppWindow.g_force_rebuild);
     try std.testing.expect(AppWindow.g_cells_valid);
@@ -1498,8 +1560,7 @@ test "input: skill center main actions are blocked while import list overlay is 
         }
     }
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{ .key_code = 0x49, .ctrl = false, .shift = false, .alt = false, .super = false });
     try std.testing.expect(!AppWindow.g_force_rebuild);
     try std.testing.expect(AppWindow.g_cells_valid);
@@ -1513,8 +1574,7 @@ test "input: skill center main actions are blocked while import list overlay is 
         session.model.sel_row = 1;
     }
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{ .key_code = 0x54, .ctrl = false, .shift = false, .alt = false, .super = false });
     try std.testing.expect(!AppWindow.g_force_rebuild);
     try std.testing.expect(AppWindow.g_cells_valid);
@@ -1531,8 +1591,7 @@ test "input: skill center main actions are blocked while import list overlay is 
         }
     }
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(.{ .key_code = 0x45, .ctrl = false, .shift = false, .alt = false, .super = false });
     try std.testing.expect(!AppWindow.g_force_rebuild);
     try std.testing.expect(AppWindow.g_cells_valid);
@@ -1603,7 +1662,7 @@ test "input: terminal viewport mouse wheel scroll requests a repaint" {
         .skill_center_session = null,
         .port_forwarding_session = null,
         .copilot_session = null,
-        .copilot_visible = false,
+        .right_dock = .{},
     };
     defer tab_state.tree.deinit();
 
@@ -1618,8 +1677,7 @@ test "input: terminal viewport mouse wheel scroll requests a repaint" {
     g_selecting = false;
     overlays.hideWhatsNew();
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
 
     handleMouseWheel(.{ .delta = 120, .xpos = 20, .ypos = 40 });
 
@@ -1672,8 +1730,7 @@ test "input: file explorer mouse wheel scroll requests a repaint" {
     file_explorer.g_entry_count = 100; // total 2000px >> visible 100px → scrollable
     file_explorer.g_scroll_offset = 0;
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
 
     // Wheel "down" inside the panel (negative delta scrolls toward the bottom).
     handleMouseWheel(.{ .delta = -120, .xpos = 20, .ypos = 200 });
@@ -1687,6 +1744,62 @@ test "input: file explorer mouse wheel scroll requests a repaint" {
     // The explorer draws above the terminal cell grid, so scrolling it must not
     // invalidate the cells — that would force an unnecessary grid rebuild.
     try std.testing.expect(AppWindow.g_cells_valid);
+}
+
+test "input: right dock tab-row clicks switch panels and request a repaint" {
+    try skipUnlessInputRendererShard();
+    const right_dock_actions = @import("appwindow/right_dock_actions.zig");
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_dock_state = right_dock.g_state;
+    const previous_docked = file_explorer.isDocked();
+    const previous_browser_visible = browser_panel.g_visible;
+    defer {
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        right_dock.g_state = previous_dock_state;
+        file_explorer.setDockVisibilityQuery(if (previous_docked) &right_dock_actions.filesShowing else null);
+        // applyPlacement closed the left-panel explorer; leave it closed.
+        file_explorer.close();
+        browser_panel.g_visible = previous_browser_visible;
+    }
+
+    var tab_state = tab.TabState{
+        .kind = .terminal,
+        .tree = .empty,
+        .focused = .root,
+        .ai_chat_session = null,
+        .ai_history_session = null,
+        .copilot_session = null,
+        .right_dock = .{ .open = false, .panel = .copilot },
+    };
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tabs[0] = &tab_state;
+    tab.g_tab_count = 1;
+    active_tab_state.g_active_tab = 0;
+    browser_panel.g_visible = false;
+    right_dock.g_state.placement = .left;
+    _ = right_dock_actions.applyPlacement(.right);
+
+    // Clicking the Files tab opens the dock on Files and hands the explorer's
+    // visibility to the dock.
+    resetInputRepaintForTest();
+    applyInputEffect(applyRightDockHeaderHit(.{ .tab = .files }));
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+    try std.testing.expect(tab_state.right_dock.showing(.files));
+    try std.testing.expect(file_explorer.isVisibleForActiveTab());
+    try std.testing.expectEqual(@as(f32, 0), file_explorer.width());
+
+    // The toggle closes the dock (and with it the docked explorer) at once.
+    resetInputRepaintForTest();
+    applyInputEffect(applyRightDockHeaderHit(.toggle));
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!tab_state.right_dock.open);
+    try std.testing.expectEqual(right_dock.Panel.files, tab_state.right_dock.panel);
+    try std.testing.expect(!file_explorer.isVisibleForActiveTab());
 }
 
 test "input: file explorer keyboard navigation requests a repaint" {
@@ -1722,7 +1835,7 @@ test "input: file explorer keyboard navigation requests a repaint" {
     file_explorer.g_entry_count = 10;
     file_explorer.g_selected = 0;
 
-    AppWindow.g_force_rebuild = false;
+    resetInputRepaintForTest();
 
     // Bare Down arrow advances the selection (no modifier → not a keybind).
     handleKey(.{ .key_code = platform_input.key_down, .ctrl = false, .shift = false, .alt = false, .super = false });
@@ -1758,8 +1871,7 @@ test "input: port forwarding form left/right arrows toggle Direction and request
     handleKey(arrow_down_event); // Name -> Profile
     handleKey(arrow_down_event); // Profile -> Direction
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(arrow_right_event);
 
     try std.testing.expect(AppWindow.g_force_rebuild);
@@ -1772,8 +1884,7 @@ test "input: port forwarding form left/right arrows toggle Direction and request
         try std.testing.expect(form.rule.direction == .local);
     }
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(arrow_left_event);
 
     try std.testing.expect(AppWindow.g_force_rebuild);
@@ -1858,8 +1969,7 @@ test "input: overlay navigation drives the render gate to repaint" {
     defer overlays.commandPaletteClose();
     overlays.commandPaletteOpen();
 
-    AppWindow.g_force_rebuild = false;
-    AppWindow.g_cells_valid = true;
+    resetInputRepaintForTest();
     handleKey(arrow_down_event);
 
     const signals = render_gate.RenderSignals{
@@ -2027,14 +2137,24 @@ const AiTranscriptPanel = enum {
     copilot_sidebar,
 };
 const AiTranscriptPanelGeometry = ai_sidebar.PanelGeometry;
-threadlocal var g_ai_transcript_scroll_dragging: bool = false;
-threadlocal var g_ai_transcript_scroll_chat: ?*AppWindow.ai_chat.Session = null;
-threadlocal var g_ai_transcript_scroll_drag_offset: f32 = 0;
-threadlocal var g_ai_transcript_scroll_panel: AiTranscriptPanel = .active_chat;
-threadlocal var g_ai_transcript_selecting: bool = false;
-threadlocal var g_ai_transcript_select_chat: ?*AppWindow.ai_chat.Session = null;
-threadlocal var g_ai_transcript_select_auto_copy: bool = false;
-threadlocal var g_ai_transcript_select_panel: AiTranscriptPanel = .active_chat;
+const AiScrollDrag = struct {
+    dragging: bool = false,
+    chat: ?*AppWindow.ai_chat.Session = null,
+    offset: f32 = 0,
+    panel: AiTranscriptPanel = .active_chat,
+    question: ?AppWindow.assistant_conversation_renderer.QuestionScrollbarHit = null,
+};
+threadlocal var ai_scroll_drag: AiScrollDrag = .{};
+/// Mouse-held text selection in an AI chat: its transcript, or the pending
+/// ask_user card while `session_question_select.dragging(chat)`.
+const AiTextSelect = struct {
+    active: bool = false,
+    chat: ?*AppWindow.ai_chat.Session = null,
+    /// Shift held at press: copy as soon as the drag ends.
+    auto_copy: bool = false,
+    panel: AiTranscriptPanel = .active_chat,
+};
+threadlocal var g_ai_text_select: AiTextSelect = .{};
 const CommandCharSuppressors = struct {
     port_forwarding: ?u21 = null,
     skill_center: ?u21 = null,
@@ -2047,8 +2167,6 @@ pub threadlocal var g_explorer_resize_hover: bool = false; // Mouse is over the 
 pub threadlocal var g_explorer_resize_dragging: bool = false; // Currently dragging the file explorer edge
 pub threadlocal var g_browser_resize_hover: bool = false; // Mouse is over the embedded browser edge
 pub threadlocal var g_browser_resize_dragging: bool = false; // Currently dragging the browser edge
-pub threadlocal var g_ai_copilot_resize_hover: bool = false; // Mouse is over the AI copilot left edge
-pub threadlocal var g_ai_copilot_resize_dragging: bool = false; // Currently dragging the AI copilot edge
 
 /// Whether the AI copilot sidebar currently owns keyboard/mouse focus. Set by
 /// AppWindow.toggleAiCopilot; full key/mouse routing lands in a later task.
@@ -2210,8 +2328,7 @@ pub fn cancelTransientMouseState(win: anytype) void {
     g_explorer_resize_dragging = false;
     g_browser_resize_hover = false;
     g_browser_resize_dragging = false;
-    g_ai_copilot_resize_hover = false;
-    g_ai_copilot_resize_dragging = false;
+    right_dock.g_interaction = .{};
     g_selecting = false;
     plus_btn_pressed = false;
     tab.g_tab_close_pressed = null;
@@ -2222,15 +2339,10 @@ pub fn cancelTransientMouseState(win: anytype) void {
     g_scrollbar_drag_surface = null;
     g_ai_input_scroll_dragging = false;
     g_ai_input_scroll_chat = null;
-    g_ai_transcript_scroll_dragging = false;
-    g_ai_transcript_scroll_chat = null;
+    ai_scroll_drag = .{};
     AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_dragging = false;
     AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_hover = false;
-    g_ai_transcript_scroll_panel = .active_chat;
-    g_ai_transcript_selecting = false;
-    g_ai_transcript_select_chat = null;
-    g_ai_transcript_select_auto_copy = false;
-    g_ai_transcript_select_panel = .active_chat;
+    g_ai_text_select = .{};
     window_backend.clearTransientInput(win);
 }
 
@@ -2250,6 +2362,11 @@ pub fn toggleFileExplorer() void {
     const perf = ui_perf.begin("input.toggle_file_explorer");
     defer perf.end();
 
+    // `file-explorer-position = right`: the explorer is the dock's Files tab.
+    if (file_explorer.isDocked()) {
+        AppWindow.toggleRightDockPanel(.files);
+        return;
+    }
     file_explorer.toggle();
     if (file_explorer.isVisibleForActiveTab()) {
         AppWindow.syncVisibleFileExplorerForActiveTab(true);
@@ -2261,6 +2378,11 @@ pub fn toggleFileExplorer() void {
 }
 
 fn closeFileExplorerPanel() void {
+    if (file_explorer.isDocked()) {
+        AppWindow.closeRightDock();
+        blurBrowserUrlBarIfFocused();
+        return;
+    }
     file_explorer.close();
     blurBrowserUrlBarIfFocused();
     if (AppWindow.g_window) |win| {
@@ -2282,7 +2404,7 @@ pub fn toggleBrowserPanel() void {
         _ = platform_open_url.open(allocator, .{ .url = target });
         return;
     }
-    if (!browser_panel.isVisibleForActiveTab()) AppWindow.hideAiCopilot();
+    if (!browser_panel.isVisibleForActiveTab()) AppWindow.closeRightDock();
     if (!browser_panel.toggleForSurface(allocator, parent, surface)) return;
     if (AppWindow.g_window) |win| {
         syncPanelGridFromWindow(win);
@@ -2297,7 +2419,7 @@ pub fn openJupyterPanel() void {
     const allocator = AppWindow.g_allocator orelse return;
     const parent = AppWindow.currentNativeHandle();
     const surface = AppWindow.activeSurface();
-    if (!browser_panel.isVisibleForActiveTab()) AppWindow.hideAiCopilot();
+    if (!browser_panel.isVisibleForActiveTab()) AppWindow.closeRightDock();
 
     // Open Jupyter takes over the full content area.
     browser_panel.setDisplayMode(.full);
@@ -2342,14 +2464,6 @@ fn closeBrowserPanel() void {
 
 pub fn refreshBrowserPanel() void {
     browser_panel.refresh();
-    requestInputRepaint();
-}
-
-fn closeAiCopilotPanel() void {
-    AppWindow.hideAiCopilot();
-    if (AppWindow.g_window) |win| {
-        syncPanelGridFromWindow(win);
-    }
     requestInputRepaint();
 }
 
@@ -2577,12 +2691,19 @@ pub fn scrollbarForSurfaceLocked(surface: *Surface) ScrollbarState {
     };
 }
 
+/// Window-pixel origin of the surface's drawn cell grid (see
+/// `split_layout.gridOrigin`), or null when the surface has no live rect.
+fn surfaceGridOrigin(surface: *Surface) ?split_layout.GridOrigin {
+    const rect = splitRectForSurface(surface) orelse return null;
+    const single_pane = split_layout.soleTerminalSurface() == surface;
+    return split_layout.gridOrigin(rect, surface.getPadding(), single_pane);
+}
+
 /// Convert a window mouse position to a cell in the clicked split surface.
 fn mouseToSurfaceCell(surface: *Surface, xpos: f64, ypos: f64) CellPos {
-    const rect = splitRectForSurface(surface) orelse return mouseToCell(xpos, ypos);
-    const pad = surface.getPadding();
-    const col_f = (xpos - @as(f64, @floatFromInt(rect.x)) - @as(f64, @floatFromInt(pad.left))) / @as(f64, @floatCast(font.cell_width));
-    const row_f = (ypos - @as(f64, @floatFromInt(rect.y)) - @as(f64, @floatFromInt(pad.top))) / @as(f64, @floatCast(font.cell_height));
+    const origin = surfaceGridOrigin(surface) orelse return mouseToCell(xpos, ypos);
+    const col_f = (xpos - @as(f64, @floatFromInt(origin.x))) / @as(f64, @floatCast(font.cell_width));
+    const row_f = (ypos - @as(f64, @floatFromInt(origin.y))) / @as(f64, @floatCast(font.cell_height));
     const cols = @max(@as(usize, 1), @as(usize, @intCast(surface.size.grid.cols)));
     const rows = @max(@as(usize, 1), @as(usize, @intCast(surface.size.grid.rows)));
 
@@ -2593,11 +2714,10 @@ fn mouseToSurfaceCell(surface: *Surface, xpos: f64, ypos: f64) CellPos {
 }
 
 fn mouseToSurfacePixel(surface: *Surface, xpos: i32, ypos: i32) struct { x: i32, y: i32 } {
-    if (splitRectForSurface(surface)) |rect| {
-        const pad = surface.getPadding();
+    if (surfaceGridOrigin(surface)) |origin| {
         return .{
-            .x = xpos - rect.x - @as(i32, @intCast(pad.left)),
-            .y = ypos - rect.y - @as(i32, @intCast(pad.top)),
+            .x = xpos - origin.x,
+            .y = ypos - origin.y,
         };
     }
     return .{
@@ -2731,6 +2851,7 @@ pub fn processEvents(win: anytype) void {
         return;
     }
     processKeyAndCharEvents(win);
+    processImePreeditChange(win);
     processMouseButtonEvents(win);
     processMouseMoveEvents(win);
     processMouseWheelEvents(win);
@@ -2762,6 +2883,13 @@ fn processKeyAndCharEvents(win: anytype) void {
         g_pending_input_us = std.time.microTimestamp();
         g_pending_input_iter = AppWindow.g_loop_iter;
     }
+}
+
+// The render loop paints the IME preedit, so a preedit change must request
+// its own repaint: dictation streams interim text as marked text with no key
+// event at all (issue #671).
+fn processImePreeditChange(win: anytype) void {
+    if (window_backend.takeImePreeditChanged(win)) requestInputRepaint();
 }
 
 fn processMouseButtonEvents(win: anytype) void {
@@ -2835,6 +2963,9 @@ fn dispatchChar(ev: platform_input.CharEvent) ui_effect.UiEffect {
         if (effect.needs_rebuild) overlays.commandPaletteInsertChar(ev.codepoint);
         return effect;
     }
+    if (overlays.settingsPageVisible() and !ev.ctrl and !ev.alt and overlays.settingsPageInsertChar(ev.codepoint)) {
+        return input_effects.repaint();
+    }
     if (weixinQrPanelConsumesChar()) return .none;
     if (overlays.feishuRegPanelVisible()) return .none;
     if (browser_panel.urlBarFocused()) {
@@ -2894,6 +3025,15 @@ fn dispatchChar(ev: platform_input.CharEvent) ui_effect.UiEffect {
         if (!ev.ctrl and !ev.alt and !ev.super) {
             if (AppWindow.skillCenterUrlInsertChar(ev.codepoint)) markSkillCenterInputDirty(); // no-op unless url_input active
         }
+        return .none;
+    }
+    if (AppWindow.activePasswordStore()) |password_page| {
+        // ctrl == alt admits plain text and AltGr (Ctrl+Alt) characters.
+        if (!ev.super and ev.ctrl == ev.alt and password_page.insertChar(ev.codepoint)) return input_effects.repaint();
+        return .none;
+    }
+    if (AppWindow.activeSyncPage()) |sync_page| {
+        if (!ev.super and ev.ctrl == ev.alt and sync_page.insertChar(ev.codepoint)) return input_effects.repaint();
         return .none;
     }
     if (AppWindow.activePortForwarding() != null) {
@@ -2961,6 +3101,17 @@ fn configuredAction(ev: platform_input.KeyEvent) ?keybind.Action {
     return AppWindow.g_keybinds.lookupApp(triggerFromKeyEvent(ev));
 }
 
+fn configuredScopedAction(ev: platform_input.KeyEvent, scope: keybind.Scope) ?keybind.Action {
+    return AppWindow.g_keybinds.lookupScoped(scope, triggerFromKeyEvent(ev));
+}
+
+fn suppressCommandCharForKey(slot: *?u21, ev: platform_input.KeyEvent) void {
+    if (ev.ctrl or ev.alt or ev.super) return;
+    if (ev.key_code >= 'A' and ev.key_code <= 'Z') {
+        slot.* = @as(u21, @intCast(if (ev.shift) ev.key_code else ev.key_code + ('a' - 'A')));
+    }
+}
+
 fn logicalKeyEvent(ev: platform_input.KeyEvent) input_key.KeyEvent {
     return .{
         .key = logicalKeyFromCode(ev.key_code),
@@ -3019,18 +3170,12 @@ fn aiTranscriptPanelGeometry(panel: AiTranscriptPanel) ?AiTranscriptPanelGeometr
         .active_chat => .{
             .window_width = @floatFromInt(metrics.framebuffer_width),
             .window_height = @floatFromInt(metrics.framebuffer_height),
+            .top = @floatCast(metrics.titlebar_h),
             .chat_x = AppWindow.leftPanelsWidth(),
             .chat_w = @as(f32, @floatFromInt(metrics.framebuffer_width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(metrics.framebuffer_width),
         },
         .copilot_sidebar => blk: {
-            if (!AppWindow.aiCopilotVisible()) return null;
-            const bounds = ai_sidebar.boundsForWindow(
-                @intCast(metrics.framebuffer_width),
-                @intCast(metrics.framebuffer_height),
-                @floatCast(metrics.titlebar_h),
-                AppWindow.leftPanelsWidth(),
-                0,
-            );
+            const bounds = AppWindow.copilotPanelBounds(@intCast(metrics.framebuffer_width), @intCast(metrics.framebuffer_height)) orelse return null;
             break :blk aiTranscriptPanelGeometryForBounds(@intCast(metrics.framebuffer_width), @intCast(metrics.framebuffer_height), bounds);
         },
     };
@@ -3045,7 +3190,7 @@ test "input: copilot transcript panel geometry uses sidebar bounds" {
     try skipUnlessInputRendererShard();
     const bounds = ai_sidebar.Bounds{
         .left = 1120,
-        .top = 30,
+        .top = 64,
         .right = 1600,
         .bottom = 900,
     };
@@ -3053,6 +3198,7 @@ test "input: copilot transcript panel geometry uses sidebar bounds" {
 
     try std.testing.expectApproxEqAbs(@as(f32, 1600), geometry.window_width, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 900), geometry.window_height, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 64), geometry.top, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 1120), geometry.chat_x, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 480), geometry.chat_w, 0.001);
 }
@@ -3140,9 +3286,9 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
         },
         .paste_image => {
             if (assistant_conversation.current(aiCopilotFocused())) |target| {
-                if (!pasteImageIntoAiChat(target.session)) pasteFromClipboardIntoAiChat(target.session);
+                pasteImageOrTextIntoAiChat(target.session);
             } else {
-                if (!pasteImageFromClipboard()) pasteFromClipboard();
+                pasteImageOrTextIntoTerminal();
             }
         },
         // Panel-focus shortcuts are "performable": if there is no pane in
@@ -3226,6 +3372,30 @@ fn terminalSpecialKeySeq(
     return input_shortcuts.kittyKeyEncode(opts, key, mods, buf) orelse legacy;
 }
 
+fn terminalFunctionKeySeq(surface: *Surface, ev: platform_input.KeyEvent, buf: []u8) ?[]const u8 {
+    const ghostty_vt = @import("ghostty-vt");
+    const opts = ghostty_vt.input.KeyEncodeOptions.fromTerminal(&surface.terminal);
+    const mods: ghostty_vt.input.KeyMods = .{
+        .shift = ev.shift,
+        .ctrl = ev.ctrl,
+        .alt = ev.alt,
+        .super = ev.super,
+    };
+    return input_shortcuts.terminalFunctionKeyEncode(opts, ev.key_code, mods, buf);
+}
+
+fn terminalNavigationKeySeq(surface: *Surface, ev: platform_input.KeyEvent, buf: []u8, key_code: platform_input.KeyCode, legacy: []const u8) []const u8 {
+    const ghostty_vt = @import("ghostty-vt");
+    const opts = ghostty_vt.input.KeyEncodeOptions.fromTerminal(&surface.terminal);
+    const mods: ghostty_vt.input.KeyMods = .{
+        .shift = ev.shift,
+        .ctrl = ev.ctrl,
+        .alt = ev.alt,
+        .super = ev.super,
+    };
+    return input_shortcuts.terminalNavigationKeyEncode(opts, key_code, mods, buf) orelse legacy;
+}
+
 fn handleKey(ev: platform_input.KeyEvent) void {
     applyInputEffect(dispatchKey(ev));
 }
@@ -3262,7 +3432,7 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
             return input_effects.repaint();
         }
         if (actionIs(action, .paste_image)) {
-            if (!pasteImageIntoAiChat(session)) pasteFromClipboardIntoAiChat(session);
+            pasteImageOrTextIntoAiChat(session);
             return input_effects.repaint();
         }
         const mod = ev.ctrl or ev.super;
@@ -3351,6 +3521,9 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
     if (overlays.restoreDefaultsConfirmVisible()) {
         return overlays.restoreDefaultsConfirmHandleKey(key_event);
     }
+    if (overlays.updateRestartConfirmVisible()) {
+        return overlays.updateRestartConfirmHandleKey(key_event);
+    }
     if (overlays.settingsPageVisible()) {
         return overlays.settingsPageHandleKey(key_event);
     }
@@ -3398,6 +3571,25 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
             return input_effects.repaint();
         }
     }
+    // Password Store page: after the explorer/rename/URL-bar editors, before
+    // the late keybinds so Copy/Paste act on the page while tab switching and
+    // other configured chords keep working.
+    if (AppWindow.activePasswordStore() != null) {
+        if (actionIs(action, .paste)) return if (pasteClipboardIntoPasswordStore()) input_effects.repaint() else .none;
+        if (actionIs(action, .copy)) return AppWindow.passwordStoreCopySelected();
+        if (action) |app_action| {
+            if (handleConfiguredKeybindAction(app_action, .late)) return .none;
+        }
+        return AppWindow.passwordStoreHandleKey(key_event);
+    }
+    // Sync page: same placement and rules as the Password Store page.
+    if (AppWindow.activeSyncPage() != null) {
+        if (actionIs(action, .paste)) return if (pasteClipboardIntoSyncPage()) input_effects.repaint() else .none;
+        if (action) |app_action| {
+            if (handleConfiguredKeybindAction(app_action, .late)) return .none;
+        }
+        return AppWindow.syncPageHandleKey(key_event);
+    }
     if (assistant_conversation.current(aiCopilotFocused())) |target| {
         // Accept Cmd (super, macOS) or Ctrl (Windows) for chat editing keys.
         const mod = ev.ctrl or ev.super;
@@ -3419,7 +3611,7 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
     }
 
     if (assistant_conversation.current(aiCopilotFocused())) |target| {
-        if (target.isSidebar() and ev.key_code == platform_input.key_escape) {
+        if (target.isSidebar() and ev.key_code == platform_input.key_escape and !target.session.queuePanelOpen()) {
             if (target.session.requestState().inflight) {
                 target.session.stopRequest();
             } else if (target.session.hasSelection()) {
@@ -3438,11 +3630,35 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
     }
 
     if (AppWindow.activeAiHistory() != null) {
-        const plain = !ev.ctrl and !ev.alt and !ev.super;
-        // The Search box owns plain typing while focused, so Backspace edits the
-        // query there and the single-key Scan/Preview shortcuts stand down — letting
-        // their characters fall through to the filter instead.
+        // Search text keeps ownership while focused. Operation actions are scoped
+        // so the same keys can mean something else in other workbench pages.
         const search_focused = AppWindow.aiHistorySearchFocused();
+        const scoped_action = configuredScopedAction(ev, .ai_history);
+        if (actionIs(scoped_action, .ai_history_preview) and AppWindow.aiHistorySpacePreviews()) {
+            _ = AppWindow.aiHistoryPreviewSelectedTranscript();
+            return .none;
+        }
+        if (!search_focused) {
+            if (actionIs(scoped_action, .ai_history_scan)) {
+                _ = AppWindow.aiHistoryScanLocalNow();
+                return .none;
+            }
+            if (actionIs(scoped_action, .ai_history_download)) {
+                _ = AppWindow.aiHistoryDownloadSelectedRaw();
+                suppressCommandCharForKey(&command_char_suppressors.ai_history, ev);
+                return .none;
+            }
+            if (actionIs(scoped_action, .ai_history_export)) {
+                _ = AppWindow.aiHistoryExportSelectedMarkdown();
+                suppressCommandCharForKey(&command_char_suppressors.ai_history, ev);
+                return .none;
+            }
+            if (actionIs(scoped_action, .ai_history_attach)) {
+                _ = AppWindow.aiHistoryAttachSelectedToCopilot();
+                suppressCommandCharForKey(&command_char_suppressors.ai_history, ev);
+                return .none;
+            }
+        }
         switch (ev.key_code) {
             platform_input.key_backspace => {
                 if (search_focused) _ = AppWindow.aiHistoryBackspaceFilter();
@@ -3484,41 +3700,26 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
                 _ = AppWindow.aiHistoryScrollTranscript(1 << 30);
                 return .none;
             },
-            0x20 => if (plain and AppWindow.aiHistorySpacePreviews()) {
-                _ = AppWindow.aiHistoryPreviewSelectedTranscript();
-                return .none;
-            },
-            0x52 => if (plain and !ev.shift and !search_focused) {
-                _ = AppWindow.aiHistoryScanLocalNow();
-                return .none;
-            },
-            0x44 => if (plain and !ev.shift and !search_focused) {
-                _ = AppWindow.aiHistoryDownloadSelectedRaw();
-                command_char_suppressors.ai_history = 'd';
-                return .none;
-            },
-            0x4D => if (plain and !ev.shift and !search_focused) {
-                _ = AppWindow.aiHistoryExportSelectedMarkdown();
-                command_char_suppressors.ai_history = 'm';
-                return .none;
-            },
-            0x41 => if (plain and !ev.shift and !search_focused) {
-                _ = AppWindow.aiHistoryAttachSelectedToCopilot();
-                command_char_suppressors.ai_history = 'a';
-                return .none;
-            },
             else => {},
         }
         return .none;
     }
 
     if (AppWindow.activeMemoryCenter()) |memory_session| {
-        const plain = !ev.ctrl and !ev.alt and !ev.super;
+        const scoped_action = configuredScopedAction(ev, .memory_center);
+        if (actionIs(scoped_action, .memory_center_toggle_setting)) {
+            if (AppWindow.g_allocator) |allocator| applyInputEffect(memory_session.toggleSetting(allocator));
+            return .none;
+        }
+        if (actionIs(scoped_action, .memory_center_reload)) {
+            _ = AppWindow.memoryCenterReload();
+            return .none;
+        }
+        if (actionIs(scoped_action, .memory_center_run_digest)) {
+            _ = AppWindow.runMemoryDigestFromCenter();
+            return .none;
+        }
         switch (ev.key_code) {
-            platform_input.key_space => if (plain) {
-                if (AppWindow.g_allocator) |allocator| applyInputEffect(memory_session.toggleSetting(allocator));
-                return .none;
-            },
             platform_input.key_up => {
                 _ = AppWindow.memoryCenterMoveSelection(-1);
                 return .none;
@@ -3551,20 +3752,20 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
                 _ = AppWindow.memoryCenterScrollDetail(1 << 30);
                 return .none;
             },
-            0x52 => if (plain and !ev.shift) {
-                _ = AppWindow.memoryCenterReload();
-                return .none;
-            },
-            0x44 => if (plain and !ev.shift) {
-                _ = AppWindow.runMemoryDigestFromCenter();
-                return .none;
-            },
             else => {},
         }
         return .none;
     }
 
     if (AppWindow.activeConversationCenter()) |center| {
+        if (actionIs(configuredScopedAction(ev, .conversation_center), .conversation_center_resume)) {
+            _ = AppWindow.resumeConversationCenterSelection();
+            return .none;
+        }
+        if (actionIs(configuredScopedAction(ev, .conversation_center), .conversation_center_delete)) {
+            _ = AppWindow.deleteConversationCenterSelection();
+            return .none;
+        }
         switch (ev.key_code) {
             platform_input.key_up => {
                 if (center.focus == .filters) {
@@ -3594,14 +3795,6 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
                 _ = AppWindow.conversationCenterCycleFocus(1);
                 return .none;
             },
-            platform_input.key_enter => {
-                _ = AppWindow.resumeConversationCenterSelection();
-                return .none;
-            },
-            platform_input.key_delete => {
-                _ = AppWindow.deleteConversationCenterSelection();
-                return .none;
-            },
             platform_input.key_backspace => {
                 _ = AppWindow.conversationCenterBackspaceQuery();
                 return .none;
@@ -3620,10 +3813,38 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
     }
 
     if (AppWindow.activePortForwarding() != null) {
-        const plain = !ev.ctrl and !ev.alt and !ev.super;
         const overlay_kind = AppWindow.portForwardingOverlayKind() orelse .none;
         const form_active = overlay_kind == .form;
         const overlay_active = overlay_kind != .none;
+        if (configuredScopedAction(ev, .port_forwarding)) |port_action| {
+            switch (port_action) {
+                .port_forwarding_toggle_selected => {
+                    if (form_active) _ = AppWindow.portForwardingFormAdjust(1) else if (!overlay_active) _ = AppWindow.portForwardingToggleSelected();
+                    return .none;
+                },
+                .port_forwarding_new => {
+                    if (!overlay_active and AppWindow.portForwardingOpenNew()) suppressCommandCharForKey(&command_char_suppressors.port_forwarding, ev);
+                    return .none;
+                },
+                .port_forwarding_edit => {
+                    if (!overlay_active and AppWindow.portForwardingOpenEdit()) suppressCommandCharForKey(&command_char_suppressors.port_forwarding, ev);
+                    return .none;
+                },
+                .port_forwarding_delete => {
+                    if (!overlay_active) _ = AppWindow.portForwardingOpenDeleteConfirm();
+                    return .none;
+                },
+                .port_forwarding_restart => {
+                    if (!overlay_active) _ = AppWindow.portForwardingRestartSelected();
+                    return .none;
+                },
+                .port_forwarding_toggle_autostart => {
+                    if (!overlay_active) _ = AppWindow.portForwardingToggleAutoStart();
+                    return .none;
+                },
+                else => {},
+            }
+        }
         switch (ev.key_code) {
             platform_input.key_up => {
                 if (form_active) {
@@ -3665,46 +3886,14 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
                 if (form_active) _ = AppWindow.portForwardingBackspace();
                 return .none;
             },
-            platform_input.key_space => if (plain and !ev.shift) {
-                if (form_active) {
-                    _ = AppWindow.portForwardingFormAdjust(1);
-                } else if (!overlay_active) {
-                    _ = AppWindow.portForwardingToggleSelected();
-                }
-                return .none;
-            },
-            0x4E => if (plain and !ev.shift) {
-                if (!overlay_active and AppWindow.portForwardingOpenNew()) {
-                    command_char_suppressors.port_forwarding = 'n';
-                }
-                return .none;
-            },
-            0x45 => if (plain and !ev.shift) {
-                if (!overlay_active and AppWindow.portForwardingOpenEdit()) {
-                    command_char_suppressors.port_forwarding = 'e';
-                }
-                return .none;
-            },
-            0x44 => if (plain and !ev.shift) {
-                if (!overlay_active) _ = AppWindow.portForwardingOpenDeleteConfirm();
-                return .none;
-            },
-            0x52 => if (plain and !ev.shift) {
-                if (!overlay_active) _ = AppWindow.portForwardingRestartSelected();
-                return .none;
-            },
-            0x41 => if (plain and !ev.shift) {
-                if (!overlay_active) _ = AppWindow.portForwardingToggleAutoStart();
-                return .none;
-            },
             else => {},
         }
         return .none;
     }
 
-    // Skill Center: ↑/↓ move, space preview/toggle, ⏎ confirm, esc cancel,
-    // d deploy, i import, t import tool, e toggle, g get-from-GitHub, r rescan.
-    // The URL-input overlay captures text; the checklist captures space + 'a'.
+    // Skill Center navigation and editor controls stay local to the page;
+    // operation keys (preview, rescan, deploy, import, toggle, URL, select-all)
+    // are configured with the skill-center: scoped keybind prefix.
     if (AppWindow.activeSkillCenter() != null) {
         switch (AppWindow.skillCenterPreviewKind()) {
             .text => {
@@ -3750,13 +3939,48 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
             },
             .none => {},
         }
-        const plain = !ev.ctrl and !ev.alt and !ev.super;
         const text_capture = AppWindow.skillCenterUrlInputActive();
         const picking = AppWindow.skillCenterPickActive();
         const overlay_active = AppWindow.skillCenterOverlayActive();
         // Ctrl/Cmd+V paste into the URL field.
         if (text_capture and (ev.ctrl or ev.super) and ev.key_code == 0x56) { // 'V'
             if (AppWindow.skillCenterUrlPaste()) markSkillCenterInputDirty();
+            return .none;
+        }
+        const scoped_action = configuredScopedAction(ev, .skill_center);
+        if (actionIs(scoped_action, .skill_center_preview) and !text_capture) {
+            if (AppWindow.skillCenterSpacePreview()) markSkillCenterInputDirty();
+            return .none;
+        }
+        if (actionIs(scoped_action, .skill_center_rescan) and !text_capture) {
+            if (AppWindow.skillCenterRescan()) markSkillCenterInputDirty();
+            return .none;
+        }
+        if (!text_capture and !picking and !overlay_active) {
+            if (actionIs(scoped_action, .skill_center_deploy)) {
+                if (AppWindow.skillCenterDeploy()) markSkillCenterInputDirty();
+                return .none;
+            }
+            if (actionIs(scoped_action, .skill_center_import)) {
+                if (AppWindow.skillCenterImport()) markSkillCenterInputDirty();
+                return .none;
+            }
+            if (actionIs(scoped_action, .skill_center_import_tool)) {
+                if (AppWindow.skillCenterImportTool()) markSkillCenterInputDirty();
+                return .none;
+            }
+            if (actionIs(scoped_action, .skill_center_toggle)) {
+                if (AppWindow.skillCenterToggleToolEnabled()) markSkillCenterInputDirty();
+                return .none;
+            }
+        }
+        if (!text_capture and !picking and actionIs(scoped_action, .skill_center_open_url)) {
+            if (AppWindow.skillCenterOpenUrlInput()) markSkillCenterInputDirty();
+            suppressCommandCharForKey(&command_char_suppressors.skill_center, ev);
+            return .none;
+        }
+        if (picking and actionIs(scoped_action, .skill_center_select_all)) {
+            if (AppWindow.skillCenterPickSelectAll()) markSkillCenterInputDirty();
             return .none;
         }
         switch (ev.key_code) {
@@ -3794,42 +4018,6 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
                     if (AppWindow.skillCenterUrlBackspace()) markSkillCenterInputDirty();
                     return .none;
                 }
-            },
-            0x52 => if (plain and !ev.shift and !text_capture) { // 'R'
-                if (AppWindow.skillCenterRescan()) markSkillCenterInputDirty();
-                return .none;
-            },
-            0x44 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'D'
-                if (AppWindow.skillCenterDeploy()) markSkillCenterInputDirty();
-                return .none;
-            },
-            0x49 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'I'
-                if (AppWindow.skillCenterImport()) markSkillCenterInputDirty();
-                return .none;
-            },
-            0x54 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'T'
-                if (AppWindow.skillCenterImportTool()) markSkillCenterInputDirty();
-                return .none;
-            },
-            0x45 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'E'
-                if (AppWindow.skillCenterToggleToolEnabled()) markSkillCenterInputDirty();
-                return .none;
-            },
-            0x47 => if (plain and !ev.shift and !text_capture and !picking) { // 'G'
-                if (AppWindow.skillCenterOpenUrlInput()) markSkillCenterInputDirty();
-                // SDL text-input mode also fires a 'g' CHAR event after this
-                // key-down; suppress it so it doesn't land in the now-active
-                // URL field. (Only 'G' opens a text field, so only it suppresses.)
-                command_char_suppressors.skill_center = 'g';
-                return .none;
-            },
-            0x41 => if (plain and !ev.shift and picking) { // 'A' select-all
-                if (AppWindow.skillCenterPickSelectAll()) markSkillCenterInputDirty();
-                return .none;
-            },
-            platform_input.key_space => if (plain and !ev.shift and !text_capture) {
-                if (AppWindow.skillCenterSpacePreview()) markSkillCenterInputDirty(); // toggles when picking
-                return .none;
             },
             else => {},
         }
@@ -3908,47 +4096,72 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
     // not for modifier-only keys or key combos that don't produce PTY output.
     var wrote_to_pty = false;
 
-    // Scratch buffer for Kitty keyboard protocol key encoding. Only used by the
-    // Enter/Backspace/Tab arms below; harmless otherwise.
+    // Scratch buffer for terminal special-key encoding.
     var kitty_buf: [128]u8 = undefined;
 
     const seq: ?[]const u8 = switch (ev.key_code) {
+        platform_input.key_f1, platform_input.key_f2, platform_input.key_f3, platform_input.key_f4, platform_input.key_f5, platform_input.key_f6, platform_input.key_f7, platform_input.key_f8, platform_input.key_f9, platform_input.key_f10, platform_input.key_f11, platform_input.key_f12 => terminalFunctionKeySeq(surface, ev, &kitty_buf),
         platform_input.key_enter => terminalSpecialKeySeq(surface, ev, .enter, &kitty_buf, "\r"),
         platform_input.key_backspace => terminalSpecialKeySeq(surface, ev, .backspace, &kitty_buf, "\x7f"),
         platform_input.key_tab => terminalSpecialKeySeq(surface, ev, .tab, &kitty_buf, if (ev.shift) "\x1b[Z" else "\t"),
-        platform_input.key_escape => "\x1b",
+        platform_input.key_escape => terminalNavigationKeySeq(surface, ev, &kitty_buf, platform_input.key_escape, "\x1b"),
         platform_input.key_up, platform_input.key_down, platform_input.key_right, platform_input.key_left => input_shortcuts.terminalArrowSequence(key_event, surface.terminal.modes.get(.cursor_keys)),
-        platform_input.key_home => "\x1b[H",
-        platform_input.key_end => "\x1b[F",
+        platform_input.key_home => terminalNavigationKeySeq(surface, ev, &kitty_buf, platform_input.key_home, "\x1b[H"),
+        platform_input.key_end => terminalNavigationKeySeq(surface, ev, &kitty_buf, platform_input.key_end, "\x1b[F"),
         platform_input.key_page_up => blk: { // Page Up
-            if (ev.shift) {
+            if (ev.shift and surface.terminal.screens.active_key != .alternate) {
                 surface.render_state.mutex.lock();
                 surface.terminal.scrollViewport(.{ .delta = -@as(isize, AppWindow.term_rows / 2) });
                 surface.render_state.mutex.unlock();
                 overlays.scrollbarShow();
                 break :blk null;
             }
-            break :blk "\x1b[5~";
+            break :blk terminalNavigationKeySeq(surface, ev, &kitty_buf, platform_input.key_page_up, "\x1b[5~");
         },
         platform_input.key_page_down => blk: { // Page Down
-            if (ev.shift) {
+            if (ev.shift and surface.terminal.screens.active_key != .alternate) {
                 surface.render_state.mutex.lock();
                 surface.terminal.scrollViewport(.{ .delta = @as(isize, AppWindow.term_rows / 2) });
                 surface.render_state.mutex.unlock();
                 overlays.scrollbarShow();
                 break :blk null;
             }
-            break :blk "\x1b[6~";
+            break :blk terminalNavigationKeySeq(surface, ev, &kitty_buf, platform_input.key_page_down, "\x1b[6~");
         },
-        platform_input.key_insert => "\x1b[2~",
-        platform_input.key_delete => "\x1b[3~",
+        platform_input.key_insert => terminalNavigationKeySeq(surface, ev, &kitty_buf, platform_input.key_insert, "\x1b[2~"),
+        platform_input.key_delete => terminalNavigationKeySeq(surface, ev, &kitty_buf, platform_input.key_delete, "\x1b[3~"),
         else => blk: {
-            // Ctrl+A through Ctrl+Z
-            if (ev.ctrl and ev.key_code >= 0x41 and ev.key_code <= 0x5A) {
-                // Shifted Ctrl+letter chords are application shortcuts above.
-                if (!ev.shift) {
-                    const ctrl_char: u8 = @intCast(ev.key_code - 0x41 + 1);
-                    writeToPty(surface, &[_]u8{ctrl_char});
+            const ascii_code = input_shortcuts.asciiKeyCode(ev.key_code);
+            const is_ascii_key = ascii_code != null;
+            const is_ascii_letter = ev.key_code >= 0x41 and ev.key_code <= 0x5A;
+            const ghostty_vt = @import("ghostty-vt");
+            const opts = ghostty_vt.input.KeyEncodeOptions.fromTerminal(&surface.terminal);
+            const mods: ghostty_vt.input.KeyMods = .{
+                .ctrl = ev.ctrl,
+                .shift = ev.shift,
+                .alt = ev.alt,
+                .super = ev.super,
+            };
+            // Preserve the established Ctrl+A..Z control-byte path.
+            if (ev.ctrl and !ev.shift and !ev.alt and !ev.super and is_ascii_letter) {
+                const ctrl_char: u8 = @intCast(ev.key_code - 0x41 + 1);
+                writeToPty(surface, &[_]u8{ctrl_char});
+                wrote_to_pty = true;
+            } else if (ev.ctrl and !ev.alt and is_ascii_key) {
+                // Kitty/modify-other-keys lets Pi distinguish Ctrl+Shift and
+                // Ctrl+punctuation chords; protocol-off returns null safely.
+                if (input_shortcuts.terminalAsciiKeyEncode(opts, ev.key_code, mods, &kitty_buf)) |s| {
+                    writeToPty(surface, s);
+                    wrote_to_pty = true;
+                }
+            } else if (ev.alt and !ev.ctrl and !ev.super and is_ascii_key) {
+                if (input_shortcuts.terminalAsciiKeyEncode(opts, ev.key_code, mods, &kitty_buf)) |s| {
+                    writeToPty(surface, s);
+                    wrote_to_pty = true;
+                } else if (ascii_code) |code| {
+                    // Legacy fallback for terminals without Kitty/modify-other-keys.
+                    const ch: u8 = if (ev.shift and code >= 'a' and code <= 'z') code - 32 else code;
+                    writeToPty(surface, &[_]u8{ 0x1b, ch });
                     wrote_to_pty = true;
                 }
             }
@@ -4026,7 +4239,8 @@ fn btwInputWrapCols() usize {
 fn aiCopilotInputWrapCols() usize {
     const win = AppWindow.g_window orelse return std.math.maxInt(usize);
     const size = clientSize(win);
-    const panel_w = AppWindow.aiCopilotWidth(size.width);
+    const bounds = AppWindow.copilotPanelBounds(size.width, size.height) orelse return std.math.maxInt(usize);
+    const panel_w: f32 = @floatFromInt(bounds.right - bounds.left);
     return AppWindow.assistant_conversation_renderer.inputWrapColumns(panel_w);
 }
 
@@ -4164,33 +4378,48 @@ fn applySidebarWidthFromMouse(xpos: f64) void {
     requestInputRepaint();
 }
 
+/// Where the explorer is drawn this frame (beside the sidebar, or inside the
+/// right dock below its tab row). Shared by every explorer hit-test.
+fn fileExplorerRect() ?AppWindow.ExplorerRect {
+    // The left placement needs no window size (it hangs off the sidebar), so
+    // window-less test harnesses still route explorer input.
+    var width: i32 = 0;
+    var height: i32 = 0;
+    if (AppWindow.g_window) |win| {
+        const metrics = windowMetrics(win);
+        width = @intCast(metrics.framebuffer_width);
+        height = @intCast(metrics.framebuffer_height);
+    }
+    return AppWindow.fileExplorerPanelRect(width, height);
+}
+
 fn hitTestFileExplorer(xpos: f64, ypos: f64) bool {
-    if (!file_explorer.isVisibleForActiveTab()) return false;
-    if (ypos < titlebarHeight()) return false;
-    const panel_x: f64 = @floatCast(titlebar.sidebarWidth());
-    const panel_right = panel_x + @as(f64, @floatCast(file_explorer.width()));
-    return xpos >= panel_x and xpos < panel_right;
+    const rect = fileExplorerRect() orelse return false;
+    if (ypos < rect.top) return false;
+    return xpos >= rect.left and xpos < rect.right;
 }
 
 fn fileExplorerHeaderLayout() ?hit_test.PanelHeaderLayout {
-    if (!file_explorer.isVisibleForActiveTab()) return null;
-    const panel_x: f64 = @floatCast(titlebar.sidebarWidth());
-    const panel_right = panel_x + @as(f64, @floatCast(file_explorer.width()));
+    const rect = fileExplorerRect() orelse return null;
     return .{
         .visible = true,
-        .left = panel_x,
-        .right = panel_right,
-        .top = titlebarHeight(),
+        .left = rect.left,
+        .right = rect.right,
+        .top = rect.top,
         .height = @floatCast(file_explorer.headerHeight()),
     };
 }
 
+/// The explorer's own × only exists beside the sidebar; in the dock the tab
+/// row's toggle closes it.
 fn hitTestFileExplorerCloseButton(xpos: f64, ypos: f64) bool {
+    if (file_explorer.isDocked()) return false;
     return hit_test.panelHeaderCloseButton(fileExplorerHeaderLayout() orelse return false, xpos, ypos);
 }
 
 fn hitTestFileExplorerRefreshButton(xpos: f64, ypos: f64) bool {
-    return hit_test.panelHeaderSecondButton(fileExplorerHeaderLayout() orelse return false, xpos, ypos);
+    const slot = file_explorer_renderer.refreshSlot(file_explorer.isDocked());
+    return hit_test.panelHeaderButton(fileExplorerHeaderLayout() orelse return false, slot, xpos, ypos);
 }
 
 fn browserPanelBounds() ?browser_panel.Bounds {
@@ -4255,30 +4484,6 @@ fn toggleBrowserDisplayMode() void {
     requestInputRepaint();
 }
 
-fn aiCopilotHeaderLayout() ?hit_test.PanelHeaderLayout {
-    if (!AppWindow.aiCopilotVisible()) return null;
-    const win = AppWindow.g_window orelse return null;
-    const metrics = windowMetrics(win);
-    const bounds = ai_sidebar.boundsForWindow(
-        @intCast(metrics.framebuffer_width),
-        @intCast(metrics.framebuffer_height),
-        @floatCast(metrics.titlebar_h),
-        AppWindow.leftPanelsWidth(),
-        0,
-    );
-    return .{
-        .visible = true,
-        .left = @floatFromInt(bounds.left),
-        .right = @floatFromInt(bounds.right),
-        .top = @floatFromInt(bounds.top),
-        .height = @floatCast(AppWindow.assistant_conversation_renderer.HEADER_H),
-    };
-}
-
-fn hitTestAiCopilotCloseButton(xpos: f64, ypos: f64) bool {
-    return hit_test.panelHeaderCloseButton(aiCopilotHeaderLayout() orelse return false, xpos, ypos);
-}
-
 fn hitTestBrowserResizeHandle(xpos: f64, ypos: f64) bool {
     if (!browser_panel.isVisibleForActiveTab()) return false;
     if (ypos < titlebarHeight()) return false;
@@ -4299,28 +4504,74 @@ fn applyBrowserWidthFromMouse(xpos: f64) void {
     requestInputRepaint();
 }
 
-// AI copilot panel resize grip. The copilot is right-docked (right_offset 0)
-// and its bounds are computed against framebufferSize everywhere (renderer +
-// click handling), so the hit-test/apply mirror the browser resize structure
-// but read the framebuffer size to track the panel's actual left edge.
-fn hitTestAiCopilotResizeHandle(xpos: f64, ypos: f64) bool {
-    if (!AppWindow.aiCopilotVisible()) return false;
-    if (ypos < titlebarHeight()) return false;
-    const win = AppWindow.g_window orelse return false;
+fn rightDockBoundsForInput() ?right_dock.Bounds {
+    const win = AppWindow.g_window orelse return null;
     const metrics = windowMetrics(win);
-    const bounds = ai_sidebar.boundsForWindow(
-        @intCast(metrics.framebuffer_width),
-        @intCast(metrics.framebuffer_height),
-        @floatCast(metrics.titlebar_h),
-        AppWindow.leftPanelsWidth(),
-        0,
-    );
-    const panel_x: f64 = @floatFromInt(bounds.left);
-    const half_hit: f64 = @as(f64, @floatCast(ai_sidebar.RESIZE_HIT_WIDTH)) / 2;
-    return xpos >= panel_x - half_hit and xpos <= panel_x + half_hit;
+    return AppWindow.rightDockBounds(@intCast(metrics.framebuffer_width), @intCast(metrics.framebuffer_height));
 }
 
-/// Hit-test the closed-state Copilot summon handle (valid only when Copilot is
+/// The right dock's resize grip straddles its left edge (shared width for
+/// every dock tab, so dragging never depends on which panel is showing).
+fn hitTestRightDockResizeHandle(xpos: f64, ypos: f64) bool {
+    const dock = rightDockBoundsForInput() orelse return false;
+    return right_dock.resizeHandleHit(dock, xpos, ypos);
+}
+
+/// True when the right dock (tab row + panel) covers (xpos, ypos).
+fn hitTestRightDock(xpos: f64, ypos: f64) bool {
+    const dock = rightDockBoundsForInput() orelse return false;
+    return dock.contains(xpos, ypos);
+}
+
+fn rightDockHeaderHitAt(xpos: f64, ypos: f64) ?right_dock.HeaderHit {
+    const win = AppWindow.g_window orelse return null;
+    const metrics = windowMetrics(win);
+    const layout = right_dock_renderer.headerLayout(@intCast(metrics.framebuffer_width), @intCast(metrics.framebuffer_height)) orelse return null;
+    if (!layout.row.contains(xpos, ypos)) return null;
+    return right_dock.headerHitAt(&layout, xpos, ypos);
+}
+
+/// Left press on the dock chrome: start a resize, switch tabs, or close.
+/// Returns the effect when the press landed on the tab row or resize edge;
+/// presses in the panel below fall through to Copilot / explorer routing.
+fn handleRightDockPress(xpos: f64, ypos: f64) ?ui_effect.UiEffect {
+    if (hitTestRightDockResizeHandle(xpos, ypos)) {
+        right_dock.g_interaction.resize_dragging = true;
+        right_dock.g_interaction.resize_hover = true;
+        platform_cursor.set(.size_we);
+        return input_effects.repaint();
+    }
+    const dock = rightDockBoundsForInput() orelse return null;
+    const row_bottom: f64 = @as(f64, @floatFromInt(dock.top)) + @as(f64, @floatCast(AppWindow.rightDockTabRowHeight()));
+    if (!dock.contains(xpos, ypos) or ypos >= row_bottom) return null;
+    if (rightDockHeaderHitAt(xpos, ypos)) |hit| return applyRightDockHeaderHit(hit);
+    // Empty stretches of the tab row are still dock chrome: consume them.
+    return input_effects.repaint();
+}
+
+/// A tab-row click: switch to that panel, or close the dock (the toggle).
+/// Either way the switch must paint now, not on the next cursor blink.
+fn applyRightDockHeaderHit(hit: right_dock.HeaderHit) ui_effect.UiEffect {
+    switch (hit) {
+        .tab => |panel| AppWindow.selectRightDockPanel(panel),
+        .toggle => AppWindow.closeRightDock(),
+    }
+    return input_effects.repaint();
+}
+
+fn applyRightDockWidthFromMouse(xpos: f64) void {
+    const win = AppWindow.g_window orelse return;
+    const metrics = windowMetrics(win);
+    // Right-docked at the far right edge: width grows as the mouse moves left.
+    const right_edge = @as(f64, @floatFromInt(metrics.framebuffer_width));
+    const new_width = right_edge - xpos;
+    const available_width: f32 = @as(f32, @floatFromInt(metrics.framebuffer_width)) - AppWindow.leftPanelsWidth();
+    if (!right_dock.setWidth(@floatCast(new_width), available_width)) return;
+    syncGridFromWindow(win);
+    requestInputRepaint();
+}
+
+/// Hit-test the closed-state dock summon handle (valid only when the dock is
 /// closed). Widens the click zone for comfort without a heavier visual.
 fn hitTestCopilotEdgeHandle(xpos: f64, ypos: f64) bool {
     // Must match the render + mouse-move eligibility exactly, or this becomes an
@@ -4328,14 +4579,14 @@ fn hitTestCopilotEdgeHandle(xpos: f64, ypos: f64) bool {
     // feature is disabled, or from a browser/Jupyter panel sharing the slot).
     if (!copilot_hint_gate.handleEligible(
         AppWindow.g_copilot_hint,
-        AppWindow.aiCopilotVisible(),
+        AppWindow.rightDockVisible(),
         AppWindow.isActiveTabTerminal(),
         AppWindow.anyRightDockPanelVisible(),
     )) return false;
     if (ypos < titlebarHeight()) return false;
     const win = AppWindow.g_window orelse return false;
     const metrics = windowMetrics(win);
-    const rect = ai_sidebar.closedHandleRect(
+    const rect = right_dock.closedHandleRect(
         @floatFromInt(metrics.framebuffer_width),
         @floatFromInt(metrics.framebuffer_height),
         @floatCast(metrics.titlebar_h),
@@ -4349,20 +4600,9 @@ fn hitTestCopilotEdgeHandle(xpos: f64, ypos: f64) bool {
     return xpos >= right - hit_w and ypos >= top and ypos <= bottom;
 }
 
-fn applyAiCopilotWidthFromMouse(xpos: f64) void {
-    const win = AppWindow.g_window orelse return;
-    const metrics = windowMetrics(win);
-    // Right-docked at the far right edge (right_offset 0): width grows as the
-    // mouse moves left, same as the browser's right-edge math.
-    const right_edge = @as(f64, @floatFromInt(metrics.framebuffer_width));
-    const new_width = right_edge - xpos;
-    const available_width: f32 = @as(f32, @floatFromInt(metrics.framebuffer_width)) - AppWindow.leftPanelsWidth();
-    if (!ai_sidebar.setWidth(@floatCast(new_width), available_width)) return;
-    syncGridFromWindow(win);
-    requestInputRepaint();
-}
-
 fn hitTestFileExplorerResizeHandle(xpos: f64, ypos: f64) bool {
+    // A docked explorer resizes with the dock's own left-edge grip.
+    if (file_explorer.isDocked()) return false;
     if (!file_explorer.isVisibleForActiveTab()) return false;
     if (ypos < titlebarHeight()) return false;
     const panel_x: f64 = @floatCast(titlebar.sidebarWidth());
@@ -4392,7 +4632,9 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
     const key_up = platform_input.key_up;
     const key_down = platform_input.key_down;
 
-    // In input mode (rename/new file/new dir)
+    // In input mode (rename/new file/new dir), only editing controls are owned
+    // here. Scoped workbench actions intentionally stand down until the edit is
+    // committed or cancelled.
     if (file_explorer.hasActiveOp()) {
         switch (ev.key_code) {
             key_escape => {
@@ -4411,57 +4653,72 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
         }
     }
 
-    // Normal navigation mode
+    if (configuredScopedAction(ev, .file_explorer)) |action| {
+        switch (action) {
+            .file_explorer_download => {
+                if (!file_explorer.isRemoteMode()) return false;
+                var dl_buf: [260]u8 = undefined;
+                const dl_path = getDownloadsFolder(&dl_buf);
+                if (dl_path.len > 0) file_explorer.downloadSelected(dl_path);
+                return true;
+            },
+            .file_explorer_upload_file => {
+                if (!file_explorer.isRemoteMode()) return false;
+                openFileDialogAndUpload();
+                return true;
+            },
+            .file_explorer_upload_folder => {
+                if (!file_explorer.isRemoteMode()) return false;
+                openFolderDialogAndUpload();
+                return true;
+            },
+            .file_explorer_rename => {
+                file_explorer.handleAction(.rename_selected);
+                return true;
+            },
+            .file_explorer_new_file => {
+                file_explorer.handleAction(.create_file);
+                return true;
+            },
+            .file_explorer_new_folder => {
+                file_explorer.handleAction(.create_directory);
+                return true;
+            },
+            .file_explorer_delete => {
+                file_explorer.handleAction(.delete_selected);
+                return true;
+            },
+            .file_explorer_refresh => {
+                file_explorer.handleAction(.refresh);
+                return true;
+            },
+            else => {},
+        }
+    }
+
+    // Normal navigation mode. Navigation remains owned by the panel; operation
+    // keys above are configurable and no longer have a hardcoded fallback.
     switch (ev.key_code) {
         key_escape => {
             file_explorer.blur();
             return true;
         },
         key_up, key_down, key_enter => {
-            // Navigation keys route through a domain-owned action so this branch
-            // asks file_explorer to perform the intent instead of calling its
-            // internals directly. fromNavigationKey owns exactly these keys.
             if (file_explorer_keymap.fromNavigationKey(ev.key_code)) |action| {
                 file_explorer.handleAction(action);
             }
             return true;
         },
-        0x53 => { // 'S' key: Ctrl/Cmd+S = download selected file
-            if ((ev.ctrl or ev.super) and !ev.alt and !ev.shift) {
-                if (file_explorer.isRemoteMode()) {
-                    // Download to user's Downloads folder
-                    var dl_buf: [260]u8 = undefined;
-                    const dl_path = getDownloadsFolder(&dl_buf);
-                    if (dl_path.len > 0) {
-                        file_explorer.downloadSelected(dl_path);
-                    }
-                    return true;
-                }
-            }
-            return false;
-        },
-        0x55 => { // 'U' = upload file; Shift+U = upload folder
-            if (file_explorer.isRemoteMode() and !ev.ctrl and !ev.alt and !ev.super) {
-                if (ev.shift) {
-                    openFolderDialogAndUpload();
-                } else {
-                    openFileDialogAndUpload();
-                }
-                return true;
-            }
-            return false;
-        },
-        else => {
-            if (file_explorer_keymap.fromOperationKey(ev)) |action| {
-                file_explorer.handleAction(action);
-                return true;
-            }
-            return false;
-        },
+        else => return false,
     }
 }
 
 fn handleAgentHistoryKey(ev: platform_input.KeyEvent) bool {
+    if (actionIs(configuredScopedAction(ev, .agent_history), .agent_history_delete)) {
+        deleteSelectedAgentHistoryRow();
+        return true;
+    }
+
     switch (ev.key_code) {
         platform_input.key_escape => {
             file_explorer.blur();
@@ -4478,17 +4735,6 @@ fn handleAgentHistoryKey(ev: platform_input.KeyEvent) bool {
         platform_input.key_enter => {
             activateSelectedAgentHistoryRow();
             return true;
-        },
-        platform_input.key_delete => {
-            deleteSelectedAgentHistoryRow();
-            return true;
-        },
-        0x44 => { // 'D' key = delete history row
-            if (!ev.ctrl and !ev.alt and !ev.shift and !ev.super) {
-                deleteSelectedAgentHistoryRow();
-                return true;
-            }
-            return false;
         },
         else => return false,
     }
@@ -4558,13 +4804,11 @@ fn handleFileExplorerPress(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: b
     }
 
     // Click on a file entry
-    const panel_x: f64 = @floatCast(titlebar.sidebarWidth());
-    const panel_right = panel_x + @as(f64, @floatCast(file_explorer.width()));
-    if (xpos < panel_x or xpos >= panel_right) return;
+    const rect = fileExplorerRect() orelse return;
+    if (xpos < rect.left or xpos >= rect.right) return;
 
-    const titlebar_h = titlebarHeight();
     const header_h: f64 = @floatCast(file_explorer.headerHeight());
-    const list_top = titlebar_h + header_h;
+    const list_top = rect.top + header_h;
     if (ypos < list_top) return;
 
     if (file_explorer.rowIndexAtListY(ypos - list_top)) |row_idx| {
@@ -4582,13 +4826,11 @@ fn handleFileExplorerPress(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: b
 }
 
 fn handleAgentHistoryPress(xpos: f64, ypos: f64) void {
-    const panel_x: f64 = @floatCast(titlebar.sidebarWidth());
-    const panel_right = panel_x + @as(f64, @floatCast(file_explorer.width()));
-    if (xpos < panel_x or xpos >= panel_right) return;
+    const rect = fileExplorerRect() orelse return;
+    if (xpos < rect.left or xpos >= rect.right) return;
 
-    const titlebar_h = titlebarHeight();
     const header_h: f64 = @floatCast(file_explorer.headerHeight());
-    const list_top = titlebar_h + header_h;
+    const list_top = rect.top + header_h;
     if (ypos < list_top) return;
 
     const row_h: f64 = @floatCast(file_explorer.rowHeight());
@@ -4661,11 +4903,59 @@ fn hitTestCopilotButton(xpos: f64, ypos: f64) bool {
     return xpos >= copilot_x and xpos < copilot_x + copilot_w;
 }
 
+fn hitTestPaletteButton(xpos: f64, ypos: f64) bool {
+    const titlebar_h = titlebarHeight();
+    if (ypos < 0 or ypos >= titlebar_h) return false;
+    if (titlebar.TITLEBAR_PALETTE_W <= 0) return false;
+    const win = AppWindow.g_window orelse return false;
+    const size = clientSize(win);
+    const window_width: f64 = @floatFromInt(size.width);
+    const caption_w: f64 = 46 * 3;
+    const config_w: f64 = @floatCast(titlebar.TITLEBAR_CONFIG_W);
+    const help_w: f64 = @floatCast(titlebar.TITLEBAR_HELP_W);
+    const copilot_w: f64 = @floatCast(titlebar.TITLEBAR_COPILOT_W);
+    const palette_w: f64 = @floatCast(titlebar.TITLEBAR_PALETTE_W);
+    const palette_x = window_width - caption_w - config_w - help_w - copilot_w - palette_w;
+    return xpos >= palette_x and xpos < palette_x + palette_w;
+}
+
+/// The Update pill sits left of the command center button while a staged
+/// update is ready (update_pill_state).
+fn hitTestUpdatePill(xpos: f64, ypos: f64) bool {
+    const titlebar_h = titlebarHeight();
+    if (ypos < 0 or ypos >= titlebar_h) return false;
+    if (titlebar.TITLEBAR_PALETTE_W <= 0) return false;
+    const pill_w: f64 = @floatCast(update_pill_state.currentWidth());
+    if (pill_w <= 0) return false;
+    const win = AppWindow.g_window orelse return false;
+    const size = clientSize(win);
+    const window_width: f64 = @floatFromInt(size.width);
+    const caption_w: f64 = 46 * 3;
+    const config_w: f64 = @floatCast(titlebar.TITLEBAR_CONFIG_W);
+    const help_w: f64 = @floatCast(titlebar.TITLEBAR_HELP_W);
+    const copilot_w: f64 = @floatCast(titlebar.TITLEBAR_COPILOT_W);
+    const palette_w: f64 = @floatCast(titlebar.TITLEBAR_PALETTE_W);
+    const pill_x = window_width - caption_w - config_w - help_w - copilot_w - palette_w - pill_w;
+    return xpos >= pill_x and xpos < pill_x + pill_w;
+}
+
 fn handleTopbarPress(xpos: f64) void {
     const toggle_x: f64 = @floatCast(titlebar.titlebarLeftReserved());
     const toggle_end: f64 = toggle_x + @as(f64, titlebar.TITLEBAR_TOGGLE_W);
     if (xpos >= toggle_x and xpos < toggle_end) {
         toggleSidebar();
+        return;
+    }
+
+    if (hitTestPaletteButton(xpos, titlebarHeight() / 2)) {
+        overlays.commandPaletteToggle();
+        requestInputRepaint();
+        return;
+    }
+
+    if (hitTestUpdatePill(xpos, titlebarHeight() / 2)) {
+        overlays.updateRestartConfirmOpen();
+        requestInputRepaint();
         return;
     }
 
@@ -4703,12 +4993,30 @@ fn handleSidebarPress(xpos: f64, ypos: f64) void {
     }
 }
 
-fn viewportCellCodepoint(surface: *Surface, col: usize, row: usize) u21 {
+fn viewportPageCell(surface: *Surface, col: usize, row: usize) ?*@import("ghostty-vt").Cell {
     const cell_data = surface.terminal.screens.active.pages.getCell(.{ .viewport = .{
         .x = @intCast(col),
         .y = @intCast(row),
-    } }) orelse return 0;
-    return @intCast(cell_data.cell.codepoint());
+    } }) orelse return null;
+    return cell_data.cell;
+}
+
+fn viewportCellCodepoint(surface: *Surface, col: usize, row: usize) u21 {
+    const cell = viewportPageCell(surface, col, row) orelse return 0;
+    return @intCast(cell.codepoint());
+}
+
+fn viewportCellIsSpacer(surface: *Surface, col: usize, row: usize) bool {
+    const cell = viewportPageCell(surface, col, row) orelse return false;
+    return switch (cell.wide) {
+        .spacer_tail, .spacer_head => true,
+        else => false,
+    };
+}
+
+fn viewportCellIsSpacerTail(surface: *Surface, col: usize, row: usize) bool {
+    const cell = viewportPageCell(surface, col, row) orelse return false;
+    return cell.wide == .spacer_tail;
 }
 
 fn viewportRowFlags(surface: *Surface, row: usize) struct { wraps_next: bool, continues_from_prev: bool } {
@@ -4739,6 +5047,10 @@ const TerminalTokenGrid = struct {
 
     pub fn codepoint(self: TerminalTokenGrid, row: usize, col: usize) u21 {
         return viewportCellCodepoint(self.surface, col, row);
+    }
+
+    pub fn isSpacer(self: TerminalTokenGrid, row: usize, col: usize) bool {
+        return viewportCellIsSpacer(self.surface, col, row);
     }
 
     pub fn wrapsNext(self: TerminalTokenGrid, row: usize) bool {
@@ -4833,9 +5145,14 @@ fn selectWordAtCell(surface: *Surface, cell_pos: CellPos) bool {
     surface.render_state.mutex.lock();
     defer surface.render_state.mutex.unlock();
 
-    const row = readViewportRowLocked(surface, cell_pos.row, &row_buf);
-    if (cell_pos.col >= row.len) return false;
-    const range = selection_unit.wordRange(row, cell_pos.col) orelse return false;
+    const row_len = readViewportRowLocked(surface, cell_pos.row, &row_buf).len;
+    if (cell_pos.col >= row_len) return false;
+    var spacer_tail: [MAX_SELECTION_COLS]bool = undefined;
+    for (0..row_len) |col| {
+        spacer_tail[col] = viewportCellIsSpacerTail(surface, col, cell_pos.row);
+    }
+    selection_unit.bridgeWideSpacers(row_buf[0..row_len], spacer_tail[0..row_len]);
+    const range = selection_unit.wordRange(row_buf[0..row_len], cell_pos.col) orelse return false;
     const abs_row = viewportOffsetForSurfaceLocked(surface) + cell_pos.row;
     activateSelection(surface, range.start, abs_row, range.end, abs_row);
     return true;
@@ -5654,6 +5971,9 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             const top_offset: f32 = @floatCast(titlebarHeight());
             const xpos: f64 = @floatFromInt(ev.x);
             const ypos: f64 = @floatFromInt(ev.y);
+            // A click can move focus or cycle a ←/→ choice row without running
+            // an action; repaint either way so it does not wait for a blink.
+            defer requestInputRepaint();
             if (overlays.sessionLauncherExecuteAt(xpos, ypos, w_f, h_f, top_offset)) return;
             if (!overlays.sessionLauncherContainsPoint(xpos, ypos, w_f, h_f, top_offset)) {
                 overlays.sessionLauncherClose();
@@ -5668,6 +5988,17 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             const xpos: f64 = @floatFromInt(ev.x);
             const ypos: f64 = @floatFromInt(ev.y);
             _ = overlays.restoreDefaultsConfirmExecuteAt(xpos, ypos, @floatFromInt(fb.width), @floatFromInt(fb.height));
+            requestInputRepaint();
+        }
+        return;
+    }
+    if (overlays.updateRestartConfirmVisible()) {
+        if (ev.button == .left and ev.action == .press) {
+            const win = AppWindow.g_window orelse return;
+            const fb = window_backend.framebufferSize(win);
+            const xpos: f64 = @floatFromInt(ev.x);
+            const ypos: f64 = @floatFromInt(ev.y);
+            _ = overlays.updateRestartConfirmExecuteAt(xpos, ypos, @floatFromInt(fb.width), @floatFromInt(fb.height));
             requestInputRepaint();
         }
         return;
@@ -5878,10 +6209,6 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 closeBrowserPanel();
                 return;
             }
-            if (hitTestAiCopilotCloseButton(xpos, ypos)) {
-                closeAiCopilotPanel();
-                return;
-            }
             const over_browser_url_bar = hitTestBrowserUrlBar(xpos, ypos);
             if (!over_browser_url_bar) blurBrowserUrlBarIfFocused();
             if (hitTestSidebarResizeHandle(xpos, ypos)) {
@@ -5902,14 +6229,13 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 platform_cursor.set(.size_we);
                 return;
             }
-            if (hitTestAiCopilotResizeHandle(xpos, ypos)) {
-                g_ai_copilot_resize_dragging = true;
-                g_ai_copilot_resize_hover = true;
-                platform_cursor.set(.size_we);
+            // Right dock chrome: resize edge, tab row (tab switch / close).
+            if (handleRightDockPress(xpos, ypos)) |effect| {
+                applyInputEffect(effect);
                 return;
             }
-            if (!AppWindow.aiCopilotVisible() and hitTestCopilotEdgeHandle(xpos, ypos)) {
-                AppWindow.toggleAiCopilot();
+            if (!AppWindow.rightDockVisible() and hitTestCopilotEdgeHandle(xpos, ypos)) {
+                AppWindow.summonRightDock();
                 return;
             }
 
@@ -5967,6 +6293,14 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 if (AppWindow.memoryCenterHandleMousePress(xpos, ypos)) return;
             }
 
+            if (AppWindow.activePasswordStore() != null) {
+                if (AppWindow.passwordStoreHandleMousePress(xpos, ypos)) return;
+            }
+
+            if (AppWindow.activeSyncPage() != null) {
+                if (AppWindow.syncPageHandleMousePress(xpos, ypos)) return;
+            }
+
             if (AppWindow.activeConversationCenter() != null) {
                 if (AppWindow.conversationCenterHandleMousePress(xpos, ypos)) return;
             }
@@ -5982,13 +6316,10 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 if (AppWindow.activeCopilotSessionForInput()) |chat| {
                     const win = AppWindow.g_window orelse return;
                     const fb = window_backend.framebufferSize(win);
-                    const bounds = ai_sidebar.boundsForWindow(
-                        @intCast(fb.width),
-                        @intCast(fb.height),
-                        @floatCast(titlebarHeight()),
-                        AppWindow.leftPanelsWidth(),
-                        0,
-                    );
+                    const bounds = AppWindow.copilotPanelBounds(@intCast(fb.width), @intCast(fb.height)) orelse return;
+                    // The conversation starts below the dock's tab row, not at
+                    // the titlebar: every Copilot hit-test takes this top.
+                    const panel_top: f32 = @floatFromInt(bounds.top);
                     const bx_left: f64 = @floatFromInt(bounds.left);
                     const bx_right: f64 = @floatFromInt(bounds.right);
                     const by_top: f64 = @floatFromInt(bounds.top);
@@ -6002,7 +6333,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             xpos,
                             ypos,
                             @floatFromInt(fb.width),
-                            @floatCast(titlebarHeight()),
+                            panel_top,
                             chat_x,
                             chat_w,
                             true, // copilot sidebar: dot hit-box
@@ -6016,7 +6347,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             xpos,
                             ypos,
                             @floatFromInt(fb.width),
-                            @floatCast(titlebarHeight()),
+                            panel_top,
                             chat_x,
                             chat_w,
                             true, // copilot sidebar: error text left of dot
@@ -6031,7 +6362,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             ypos,
                             @floatFromInt(fb.width),
                             @floatFromInt(fb.height),
-                            @floatCast(titlebarHeight()),
+                            panel_top,
                             chat_x,
                             chat_w,
                         )) |target| {
@@ -6050,11 +6381,26 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                                     chat.toggleReasoningCollapsed(message_index);
                                     requestInputRepaint();
                                 },
-                                .question_option => |idx| {
-                                    _ = chat.resolveQuestionOption(idx);
+                                .question_scrollbar => |hit| {
+                                    ai_scroll_drag = .{ .dragging = true, .chat = chat, .panel = .copilot_sidebar, .question = hit };
+                                    applyAiQuestionScrollbarDrag(chat, xpos);
                                     requestInputRepaint();
                                 },
+                                .question_text => |hit| beginAiQuestionSelection(chat, hit, ev.shift, .copilot_sidebar),
                             }
+                            return;
+                        }
+                        if (AppWindow.assistant_conversation_renderer.effortChipHitTest(
+                            chat,
+                            xpos,
+                            ypos,
+                            panel_top,
+                            chat_x,
+                            chat_w,
+                            true, // copilot sidebar: compact header layout
+                        )) {
+                            session_effort.cycle(chat);
+                            requestInputRepaint();
                             return;
                         }
                         if (AppWindow.assistant_conversation_renderer.modelLabelHitTest(
@@ -6062,7 +6408,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             xpos,
                             ypos,
                             @floatFromInt(fb.width),
-                            @floatCast(titlebarHeight()),
+                            panel_top,
                             chat_x,
                             chat_w,
                             true, // copilot sidebar: compact header layout
@@ -6072,10 +6418,11 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             return;
                         }
                         if (AppWindow.assistant_conversation_renderer.permissionChipHitTest(
+                            chat,
                             xpos,
                             ypos,
                             @floatFromInt(fb.width),
-                            @floatCast(titlebarHeight()),
+                            panel_top,
                             chat_x,
                             chat_w,
                             true, // copilot sidebar: chip sits next to the status dot
@@ -6089,14 +6436,11 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             ypos,
                             @floatFromInt(fb.width),
                             @floatFromInt(fb.height),
-                            @floatCast(titlebarHeight()),
+                            panel_top,
                             chat_x,
                             chat_w,
                         )) |drag_offset| {
-                            g_ai_transcript_scroll_dragging = true;
-                            g_ai_transcript_scroll_chat = chat;
-                            g_ai_transcript_scroll_drag_offset = drag_offset;
-                            g_ai_transcript_scroll_panel = .copilot_sidebar;
+                            ai_scroll_drag = .{ .dragging = true, .chat = chat, .offset = drag_offset, .panel = .copilot_sidebar };
                             AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_dragging = true;
                             applyAiTranscriptScrollbarDrag(chat, ypos);
                             requestInputRepaint();
@@ -6109,19 +6453,28 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                                 ypos,
                                 @floatFromInt(fb.width),
                                 @floatFromInt(fb.height),
-                                @floatCast(titlebarHeight()),
+                                panel_top,
                                 chat_x,
                                 chat_w,
                             )) |hit| {
                                 chat.beginTranscriptSelection(hit.message_index, hit.byte_offset);
-                                g_ai_transcript_selecting = true;
-                                g_ai_transcript_select_chat = chat;
-                                g_ai_transcript_select_auto_copy = ev.shift;
-                                g_ai_transcript_select_panel = .copilot_sidebar;
+                                g_ai_text_select = .{ .active = true, .chat = chat, .auto_copy = ev.shift, .panel = .copilot_sidebar };
                                 platform_cursor.set(.ibeam);
                                 requestInputRepaint();
                                 return;
                             }
+                        }
+                        if (AppWindow.assistant_conversation_renderer.inputTextOffsetAt(
+                            chat,
+                            xpos,
+                            ypos,
+                            @floatFromInt(fb.height),
+                            chat_x,
+                            chat_w,
+                        )) |offset| {
+                            chat.setInputCursor(offset);
+                            requestInputRepaint();
+                            return;
                         }
                         // Click landed in the panel but not on an interactive
                         // element: keep focus, clear any selection, consume it.
@@ -6190,11 +6543,26 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             chat.toggleReasoningCollapsed(message_index);
                             requestInputRepaint();
                         },
-                        .question_option => |idx| {
-                            _ = chat.resolveQuestionOption(idx);
+                        .question_scrollbar => |hit| {
+                            ai_scroll_drag = .{ .dragging = true, .chat = chat, .panel = .active_chat, .question = hit };
+                            applyAiQuestionScrollbarDrag(chat, xpos);
                             requestInputRepaint();
                         },
+                        .question_text => |hit| beginAiQuestionSelection(chat, hit, ev.shift, .active_chat),
                     }
+                    return;
+                }
+                if (AppWindow.assistant_conversation_renderer.effortChipHitTest(
+                    chat,
+                    xpos,
+                    ypos,
+                    @floatCast(titlebarHeight()),
+                    AppWindow.leftPanelsWidth(),
+                    @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
+                    false, // full tab
+                )) {
+                    session_effort.cycle(chat);
+                    requestInputRepaint();
                     return;
                 }
                 if (AppWindow.assistant_conversation_renderer.modelLabelHitTest(
@@ -6212,6 +6580,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     return;
                 }
                 if (AppWindow.assistant_conversation_renderer.permissionChipHitTest(
+                    chat,
                     xpos,
                     ypos,
                     @floatFromInt(fb.width),
@@ -6233,10 +6602,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     AppWindow.leftPanelsWidth(),
                     @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                 )) |drag_offset| {
-                    g_ai_transcript_scroll_dragging = true;
-                    g_ai_transcript_scroll_chat = chat;
-                    g_ai_transcript_scroll_drag_offset = drag_offset;
-                    g_ai_transcript_scroll_panel = .active_chat;
+                    ai_scroll_drag = .{ .dragging = true, .chat = chat, .offset = drag_offset, .panel = .active_chat };
                     AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_dragging = true;
                     applyAiTranscriptScrollbarDrag(chat, ypos);
                     requestInputRepaint();
@@ -6254,10 +6620,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                         @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                     )) |hit| {
                         chat.beginTranscriptSelection(hit.message_index, hit.byte_offset);
-                        g_ai_transcript_selecting = true;
-                        g_ai_transcript_select_chat = chat;
-                        g_ai_transcript_select_auto_copy = ev.shift;
-                        g_ai_transcript_select_panel = .active_chat;
+                        g_ai_text_select = .{ .active = true, .chat = chat, .auto_copy = ev.shift, .panel = .active_chat };
                         platform_cursor.set(.ibeam);
                         requestInputRepaint();
                         return;
@@ -6276,6 +6639,18 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     g_ai_input_scroll_chat = chat;
                     g_ai_input_scroll_drag_offset = hit.drag_offset_px;
                     applyAiInputScrollbarDrag(chat, ypos);
+                    requestInputRepaint();
+                    return;
+                }
+                if (AppWindow.assistant_conversation_renderer.inputTextOffsetAt(
+                    chat,
+                    xpos,
+                    ypos,
+                    @floatFromInt(fb.height),
+                    AppWindow.leftPanelsWidth(),
+                    @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
+                )) |offset| {
+                    chat.setInputCursor(offset);
                     requestInputRepaint();
                     return;
                 }
@@ -6380,18 +6755,11 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             g_scrollbar_drag_surface = null;
             g_ai_input_scroll_dragging = false;
             g_ai_input_scroll_chat = null;
-            g_ai_transcript_scroll_dragging = false;
-            g_ai_transcript_scroll_chat = null;
-            g_ai_transcript_scroll_panel = .active_chat;
+            ai_scroll_drag = .{};
             AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_dragging = false;
-            if (g_ai_transcript_selecting) {
-                if (g_ai_transcript_select_chat) |chat| {
-                    if (chat.finishTranscriptSelection() and g_ai_transcript_select_auto_copy) copyAiChatToClipboard(chat);
-                }
-                g_ai_transcript_selecting = false;
-                g_ai_transcript_select_chat = null;
-                g_ai_transcript_select_auto_copy = false;
-                g_ai_transcript_select_panel = .active_chat;
+            if (g_ai_text_select.active) {
+                if (g_ai_text_select.chat) |chat| finishAiTextSelection(chat, g_ai_text_select.auto_copy);
+                g_ai_text_select = .{};
                 requestInputRepaint();
                 platform_cursor.set(.arrow);
                 return;
@@ -6414,10 +6782,12 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 platform_cursor.set(if (g_browser_resize_hover) .size_we else .arrow);
                 return;
             }
-            if (g_ai_copilot_resize_dragging) {
-                g_ai_copilot_resize_dragging = false;
-                g_ai_copilot_resize_hover = hitTestAiCopilotResizeHandle(xpos, ypos);
-                platform_cursor.set(if (g_ai_copilot_resize_hover) .size_we else .arrow);
+            if (right_dock.g_interaction.resize_dragging) {
+                right_dock.g_interaction.resize_dragging = false;
+                right_dock.g_interaction.resize_hover = hitTestRightDockResizeHandle(xpos, ypos);
+                platform_cursor.set(if (right_dock.g_interaction.resize_hover) .size_we else .arrow);
+                AppWindow.persistRightDockWidth();
+                requestInputRepaint();
                 return;
             }
 
@@ -6593,31 +6963,95 @@ fn applyAiInputScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
 }
 
 fn applyAiTranscriptScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
-    const geometry = aiTranscriptPanelGeometry(g_ai_transcript_scroll_panel) orelse return;
+    const geometry = aiTranscriptPanelGeometry(ai_scroll_drag.panel) orelse return;
     if (AppWindow.assistant_conversation_renderer.transcriptScrollbarScrollPxAt(
         chat,
         ypos,
         geometry.window_width,
         geometry.window_height,
-        @floatCast(titlebarHeight()),
+        geometry.top,
         geometry.chat_x,
         geometry.chat_w,
-        g_ai_transcript_scroll_drag_offset,
+        ai_scroll_drag.offset,
     )) |px| {
         chat.scrollToPx(px);
         requestInputRepaint();
     }
 }
 
-fn updateAiTranscriptSelectionDrag(chat: *AppWindow.ai_chat.Session, xpos: f64, ypos: f64) void {
-    const geometry = aiTranscriptPanelGeometry(g_ai_transcript_select_panel) orelse return;
+fn applyAiQuestionScrollbarDrag(chat: *AppWindow.ai_chat.Session, xpos: f64) void {
+    const current = switch (ai_scroll_drag.panel) {
+        .active_chat => AppWindow.activeAiChat(),
+        .copilot_sidebar => AppWindow.activeCopilotSessionForInput(),
+    };
+    if (current != chat) {
+        ai_scroll_drag = .{};
+        return;
+    }
+    const hit = ai_scroll_drag.question orelse return;
+    const geometry = aiTranscriptPanelGeometry(ai_scroll_drag.panel) orelse {
+        ai_scroll_drag = .{};
+        return;
+    };
+    const drag = AppWindow.assistant_conversation_renderer.questionScrollbarDragAt(
+        chat,
+        xpos,
+        geometry.window_height,
+        geometry.chat_x,
+        geometry.chat_w,
+        hit,
+    ) orelse {
+        ai_scroll_drag = .{};
+        return;
+    };
+    if (chat.scrollQuestionTo(hit.generation, drag.offset, drag.content_w, drag.clip_w)) requestInputRepaint();
+}
+
+fn beginAiQuestionSelection(
+    chat: *AppWindow.ai_chat.Session,
+    hit: AppWindow.assistant_conversation_renderer.QuestionTextHit,
+    auto_copy: bool,
+    panel: AiTranscriptPanel,
+) void {
+    session_question_select.begin(chat, hit.generation, hit.point, hit.option);
+    g_ai_text_select = .{ .active = true, .chat = chat, .auto_copy = auto_copy, .panel = panel };
+    platform_cursor.set(.ibeam);
+    requestInputRepaint();
+}
+
+fn finishAiTextSelection(chat: *AppWindow.ai_chat.Session, auto_copy: bool) void {
+    if (!session_question_select.dragging(chat)) {
+        if (chat.finishTranscriptSelection() and auto_copy) copyAiChatToClipboard(chat);
+        return;
+    }
+    switch (session_question_select.finish(chat)) {
+        .none => {},
+        .selected => if (auto_copy) copyAiChatToClipboard(chat),
+        .choose => |option| _ = chat.resolveQuestionOption(option),
+    }
+}
+
+fn updateAiTextSelectionDrag(chat: *AppWindow.ai_chat.Session, xpos: f64, ypos: f64) void {
+    const geometry = aiTranscriptPanelGeometry(g_ai_text_select.panel) orelse return;
+    if (session_question_select.dragging(chat)) {
+        const hit = AppWindow.assistant_conversation_renderer.questionSelectionDragAt(
+            chat,
+            xpos,
+            ypos,
+            geometry.window_height,
+            geometry.chat_x,
+            geometry.chat_w,
+        ) orelse return;
+        if (session_question_select.update(chat, hit.generation, hit.point)) requestInputRepaint();
+        return;
+    }
     if (AppWindow.assistant_conversation_renderer.transcriptTextHitTest(
         chat,
         xpos,
         ypos,
         geometry.window_width,
         geometry.window_height,
-        @floatCast(titlebarHeight()),
+        geometry.top,
         geometry.chat_x,
         geometry.chat_w,
     )) |hit| {
@@ -6648,8 +7082,8 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         platform_cursor.set(.size_we);
         return;
     }
-    if (g_ai_copilot_resize_dragging) {
-        applyAiCopilotWidthFromMouse(xpos);
+    if (right_dock.g_interaction.resize_dragging) {
+        applyRightDockWidthFromMouse(xpos);
         platform_cursor.set(.size_we);
         return;
     }
@@ -6657,12 +7091,17 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         if (g_ai_input_scroll_chat) |chat| applyAiInputScrollbarDrag(chat, ypos);
         return;
     }
-    if (g_ai_transcript_scroll_dragging) {
-        if (g_ai_transcript_scroll_chat) |chat| applyAiTranscriptScrollbarDrag(chat, ypos);
+    if (ai_scroll_drag.dragging) {
+        if (ai_scroll_drag.chat) |chat| {
+            if (ai_scroll_drag.question != null)
+                applyAiQuestionScrollbarDrag(chat, xpos)
+            else
+                applyAiTranscriptScrollbarDrag(chat, ypos);
+        }
         return;
     }
-    if (g_ai_transcript_selecting) {
-        if (g_ai_transcript_select_chat) |chat| updateAiTranscriptSelectionDrag(chat, xpos, ypos);
+    if (g_ai_text_select.active) {
+        if (g_ai_text_select.chat) |chat| updateAiTextSelectionDrag(chat, xpos, ypos);
         platform_cursor.set(.ibeam);
         return;
     }
@@ -6758,10 +7197,6 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         return;
     }
     if (!g_selecting and !overlays.scrollbar.g_scrollbar_dragging) {
-        if (hitTestAiCopilotCloseButton(xpos, ypos)) {
-            platform_cursor.set(.arrow);
-            return;
-        }
         const over_sidebar_resize = hitTestSidebarResizeHandle(xpos, ypos);
         if (over_sidebar_resize) {
             platform_cursor.set(.size_we);
@@ -6789,20 +7224,29 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
             platform_cursor.set(.arrow);
             g_browser_resize_hover = false;
         }
-        const over_ai_copilot_resize = hitTestAiCopilotResizeHandle(xpos, ypos);
-        if (over_ai_copilot_resize) {
+        const over_dock_resize = hitTestRightDockResizeHandle(xpos, ypos);
+        if (over_dock_resize) {
             platform_cursor.set(.size_we);
-            g_ai_copilot_resize_hover = true;
+            if (!right_dock.g_interaction.resize_hover) requestInputRepaint();
+            right_dock.g_interaction.resize_hover = true;
             return;
-        } else if (g_ai_copilot_resize_hover) {
+        } else if (right_dock.g_interaction.resize_hover) {
             platform_cursor.set(.arrow);
-            g_ai_copilot_resize_hover = false;
+            right_dock.g_interaction.resize_hover = false;
+            requestInputRepaint();
         }
-        // Closed-state Copilot summon handle: reveal as the cursor nears the edge.
-        if (!AppWindow.aiCopilotVisible()) {
+        // Dock tab row: repaint when the hovered tab / toggle changes so the
+        // highlight follows the pointer without waiting for a cursor blink.
+        const dock_hover = rightDockHeaderHitAt(xpos, ypos);
+        if (!std.meta.eql(dock_hover, right_dock.g_interaction.header_hover)) {
+            right_dock.g_interaction.header_hover = dock_hover;
+            requestInputRepaint();
+        }
+        // Closed-state dock summon handle: reveal as the cursor nears the edge.
+        if (!AppWindow.rightDockVisible()) {
             const handle_eligible = copilot_hint_gate.handleEligible(
                 AppWindow.g_copilot_hint,
-                AppWindow.aiCopilotVisible(),
+                AppWindow.rightDockVisible(),
                 AppWindow.isActiveTabTerminal(),
                 AppWindow.anyRightDockPanelVisible(),
             );
@@ -7040,22 +7484,6 @@ fn sendTerminalMouseReport(
     return true;
 }
 
-/// True when the AI copilot sidebar is shown and covers (xf, yf).
-fn aiCopilotRegionContains(xf: f64, yf: f64) bool {
-    if (!AppWindow.aiCopilotVisible()) return false;
-    const win = AppWindow.g_window orelse return false;
-    const fb = window_backend.framebufferSize(win);
-    const bounds = ai_sidebar.boundsForWindow(
-        @intCast(fb.width),
-        @intCast(fb.height),
-        @floatCast(titlebarHeight()),
-        AppWindow.leftPanelsWidth(),
-        0,
-    );
-    return xf >= @as(f64, @floatFromInt(bounds.left)) and xf < @as(f64, @floatFromInt(bounds.right)) and
-        yf >= @as(f64, @floatFromInt(bounds.top)) and yf < @as(f64, @floatFromInt(bounds.bottom));
-}
-
 /// The surface that should receive a mouse report for an event at (x, y), or
 /// null when the point is over window chrome / side panels or the focused
 /// program has not enabled mouse tracking. Mirrors the chrome exclusions the
@@ -7069,7 +7497,7 @@ fn terminalMouseReportTarget(x_i: i32, y_i: i32) ?*Surface {
     if (hitTestFileExplorer(xf, yf)) return null;
     if (hitTestBrowserUrlBar(xf, yf)) return null;
     if (hitTestBrowserPanel(xf, yf)) return null;
-    if (aiCopilotRegionContains(xf, yf)) return null;
+    if (hitTestRightDock(xf, yf)) return null;
     const surface = split_layout.surfaceAtPoint(x_i, y_i) orelse return null;
     surface.render_state.mutex.lock();
     const mode = surface.terminal.flags.mouse_event;
@@ -7125,6 +7553,31 @@ fn reportMouseMotion(surface: *Surface, button: mouse_report.Button, ev: platfor
     });
 }
 
+fn scrollWideMarkdownTable(
+    chat: *AppWindow.ai_chat.Session,
+    ev: platform_input.MouseWheelEvent,
+    window_width: f32,
+    window_height: f32,
+    top: f32,
+    chat_x: f32,
+    chat_w: f32,
+) bool {
+    const hit = AppWindow.assistant_conversation_renderer.wideTableAtPoint(
+        chat,
+        @floatFromInt(ev.xpos),
+        @floatFromInt(ev.ypos),
+        window_width,
+        window_height,
+        top,
+        chat_x,
+        chat_w,
+    ) orelse return false;
+    const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
+    if (!chat.scrollTableHorizontal(hit.message_index, hit.table_start, delta, hit.content_w, hit.clip_w)) return false;
+    requestInputRepaint();
+    return true;
+}
+
 fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
     overlays.startupShortcutsDismiss();
     if (overlays.btwConversationVisible()) {
@@ -7168,11 +7621,11 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
     }
     if (tab.g_sidebar_visible and ev.xpos >= 0 and ev.xpos < @as(i32, @intFromFloat(titlebar.sidebarWidth()))) return;
     if (hitTestBrowserPanel(@floatFromInt(ev.xpos), @floatFromInt(ev.ypos))) return;
-    // Scroll in file explorer
-    if (file_explorer.isVisibleForActiveTab()) {
-        const panel_x = @as(i32, @intFromFloat(titlebar.sidebarWidth()));
-        const panel_right = @as(i32, @intFromFloat(titlebar.sidebarWidth() + file_explorer.width()));
-        if (ev.xpos >= panel_x and ev.xpos < panel_right) {
+    // Scroll in file explorer (beside the sidebar or in the right dock)
+    if (fileExplorerRect()) |rect| {
+        const panel_x: i32 = @intFromFloat(rect.left);
+        const panel_right: i32 = @intFromFloat(rect.right);
+        if (ev.xpos >= panel_x and ev.xpos < panel_right and @as(f64, @floatFromInt(ev.ypos)) >= rect.top) {
             const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * file_explorer.rowHeight() * 3 / 120.0;
             file_explorer.scrollBy(delta);
             // Request a frame so the new offset is drawn now; otherwise the panel
@@ -7210,6 +7663,14 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
         _ = AppWindow.memoryCenterHandleMouseWheel(ev.xpos, ev.ypos, @intCast(ev.delta));
         return;
     }
+    if (AppWindow.activePasswordStore() != null) {
+        AppWindow.passwordStoreHandleMouseWheel(ev.xpos, @intCast(ev.delta));
+        return;
+    }
+    if (AppWindow.activeSyncPage() != null) {
+        AppWindow.syncPageHandleMouseWheel(ev.xpos, @intCast(ev.delta));
+        return;
+    }
     if (AppWindow.activeConversationCenter() != null) {
         _ = AppWindow.conversationCenterHandleMouseWheel(ev.xpos, ev.ypos, @intCast(ev.delta));
         return;
@@ -7242,6 +7703,9 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
                 requestInputRepaint();
                 return;
             }
+            const chat_x = AppWindow.leftPanelsWidth();
+            const chat_w = @as(f32, @floatFromInt(size.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(size.width);
+            if (scrollWideMarkdownTable(chat, ev, @floatFromInt(size.width), @floatFromInt(size.height), @floatCast(titlebarHeight()), chat_x, chat_w)) return;
             const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
             chat.scrollBy(delta);
             requestInputRebuild();
@@ -7256,13 +7720,7 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
         if (AppWindow.activeCopilotSessionForInput()) |chat| {
             const win = AppWindow.g_window orelse return;
             const size = clientSize(win);
-            const bounds = ai_sidebar.boundsForWindow(
-                size.width,
-                size.height,
-                @floatCast(titlebarHeight()),
-                AppWindow.leftPanelsWidth(),
-                0,
-            );
+            const bounds = AppWindow.copilotPanelBounds(size.width, size.height) orelse return;
             if (ev.xpos >= bounds.left and ev.xpos < bounds.right and ev.ypos >= bounds.top and ev.ypos < bounds.bottom) {
                 const chat_x: f32 = @floatFromInt(bounds.left);
                 const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
@@ -7281,6 +7739,7 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
                     requestInputRepaint();
                     return;
                 }
+                if (scrollWideMarkdownTable(chat, ev, @floatFromInt(size.width), @floatFromInt(size.height), @floatFromInt(bounds.top), chat_x, chat_w)) return;
                 const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
                 chat.scrollBy(delta);
                 requestInputRebuild();

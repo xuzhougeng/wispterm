@@ -27,6 +27,16 @@ threadlocal var scissor: ScissorState = .{
 threadlocal var clear_color: ClearColor = .{ .r = 0, .g = 0, .b = 0, .a = 0 };
 threadlocal var scratch_error: [256]u8 = @splat(0);
 
+/// Called before any state mutation below takes effect (mirrors the OpenGL
+/// backend). The UI glyph batcher registers its flush here so deferred draws
+/// are encoded under the state they were issued with (scissor/blend/viewport)
+/// and before the frame commits. Stays null when batching is disabled.
+pub threadlocal var pre_change_hook: ?*const fn () void = null;
+
+inline fn notifyPreChange() void {
+    if (pre_change_hook) |hook| hook();
+}
+
 extern fn wispterm_metal_frame_begin(ctx: *Context.Handles, r: f32, g: f32, b: f32, a: f32, error_buf: [*]u8, error_buf_len: usize) bool;
 extern fn wispterm_metal_frame_end(ctx: *Context.Handles, error_buf: [*]u8, error_buf_len: usize) bool;
 extern fn wispterm_metal_arm_capture() void;
@@ -63,6 +73,7 @@ pub fn beginFrame() void {
     frame_active = true;
 }
 pub fn endFrame() void {
+    notifyPreChange();
     if (!frame_active) return;
     if (!wispterm_metal_frame_end(&Context.handles, &scratch_error, scratch_error.len)) {
         const end = std.mem.indexOfScalar(u8, &scratch_error, 0) orelse scratch_error.len;
@@ -72,11 +83,13 @@ pub fn endFrame() void {
 }
 
 pub fn setBlendEnabled(enabled: bool) void {
+    notifyPreChange();
     blend_enabled = enabled;
     wispterm_metal_set_blend_enabled(enabled);
 }
 
 pub fn setBlendMode(mode: BlendMode) void {
+    notifyPreChange();
     blend_mode = mode;
     wispterm_metal_set_blend_mode(switch (mode) {
         .alpha => 0,
@@ -85,11 +98,13 @@ pub fn setBlendMode(mode: BlendMode) void {
 }
 
 pub fn clear(r: f32, g: f32, b: f32, a: f32) void {
+    notifyPreChange();
     clear_color = .{ .r = r, .g = g, .b = b, .a = a };
     beginFrame();
 }
 
 pub fn setViewport(x: i32, y: i32, w: i32, h: i32) void {
+    notifyPreChange();
     viewport = .{ .x = x, .y = y, .w = w, .h = h };
     wispterm_metal_set_viewport(@intCast(x), @intCast(y), @intCast(w), @intCast(h));
 }
@@ -139,11 +154,13 @@ fn blendSnapshot() types.BlendSnapshot {
 }
 
 pub fn setScissor(rect: Rect) void {
+    notifyPreChange();
     scissor = .{ .enabled = true, .box = rect };
     wispterm_metal_set_scissor(true, @intCast(rect.x), @intCast(rect.y), @intCast(rect.w), @intCast(rect.h));
 }
 
 pub fn disableScissor() void {
+    notifyPreChange();
     scissor.enabled = false;
     wispterm_metal_set_scissor(false, 0, 0, 0, 0);
 }
@@ -153,6 +170,7 @@ pub fn scissorState() ScissorState {
 }
 
 pub fn restoreScissor(s: ScissorState) void {
+    notifyPreChange();
     scissor = s;
     wispterm_metal_set_scissor(s.enabled, @intCast(s.box.x), @intCast(s.box.y), @intCast(s.box.w), @intCast(s.box.h));
 }

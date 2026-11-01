@@ -34,7 +34,7 @@ keybind = global:ctrl+backquote=toggle_quake
 | --- | --- | --- |
 | `Ctrl+backquote` (global) | `toggle_quake` | Show/hide the Quake drop-down window |
 | `Ctrl+Shift+P` | `toggle_command_palette` | Open the command center |
-| `Ctrl+Shift+T` | `new_session` | Open the session launcher (shell / Copilot / Sessions) |
+| `Ctrl+Shift+T` | `new_session` | Open the session launcher (shell, Copilot, Sessions, Port Forwarding, Memory, Settings) |
 | `Ctrl+Shift+N` | `new_window` | Open a new window |
 | `Ctrl+Shift++` | `split_right` | Split the focused panel to the right |
 | `Ctrl+Shift+-` | `split_down` | Split the focused panel downward |

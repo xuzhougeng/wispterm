@@ -20,6 +20,10 @@ English | [简体中文](README.zh-CN.md)
 > WispTerm ships for **Windows** and **macOS** (Apple Silicon and Intel). A
 > **Linux** AppImage is published for community testing and remains
 > experimental.
+>
+> The macOS app runs on **macOS 13 Ventura or later**. **macOS 12 Monterey is
+> best-effort**: the app is built for it and CI rejects newer APIs, but no CI
+> runner can launch macOS 12, so it is not tested there.
 
 ## Features
 
@@ -36,19 +40,36 @@ English | [简体中文](README.zh-CN.md)
 - **AI Agent sessions** - launch OpenAI-compatible Agent tabs, configure profiles, restore history, export Markdown transcripts, and distill reusable local skills
 - **Command-center Copilot History** - search saved AI Chat and Copilot sidebar conversations, grouped by date, with source filters for sidebar vs tab sessions. Open **Conversation Center** from the picker for date filters, transcript preview, and resume
 - **In-session model switching** - use `/model` or click the model label to move an active AI chat/Copilot session to another saved profile with a context summary handoff
-- **Prompt queue** - prompts submitted while a Copilot request is running are queued and auto-sent in order when the session goes idle; review, reorder, edit, or drop them from the queue panel
+- **Prompt queue** - prompts submitted while a Copilot request is running are queued and auto-sent in order when the session goes idle. Enter on the queue panel sends the selected follow-up into the conversation now (as guidance, like Codex / Claude Code / Grok); Esc returns it to the input to edit. You can also reorder or drop entries, and the command palette can show or clear the queue
 - **Send to Chat** - send the terminal selection (or recent output tail) to Copilot as a collapsible context card, via the command palette or a bindable `send_to_copilot` keybind action
 - **Fork session** - duplicate an AI conversation at any rewind point (rewind picker `f`, or whole-session from the command palette) to explore alternative approaches with shared history
 - **Workspace recipes** - save the current window's tab/split layout as a named recipe, restore it into a new window from the command palette, and export/import recipe JSON files to share setups
+- **Password store** - a Settings-style page (Command Center → Password Store) for root/mysql/... secrets, encrypted on disk with the key in the macOS Keychain / Windows DPAPI; passwords stay hidden until you reveal or copy one, and the agent types one into a terminal password prompt with `password_input` after an explicit approval prompt, without ever seeing it or leaving it in the chat history
+- **Encrypted sync** - keep the Password Store, Agent history, SSH hosts and AI profiles in sync across computers through WebDAV (坚果云, Nextcloud, Synology, …) or a synced folder (OneDrive, iCloud Drive, Dropbox), end-to-end encrypted with a sync passphrase and merged item by item; see [Sync](docs/sync.md)
 - **AI history browser** - browse local, WSL, and SSH Codex / Claude Code / Kimi Code / OpenCode history and resume sessions from their original project directories
+- **Agent status badges** - every tab running Claude Code, Codex, Gemini CLI, Copilot CLI, Cursor, Kimi, OpenCode, Pi, Qwen and 13 more agents shows idle / run / ask / done, with a desktop notification when an agent stops for an answer or finishes; state comes from the agent's own hook when installed, otherwise from the screen via herdr's detection manifests (`agent-screen-detection`)
 - **Kitty Graphics protocol** - display inline images and PDFs from remote shells via `imgcat.py` / `pdfcat.py`
 - **Opt-in remote access** - share a session key over a Cloudflare-hosted relay (disabled by default)
+
+## Architecture
+
+[![WispTerm architecture: native hosts, shared Zig application and terminal core, platform services, and optional web remote](docs/assets/wispterm-architecture.svg)](docs/assets/wispterm-architecture.svg)
+
+WispTerm follows [Ghostty's core/runtime separation](https://github.com/ghostty-org/ghostty/blob/main/src/apprt.zig):
+native hosts provide windows and events, while shared Zig code coordinates the
+workspace and terminal sessions. **libghostty-vt** provides VT parsing and terminal
+state; WispTerm owns the rendering pipeline and workspace features. The optional
+Remote console connects through a relay and uses xterm.js in the browser.
+
+See the [architecture and host contract](docs/architecture.md) for module boundaries
+and the [Remote guide](remote/README.md) for the web console and relay.
 
 ## Documentation
 
 - [Configuration](docs/configuration.md)
 - [File Explorer and previews](docs/file-explorer.md)
 - [AI Agent sessions](docs/ai-agent.md)
+- [Magpie model connection](docs/magpie.md)
 - [Media, background images, and inline remote images](docs/media.md)
 - [SSH port forwarding](docs/port-forwarding.md)
 - [Development, architecture, packaging, and releases](docs/development.md)
@@ -57,7 +78,7 @@ English | [简体中文](README.zh-CN.md)
 ## Versions
 
 The desktop app version is the repository root version in `build.zig.zon`
-(currently `1.38.0`) and is what `wispterm --version`, release notes, desktop
+(currently `1.46.1`) and is what `wispterm --version`, release notes, desktop
 packages, and the command center `Version` entry use.
 
 The WispTerm Remote web console/relay under `remote/` has an independent npm/web
@@ -74,7 +95,7 @@ zig build -Doptimize=ReleaseFast  # ReleaseFast build for distribution
 Remove-Item -Recurse -Force .\zig-out, .\.zig-cache -ErrorAction SilentlyContinue
 ```
 
-macOS (requires macOS 13+ and Zig 0.15.2):
+macOS (building requires macOS 13+ and Zig 0.15.2; the built app also runs on macOS 12, best-effort):
 
 ```bash
 zig build macos-app -Dtarget=aarch64-macos   # Apple Silicon .app bundle (use x86_64-macos on Intel)
@@ -122,20 +143,40 @@ Options:
 
 Configuration file details are in [Configuration](docs/configuration.md).
 
+On Windows, download `wispterm-windows-setup-vX.Y.Z.exe` from the
+[releases page](https://github.com/xuzhougeng/wispterm/releases) for a
+per-user install (Start menu shortcut, Add/Remove Programs entry), or a
+portable zip to run from any folder. Both are signed and both update in place.
+
 Windows builds include an optional **Open in WispTerm** Explorer context menu for folders and folder backgrounds. Enable it with `Add-Context-Menu.cmd` from a trusted signed bundle; use `Remove-Context-Menu.cmd` to remove it. See [Windows context menu setup](docs/windows-context-menu.md) for signing requirements and installation details.
 
 ## Keyboard shortcuts
 
-Default app-level chords are defined in [`src/keybind.zig`](src/keybind.zig) and can be remapped with repeated `keybind = ...` lines in the config file. Some modal/editor-local keys are still handled by the focused overlay first (command center navigation, session launcher editing, AI Chat input, and similar).
+Default application chords are defined in [`src/keybind.zig`](src/keybind.zig)
+and can be remapped with repeated `keybind = ...` lines. Workbench operation
+keys support a page scope, so the same key can be configured independently for
+File Explorer, Agent History, AI History, Memory Center, Conversation Center,
+Port Forwarding, and Skill Center. Modal/editor-local keys remain owned by the
+focused overlay or editor.
 
 Example remaps:
 
 ```text
 keybind = alt+f10=toggle_command_palette
 keybind = global:ctrl+backquote=toggle_quake
+keybind = file-explorer:r=file_explorer_rename
+keybind = port-forwarding:r=port_forwarding_restart
 ```
 
-Use `keybind = clear` before custom bindings if you want to remove all defaults and rebuild the table from scratch. To confirm the running desktop version, open the command center (`Ctrl+Shift+P` on Windows, `Cmd+Shift+P` on macOS), type `version`, and press Enter.
+Use `keybind = clear` before custom bindings if you want to remove every default,
+including scoped workbench bindings, and rebuild the table from scratch. To
+confirm the running desktop version, open the command center (`Ctrl+Shift+P` on
+Windows, `Cmd+Shift+P` on macOS), type `version`, and press Enter. The command
+center is also reachable without the keyboard: the magnifier button next to the
+Copilot button in the Windows titlebar, or **View › Open Command Center** in the
+macOS menu bar. WispTerm's own titlebar and sidebar buttons appear while the
+pointer is over the titlebar or tab sidebar; set `window-show-toolbar = always`
+to keep them visible.
 
 Choose **Toggle SSH Latency** in the command center to show the current SSH
 host's Ping round-trip time in the titlebar, refreshed every 5 seconds. The
@@ -159,8 +200,8 @@ sessions hide the readout.
 | Toggle tab sidebar | **Ctrl+Shift+B** | **Cmd+Shift+B** |
 | Split to the right | **Ctrl+Shift++** | **Cmd+Shift++** |
 | Split downward | **Ctrl+Shift+-** | **Cmd+Shift+-** |
-| Toggle file explorer sidebar | **Ctrl+Shift+Alt+E** | **Cmd+Shift+Opt+E** |
-| Toggle AI Copilot sidebar (current terminal) | **Ctrl+Shift+A** | **Cmd+Shift+A** |
+| Toggle File Explorer (the right dock's Files tab; the left panel with `file-explorer-position = left`) | **Ctrl+Shift+Alt+E** | **Cmd+Shift+Opt+E** |
+| Toggle Copilot (the right dock's Copilot tab, current tab) | **Ctrl+Shift+A** | **Cmd+Shift+A** |
 | Preview files (Ctrl/Cmd-click in terminal, or double-click in File Explorer) | Ctrl-click | Cmd-click |
 | Previous / next image/PDF in gallery (preview focused) | Left / Right | Left / Right |
 | Previous / next PDF page (PDF preview focused) | PageUp / PageDown | PageUp / PageDown |
@@ -173,6 +214,7 @@ sessions hide the readout.
 | Select terminal text while tmux mouse mode is enabled | **Shift-drag** | **Shift-drag** |
 | Select part of an AI answer | Drag AI answer text | Drag AI answer text |
 | Select and copy part of an AI answer | Shift-drag AI answer text | Shift-drag AI answer text |
+| Copy part of an Agent question or option (a plain click still picks the option) | Drag question card text, then **Ctrl+C** (or Shift-drag) | Drag question card text, then **Cmd+C** (or Shift-drag) |
 | Select AI Chat input; select transcript when input is empty | **Ctrl+A** in AI Chat | **Cmd+A** in AI Chat |
 | Copy AI Chat selection or full transcript | **Ctrl+C** in AI Chat | **Cmd+C** in AI Chat |
 | Delete the selected saved Agent session | **D** / **Delete** in Agent History | **D** / **Delete** in Agent History |
@@ -196,6 +238,8 @@ sessions hide the readout.
 | Toggle a memory source | **Space** in Memory Center → Source settings | **Space** in Memory Center → Source settings |
 | Edit AI Chat input cursor | Left/Right/Home/End/Delete/Backspace | Left/Right/Home/End/Delete/Backspace |
 | Stop in-flight AI Chat or Agent request | **Esc** in AI Chat while working | **Esc** in AI Chat while working |
+| Send a queued follow-up into the conversation now | **Enter** on Queued Prompts | **Enter** on Queued Prompts |
+| Return a queued follow-up to the input to edit | **Esc** on Queued Prompts | **Esc** on Queued Prompts |
 | Copy selection (right-click) | Right-click a selection | Right-click a selection |
 | Paste text | **Ctrl+V**; **Ctrl+Shift+V** also pastes text when the clipboard has no image | **Cmd+V**; **Cmd+Shift+V** also pastes text when the clipboard has no image |
 | Paste clipboard image | **Ctrl+Shift+V** | **Cmd+Shift+V** |
@@ -292,7 +336,7 @@ MIT
 
 ## Citation
 
-Xu, Z.-G. (2026). *WispTerm* (Version 1.38.0) [Computer software]. Zenodo.
+Xu, Z.-G. (2026). *WispTerm* (Version 1.46.1) [Computer software]. Zenodo.
 https://doi.org/10.5281/zenodo.20660541
 
 Copyable acknowledgment template:
@@ -302,6 +346,6 @@ We used WispTerm as part of our computational environment for life sciences data
 analysis, remote computing workflows, reproducible command-line processing, and
 the organization of related literature and analysis code.
 
-Xu, Z.-G. (2026). WispTerm (Version 1.38.0) [Computer software]. Zenodo.
+Xu, Z.-G. (2026). WispTerm (Version 1.46.1) [Computer software]. Zenodo.
 https://doi.org/10.5281/zenodo.20660541
 ```

@@ -34,7 +34,9 @@ pub const SshCommandOptions = struct {
     password_auth: bool = false,
     legacy_algorithms: bool = false,
     proxy_jump: []const u8 = "",
+    network_proxy: ssh_connection.network_proxy.Config = .{},
     remote_command: []const u8 = "",
+    terminal_capabilities: bool = false,
 };
 
 pub fn resolveShellCommandLine(out_buf: *CommandLineBuffer, cmd: []const u8) usize {
@@ -225,6 +227,11 @@ pub fn wslAvailable() bool {
     return false;
 }
 
+pub fn wslDefaultDistroName(out: []u8) ?[]const u8 {
+    _ = out;
+    return null;
+}
+
 pub fn wslInteractiveCommand(buf: []u8, cwd: ?[]const u8) ?[]const u8 {
     _ = buf;
     _ = cwd;
@@ -303,6 +310,15 @@ fn buildSshCommandLine(buf: []u8, options: SshCommandOptions) ?[]const u8 {
     // retransmission instead of OpenSSH hard-killing the session after 3
     // missed probes. Keep in sync with pty_command_windows.zig.
     if (!appendAscii(buf, &pos, "ssh -tt -o ServerAliveInterval=30 -o ServerAliveCountMax=20 ")) return null;
+    if (options.terminal_capabilities) {
+        if (!appendAscii(buf, &pos, "-o SetEnv=TERM_PROGRAM=ghostty -o SetEnv=COLORTERM=truecolor ")) return null;
+    }
+    if (!options.network_proxy.allowsJump(options.proxy_jump)) return null;
+    if (options.network_proxy.kind != .none) {
+        if (!appendAscii(buf, &pos, "-o ")) return null;
+        if (!appendPosixSingleQuotedArg(buf, &pos, options.network_proxy.option())) return null;
+        if (!appendAscii(buf, &pos, " -o ConnectTimeout=10 ")) return null;
+    }
     if (options.proxy_jump.len > 0) {
         if (!appendAscii(buf, &pos, "-o ProxyJump=")) return null;
         if (!appendAscii(buf, &pos, options.proxy_jump)) return null;

@@ -20,6 +20,8 @@ pub const State = struct {
     close_pending: close_confirm.PendingClose = .window,
     close_variant: CloseConfirmVariant = .window_generic,
     restore_defaults_visible: bool = false,
+    /// "Restart to update?" — opened from the titlebar Update pill.
+    update_restart_visible: bool = false,
 
     pub fn openCloseConfirm(self: *State, action: close_confirm.PendingClose, variant: CloseConfirmVariant) void {
         self.window_close_visible = true;
@@ -77,6 +79,30 @@ pub const State = struct {
         };
     }
 
+    pub fn openUpdateRestart(self: *State) void {
+        self.update_restart_visible = true;
+    }
+
+    pub fn closeUpdateRestart(self: *State) void {
+        self.update_restart_visible = false;
+    }
+
+    /// Enter restarts, Escape is Later. Same keys as restore defaults.
+    pub fn handleUpdateRestartKey(self: *State, ev: input_key.KeyEvent) RestoreDefaultsAction {
+        if (!self.update_restart_visible) return .none;
+        return switch (ev.key) {
+            .enter => {
+                self.closeUpdateRestart();
+                return .apply;
+            },
+            .escape => {
+                self.closeUpdateRestart();
+                return .cancel;
+            },
+            else => .none,
+        };
+    }
+
     pub fn openTransferCancel(self: *State) void {
         self.transfer_cancel_visible = true;
     }
@@ -112,6 +138,19 @@ test "restore defaults confirmation maps escape to cancel" {
 
     try std.testing.expectEqual(RestoreDefaultsAction.cancel, action);
     try std.testing.expect(!state.restore_defaults_visible);
+}
+
+test "update restart confirmation maps enter to apply and escape to later" {
+    var state: State = .{};
+    state.openUpdateRestart();
+    try std.testing.expectEqual(RestoreDefaultsAction.none, state.handleUpdateRestartKey(.{ .key = .tab }));
+    try std.testing.expect(state.update_restart_visible);
+    try std.testing.expectEqual(RestoreDefaultsAction.apply, state.handleUpdateRestartKey(.{ .key = .enter }));
+    try std.testing.expect(!state.update_restart_visible);
+
+    state.openUpdateRestart();
+    try std.testing.expectEqual(RestoreDefaultsAction.cancel, state.handleUpdateRestartKey(.{ .key = .escape }));
+    try std.testing.expect(!state.update_restart_visible);
 }
 
 test "transfer cancel confirmation closes on interrupt" {

@@ -15,7 +15,7 @@
 ## 标签操作
 
 - **新建标签：** 点击标签栏末尾的 **`+`** 按钮，或按 `Ctrl+Shift+T`（`new_session`）
-  打开会话启动器，从中选择 shell、Copilot 或已保存的 SSH 配置。
+  打开会话启动器，从中选择 shell、Copilot、SSH、tmux、会话，或打开端口转发、记忆中心和设置。
 - **切换标签：** `Ctrl+Tab` / `Ctrl+Shift+Tab` 切到下一个/上一个标签；
   `Alt+1` … `Alt+9`（`switch_tab_1` … `switch_tab_9`）可直接跳到第 N 个标签。
 - **重命名标签：** **双击标签标题**，输入新名称，然后按 `Enter` 确认或 `Escape` 取消。

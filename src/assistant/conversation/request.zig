@@ -10,14 +10,21 @@ const ai_chat_protocol = @import("protocol.zig");
 const ai_skill_distill = @import("distill.zig");
 const agent_tools = @import("../../agent_tools/mod.zig");
 const tool_args = @import("../../agent_tools/args.zig");
+const secret_redact = @import("../../credential/redact.zig");
 const tool_output = @import("../../agent_tools/output.zig");
 const first_party_tools = @import("../../tools/first_party.zig");
 const web_search = @import("../../research/web_search.zig");
 const web_read = @import("../../research/web_read.zig");
 const pubmed = @import("../../research/pubmed.zig");
 const ai_chat_types = @import("types.zig");
+const question_answer = @import("question_answer.zig");
+const session_question_answer = @import("session_question_answer.zig");
 const ai_loop_store = @import("../loop/store.zig");
 const platform_agent_prompt = @import("../../platform/agent_prompt.zig");
+const oauth_client = @import("../oauth/client.zig");
+const platform_http = @import("../../platform/http_client.zig");
+const app_metadata = @import("../../app_metadata.zig");
+const http_proxy = @import("../../platform/http_proxy.zig");
 
 const title_log = std.log.scoped(.ai_title);
 
@@ -202,11 +209,15 @@ pub fn webSearchThreadMain(req: *ai_chat.WebSearchRequest) void {
     };
     defer allocator.free(key);
 
+    var route = http_proxy.loadResearch(allocator);
+    defer route.deinit(allocator);
+
     var results = web_search.executeSearch(allocator, req.query, .{
         .engine = .jina,
         .api_key = key,
         .with_content = false,
         .max_results = 10,
+        .proxy = route.explicit,
     }) catch |err| {
         const text = web_search.formatErrorText(allocator, err) catch {
             ai_chat.appendWebSearchResult(session, web_search.errorText(err));
@@ -239,8 +250,11 @@ pub fn webReadThreadMain(req: *ai_chat.WebReadRequest) void {
     defer if (key_opt) |k| allocator.free(k);
     const key = key_opt orelse "";
 
+    var route = http_proxy.loadResearch(allocator);
+    defer route.deinit(allocator);
+
     const cache_dir: ?[]const u8 = if (req.working_dir.len > 0) req.working_dir else null;
-    var result = web_read.executeRead(allocator, req.target, .{ .api_key = key, .cache_dir = cache_dir }) catch |err| {
+    var result = web_read.executeRead(allocator, req.target, .{ .api_key = key, .cache_dir = cache_dir, .proxy = route.explicit }) catch |err| {
         const text = web_read.formatErrorText(allocator, err) catch {
             ai_chat.appendWebSearchResult(session, web_read.errorText(err));
             return;
@@ -268,7 +282,10 @@ pub fn pubMedThreadMain(req: *ai_chat.WebPubMedRequest) void {
     const session = req.session;
     if (session.closing.load(.acquire)) return;
 
-    var results = pubmed.executeSearch(allocator, req.query, .{ .max_results = 10 }) catch |err| {
+    var route = http_proxy.loadResearch(allocator);
+    defer route.deinit(allocator);
+
+    var results = pubmed.executeSearch(allocator, req.query, .{ .max_results = 10, .proxy = route.explicit }) catch |err| {
         const text = pubmed.formatErrorText(allocator, err) catch {
             ai_chat.appendWebSearchResult(session, pubmed.errorText(err));
             return;
@@ -308,6 +325,7 @@ fn runAgentRequest(request: *ChatRequest) !ApiResult {
 
     var total_usage: ApiUsage = .{};
     var has_usage = false;
+    var user_wait_ms: i64 = 0;
     while (true) {
         if (ai_chat.requestCancelled(request)) return error.Canceled;
         const result = try runChatRequestForMessages(request, transcript.items, true);
@@ -323,6 +341,7 @@ fn runAgentRequest(request: *ChatRequest) !ApiResult {
             applySubagentUsage(request, &total_usage, &has_usage);
             var final = result;
             if (has_usage) final.usage = total_usage;
+            final.user_wait_ms = user_wait_ms;
             return final;
         }
         errdefer result.deinit(request.allocator);
@@ -340,12 +359,21 @@ fn runAgentRequest(request: *ChatRequest) !ApiResult {
         var mcp_specs_dirty = false;
         for (result.tool_calls.?) |call| {
             if (ai_chat.requestCancelled(request)) return error.Canceled;
-            const progress = try std.fmt.allocPrint(request.allocator, "running {s} {s}", .{ call.name, call.arguments });
+            const progress = try request.session.secret_filter.redactOwned(
+                request.allocator,
+                try std.fmt.allocPrint(request.allocator, "running {s} {s}", .{ call.name, call.arguments }),
+            );
             defer request.allocator.free(progress);
-            ai_chat.appendProgressMessage(request.session, progress) catch {};
+            // ask_user's question card already shows its arguments: keep the
+            // raw call to one row, and keep the time the card waits for the
+            // user out of the turn's duration and token rate.
+            const asks_user = std.mem.eql(u8, call.name, question_answer.TOOL_NAME);
+            ai_chat.appendProgressMessageCollapsed(request.session, progress, asks_user) catch {};
 
+            const tool_started_ms = std.time.milliTimestamp();
             const tool_result = try executeToolCall(request, call);
             defer request.allocator.free(tool_result);
+            if (asks_user) user_wait_ms += @max(@as(i64, 0), std.time.milliTimestamp() - tool_started_ms);
             if (ai_chat.requestCancelled(request)) return error.Canceled;
             if (std.mem.eql(u8, call.name, "skill_info")) {
                 ai_chat.appendReplayableToolMessage(request.session, call.id, call.name, tool_result) catch {};
@@ -564,17 +592,134 @@ fn oneShotRequestProtocol(session: *const Session) ApiProtocol {
     return session.protocol;
 }
 
+const PreparedCall = struct {
+    access: oauth_client.Access,
+    bearer: []u8,
+    user_agent: ?[]u8 = null,
+    extra: [6]std.http.Header = undefined,
+    extra_len: usize = 0,
+    omit_authorization: bool = false,
+
+    fn deinit(self: *PreparedCall, allocator: std.mem.Allocator) void {
+        allocator.free(self.bearer);
+        if (self.user_agent) |user_agent| allocator.free(user_agent);
+        self.access.deinit(allocator);
+    }
+};
+
+fn prepareCall(request: *const ChatRequest) !PreparedCall {
+    const allocator = request.allocator;
+    const access = oauth_client.resolve(allocator, request.protocol, request.api_key) catch |err| switch (err) {
+        error.NotSignedIn, error.RefreshFailed => return err,
+        else => return error.RefreshFailed,
+    };
+    errdefer access.deinit(allocator);
+    const bearer = try std.fmt.allocPrint(allocator, "Bearer {s}", .{access.token});
+    errdefer allocator.free(bearer);
+    var prepared = PreparedCall{ .access = access, .bearer = bearer };
+    switch (ai_chat_protocol.wireProtocol(request.protocol, request.model)) {
+        .anthropic => {
+            prepared.omit_authorization = true;
+            prepared.extra[0] = .{ .name = "x-api-key", .value = access.token };
+            prepared.extra[1] = .{ .name = "anthropic-version", .value = "2023-06-01" };
+            prepared.extra_len = 2;
+        },
+        .kimi => {
+            prepared.extra[0] = .{ .name = "anthropic-version", .value = "2023-06-01" };
+            prepared.extra_len = 1;
+        },
+        .codex => {
+            prepared.extra[0] = .{ .name = "chatgpt-account-id", .value = access.account_id };
+            prepared.extra[1] = .{ .name = "originator", .value = "wispterm" };
+            prepared.extra_len = 2;
+        },
+        else => {},
+    }
+    if (ai_chat_protocol.needsOpenCodeSession(request.protocol, request.base_url)) {
+        const session_id = if (request.schedule_session_id.len > 0) request.schedule_session_id else "wispterm";
+        prepared.extra[prepared.extra_len] = .{ .name = "x-opencode-session", .value = session_id };
+        prepared.extra_len += 1;
+        prepared.user_agent = try std.fmt.allocPrint(allocator, "wispterm/{s}", .{app_metadata.version});
+    }
+    return prepared;
+}
+
+fn authFailureResult(allocator: std.mem.Allocator, err: anyerror) !ApiResult {
+    return .{
+        .content = try allocator.dupe(u8, oauth_client.failureText(err)),
+        .api_error = true,
+    };
+}
+
+fn providerHeaders(prepared: *const PreparedCall, out: []platform_http.Header) usize {
+    var n: usize = 0;
+    if (n >= out.len) return n;
+    out[n] = .{ .name = "Content-Type", .value = "application/json" };
+    n += 1;
+    if (!prepared.omit_authorization and n < out.len) {
+        out[n] = .{ .name = "Authorization", .value = prepared.bearer };
+        n += 1;
+    }
+    for (prepared.extra[0..prepared.extra_len]) |header| {
+        if (n >= out.len) break;
+        out[n] = header;
+        n += 1;
+    }
+    if (prepared.user_agent) |user_agent| {
+        if (n < out.len) {
+            out[n] = .{ .name = "User-Agent", .value = user_agent };
+            n += 1;
+        }
+    }
+    return n;
+}
+
+fn postViaProxy(
+    allocator: std.mem.Allocator,
+    endpoint: []const u8,
+    body: []const u8,
+    prepared: *const PreparedCall,
+    explicit_proxy: ?[]const u8,
+) !platform_http.Response {
+    var headers: [12]platform_http.Header = undefined;
+    const n = providerHeaders(prepared, &headers);
+    return platform_http.fetch(allocator, .{
+        .method = .POST,
+        .url = endpoint,
+        .headers = headers[0..n],
+        .body = body,
+        .timeout_ms = 120_000,
+        .proxy = explicit_proxy,
+    });
+}
+
 fn runChatRequestForMessages(request: *const ChatRequest, messages: []const RequestMessage, include_tools: bool) !ApiResult {
     if (ai_chat.requestCancelled(request)) return error.Canceled;
     const allocator = request.allocator;
-    const endpoint = try ai_chat_protocol.apiEndpoint(allocator, request.base_url, request.protocol);
+    var prepared = prepareCall(request) catch |err| return authFailureResult(allocator, err);
+    defer prepared.deinit(allocator);
+    const endpoint = try ai_chat_protocol.apiEndpointForModel(allocator, request.base_url, request.protocol, request.model);
     defer allocator.free(endpoint);
 
     const body = try buildRequestJsonForMessages(allocator, request, messages, include_tools);
     defer allocator.free(body);
 
-    const bearer = try std.fmt.allocPrint(allocator, "Bearer {s}", .{request.api_key});
-    defer allocator.free(bearer);
+    var route = http_proxy.load(allocator);
+    defer route.deinit(allocator);
+    if (route.enabled) {
+        const response = postViaProxy(allocator, endpoint, body, &prepared, route.explicit) catch |err| return networkFailureResult(allocator, endpoint, err);
+        defer allocator.free(response.body);
+        if (ai_chat.requestCancelled(request)) return error.Canceled;
+        if (response.status != 200) {
+            const trimmed = std.mem.trim(u8, response.body, " \t\r\n");
+            if (trimmed.len > 0) return ApiResult{ .content = try allocator.dupe(u8, trimmed), .api_error = true };
+            return ApiResult{ .content = try std.fmt.allocPrint(allocator, "HTTP {d}", .{response.status}), .api_error = true };
+        }
+        return if (request.stream)
+            ai_chat_protocol.parseApiStreamResponse(allocator, response.body)
+        else
+            ai_chat_protocol.parseApiResponse(allocator, response.body, ai_chat_protocol.wireProtocol(request.protocol, request.model));
+    }
 
     var client: std.http.Client = .{
         .allocator = allocator,
@@ -585,20 +730,16 @@ fn runChatRequestForMessages(request: *const ChatRequest, messages: []const Requ
     var resp_buf: std.Io.Writer.Allocating = .init(allocator);
     defer resp_buf.deinit();
 
-    const is_anthropic = request.protocol == .anthropic;
-    const anthropic_headers = [_]std.http.Header{
-        .{ .name = "x-api-key", .value = request.api_key },
-        .{ .name = "anthropic-version", .value = "2023-06-01" },
-    };
     const result = client.fetch(.{
         .location = .{ .url = endpoint },
         .method = .POST,
         .payload = body,
         .headers = .{
             .content_type = .{ .override = "application/json" },
-            .authorization = if (is_anthropic) .omit else .{ .override = bearer },
+            .authorization = if (prepared.omit_authorization) .omit else .{ .override = prepared.bearer },
+            .user_agent = if (prepared.user_agent) |user_agent| .{ .override = user_agent } else .default,
         },
-        .extra_headers = if (is_anthropic) &anthropic_headers else &.{},
+        .extra_headers = prepared.extra[0..prepared.extra_len],
         .response_writer = &resp_buf.writer,
     }) catch |err| return networkFailureResult(allocator, endpoint, err);
     if (ai_chat.requestCancelled(request)) return error.Canceled;
@@ -615,20 +756,56 @@ fn runChatRequestForMessages(request: *const ChatRequest, messages: []const Requ
     return if (request.stream)
         ai_chat_protocol.parseApiStreamResponse(allocator, resp_list.items)
     else
-        ai_chat_protocol.parseApiResponse(allocator, resp_list.items, request.protocol);
+        ai_chat_protocol.parseApiResponse(allocator, resp_list.items, ai_chat_protocol.wireProtocol(request.protocol, request.model));
 }
 
 fn runChatRequestStreaming(request: *const ChatRequest) !void {
     if (ai_chat.requestCancelled(request)) return error.Canceled;
     const allocator = request.allocator;
-    const endpoint = try ai_chat_protocol.apiEndpoint(allocator, request.base_url, request.protocol);
+    var prepared = prepareCall(request) catch |err| {
+        const text = oauth_client.failureText(err);
+        ai_chat.failAssistantStream(request.session, null, text);
+        return;
+    };
+    defer prepared.deinit(allocator);
+    const endpoint = try ai_chat_protocol.apiEndpointForModel(allocator, request.base_url, request.protocol, request.model);
     defer allocator.free(endpoint);
 
     const body = try buildRequestJson(allocator, request);
     defer allocator.free(body);
 
-    const bearer = try std.fmt.allocPrint(allocator, "Bearer {s}", .{request.api_key});
-    defer allocator.free(bearer);
+    var route = http_proxy.load(allocator);
+    defer route.deinit(allocator);
+    if (route.enabled) {
+        const response = postViaProxy(allocator, endpoint, body, &prepared, route.explicit) catch |err| {
+            try failStreamNetworkRequest(request, endpoint, "open request", err);
+            return;
+        };
+        defer allocator.free(response.body);
+        if (ai_chat.requestCancelled(request)) return error.Canceled;
+        if (response.status != 200) {
+            const trimmed = std.mem.trim(u8, response.body, " \t\r\n");
+            if (trimmed.len > 0) {
+                ai_chat.failAssistantStream(request.session, null, trimmed);
+            } else {
+                const msg = try std.fmt.allocPrint(allocator, "HTTP {d}", .{response.status});
+                defer allocator.free(msg);
+                ai_chat.failAssistantStream(request.session, null, msg);
+            }
+            return;
+        }
+        const message_idx = try ai_chat.beginAssistantStream(request.session);
+        var usage: ?ApiUsage = null;
+        var first_token_ms: i64 = 0;
+        var lines = std.mem.splitScalar(u8, response.body, '\n');
+        while (lines.next()) |line_raw| {
+            if (ai_chat.requestCancelled(request)) return error.Canceled;
+            const line = std.mem.trimRight(u8, line_raw, "\r");
+            if (try ai_chat.applyApiStreamLineToSession(allocator, request.session, message_idx, line, &usage, &first_token_ms)) break;
+        }
+        ai_chat.finishAssistantStream(request.session, message_idx, request.started_ms, first_token_ms, usage);
+        return;
+    }
 
     var client: std.http.Client = .{
         .allocator = allocator,
@@ -636,18 +813,14 @@ fn runChatRequestStreaming(request: *const ChatRequest) !void {
     };
     defer client.deinit();
 
-    const is_anthropic = request.protocol == .anthropic;
-    const anthropic_headers = [_]std.http.Header{
-        .{ .name = "x-api-key", .value = request.api_key },
-        .{ .name = "anthropic-version", .value = "2023-06-01" },
-    };
     const uri = try std.Uri.parse(endpoint);
     var req = client.request(.POST, uri, .{
         .headers = .{
             .content_type = .{ .override = "application/json" },
-            .authorization = if (is_anthropic) .omit else .{ .override = bearer },
+            .authorization = if (prepared.omit_authorization) .omit else .{ .override = prepared.bearer },
+            .user_agent = if (prepared.user_agent) |user_agent| .{ .override = user_agent } else .default,
         },
-        .extra_headers = if (is_anthropic) &anthropic_headers else &.{},
+        .extra_headers = prepared.extra[0..prepared.extra_len],
         .keep_alive = false,
     }) catch |err| {
         try failStreamNetworkRequest(request, endpoint, "open request", err);
@@ -864,17 +1037,23 @@ fn toolCancelled(ctx: *anyopaque) bool {
 
 fn toolNote(ctx: *anyopaque, text: []const u8) void {
     const session: *Session = @ptrCast(@alignCast(ctx));
-    session.appendLocalToolMessage(text);
+    const masked = session.secret_filter.redactAlloc(session.allocator, text) catch return;
+    defer session.allocator.free(masked);
+    session.appendLocalToolMessage(masked);
 }
 
 fn toolProgress(ctx: *anyopaque, text: []const u8) void {
     const session: *Session = @ptrCast(@alignCast(ctx));
-    ai_chat.appendProgressMessage(session, text) catch {};
+    const masked = session.secret_filter.redactAlloc(session.allocator, text) catch return;
+    defer session.allocator.free(masked);
+    ai_chat.appendProgressMessage(session, masked) catch {};
 }
 
 fn toolAsk(ctx: *anyopaque, question: []const u8, options: []const ai_chat_types.QuestionOption) ai_chat_types.AskResult {
     const session: *Session = @ptrCast(@alignCast(ctx));
-    return session.askUser(question, options);
+    const result = session.askUser(question, options);
+    session_question_answer.appendSummary(session, question, options, result);
+    return result;
 }
 
 fn toolScheduleContinuation(
@@ -918,6 +1097,7 @@ fn toolContextFromRequest(request: *ChatRequest) ai_chat_types.ToolContext {
         .schedule_continuation = toolScheduleContinuation,
         .write_context_surface_id = request.write_context_surface_id,
         .write_context_surface_id_len = request.write_context_surface_id_len,
+        .secret_filter = &request.session.secret_filter,
         .approve = toolApprove,
         .cancelled = toolCancelled,
         .note = toolNote,
@@ -926,7 +1106,15 @@ fn toolContextFromRequest(request: *ChatRequest) ai_chat_types.ToolContext {
     };
 }
 
+/// Every tool result reaches the model and the transcript through here, so a
+/// secret `password_input` typed earlier in the conversation is masked even if
+/// a later command echoes it.
 pub fn executeToolCall(request: *ChatRequest, call: ToolCall) ![]u8 {
+    const result = try executeToolCallUnmasked(request, call);
+    return request.session.secret_filter.redactOwned(request.allocator, result);
+}
+
+fn executeToolCallUnmasked(request: *ChatRequest, call: ToolCall) ![]u8 {
     if (first_party_tools.isKnown(call.name) and first_party_tools.isDisabledName(request.disabled_first_party_tools, call.name)) {
         return std.fmt.allocPrint(request.allocator, "Tool is disabled: {s}", .{call.name});
     }
@@ -1370,6 +1558,25 @@ test "subagent tool call requires a task argument" {
     const out = try executeToolCall(env.request, call);
     defer a.free(out);
     try std.testing.expectEqualStrings("Missing task", out);
+}
+
+test "executeToolCall masks a secret typed earlier in the conversation" {
+    const a = std.testing.allocator;
+    const env = try testSessionAndRequest(a);
+    defer env.session.deinit();
+    defer env.request.deinit();
+    // Stand-in for a password_input secret that a later tool output echoes.
+    env.session.secret_filter.remember("Missing task");
+
+    var call = ToolCall{
+        .id = try a.dupe(u8, "c1"),
+        .name = try a.dupe(u8, "subagent"),
+        .arguments = try a.dupe(u8, "{}"),
+    };
+    defer call.deinit(a);
+    const out = try executeToolCall(env.request, call);
+    defer a.free(out);
+    try std.testing.expectEqualStrings(secret_redact.MASK, out);
 }
 
 test "executeToolCall rejects disabled subagent before the wrapper special case" {

@@ -12,13 +12,16 @@ const SshProfileSaveArgs = types.SshProfileSaveArgs;
 pub fn sshProfileSaveApprovalText(allocator: std.mem.Allocator, args: SshProfileSaveArgs) ![]u8 {
     return std.fmt.allocPrint(
         allocator,
-        "Save SSH profile name=\"{s}\" host=\"{s}\" user=\"{s}\" port=\"{s}\" proxy_jump=\"{s}\" auth_method=\"{s}\" identity_file=\"{s}\" password=\"{s}\"",
+        "Save SSH profile name=\"{s}\" host=\"{s}\" user=\"{s}\" port=\"{s}\" proxy_jump=\"{s}\" proxy_type=\"{s}\" proxy_host=\"{s}\" proxy_port=\"{s}\" auth_method=\"{s}\" identity_file=\"{s}\" password=\"{s}\"",
         .{
             if (args.name.len > 0) args.name else "<default>",
             args.host,
             args.user,
             if (args.port.len > 0) args.port else "22",
             if (args.proxy_jump.len > 0) args.proxy_jump else "<none>",
+            if (args.proxy_type.len > 0) args.proxy_type else "<preserve>",
+            if (args.proxy_host.len > 0) args.proxy_host else "<preserve>",
+            if (args.proxy_port.len > 0) args.proxy_port else "<preserve>",
             if (args.auth_method.len > 0) args.auth_method else "<auto>",
             if (args.identity_file.len > 0) args.identity_file else "<none>",
             if (args.password.len > 0) "<redacted>" else "<empty>",

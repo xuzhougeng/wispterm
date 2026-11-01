@@ -13,6 +13,7 @@ const GuardedSource = struct {
 const guarded = [_]GuardedSource{
     .{ .name = "tools/import.zig", .source = @embedFile("../tools/import.zig") },
     .{ .name = "platform/remote_file.zig", .source = @embedFile("../platform/remote_file.zig") },
+    .{ .name = "agent_tools/exec.zig", .source = @embedFile("../agent_tools/exec.zig") },
 };
 
 test "process capture owners use process_runner instead of direct Child.init" {

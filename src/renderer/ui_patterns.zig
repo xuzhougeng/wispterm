@@ -28,6 +28,43 @@ pub fn modalWidth(
     return @round(@min(capped_max, @max(min_width, preferred_width)));
 }
 
+pub const Columns = struct {
+    left_w: f32,
+    right_x: f32,
+    right_w: f32,
+};
+
+/// Give both labels their measured width when they fit. Under pressure reserve
+/// up to half the row for the primary label, then ellipsize the detail. A fixed
+/// 96px reservation both clipped short Chinese labels' details unnecessarily
+/// and let long field names disappear behind their values.
+pub fn textColumns(width: f32, left_width: f32, right_width: f32, gap: f32) Columns {
+    const available = @max(0, width);
+    if (right_width <= 0) return .{ .left_w = available, .right_x = available, .right_w = 0 };
+    const spacing = @min(available, @max(0, gap));
+    const usable = available - spacing;
+    const reserved_left = @min(@max(0, left_width), usable * 0.5);
+    const right_w = @min(@max(0, right_width), usable - reserved_left);
+    return .{ .left_w = usable - right_w, .right_x = available - right_w, .right_w = right_w };
+}
+
+test "measured columns fit Chinese labels without a fixed reservation" {
+    const columns = textColumns(382, 40, 310, 18);
+    try std.testing.expect(columns.left_w >= 40);
+    try std.testing.expectEqual(@as(f32, 310), columns.right_w);
+    try std.testing.expect(columns.right_x >= columns.left_w + 18);
+}
+
+test "long labels and values stay in separate slots at every width" {
+    for ([_]f32{ 0, 12, 80, 180, 320, 600, 1200 }) |width| {
+        const columns = textColumns(width, 280, 900, 18);
+        try std.testing.expect(columns.left_w >= 0);
+        try std.testing.expect(columns.right_w >= 0);
+        try std.testing.expect(columns.left_w <= columns.right_x);
+        try std.testing.expect(columns.right_x + columns.right_w <= width);
+    }
+}
+
 /// A workbench footer is its own persistent information band. It keeps
 /// keyboard hints and non-blocking status out of feature columns.
 pub fn workbenchFooterHeight(cell_height: f32) f32 {

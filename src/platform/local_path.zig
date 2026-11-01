@@ -270,6 +270,96 @@ pub fn absolutePathEqual(a: []const u8, b: []const u8) bool {
     return nativeAbsolutePathEqual(a, b);
 }
 
+/// Path inside an OSC 7 `file://…` URI. Accepts `file://host/D:/foo`,
+/// `file:///D:/foo`, and `file://D:\foo` (no extra slash after the host).
+pub fn pathFromFileUri(uri: []const u8) ?[]const u8 {
+    const prefix = "file://";
+    if (!std.mem.startsWith(u8, uri, prefix)) return null;
+    const after = uri[prefix.len..];
+    if (std.mem.indexOfScalar(u8, after, '/')) |slash| return after[slash..];
+    if (after.len >= 2 and after[1] == ':') return after;
+    return null;
+}
+
+/// Rewrite a local filesystem path so Windows file APIs can open it.
+///
+/// OSC 7 from pwsh is a `file://` URI whose path looks like `/D:/foo` or
+/// `/D:\foo`. Joining that with a relative click using `\` produces
+/// `/D:\foo\bar.png`, which `openFileAbsolute` rejects. This strips the extra
+/// leading slash, percent-decodes `%5C` backslashes, and uses native separators.
+pub fn forLocalOpen(path: []const u8, buf: []u8) ?[]const u8 {
+    return forLocalOpenForOs(builtin.os.tag, path, buf);
+}
+
+pub fn forLocalOpenForOs(os_tag: std.Target.Os.Tag, path: []const u8, buf: []u8) ?[]const u8 {
+    const decoded = percentDecodeInto(path, buf) orelse return null;
+    const stripped = stripLeadingSlashBeforeDrive(decoded);
+    // Only Windows drive/UNC paths get native separators. A Unix path such as a
+    // WSL/SSH OSC 7 cwd (`/home/me/proj`) must stay Unix, or `\home\me\proj`
+    // breaks remote resolution, WSL guest-path translation, and cwd inheritance.
+    if (os_tag != .windows or driveOrUncRootLen(stripped) == 0) {
+        if (stripped.ptr == buf.ptr) return stripped;
+        if (stripped.len > buf.len) return null;
+        std.mem.copyForwards(u8, buf, stripped);
+        return buf[0..stripped.len];
+    }
+
+    if (stripped.len > buf.len) return null;
+    var i: usize = 0;
+    while (i < stripped.len) : (i += 1) {
+        const ch = stripped[i];
+        buf[i] = if (ch == '/') '\\' else ch;
+    }
+    return buf[0..stripped.len];
+}
+
+/// Drive/UNC absolute after `forLocalOpen`, including OSC 7 `/D:/foo`.
+pub fn isDriveAbsolute(path: []const u8) bool {
+    const stripped = stripLeadingSlashBeforeDrive(path);
+    return driveOrUncRootLen(stripped) > 0;
+}
+
+fn stripLeadingSlashBeforeDrive(path: []const u8) []const u8 {
+    if (path.len >= 3 and path[0] == '/' and std.ascii.isAlphabetic(path[1]) and path[2] == ':') {
+        return path[1..];
+    }
+    return path;
+}
+
+fn hexNibble(ch: u8) ?u8 {
+    return switch (ch) {
+        '0'...'9' => ch - '0',
+        'a'...'f' => ch - 'a' + 10,
+        'A'...'F' => ch - 'A' + 10,
+        else => null,
+    };
+}
+
+fn percentDecodeInto(src: []const u8, buf: []u8) ?[]u8 {
+    var o: usize = 0;
+    var i: usize = 0;
+    while (i < src.len) {
+        if (o >= buf.len) return null;
+        if (src[i] == '%' and i + 2 < src.len) {
+            if (hexNibble(src[i + 1])) |hi| {
+                if (hexNibble(src[i + 2])) |lo| {
+                    const byte = (hi << 4) | lo;
+                    if (byte != 0) {
+                        buf[o] = byte;
+                        o += 1;
+                        i += 3;
+                        continue;
+                    }
+                }
+            }
+        }
+        buf[o] = src[i];
+        o += 1;
+        i += 1;
+    }
+    return buf[0..o];
+}
+
 test "platform local path joins with target separators" {
     var buf: [128]u8 = undefined;
 
@@ -314,4 +404,64 @@ test "platform local path compares absolute paths with platform-compatible rules
     try std.testing.expect(absolutePathEqual("\\\\?\\UNC\\server\\share", "\\\\server\\share\\"));
     try std.testing.expect(absolutePathEqual("/opt/wispterm/", "/opt/wispterm"));
     try std.testing.expect(!absolutePathEqual("/opt/wispterm", "/opt/other"));
+}
+
+test "platform local path rewrites OSC 7 drive paths for local open" {
+    var buf: [256]u8 = undefined;
+
+    try std.testing.expectEqualStrings(
+        "D:\\wispterm\\docs\\design-qa\\research-journey\\comparison.png",
+        forLocalOpenForOs(.windows, "/D:\\wispterm\\docs\\design-qa\\research-journey\\comparison.png", &buf).?,
+    );
+    try std.testing.expectEqualStrings(
+        "D:\\wispterm\\docs\\foo.png",
+        forLocalOpenForOs(.windows, "/D:/wispterm/docs/foo.png", &buf).?,
+    );
+    try std.testing.expectEqualStrings(
+        "D:\\wispterm\\aipoch_star_plot.png",
+        forLocalOpenForOs(.windows, "D:\\wispterm\\aipoch_star_plot.png", &buf).?,
+    );
+    try std.testing.expectEqualStrings(
+        "D:\\wispterm\\docs\\foo.png",
+        forLocalOpenForOs(.windows, "D:/wispterm/docs/foo.png", &buf).?,
+    );
+    try std.testing.expectEqualStrings(
+        "D:\\wispterm\\docs\\foo.png",
+        forLocalOpenForOs(.windows, "/D:%5Cwispterm%5Cdocs%5Cfoo.png", &buf).?,
+    );
+    try std.testing.expectEqualStrings(
+        "/home/xzg/docs/foo.png",
+        forLocalOpenForOs(.linux, "/home/xzg/docs/foo.png", &buf).?,
+    );
+    // WSL/SSH OSC 7 cwds reach this on Windows too; they must stay Unix paths.
+    try std.testing.expectEqualStrings(
+        "/home/xzg/project/research-integrity-audit",
+        forLocalOpenForOs(.windows, "/home/xzg/project/research-integrity-audit", &buf).?,
+    );
+    try std.testing.expectEqualStrings(
+        "/home/xzg/my proj",
+        forLocalOpenForOs(.windows, "/home/xzg/my%20proj", &buf).?,
+    );
+
+    try std.testing.expect(isDriveAbsolute("/D:\\wispterm\\foo.png"));
+    try std.testing.expect(isDriveAbsolute("D:\\wispterm\\foo.png"));
+    try std.testing.expect(!isDriveAbsolute("docs/foo.png"));
+    try std.testing.expect(!isDriveAbsolute("/home/xzg/foo.png"));
+}
+
+test "platform local path extracts OSC 7 file URI paths including backslash drives" {
+    try std.testing.expectEqualStrings(
+        "/D:\\wispterm\\docs\\foo.png",
+        pathFromFileUri("file://DESKTOP/D:\\wispterm\\docs\\foo.png").?,
+    );
+    try std.testing.expectEqualStrings(
+        "D:\\wispterm\\docs\\foo.png",
+        pathFromFileUri("file://D:\\wispterm\\docs\\foo.png").?,
+    );
+    try std.testing.expectEqualStrings(
+        "/D:/wispterm/docs/foo.png",
+        pathFromFileUri("file://localhost/D:/wispterm/docs/foo.png").?,
+    );
+    try std.testing.expectEqualStrings("/home/xzg/proj", pathFromFileUri("file://host/home/xzg/proj").?);
+    try std.testing.expect(pathFromFileUri("not-a-uri") == null);
 }

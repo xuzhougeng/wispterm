@@ -12,6 +12,11 @@ pub const SETTINGS_CONTROL_ROW_START: usize = 3;
 pub const SHELL_INTEGRATION_ROWS: usize = if (shell_integration.supported) 2 else 0;
 pub const SETTINGS_RAW_CONFIG_ROW: usize = SETTINGS_CONTROL_ROW_START + 9 + SHELL_INTEGRATION_ROWS;
 pub const SETTINGS_RESTORE_DEFAULTS_ROW: usize = SETTINGS_CONTROL_ROW_START + 10 + SHELL_INTEGRATION_ROWS;
+/// Free of the shell-integration / raw-config indices on every OS.
+pub const SETTINGS_SYSTEM_PROXY_ROW: usize = SETTINGS_CONTROL_ROW_START + 13;
+pub const SETTINGS_PROXY_ADDRESS_ROW: usize = SETTINGS_CONTROL_ROW_START + 14;
+pub const SETTINGS_RESEARCH_PROXY_ROW: usize = SETTINGS_CONTROL_ROW_START + 15;
+pub const SETTINGS_RESEARCH_PROXY_ADDRESS_ROW: usize = SETTINGS_CONTROL_ROW_START + 16;
 
 pub const Category = enum {
     general,
@@ -37,6 +42,10 @@ const APPEARANCE_ROWS = [_]usize{
 };
 const AI_ROWS = [_]usize{
     SETTINGS_CONTROL_ROW_START + 4, // default AI
+    SETTINGS_SYSTEM_PROXY_ROW, // enable provider proxy
+    SETTINGS_PROXY_ADDRESS_ROW, // system proxy or host:port
+    SETTINGS_RESEARCH_PROXY_ROW, // enable research proxy
+    SETTINGS_RESEARCH_PROXY_ADDRESS_ROW, // inherited or custom research proxy
     SETTINGS_CONTROL_ROW_START + 5, // WeChat direct
     SETTINGS_CONTROL_ROW_START + 8, // distill suggestions
 };
@@ -86,6 +95,12 @@ pub const Action = enum {
     cycle_language,
     toggle_restore_tabs,
     toggle_distill_suggest,
+    toggle_system_proxy,
+    edit_proxy,
+    commit_proxy,
+    toggle_research_proxy,
+    edit_research_proxy,
+    commit_research_proxy,
     toggle_start_menu,
     toggle_startup,
     open_raw_config,
@@ -107,15 +122,32 @@ pub const State = struct {
     picker_choices: []const []const u8 = &.{},
     picker_choices_owned: bool = false,
     picker_allocator: ?std.mem.Allocator = null,
+    // Type-to-search for owned (font) lists: hundreds of families are
+    // unusable with arrows alone (#647). `picker_view` holds the matches.
+    picker_query: [64]u8 = undefined,
+    picker_query_len: usize = 0,
+    picker_view: std.ArrayListUnmanaged([]const u8) = .empty,
+    proxy_editing: bool = false,
+    proxy_draft_invalid: bool = false,
+    proxy_draft_len: usize = 0,
+    proxy_draft: [255]u8 = undefined,
+    research_proxy_editing: bool = false,
+    research_proxy_draft_invalid: bool = false,
+    research_proxy_draft_len: usize = 0,
+    research_proxy_draft: [255]u8 = undefined,
 
     pub fn open(self: *State) void {
         self.closePicker(null);
+        self.endProxyEdit();
+        self.endResearchProxyEdit();
         self.visible = true;
         self.selectCategory(.general);
         self.cfg_dirty = true;
     }
 
     pub fn selectCategory(self: *State, category: Category) void {
+        self.endProxyEdit();
+        self.endResearchProxyEdit();
         const rows = categoryRows(category);
         if (rows.len == 0) return;
         self.category = category;
@@ -140,6 +172,8 @@ pub const State = struct {
 
     pub fn close(self: *State, allocator: ?std.mem.Allocator) void {
         self.visible = false;
+        self.endProxyEdit();
+        self.endResearchProxyEdit();
         self.closePicker(null);
         if (self.cfg_loaded) {
             const alloc = allocator orelse return;
@@ -152,6 +186,7 @@ pub const State = struct {
 
     pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
         self.closePicker(allocator);
+        self.endResearchProxyEdit();
         if (self.cfg_loaded) self.cfg_cache.deinit(allocator);
         self.cfg_cache = .{};
         self.cfg_loaded = false;
@@ -194,9 +229,12 @@ pub const State = struct {
             if (self.picker_allocator orelse allocator) |alloc| {
                 for (self.picker_choices) |choice| alloc.free(choice);
                 alloc.free(self.picker_choices);
+                self.picker_view.deinit(alloc);
             } else return;
         }
         self.picker.close();
+        self.picker_view = .empty;
+        self.picker_query_len = 0;
         self.picker_choices = &.{};
         self.picker_choices_owned = false;
         self.picker_allocator = null;
@@ -210,35 +248,180 @@ pub const State = struct {
         return self.picker.kind;
     }
 
+    /// The choices currently listed: every choice, or the search matches.
+    fn pickerVisible(self: *const State) []const []const u8 {
+        return if (self.picker_query_len > 0) self.picker_view.items else self.picker_choices;
+    }
+
     pub fn pickerCount(self: *const State) usize {
-        return if (self.pickerOpen()) self.picker_choices.len else 0;
+        return if (self.pickerOpen()) self.pickerVisible().len else 0;
     }
 
     pub fn pickerValue(self: *const State) ?[]const u8 {
-        return self.picker.selectedValue(self.picker_choices);
+        return self.picker.selectedValue(self.pickerVisible());
     }
 
     pub fn pickerValueAt(self: *const State, index: usize) ?[]const u8 {
-        if (!self.pickerOpen() or index >= self.picker_choices.len) return null;
-        return self.picker_choices[index];
+        const visible = self.pickerVisible();
+        if (!self.pickerOpen() or index >= visible.len) return null;
+        return visible[index];
     }
 
     pub fn selectPickerIndex(self: *State, index: usize) bool {
-        if (!self.pickerOpen() or index >= self.picker_choices.len) return false;
+        if (!self.pickerOpen() or index >= self.pickerVisible().len) return false;
         self.picker.selected = index;
         return true;
     }
 
+    pub fn pickerQuery(self: *const State) []const u8 {
+        return self.picker_query[0..self.picker_query_len];
+    }
+
+    /// Append a typed character to the picker search. Only owned lists (the
+    /// font picker) are searchable; the short shell list ignores typing.
+    pub fn insertPickerChar(self: *State, cp: u21) bool {
+        if (!self.pickerOpen()) return false;
+        const alloc = self.picker_allocator orelse return true;
+        if (cp < 32 or cp == 127) return true;
+        var utf8: [4]u8 = undefined;
+        const n = std.unicode.utf8Encode(cp, &utf8) catch return true;
+        if (self.picker_query_len + n > self.picker_query.len) return true;
+        @memcpy(self.picker_query[self.picker_query_len..][0..n], utf8[0..n]);
+        self.picker_query_len += n;
+        self.refilterPicker(alloc);
+        return true;
+    }
+
+    fn pickerBackspace(self: *State) void {
+        if (self.picker_query_len == 0) return;
+        var end = self.picker_query_len - 1;
+        while (end > 0 and (self.picker_query[end] & 0xC0) == 0x80) end -= 1; // drop a whole UTF-8 char
+        self.picker_query_len = end;
+        if (self.picker_allocator) |alloc| self.refilterPicker(alloc);
+    }
+
+    fn refilterPicker(self: *State, alloc: std.mem.Allocator) void {
+        self.picker.selected = 0;
+        self.picker_view.clearRetainingCapacity();
+        const query = self.pickerQuery();
+        for (self.picker_choices) |choice| {
+            if (std.ascii.indexOfIgnoreCase(choice, query) == null) continue;
+            self.picker_view.append(alloc, choice) catch return;
+        }
+    }
+
+    pub fn beginProxyEdit(self: *State, current: []const u8) void {
+        const trimmed = std.mem.trim(u8, current, " \t\r\n");
+        const n = @min(trimmed.len, self.proxy_draft.len);
+        @memcpy(self.proxy_draft[0..n], trimmed[0..n]);
+        self.proxy_draft_len = n;
+        self.proxy_editing = true;
+        self.proxy_draft_invalid = false;
+    }
+
+    pub fn endProxyEdit(self: *State) void {
+        self.proxy_editing = false;
+        self.proxy_draft_len = 0;
+        self.proxy_draft_invalid = false;
+    }
+
+    pub fn proxyDraft(self: *const State) []const u8 {
+        return self.proxy_draft[0..self.proxy_draft_len];
+    }
+
+    pub fn insertProxyChar(self: *State, cp: u21) bool {
+        if (!self.proxy_editing) return false;
+        if (cp < 33 or cp > 126) return true;
+        const c: u8 = @intCast(cp);
+        if (!proxyAddressChar(c) or self.proxy_draft_len >= self.proxy_draft.len) return true;
+        self.proxy_draft[self.proxy_draft_len] = c;
+        self.proxy_draft_len += 1;
+        self.proxy_draft_invalid = false;
+        return true;
+    }
+
+    pub fn proxyBackspace(self: *State) void {
+        if (self.proxy_draft_len > 0) self.proxy_draft_len -= 1;
+        self.proxy_draft_invalid = false;
+    }
+
+    pub fn beginResearchProxyEdit(self: *State, current: []const u8) void {
+        const trimmed = std.mem.trim(u8, current, " \t\r\n");
+        const n = @min(trimmed.len, self.research_proxy_draft.len);
+        @memcpy(self.research_proxy_draft[0..n], trimmed[0..n]);
+        self.research_proxy_draft_len = n;
+        self.research_proxy_editing = true;
+        self.research_proxy_draft_invalid = false;
+    }
+
+    pub fn endResearchProxyEdit(self: *State) void {
+        self.research_proxy_editing = false;
+        self.research_proxy_draft_len = 0;
+        self.research_proxy_draft_invalid = false;
+    }
+
+    pub fn researchProxyDraft(self: *const State) []const u8 {
+        return self.research_proxy_draft[0..self.research_proxy_draft_len];
+    }
+
+    pub fn insertResearchProxyChar(self: *State, cp: u21) bool {
+        if (!self.research_proxy_editing) return false;
+        if (cp < 33 or cp > 126) return true;
+        const c: u8 = @intCast(cp);
+        if (!proxyAddressChar(c) or self.research_proxy_draft_len >= self.research_proxy_draft.len) return true;
+        self.research_proxy_draft[self.research_proxy_draft_len] = c;
+        self.research_proxy_draft_len += 1;
+        self.research_proxy_draft_invalid = false;
+        return true;
+    }
+
+    pub fn researchProxyBackspace(self: *State) void {
+        if (self.research_proxy_draft_len > 0) self.research_proxy_draft_len -= 1;
+        self.research_proxy_draft_invalid = false;
+    }
+
     pub fn handleKey(self: *State, ev: input_key.KeyEvent) ?Action {
+        if (self.research_proxy_editing) {
+            return switch (ev.key) {
+                .escape => blk: {
+                    self.endResearchProxyEdit();
+                    break :blk null;
+                },
+                .enter => .commit_research_proxy,
+                .backspace, .delete => blk: {
+                    self.researchProxyBackspace();
+                    break :blk null;
+                },
+                else => null,
+            };
+        }
+        if (self.proxy_editing) {
+            return switch (ev.key) {
+                .escape => blk: {
+                    self.endProxyEdit();
+                    break :blk null;
+                },
+                .enter => .commit_proxy,
+                .backspace, .delete => blk: {
+                    self.proxyBackspace();
+                    break :blk null;
+                },
+                else => null,
+            };
+        }
         if (self.pickerOpen()) {
             return switch (ev.key) {
                 .escape, .arrow_left => .close_picker,
                 .arrow_down, .tab => blk: {
-                    self.picker.move(1, self.picker_choices.len);
+                    self.picker.move(1, self.pickerVisible().len);
                     break :blk null;
                 },
                 .arrow_up => blk: {
-                    self.picker.move(-1, self.picker_choices.len);
+                    self.picker.move(-1, self.pickerVisible().len);
+                    break :blk null;
+                },
+                .backspace, .delete => blk: {
+                    self.pickerBackspace();
                     break :blk null;
                 },
                 .enter, .arrow_right => .choose_picker_value,
@@ -265,7 +448,7 @@ pub const State = struct {
     pub fn handleScroll(self: *State, delta_y: f64) void {
         if (!self.visible) return;
         if (self.pickerOpen()) {
-            if (delta_y > 0) self.picker.move(-1, self.picker_choices.len) else if (delta_y < 0) self.picker.move(1, self.picker_choices.len);
+            if (delta_y > 0) self.picker.move(-1, self.pickerVisible().len) else if (delta_y < 0) self.picker.move(1, self.pickerVisible().len);
             return;
         }
         if (delta_y > 0) {
@@ -319,6 +502,10 @@ pub const State = struct {
             6 => .cycle_language,
             7 => .toggle_restore_tabs,
             8 => .toggle_distill_suggest,
+            13 => .toggle_system_proxy,
+            14 => .edit_proxy,
+            15 => .toggle_research_proxy,
+            16 => .edit_research_proxy,
             9 + SHELL_INTEGRATION_ROWS => .open_raw_config,
             10 + SHELL_INTEGRATION_ROWS => .restore_defaults,
             else => null,
@@ -351,6 +538,10 @@ pub const State = struct {
             SETTINGS_CONTROL_ROW_START + 6 => .cycle_language,
             SETTINGS_CONTROL_ROW_START + 7 => .toggle_restore_tabs,
             SETTINGS_CONTROL_ROW_START + 8 => .toggle_distill_suggest,
+            SETTINGS_SYSTEM_PROXY_ROW => .toggle_system_proxy,
+            SETTINGS_PROXY_ADDRESS_ROW => .edit_proxy,
+            SETTINGS_RESEARCH_PROXY_ROW => .toggle_research_proxy,
+            SETTINGS_RESEARCH_PROXY_ADDRESS_ROW => .edit_research_proxy,
             SETTINGS_CONTROL_ROW_START + 9 + SHELL_INTEGRATION_ROWS => .open_raw_config,
             SETTINGS_CONTROL_ROW_START + 10 + SHELL_INTEGRATION_ROWS => .restore_defaults,
             else => null,
@@ -412,6 +603,39 @@ test "settings page exposes shell integration rows only on Windows" {
     }
 }
 
+fn proxyAddressChar(c: u8) bool {
+    return switch (c) {
+        'a'...'z', 'A'...'Z', '0'...'9', '.', ':', '-', '_', '[', ']', '/' => true,
+        else => false,
+    };
+}
+
+test "settings proxy address accepts host:port and backspace" {
+    var state = State{ .visible = true, .category = .ai, .focus = SETTINGS_PROXY_ADDRESS_ROW };
+    try std.testing.expectEqual(Action.edit_proxy, state.focusPrimaryAction().?);
+    state.beginProxyEdit("127.0.0.1:1");
+    try std.testing.expect(state.insertProxyChar('2'));
+    try std.testing.expect(state.insertProxyChar(' '));
+    try std.testing.expectEqualStrings("127.0.0.1:12", state.proxyDraft());
+    state.proxyBackspace();
+    try std.testing.expectEqualStrings("127.0.0.1:1", state.proxyDraft());
+    try std.testing.expectEqual(Action.commit_proxy, state.handleKey(.{ .key = .enter }).?);
+    try std.testing.expectEqual(@as(?Action, null), state.handleKey(.{ .key = .escape }));
+    try std.testing.expect(!state.proxy_editing);
+}
+
+test "settings research proxy toggle and address edit are independent" {
+    var state = State{ .visible = true, .category = .ai, .focus = SETTINGS_RESEARCH_PROXY_ROW };
+    try std.testing.expectEqual(Action.toggle_research_proxy, state.focusPrimaryAction().?);
+    state.focus = SETTINGS_RESEARCH_PROXY_ADDRESS_ROW;
+    try std.testing.expectEqual(Action.edit_research_proxy, state.focusPrimaryAction().?);
+    state.beginResearchProxyEdit("");
+    try std.testing.expect(state.insertResearchProxyChar('1'));
+    try std.testing.expectEqualStrings("1", state.researchProxyDraft());
+    try std.testing.expectEqual(Action.commit_research_proxy, state.handleKey(.{ .key = .enter }).?);
+    state.endResearchProxyEdit();
+}
+
 test "settings page category selection scopes visible rows" {
     var state = State{ .visible = true };
     state.selectCategory(.ai);
@@ -420,7 +644,7 @@ test "settings page category selection scopes visible rows" {
     const scroll = state.firstVisibleRow(2);
 
     try std.testing.expectEqual(Category.ai, state.category);
-    try std.testing.expectEqual(@as(usize, 1), scroll);
+    try std.testing.expectEqual(AI_ROWS.len - 2, scroll);
 }
 
 test "appearance exposes font family before font size" {
@@ -438,6 +662,41 @@ test "settings page choice picker handles navigation selection and cancel" {
     try std.testing.expectEqualStrings("fish", state.pickerValue().?);
     try std.testing.expectEqual(Action.choose_picker_value, state.handleKey(.{ .key = .enter }).?);
     try std.testing.expectEqual(Action.close_picker, state.handleKey(.{ .key = .escape }).?);
+}
+
+test "settings page font picker filters by typed text and backspace restores the list" {
+    const gpa = std.testing.allocator;
+    const raw = [_][]const u8{ "JetBrains Mono", "Microsoft YaHei", "SimHei", "SimSun" };
+    const choices = try gpa.alloc([]const u8, raw.len);
+    for (raw, 0..) |name, i| choices[i] = try gpa.dupe(u8, name);
+
+    var state = State{ .visible = true };
+    state.openPicker(.font_family, choices, "JetBrains Mono", true, gpa);
+    defer state.closePicker(null);
+
+    for ("HEI") |ch| try std.testing.expect(state.insertPickerChar(ch));
+    try std.testing.expectEqualStrings("HEI", state.pickerQuery());
+    try std.testing.expectEqual(@as(usize, 2), state.pickerCount());
+    try std.testing.expectEqualStrings("Microsoft YaHei", state.pickerValue().?);
+    _ = state.handleKey(.{ .key = .arrow_down });
+    try std.testing.expectEqualStrings("SimHei", state.pickerValue().?);
+    try std.testing.expectEqual(Action.choose_picker_value, state.handleKey(.{ .key = .enter }).?);
+
+    try std.testing.expect(state.insertPickerChar('x'));
+    try std.testing.expectEqual(@as(usize, 0), state.pickerCount());
+    try std.testing.expect(state.pickerValue() == null);
+
+    for (0..4) |_| _ = state.handleKey(.{ .key = .backspace });
+    try std.testing.expectEqualStrings("", state.pickerQuery());
+    try std.testing.expectEqual(raw.len, state.pickerCount());
+}
+
+test "settings page shell picker ignores typing" {
+    const choices = [_][]const u8{ "bash", "zsh" };
+    var state = State{ .visible = true };
+    state.openPicker(.shell, &choices, "bash", false, null);
+    try std.testing.expect(state.insertPickerChar('z'));
+    try std.testing.expectEqual(@as(usize, 2), state.pickerCount());
 }
 
 test "settings page hit test selects a picker row without AppWindow" {

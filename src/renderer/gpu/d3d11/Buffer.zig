@@ -201,6 +201,13 @@ pub fn upload(self: Buffer, bytes: []const u8) void {
     update(context, e.ptr.?, 0, null, bytes.ptr, 0, 0);
 }
 
+/// Overwrite from offset 0 with data only the current frame's draws read.
+/// Dynamic buffers already rename on MAP_WRITE_DISCARD, so this is `upload`
+/// (the Metal backend sub-allocates it from a per-frame arena).
+pub fn uploadTransient(self: Buffer, bytes: []const u8) void {
+    self.upload(bytes);
+}
+
 pub fn byteLength(self: Buffer) usize {
     return if (entry(self.handle)) |e| e.len else 0;
 }

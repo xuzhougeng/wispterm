@@ -9,6 +9,7 @@
 //!   - direct2d-zig: https://github.com/marler8997/direct2d-zig
 
 const std = @import("std");
+const update_pill_state = @import("../update_pill_state.zig");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
 const windows = std.os.windows;
@@ -237,6 +238,7 @@ const SIZE_MAXIMIZED: UINT = 2;
 
 const CFS_POINT: DWORD = 0x0002;
 const CFS_CANDIDATEPOS: DWORD = 0x0040;
+const CFS_EXCLUDE: DWORD = 0x0080;
 const GCS_COMPSTR: DWORD = 0x0008;
 const GCS_RESULTSTR: DWORD = 0x0800;
 const ISC_SHOWUICOMPOSITIONWINDOW: usize = 0x80000000;
@@ -919,9 +921,16 @@ pub const Window = struct {
     /// Per-tab close button x ranges (synced from renderer, used for double-click suppression)
     close_btn_x_start: [16]i32 = .{0} ** 16,
     close_btn_x_end: [16]i32 = .{0} ** 16,
-    /// Current mouse position in client coordinates (for hover tracking)
-    mouse_x: i32 = 0,
-    mouse_y: i32 = 0,
+    /// Current mouse position in client coordinates (for hover tracking).
+    /// -1 while the pointer is outside the client area.
+    mouse_x: i32 = -1,
+    mouse_y: i32 = -1,
+    /// The pointer is over the titlebar strip but in a non-client region (the
+    /// draggable caption, caption buttons, or top resize edge), where mouse_x/y
+    /// read -1. Drives `window-show-toolbar = hover`.
+    titlebar_nc_hover: bool = false,
+    /// A client-area TME_LEAVE request is outstanding (WM_MOUSELEAVE pending).
+    client_leave_tracked: bool = false,
     /// Terminal caret position in client coordinates for Windows IME UI.
     ime_caret_x: i32 = 12,
     ime_caret_y: i32 = TITLEBAR_HEIGHT + 10,
@@ -934,6 +943,8 @@ pub const Window = struct {
     /// popup is hidden.
     ime_preedit_buf: [1024]u8 = undefined,
     ime_preedit_len: usize = 0,
+    /// Set when the preedit text changes; consumed by takeImePreeditChanged.
+    ime_preedit_changed: bool = false,
     ime_composing: bool = false,
 
     // Input event queues (written by WndProc, read by main loop)
@@ -971,9 +982,30 @@ pub const Window = struct {
         return self.ime_preedit_buf[0..self.ime_preedit_len];
     }
 
+    /// Replace the inline preedit, flagging a change only when the text differs
+    /// so a repeated WM_IME_COMPOSITION does not force an extra frame.
+    fn setImePreedit(self: *Window, text: []const u8) void {
+        const len = @min(text.len, self.ime_preedit_buf.len);
+        if (!std.mem.eql(u8, text[0..len], self.imePreeditText())) {
+            @memcpy(self.ime_preedit_buf[0..len], text[0..len]);
+            self.ime_preedit_len = len;
+            self.ime_preedit_changed = true;
+        }
+        self.ime_composing = len > 0;
+    }
+
     pub fn clearImePreedit(self: *Window) void {
-        self.ime_preedit_len = 0;
-        self.ime_composing = false;
+        self.setImePreedit("");
+    }
+
+    /// One-shot: true when the preedit changed since the last call. The
+    /// preedit is painted by the render loop, and an active IME composition
+    /// swallows the raw keys (they arrive as VK_PROCESSKEY, which paints
+    /// nothing), so the loop must repaint for it (issue #691).
+    pub fn takeImePreeditChanged(self: *Window) bool {
+        const changed = self.ime_preedit_changed;
+        self.ime_preedit_changed = false;
+        return changed;
     }
 
     pub fn clearTransientInputQueues(self: *Window) void {
@@ -984,6 +1016,7 @@ pub const Window = struct {
         self.pressed_button = .none;
         self.mouse_x = -1;
         self.mouse_y = -1;
+        self.titlebar_nc_hover = false;
     }
 
     /// Initialize a Win32 window with an OpenGL 3.3 core profile context.
@@ -1671,6 +1704,34 @@ test "win32 IME composition handles result and preedit flags independently" {
     try std.testing.expect(!result_only.update_preedit);
 }
 
+test "win32 IME preedit change is a one-shot repaint signal (issue #691)" {
+    var w: Window = .{ .hwnd = undefined, .hdc = undefined };
+    try std.testing.expect(!w.takeImePreeditChanged());
+
+    // Each new pinyin keystroke rewrites the preedit with no key event the
+    // input loop can paint from, so the change itself must ask for a frame.
+    w.setImePreedit("n");
+    try std.testing.expectEqualStrings("n", w.imePreeditText());
+    try std.testing.expect(w.ime_composing);
+    try std.testing.expect(w.takeImePreeditChanged());
+    try std.testing.expect(!w.takeImePreeditChanged());
+
+    w.setImePreedit("ni");
+    try std.testing.expect(w.takeImePreeditChanged());
+
+    // An identical repeat (e.g. a caret-only WM_IME_COMPOSITION) is not a change.
+    w.setImePreedit("ni");
+    try std.testing.expect(!w.takeImePreeditChanged());
+
+    // Committing or cancelling erases the inline preedit, which also repaints.
+    w.clearImePreedit();
+    try std.testing.expectEqualStrings("", w.imePreeditText());
+    try std.testing.expect(!w.ime_composing);
+    try std.testing.expect(w.takeImePreeditChanged());
+    w.clearImePreedit();
+    try std.testing.expect(!w.takeImePreeditChanged());
+}
+
 test "win32 IME caret sync dedup includes normalized caret and client size" {
     const caret = normalizeImeCaret(-4, 12, 0);
     try std.testing.expectEqual(@as(i32, 0), caret.x);
@@ -1730,12 +1791,13 @@ fn updateImePreeditString(w: *Window) void {
         return;
     }
 
-    const utf8_len = std.unicode.utf16LeToUtf8(&w.ime_preedit_buf, wide_buf[0..units]) catch {
+    // Decode beside the live buffer so setImePreedit can tell whether it changed.
+    var utf8_buf: @TypeOf(w.ime_preedit_buf) = undefined;
+    const utf8_len = std.unicode.utf16LeToUtf8(&utf8_buf, wide_buf[0..units]) catch {
         w.clearImePreedit();
         return;
     };
-    w.ime_preedit_len = utf8_len;
-    w.ime_composing = utf8_len > 0;
+    w.setImePreedit(utf8_buf[0..utf8_len]);
 }
 
 fn pushImeUtf16Chars(w: *Window, chars: []const WCHAR) void {
@@ -1808,12 +1870,15 @@ fn getCaptionButtonWidth() i32 {
 }
 
 /// Total width of the app-handled titlebar buttons immediately left of the
-/// native caption buttons: Copilot + help + settings (each 46px). This strip is
-/// carved out of the draggable caption region (WM_NCHITTEST / WM_LBUTTONDOWN) so
-/// their clicks reach the app instead of starting a window drag. Keep in sync
-/// with titlebar.zig's TITLEBAR_COPILOT_W + TITLEBAR_HELP_W + TITLEBAR_CONFIG_W.
+/// native caption buttons: command center + Copilot + help + settings (each
+/// 46px). This strip is carved out of the draggable caption region
+/// (WM_NCHITTEST / WM_LBUTTONDOWN) so their clicks reach the app instead of
+/// starting a window drag. Keep in sync
+/// with titlebar.zig's TITLEBAR_PALETTE_W + TITLEBAR_COPILOT_W + TITLEBAR_HELP_W
+/// + TITLEBAR_CONFIG_W, plus the Update pill while a staged update is ready
+/// (update_pill_state, drawn left of the command center button).
 fn getAppButtonStripWidth() i32 {
-    return 46 * 3;
+    return 46 * 4 + @as(i32, @intFromFloat(update_pill_state.currentWidth()));
 }
 
 fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) LRESULT {
@@ -2026,8 +2091,8 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
             return DefWindowProcW(hwnd, msg, wParam, filteredImeSetContextLParam(lParam));
         },
         WM_IME_STARTCOMPOSITION => {
+            w.clearImePreedit();
             w.ime_composing = true;
-            w.ime_preedit_len = 0;
             updateImeWindowPosition(w);
             return 0;
         },
@@ -2132,6 +2197,15 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
             // Mouse left client area — set position to -1 so + button hover clears
             w.mouse_x = -1;
             w.mouse_y = -1;
+            w.client_leave_tracked = false;
+            {
+                var pt = POINT{
+                    .x = @as(i16, @bitCast(@as(u16, @intCast(lParam & 0xFFFF)))),
+                    .y = @as(i16, @bitCast(@as(u16, @intCast((lParam >> 16) & 0xFFFF)))),
+                };
+                _ = ScreenToClient(hwnd, &pt);
+                w.titlebar_nc_hover = pt.y >= 0 and pt.y < w.titlebar_height;
+            }
 
             // Request WM_NCMOUSELEAVE so we know when the mouse leaves
             var tme = TRACKMOUSEEVENT{
@@ -2205,10 +2279,17 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
         },
         WM_NCMOUSELEAVE => {
             w.hovered_button = .none;
+            w.titlebar_nc_hover = false;
             return 0;
         },
         WM_MOUSELEAVE => {
+            // Requested from WM_MOUSEMOVE. Clear the client position so hover
+            // state (and the hover-revealed toolbar) does not stick when the
+            // pointer jumps straight out of the window past the thin borders.
             w.hovered_button = .none;
+            w.client_leave_tracked = false;
+            w.mouse_x = -1;
+            w.mouse_y = -1;
             return 0;
         },
 
@@ -2330,6 +2411,14 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
             const mods = getModifiers();
             w.mouse_x = x;
             w.mouse_y = y;
+            w.titlebar_nc_hover = false;
+            if (!w.client_leave_tracked) {
+                var tme = TRACKMOUSEEVENT{
+                    .dwFlags = TME_LEAVE,
+                    .hwndTrack = hwnd,
+                };
+                w.client_leave_tracked = TrackMouseEvent(&tme) != 0;
+            }
             w.mouse_move_events.push(.{
                 .x = x,
                 .y = y,
@@ -2399,7 +2488,43 @@ fn updateImeWindowPosition(w: *Window) void {
     };
     _ = ImmSetCandidateWindow(hIMC, &candidate);
 
+    // WispTerm hides the IME's own composition window and draws the preedit
+    // inline, so some IMEs (Windows 11 Microsoft Pinyin) ignore the point
+    // above and drop the candidate list right on the caret row, covering the
+    // text. CFS_EXCLUDE hands them the caret cell rectangle to keep clear of.
+    var exclude = CANDIDATEFORM{
+        .dwIndex = 0,
+        .dwStyle = CFS_EXCLUDE,
+        .ptCurrentPos = .{ .x = x, .y = y },
+        .rcArea = imeCandidateExcludeArea(x, y, h, w.width),
+    };
+    _ = ImmSetCandidateWindow(hIMC, &exclude);
+
     w.ime_window_sync = currentImeWindowSync(w);
+}
+
+/// Caret cell rectangle the IME candidate window must not overlap. The cell
+/// width is unknown here; a full-width CJK glyph is about one cell height
+/// wide, which is enough to push the list below (or above) the text row.
+fn imeCandidateExcludeArea(x: i32, y: i32, h: i32, client_width: i32) RECT {
+    return .{
+        .left = x,
+        .top = y,
+        .right = @min(@max(x + 1, client_width), x + h),
+        .bottom = y + h,
+    };
+}
+
+test "win32 IME candidate exclude area covers the caret cell" {
+    const area = imeCandidateExcludeArea(100, 200, 20, 800);
+    try std.testing.expectEqual(@as(i32, 100), area.left);
+    try std.testing.expectEqual(@as(i32, 200), area.top);
+    try std.testing.expectEqual(@as(i32, 120), area.right);
+    try std.testing.expectEqual(@as(i32, 220), area.bottom);
+
+    // Caret at the right edge: never extend past the client area.
+    const edge = imeCandidateExcludeArea(799, 200, 20, 800);
+    try std.testing.expectEqual(@as(i32, 800), edge.right);
 }
 
 fn handleDropFiles(wParam: WPARAM, w: *Window) void {

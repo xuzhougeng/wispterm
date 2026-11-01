@@ -41,7 +41,7 @@ background-image = C:\Users\me\Pictures\wallpaper.png   # Windows example; use /
 background-opacity = 0.85
 background-image-mode = fill
 config-file = extra.conf
-auto-update-check = true
+auto-update = download
 focus-follows-mouse = false
 remote-enabled = false
 remote-server-url = https://remote.example.com
@@ -69,16 +69,23 @@ feishu-app-secret = your-app-secret
 | `background-image-mode`     | `fill`     | Image scaling: `fill`, `fit`, `center`, or `tile`                                                                                                                                                                       |
 | `window-height`             | `0` (auto) | Initial height in cells (min: 4, 0 = auto 80x24)                                                                                                                                                                        |
 | `window-width`              | `0` (auto) | Initial width in cells (min: 10, 0 = auto 80x24)                                                                                                                                                                        |
+| `window-show-toolbar`       | `hover`    | When WispTerm's own titlebar and sidebar buttons (sidebar toggle, settings, help, Copilot, command center, new tab) show. `hover` reveals them while the pointer is over the titlebar or tab sidebar of the focused window, then fades them out shortly after it leaves; `always` keeps them visible. Native window controls, the title, and the Update button always show. Named after Ghostty's `window-show-tab-bar`. |
 | `quake-mode`                | `false`    | Start as a Quake-style drop-down terminal. The `toggle_quake` keybind hides or shows the same window while preserving terminal state, and the Quake window's size and position are remembered across restarts.            |
 | `shell`                     | OS default | Shell command for new local sessions. Windows aliases: `cmd`, `powershell`, `pwsh`, `wsl`; POSIX examples: `sh`, `zsh`, `fish`. You can also use a custom command line such as `"C:\Program Files\Git\bin\bash.exe" --login -i`. |
 | `working-directory`         | *(none)*   | Working directory for the first terminal surface. Can also be set with `--working-directory <path>`; empty/unset inherits WispTerm's process cwd.                            |
-| `keybind`                   | defaults   | Configure an app-level shortcut. Can be repeated. Syntax: `keybind = [global:]modifier+key=action`; use `keybind = clear` before custom bindings to remove all defaults.                                                 |
+| `env`                       | *(none)*   | Extra environment variables for every local terminal child (same as Ghostty's `env`). Repeat it: `env = MSYSTEM=CLANG64`, `env = MSYS=winsymlinks:nativestrict`. `env =` alone resets the list, `env = KEY=` removes `KEY`, a later `KEY` overwrites an earlier one. Values win over WispTerm's own `TERM`/`TERM_PROGRAM`; with `shell` this runs an MSYS2 environment. |
+| `keybind`                   | defaults   | Configure an application or scoped workbench shortcut. Repeat it as needed. Syntax: `keybind = [scope:]modifier+key=action` or `keybind = global:modifier+key=action`; use `keybind = clear` before custom bindings to remove all defaults. |
 | `scrollback-limit`          | `10000000` | Scrollback buffer limit in bytes                                                                                                                                                                                        |
 | `url-open-mode`             | `embedded` | Where web URLs open: `embedded` uses the right-side browser panel when available (WebView2 on Windows, WKWebView on macOS), while `system-browser` always opens the system default browser. SSH loopback URLs keep local port forwards alive for either mode. |
-| `restore-tabs-on-startup`   | `false`    | Persist tab/split layout to the platform config directory (`session.json`) on close and rebuild it on next launch. SSH passwords are never persisted; reconnects re-prompt. CLI overrides (`--working-directory`) take precedence and skip restore. |
-| `auto-update-check`         | `true`     | Check GitHub Releases after startup and show a clickable prompt when a newer version is available. Set to `false` to disable startup checks.                                                                             |
+| `restore-tabs-on-startup`   | `false`    | Persist tab/split layout and replayable Pi JSONL session paths to the platform config directory (`session.json`) on close and rebuild them on next launch. SSH passwords are never persisted; reconnects re-prompt. CLI overrides (`--working-directory`) take precedence and skip restore. |
+| `auto-update`               | `download` | Same key and values as Ghostty. `off`: never check by itself. `check`: check GitHub Releases after startup and show a prompt when a newer version is out. `download`: also download and verify it in the background. On a signed Windows portable install, the titlebar then shows an **Update** button that restarts into the new version (after a confirmation), and quitting installs it, so the next launch runs it. Elsewhere `download` behaves like `check`. |
+| `auto-update-check`         | `true`     | Older spelling: `false` turns updates off, like `auto-update = off`.                                                                                                                                                     |
 | `config-file`               | *(none)*   | Include another config file (prefix with `?` to make optional)                                                                                                                                                          |
 | `ai-default-profile`        | *(none)*   | Saved AI profile name used by New Agent, startup auto-open, remote auto-open, and Copilot defaults. Empty falls back to the first saved profile. `/model` changes only the current session and does not rewrite this key. |
+| `http-use-system-proxy`     | `false`    | Enable the AI Proxy setting for model/provider HTTP. Leave off to connect AI requests directly. |
+| `http-proxy`                | *(empty)*  | AI Proxy address used when `http-use-system-proxy` is on. Empty uses the system proxy; otherwise `host:port` or `http://host:port`. |
+| `research-use-proxy`        | `false`    | Enable the independent proxy for `websearch`, `webread`, and PubMed. |
+| `research-proxy`            | *(empty)*  | Empty inherits the `http-proxy` address above, including when the AI proxy toggle is off. Enter a value to override it for research tools only. |
 | `ai-agent-enabled`          | `false`    | Enable agent tools for AI Chat profiles by default.                                                                                                                                                                     |
 | `ai-agent-permission`       | `ask`      | Agent tool permission mode: `ask`, `auto`, or `full`.                                                                                                                                                                   |
 | `ai-agent-command-timeout-ms` | `60000`  | Timeout budget for agent shell/SSH commands.                                                                                                                                                                           |
@@ -91,8 +98,10 @@ feishu-app-secret = your-app-secret
 | `memory-digest-backfill-days` | `7`      | Maximum number of days to backfill on the first or catch-up digest run.                                                                                                                                                 |
 | `memory-digest-max-chars`   | `2000`     | Maximum characters retained from a single message before digesting.                                                                                                                                                     |
 | `memory-digest-input-budget-chars` | `96000` | Maximum bytes fed to one memory-digest map prompt before chunking.                                                                                                                                                   |
-| `copilot-hint`              | `true`     | Show the right-edge Copilot summon handle and one-time shimmer hint. Set to `false` to hide that discovery affordance.                                                                                                  |
+| `copilot-hint`              | `true`     | Show the right-edge summon handle (reopens the right dock on its last tab) and the one-time Copilot shimmer hint. Set to `false` to hide that discovery affordance.                                                     |
+| `file-explorer-position`    | `right`    | Where the File Explorer lives: `right` makes it the **Files** tab of the right dock beside Copilot (one shared, remembered dock width; open/closed is remembered per tab); `left` keeps it as the panel next to the tab sidebar. Hot-reloads. Named like Ghostty's `quick-terminal-position`. |
 | `desktop-notifications`     | `true`     | Show native desktop notifications for OSC 9 / OSC 777 sequences (macOS notification center, Windows tray balloon toast, Linux `notify-send`). Set to `false` to ignore them entirely (no toast, no bell badge); the plain terminal bell is unaffected. |
+| `agent-screen-detection`    | `true`     | Classify terminal agents (Claude Code, Codex, Gemini CLI, Copilot CLI, Kimi, OpenCode, Pi, …) as idle / working / waiting from what they draw on screen when no WispTerm hook marker is installed, driving the tab badge and attention notifications. The rules are herdr's detection manifests (`src/terminal_agents/manifests/`). Set to `false` to rely on hook markers only. |
 | `remote-enabled`            | `false`    | Start the shared outbound RemoteClient for this WispTerm instance                                                                                                                                                        |
 | `remote-server-url`         | *(none)*   | Cloudflare relay URL, for example `https://remote.example.com`                                                                                                                                                          |
 | `remote-server-fingerprint` | *(none)*   | Expected relay fingerprint for server identity pinning                                                                                                                                                                  |
@@ -107,6 +116,7 @@ feishu-app-secret = your-app-secret
 | `right-click-action`        | `copy`     | Right-click behavior in the terminal: `ignore`, `copy`, `paste`, or `copy-or-paste` (copy when a selection exists, otherwise paste).                                                                                   |
 | `copy-on-select`            | `false`    | Copy the terminal selection to the clipboard automatically as soon as you select it.                                                                                                                                    |
 | `ssh-legacy-algorithms`     | `false`    | Append compatibility options (`ssh-rsa`, old Diffie-Hellman KEX, CBC ciphers) for legacy SSH servers and bastions.                                                                                                      |
+| `ssh-advertise-terminal-capabilities` | `false` | Ask OpenSSH to advertise `TERM_PROGRAM=ghostty` and `COLORTERM=truecolor` to the remote SSH session. The server must accept these environment requests. |
 | `windows-conpty`            | `auto`     | Windows console host: `auto` prefers the bundled modern ConPTY when `conpty.dll` + `OpenConsole.exe` sit next to `wispterm.exe` (shipped in the portable-compat package; restores TUI mouse support on old Windows 10); `system` forces the OS in-box ConPTY. |
 | `wispterm-d3d-present`      | `true`     | Windows: present frames via a DXGI flip-model swapchain. Set `false` to force the classic GDI presenter (useful on weak integrated GPUs; since v1.19.1 affected machines also switch automatically).                    |
 
@@ -184,6 +194,16 @@ shell = 'C:\\Program Files\\Git\\bin\\bash.exe'
 That wrong form can make Windows look for an executable whose path includes the
 quote characters, which shows up as `Failed to create Surface for new tab`.
 
+## SSH session network proxy
+
+SSH Server profiles support **No proxy**, **SOCKS5**, and **HTTP CONNECT**. These are per-session network routes, separate from the existing SSH **Jump host** and AI/research HTTP proxy settings. Choose the proxy type with the same left/right choice-row controls as the auth method, then enter the proxy host (without a URL scheme) and TCP port. For example, if a local Clash/Mihomo mixed listener is configured at `127.0.0.1:7897`, choose SOCKS5 or HTTP CONNECT and enter that host and port. Use the listener's actual configured port; keep the target SSH server and its port (usually 22) unchanged.
+
+The initial implementation supports proxies without authentication. A SOCKS authentication challenge or HTTP 407 is reported explicitly; SSH passwords/keys still authenticate the target, not the proxy. Network proxy plus ProxyJump is rejected rather than silently choosing one route.
+
+A bundled `wispterm-ssh-proxy` stdio bridge performs the CONNECT handshake, while OpenSSH retains SSH authentication and host-key verification. No `nc`/`corkscrew`, system-proxy changes, TUN, server changes, or disabled host-key checking are needed. Profiles, restored sessions, SCP/remote-file helpers, HTML/SSH tunnels, and port forwarding retain the same route. Keep the bridge beside the application binary when moving a portable build. Proxy failures do not fall back to a direct connection.
+
+This follows MobaXterm's session-level SOCKS proxy workflow and Ghostty's delegation to external OpenSSH, not a reimplementation of SSH. Existing profiles without the added proxy fields retain their previous direct/ProxyJump behavior.
+
 ## OpenSSH config import
 
 Open the command center and run **Load OpenSSH Config** to import compatible
@@ -195,29 +215,53 @@ platform credential providers remain in charge of authentication.
 
 ## Keyboard Shortcuts
 
-WispTerm follows Ghostty's `keybind = trigger=action` style for app-level
-shortcuts. Prefix a binding with `global:` when the shortcut should be
-registered system-wide (Win32 hotkey on Windows, CGEventTap on macOS); the
-first global use case is Quake mode.
+WispTerm follows Ghostty's `keybind = trigger=action` style for application
+shortcuts. Prefix a binding with `global:` when it should be registered as a
+native system-wide hotkey (Win32 on Windows, CGEventTap on macOS).
+
+Workbench operation bindings can be scoped to the focused page with
+`scope:trigger=action`. This keeps the same key available for different pages;
+for example, `R` can rename a file, restart a port forward, or rescan skills.
 
 ```text
 keybind = alt+f10=toggle_command_palette
 keybind = ctrl+shift+t=new_session
 keybind = global:ctrl+backquote=toggle_quake
+keybind = file-explorer:r=file_explorer_rename
+keybind = port-forwarding:r=port_forwarding_restart
+keybind = skill-center:r=skill_center_rescan
 ```
 
-Supported modifiers are `ctrl`, `shift`, `alt`, and `win` (Windows) / `cmd` (macOS). Common key names
-include letters, digits, `f1`-`f24`, `backquote`, `comma`, `plus`, `minus`,
-`bracket_left`, `bracket_right`, `enter`, `tab`, `escape`, and arrow keys.
+Supported scopes are `file-explorer`, `agent-history`, `ai-history`,
+`memory-center`, `conversation-center`, `port-forwarding`, and `skill-center`.
+Supported modifiers are `ctrl`, `shift`, `alt`, and `win` (Windows) / `cmd`
+(macOS). Common key names include letters, digits, `f1`-`f24`, `backquote`,
+`comma`, `plus`, `minus`, `bracket_left`, `bracket_right`, `enter`, `tab`,
+`escape`, `delete`, `space`, and arrow keys.
 
-Current app-level actions include `toggle_command_palette`, `toggle_quake`,
-`new_session`, `new_window`, `split_right`, `toggle_file_explorer`,
-`toggle_sidebar`, `toggle_ai_copilot`, `close_panel_or_tab`, `toggle_maximize`,
-`font_size_increase`, `font_size_decrease`, `copy`, `paste`, `paste_image`,
+Application actions include `toggle_command_palette`, `toggle_quake`,
+`new_session`, `new_window`, `split_right`, `split_down`,
+`toggle_file_explorer`, `toggle_sidebar`, `toggle_ai_copilot`,
+`close_panel_or_tab`, `toggle_maximize`, `font_size_increase`,
+`font_size_decrease`, `copy`, `paste`, `paste_image`, `send_to_copilot`,
 `focus_left`, `focus_right`, `focus_up`, `focus_down`, `focus_previous`,
-`focus_next`, `equalize_splits`, `transpose_split`, `next_tab`, `previous_tab`, `switch_tab_1`
-through `switch_tab_9`, `focus_panel_1` through `focus_panel_9`, and
-`open_config`.
+`focus_next`, `equalize_splits`, `transpose_split`, `next_tab`,
+`previous_tab`, `switch_tab_1` through `switch_tab_9`, `focus_panel_1` through
+`focus_panel_9`, `open_settings`, and `open_config`.
+
+Scoped workbench actions are:
+
+- `file_explorer_download`, `file_explorer_upload_file`, `file_explorer_upload_folder`, `file_explorer_rename`, `file_explorer_new_file`, `file_explorer_new_folder`, `file_explorer_delete`, `file_explorer_refresh`
+- `agent_history_delete`
+- `ai_history_preview`, `ai_history_scan`, `ai_history_download`, `ai_history_export`, `ai_history_attach`
+- `memory_center_toggle_setting`, `memory_center_reload`, `memory_center_run_digest`
+- `conversation_center_resume`, `conversation_center_delete`
+- `port_forwarding_toggle_selected`, `port_forwarding_new`, `port_forwarding_edit`, `port_forwarding_delete`, `port_forwarding_restart`, `port_forwarding_toggle_autostart`
+- `skill_center_preview`, `skill_center_rescan`, `skill_center_deploy`, `skill_center_import`, `skill_center_import_tool`, `skill_center_toggle`, `skill_center_open_url`, `skill_center_select_all`
+
+`keybind = clear` removes all defaults, including scoped workbench defaults,
+before subsequent bindings are added. Navigation, text-entry, and terminal-local
+keys remain owned by the focused editor or terminal.
 
 ## Command Snippets
 
@@ -300,3 +344,9 @@ Grok Build reads `~/.grok/sessions/**/updates.jsonl` with sibling
 excluded. Grok Build and Kimi are initially unchecked; enable them in Source
 settings to include their history. Grok streaming text chunks remain separate
 cursor units so resuming an in-progress reply does not lose appended text.
+
+## Magpie model connection
+
+An optional Magpie Agent plugin supplies a separate `~/.config/wispterm/magpie.json`
+connection. Restart after connecting, changing models, or disconnecting. See
+[Magpie model connection](magpie.md) for activation and preservation of personal profiles.

@@ -5,6 +5,7 @@
 //! from the caller (which reads i18n).
 const std = @import("std");
 const panel_draw = @import("panel_draw.zig");
+const ui_patterns = @import("ui_patterns.zig");
 
 pub const DrawContext = panel_draw.DrawContext;
 
@@ -283,10 +284,8 @@ fn mixColor(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
     return .{ a[0] + (b[0] - a[0]) * c, a[1] + (b[1] - a[1]) * c, a[2] + (b[2] - a[2]) * c };
 }
 
-/// Right-aligned geometry for the kind/enabled metadata columns. Scaled to the
-/// font's glyph advance so the longest labels ("skill" / "tool" kind, "off" /
-/// "on" state) never clip at large font sizes — fixed-pixel budgets fit only a
-/// couple of glyphs once cells grow.
+/// Right-aligned geometry measured with the same font as the labels. Reserve
+/// at least half the row for the skill name when the viewport becomes narrow.
 const MetaLayout = struct {
     band_w: f32, // total width reserved at the row's right edge for both columns
     kind_w: f32, // max width for the kind label, from the band's left edge
@@ -294,17 +293,31 @@ const MetaLayout = struct {
     enabled_w: f32, // max width for the enabled label
 };
 
-fn metaLayout(advance_in: f32) MetaLayout {
-    const a = @max(1.0, advance_in);
-    const kind_w = a * 5.5; // "skill" (5) + margin
-    const enabled_w = a * 3.5; // "off" (3) + margin
-    const gap = a; // one-glyph gutter between the columns
+fn metaLayout(kind_w: f32, enabled_w: f32, gap: f32, available: f32) MetaLayout {
+    const band_w = @min(@max(160, kind_w + gap + enabled_w), @max(0, available / 2));
+    const columns = ui_patterns.textColumns(band_w, kind_w, enabled_w, gap);
     return .{
-        .band_w = @max(160.0, kind_w + gap + enabled_w),
-        .kind_w = kind_w,
-        .enabled_dx = kind_w + gap,
-        .enabled_w = enabled_w,
+        .band_w = band_w,
+        .kind_w = columns.left_w,
+        .enabled_dx = columns.right_x,
+        .enabled_w = columns.right_w,
     };
+}
+
+fn textWidth(draw: DrawContext, value: []const u8) f32 {
+    var it = (std.unicode.Utf8View.init(value) catch return 0).iterator();
+    var width: f32 = 0;
+    while (it.nextCodepoint()) |cp| width += draw.glyphAdvance(cp);
+    return width;
+}
+
+fn itemMetaLayout(draw: DrawContext, item: ListItem, content_w: f32) MetaLayout {
+    return metaLayout(
+        @max(textWidth(draw, "built-in"), textWidth(draw, item.kind)) + 2,
+        @max(textWidth(draw, "off"), textWidth(draw, item.enabled)) + 2,
+        draw.glyphAdvance('M'),
+        content_w - PAD_X * 2,
+    );
 }
 
 fn renderListMetadata(
@@ -315,7 +328,7 @@ fn renderListMetadata(
     text_y: f32,
     muted: [3]f32,
 ) void {
-    const ml = metaLayout(draw.glyphAdvance('M'));
+    const ml = itemMetaLayout(draw, item, content_w);
     const band_left = content_x + content_w - PAD_X - ml.band_w;
     if (item.kind.len > 0) {
         _ = draw.renderTextLimited(item.kind, band_left, text_y, muted, ml.kind_w);
@@ -426,7 +439,7 @@ fn renderSkillList(
         }
         draw.fillQuadAlpha(slot.rect.x, slot.rect.y, slot.rect.w, 1, line, 0.4);
         const item = view.itemAt(view.ctx, ri);
-        const meta_w: f32 = if (item.kind.len > 0 or item.enabled.len > 0) metaLayout(draw.glyphAdvance('M')).band_w else 0;
+        const meta_w: f32 = if (item.kind.len > 0 or item.enabled.len > 0) itemMetaLayout(draw, item, layout.content_w).band_w else 0;
         _ = draw.renderTextLimited(item.label, layout.content_x + PAD_X, slot.text_y, fg, @max(0, layout.content_w - PAD_X * 2 - meta_w));
         renderListMetadata(draw, item, layout.content_x, layout.content_w, slot.text_y, muted);
         rendered += 1;
@@ -454,8 +467,7 @@ fn renderList(
     _ = draw.renderTextLimited(lv.title, layout.content_x + PAD_X, title_y, muted, layout.content_w - PAD_X * 2);
     const list = layout.overlayListWindow(window_height, lv.len, lv.sel);
 
-    const marker_w: f32 = 110;
-    const meta_w: f32 = metaLayout(draw.glyphAdvance('M')).band_w;
+    const marker_w = @min(110, @max(0, (layout.content_w - PAD_X * 2) / 3));
     var rendered: usize = 0;
     var i: usize = list.first_visible;
     while (i < lv.len and rendered < list.visible_rows) : (i += 1) {
@@ -466,9 +478,11 @@ fn renderList(
         }
         draw.fillQuadAlpha(slot.rect.x, slot.rect.y, slot.rect.w, 1, line, 0.4);
         const item = lv.itemAt(lv.ctx, i);
-        const reserved_w = (if (item.kind.len > 0 or item.enabled.len > 0) meta_w else 0) + (if (item.marker.len > 0) marker_w else 0);
+        const item_marker_w: f32 = if (item.marker.len > 0) marker_w else 0;
+        const meta_w = itemMetaLayout(draw, item, layout.content_w - item_marker_w).band_w;
+        const reserved_w = (if (item.kind.len > 0 or item.enabled.len > 0) meta_w else 0) + item_marker_w;
         _ = draw.renderTextLimited(item.label, layout.content_x + PAD_X, slot.text_y, fg, @max(0, layout.content_w - PAD_X * 2 - reserved_w));
-        renderListMetadata(draw, item, layout.content_x - (if (item.marker.len > 0) marker_w else 0), layout.content_w, slot.text_y, muted);
+        renderListMetadata(draw, item, layout.content_x, layout.content_w - item_marker_w, slot.text_y, muted);
         if (item.marker.len > 0) {
             const mx = layout.content_x + layout.content_w - PAD_X - marker_w;
             _ = draw.renderTextLimited(item.marker, mx, slot.text_y, item.marker_color, marker_w);
@@ -496,7 +510,10 @@ fn wrapCols(width: f32, advance: f32) usize {
 /// A trailing '\r' (CRLF) is trimmed per line.
 const WrapIter = struct {
     content: []const u8,
-    cols: usize,
+    cols: usize = std.math.maxInt(usize),
+    max_w: f32 = 0,
+    glyph_advance: ?*const fn (u32) f32 = null,
+    prefer_words: bool = false,
     pos: usize = 0,
 
     fn next(self: *WrapIter) ?[]const u8 {
@@ -504,13 +521,26 @@ const WrapIter = struct {
         const start = self.pos;
         var i = start;
         var count: usize = 0;
+        var width: f32 = 0;
+        var last_space: ?usize = null;
         while (i < self.content.len) {
             if (self.content[i] == '\n') {
                 self.pos = i + 1;
                 return trimCr(self.content[start..i]);
             }
             const cp_len = std.unicode.utf8ByteSequenceLength(self.content[i]) catch 1;
-            i += @min(cp_len, self.content.len - i);
+            const end = i + @min(cp_len, self.content.len - i);
+            if (self.glyph_advance) |advance| {
+                const cp = std.unicode.utf8Decode(self.content[i..end]) catch '?';
+                const next_w = advance(cp);
+                if (width + next_w > self.max_w and i > start) {
+                    self.pos = if (self.prefer_words) last_space orelse i else i;
+                    return trimCr(self.content[start..self.pos]);
+                }
+                width += next_w;
+            }
+            if (self.content[i] == ' ') last_space = end;
+            i = end;
             count += 1;
             if (count >= self.cols) {
                 self.pos = i;
@@ -557,13 +587,14 @@ fn renderTextPreview(
 
     if (avail_h > line_pitch) {
         const visible: usize = @intFromFloat(@floor(avail_h / line_pitch));
-        const advance = draw.glyphAdvance('M');
-        const cols = wrapCols(layout.content_w - PAD_X * 2, advance);
-        const total = wrappedLineCount(tv.content, cols);
+        const wrap = WrapIter{ .content = tv.content, .max_w = layout.content_w - PAD_X * 2, .glyph_advance = draw.glyphAdvance };
+        var counter = wrap;
+        var total: usize = 0;
+        while (counter.next()) |_| total += 1;
         const scroll = clampScroll(tv.scroll, total, visible);
         if (tv.scroll_out) |p| p.* = scroll;
 
-        var it = WrapIter{ .content = tv.content, .cols = cols };
+        var it = wrap;
         var skipped: usize = 0;
         while (skipped < scroll) : (skipped += 1) _ = it.next();
         var rendered: usize = 0;
@@ -585,13 +616,15 @@ fn renderLegend(draw: DrawContext, legend: []const u8, layout: PanelLayout, mute
     const footer = layout.footer(draw.cell_h);
     draw.fillQuad(footer.rule.x, footer.rule.y, footer.rule.w, footer.rule.h, line);
     const text_w = layout.content_w - PAD_X * 2;
-    const cols = wrapCols(text_w, draw.glyphAdvance('M'));
-    var it = WrapIter{ .content = legend, .cols = cols };
+    var it = WrapIter{ .content = legend, .max_w = text_w, .glyph_advance = draw.glyphAdvance, .prefer_words = true };
     var line_index: usize = 0;
-    while (it.next()) |display_line| : (line_index += 1) {
-        if (line_index >= 3) break;
+    while (line_index < 3) : (line_index += 1) {
+        const remaining = legend[it.pos..];
+        const display_line = it.next() orelse break;
         const y = (layout.legend_h - draw.cell_h - 6) - @as(f32, @floatFromInt(line_index)) * (draw.cell_h + 2);
-        _ = draw.renderTextLimited(display_line, layout.content_x + PAD_X, y, muted, text_w);
+        // If an unusually narrow page needs more rows, expose the remainder
+        // through the standard ellipsis/hover hint instead of silently losing it.
+        _ = draw.renderTextLimited(if (line_index == 2) remaining else display_line, layout.content_x + PAD_X, y, muted, text_w);
     }
 }
 
@@ -679,20 +712,20 @@ test "skill_center_renderer: list item carries kind and enabled marker" {
     try std.testing.expectEqualStrings("on", item.enabled);
 }
 
-test "skill_center_renderer: metaLayout scales kind/enabled columns so labels never clip" {
-    // At a large font (~24px glyph advance), the longest kind label "skill" (5
-    // glyphs) and state label "off" (3 glyphs) must still fit their columns —
-    // the previous fixed 54px budget showed only "sk" / "of".
+test "skill_center_renderer: metadata fits built-in and stays bounded on narrow rows" {
     const a: f32 = 24;
-    const ml = metaLayout(a);
-    try std.testing.expect(ml.kind_w >= a * 5);
+    const ml = metaLayout(a * 8, a * 3, a, 1000);
+    try std.testing.expect(ml.kind_w >= a * 8);
     try std.testing.expect(ml.enabled_w >= a * 3);
     // Columns sit side by side inside the reserved band without overlapping.
     try std.testing.expect(ml.enabled_dx >= ml.kind_w);
     try std.testing.expect(ml.band_w >= ml.enabled_dx + ml.enabled_w);
-    // The band scales up with the font from its original floor.
-    try std.testing.expect(metaLayout(24).band_w > metaLayout(6).band_w);
-    try std.testing.expect(metaLayout(6).band_w >= 160);
+    for ([_]f32{ 0, 40, 100, 200 }) |available| {
+        const narrow = metaLayout(a * 8, a * 3, a, available);
+        try std.testing.expect(narrow.band_w <= available / 2);
+        try std.testing.expect(narrow.kind_w <= narrow.enabled_dx);
+        try std.testing.expect(narrow.enabled_dx + narrow.enabled_w <= narrow.band_w);
+    }
 }
 
 test "skill_center_renderer: input overlay variant is constructible" {
@@ -731,4 +764,25 @@ test "skill_center_renderer: text overlay variant carries scroll write-back" {
     } };
     try std.testing.expect(ov == .text);
     try std.testing.expectEqual(@as(usize, 7), ov.text.scroll);
+}
+
+test "skill center wraps Chinese by glyph width without dropping characters" {
+    const Metrics = struct {
+        fn advance(cp: u32) f32 {
+            return if (cp < 128) 10 else 20;
+        }
+    };
+    const content = "[space] 预览  [enter] 部署  [i] 导入";
+    var it = WrapIter{ .content = content, .max_w = 120, .glyph_advance = Metrics.advance };
+    var copied: usize = 0;
+    while (it.next()) |line| {
+        var view = try std.unicode.Utf8View.init(line);
+        var chars = view.iterator();
+        var width: f32 = 0;
+        while (chars.nextCodepoint()) |cp| width += Metrics.advance(cp);
+        try std.testing.expect(width <= 120);
+        try std.testing.expectEqualStrings(content[copied..][0..line.len], line);
+        copied += line.len;
+    }
+    try std.testing.expectEqual(content.len, copied);
 }

@@ -144,10 +144,26 @@ pub const Server = struct {
             },
             .spawn => {
                 // Queued for the UI thread (tab creation is not thread-safe here);
-                // ok means "accepted", not "tab is already visible".
-                if (!self.control.spawn(req.cwd, req.data))
+                // the ticket is polled with spawn-result for the new surface id.
+                const ticket = self.control.spawn(req.cwd, req.data, .{ .kind = req.kind, .split = req.split }) orelse
                     return protocol.encodeError(self.allocator, "spawn queue full or unavailable");
-                return protocol.encodeOk(self.allocator);
+                var raw: [48]u8 = undefined;
+                const json = std.fmt.bufPrint(&raw, "{{\"ticket\":{d}}}", .{ticket}) catch unreachable;
+                return protocol.encodeOkRawJson(self.allocator, json);
+            },
+            .agent_state => {
+                if (req.id.len == 0) return protocol.encodeError(self.allocator, "missing id");
+                const json = (try self.control.agentState(self.allocator, req.id)) orelse
+                    return protocol.encodeError(self.allocator, "surface not found");
+                defer self.allocator.free(json);
+                return protocol.encodeOkRawJson(self.allocator, json);
+            },
+            .spawn_result => {
+                const ticket = req.ticket orelse return protocol.encodeError(self.allocator, "missing ticket");
+                const json = (try self.control.spawnResult(self.allocator, ticket)) orelse
+                    return protocol.encodeError(self.allocator, "unknown ticket");
+                defer self.allocator.free(json);
+                return protocol.encodeOkRawJson(self.allocator, json);
             },
         }
     }
@@ -186,6 +202,8 @@ const FakeControl = struct {
     spawned_cwd: std.ArrayListUnmanaged(u8) = .empty,
     spawned_cmd: std.ArrayListUnmanaged(u8) = .empty,
     spawn_ok: bool = true,
+    spawned_kind: std.ArrayListUnmanaged(u8) = .empty,
+    spawned_split: protocol.SpawnSplit = .none,
     fn list_panes(ctx: *anyopaque, a: std.mem.Allocator) anyerror!?[]u8 {
         _ = ctx;
         return try a.dupe(u8, "{\"tabs\":[]}");
@@ -206,15 +224,35 @@ const FakeControl = struct {
         self.sent.appendSlice(t.allocator, data) catch return false;
         return true;
     }
-    fn spawn(ctx: *anyopaque, cwd: []const u8, command: []const u8) bool {
+    fn spawn(ctx: *anyopaque, cwd: []const u8, command: []const u8, opts: control_mod.SpawnOptions) ?u32 {
         const self: *FakeControl = @ptrCast(@alignCast(ctx));
-        if (!self.spawn_ok) return false;
-        self.spawned_cwd.appendSlice(t.allocator, cwd) catch return false;
-        self.spawned_cmd.appendSlice(t.allocator, command) catch return false;
-        return true;
+        if (!self.spawn_ok) return null;
+        self.spawned_cwd.appendSlice(t.allocator, cwd) catch return null;
+        self.spawned_cmd.appendSlice(t.allocator, command) catch return null;
+        self.spawned_kind.appendSlice(t.allocator, opts.kind) catch return null;
+        self.spawned_split = opts.split;
+        return 42;
+    }
+    fn agent_state(ctx: *anyopaque, a: std.mem.Allocator, id: []const u8) anyerror!?[]u8 {
+        _ = ctx;
+        if (std.mem.eql(u8, id, "s1")) return try a.dupe(u8, "{\"agentApp\":\"codex\",\"agentState\":\"running\"}");
+        return null;
+    }
+    fn spawn_result(ctx: *anyopaque, a: std.mem.Allocator, ticket: u32) anyerror!?[]u8 {
+        _ = ctx;
+        if (ticket == 42) return try a.dupe(u8, "{\"surfaceId\":\"term000000000009\"}");
+        return null;
     }
     fn iface(self: *FakeControl) control_mod.Control {
-        return .{ .ctx = self, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text, .ui_state = ui_state, .spawn = spawn } };
+        return .{ .ctx = self, .vtable = &.{
+            .list_panes = list_panes,
+            .get_text = get_text,
+            .send_text = send_text,
+            .ui_state = ui_state,
+            .spawn = spawn,
+            .agent_state = agent_state,
+            .spawn_result = spawn_result,
+        } };
     }
 };
 
@@ -272,25 +310,77 @@ test "dispatch panes / get-text / send-text happy + missing paths" {
     try t.expectEqualStrings("echo hi\n", fc.sent.items);
 }
 
-test "dispatch spawn forwards cwd+command and reports queue-full" {
+test "dispatch spawn forwards cwd+command+kind+split, returns a ticket, and reports queue-full" {
     var fc = FakeControl{};
     defer fc.sent.deinit(t.allocator);
     defer fc.spawned_cwd.deinit(t.allocator);
     defer fc.spawned_cmd.deinit(t.allocator);
+    defer fc.spawned_kind.deinit(t.allocator);
     var srv = fakeServer(&fc);
 
-    const s = try protocol.encodeRequest(t.allocator, .{ .token = "secret", .cmd = .spawn, .data = "claude -r abc", .cwd = "/work" });
+    const s = try protocol.encodeRequest(t.allocator, .{ .token = "secret", .cmd = .spawn, .data = "claude -r abc", .cwd = "/work", .kind = "claude", .split = .down });
     defer t.allocator.free(s);
     const sr = try srv.dispatch(s);
     defer t.allocator.free(sr);
     try t.expect(std.mem.indexOf(u8, sr, "\"ok\":true") != null);
+    try t.expect(std.mem.indexOf(u8, sr, "\"ticket\":42") != null);
     try t.expectEqualStrings("/work", fc.spawned_cwd.items);
     try t.expectEqualStrings("claude -r abc", fc.spawned_cmd.items);
+    try t.expectEqualStrings("claude", fc.spawned_kind.items);
+    try t.expectEqual(protocol.SpawnSplit.down, fc.spawned_split);
 
     fc.spawn_ok = false;
     const sr2 = try srv.dispatch(s);
     defer t.allocator.free(sr2);
     try t.expect(std.mem.indexOf(u8, sr2, "spawn queue full") != null);
+}
+
+test "dispatch spawn-result resolves a ticket and rejects unknown/missing ones" {
+    var fc = FakeControl{};
+    defer fc.sent.deinit(t.allocator);
+    var srv = fakeServer(&fc);
+
+    const ok = try protocol.encodeRequest(t.allocator, .{ .token = "secret", .cmd = .spawn_result, .ticket = 42 });
+    defer t.allocator.free(ok);
+    const okr = try srv.dispatch(ok);
+    defer t.allocator.free(okr);
+    try t.expect(std.mem.indexOf(u8, okr, "term000000000009") != null);
+
+    const unknown = try protocol.encodeRequest(t.allocator, .{ .token = "secret", .cmd = .spawn_result, .ticket = 1 });
+    defer t.allocator.free(unknown);
+    const ur = try srv.dispatch(unknown);
+    defer t.allocator.free(ur);
+    try t.expect(std.mem.indexOf(u8, ur, "unknown ticket") != null);
+
+    const missing = try protocol.encodeRequest(t.allocator, .{ .token = "secret", .cmd = .spawn_result });
+    defer t.allocator.free(missing);
+    const mr = try srv.dispatch(missing);
+    defer t.allocator.free(mr);
+    try t.expect(std.mem.indexOf(u8, mr, "missing ticket") != null);
+}
+
+test "dispatch agent-state returns the surface's published state" {
+    var fc = FakeControl{};
+    defer fc.sent.deinit(t.allocator);
+    var srv = fakeServer(&fc);
+
+    const a = try protocol.encodeRequest(t.allocator, .{ .token = "secret", .cmd = .agent_state, .id = "s1" });
+    defer t.allocator.free(a);
+    const ar = try srv.dispatch(a);
+    defer t.allocator.free(ar);
+    try t.expect(std.mem.indexOf(u8, ar, "\"agentState\":\"running\"") != null);
+
+    const gone = try protocol.encodeRequest(t.allocator, .{ .token = "secret", .cmd = .agent_state, .id = "ghost" });
+    defer t.allocator.free(gone);
+    const gr = try srv.dispatch(gone);
+    defer t.allocator.free(gr);
+    try t.expect(std.mem.indexOf(u8, gr, "surface not found") != null);
+
+    const noid = try protocol.encodeRequest(t.allocator, .{ .token = "secret", .cmd = .agent_state });
+    defer t.allocator.free(noid);
+    const nr = try srv.dispatch(noid);
+    defer t.allocator.free(nr);
+    try t.expect(std.mem.indexOf(u8, nr, "missing id") != null);
 }
 
 test "dispatch ui-state returns the published overlay JSON" {

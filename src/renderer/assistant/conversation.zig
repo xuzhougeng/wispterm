@@ -8,12 +8,52 @@ const i18n = @import("../../i18n.zig");
 const composer_layout = @import("../../assistant/conversation/composer_layout.zig");
 const scrollbar_model = @import("../../assistant/conversation/scrollbar_model.zig");
 const md = @import("../../markdown_text.zig");
+const table_hscroll = @import("../../assistant/conversation/table_hscroll.zig");
+const question_hscroll = @import("../../assistant/conversation/question_hscroll.zig");
+const question_select = @import("../../assistant/conversation/question_select.zig");
+const question_answer = @import("../../assistant/conversation/question_answer.zig");
 const detail_wrap = @import("../../composer_detail_wrap.zig");
 
 // Transcript scrollbar interaction state (one mouse). Set by input.zig,
 // read by the fade computation in renderTranscriptScrollbar.
 pub threadlocal var g_transcript_scrollbar_hover: bool = false;
 pub threadlocal var g_transcript_scrollbar_dragging: bool = false;
+
+/// Vertical layout of one message within a transcript pass.
+const BlockMetrics = struct {
+    block_h: f32,
+    reasoning_h: f32,
+    footer_h: f32,
+    gap: f32,
+};
+
+/// Transcript measurements that outlive a frame (see transcript_wrap.zig),
+/// plus the current paint pass's per-message metrics so `render` measures each
+/// message once. Per render thread, like the titlebar glyph cache whose
+/// advances it is keyed on; freed by `deinitMeasureCache` at window teardown.
+const MeasureState = struct {
+    cache: transcript_wrap.Cache = .{},
+    blocks: std.ArrayListUnmanaged(BlockMetrics) = .empty,
+    /// Body hashes computed in the current paint pass, by slice address.
+    /// `render` holds the session mutex for the whole pass, so a body cannot
+    /// change between its layout lookup and its paint lookup; the second one
+    /// reuses the hash instead of re-reading the whole body.
+    pass_hashes: [64]PassHash = @splat(.{}),
+    in_pass: bool = false,
+};
+const PassHash = struct { ptr: usize = 0, len: usize = 0, hash: u64 = 0, pass: u64 = 0 };
+threadlocal var g_measure: MeasureState = .{};
+
+/// Paint passes between cache sweeps, and how many passes an entry may go
+/// untouched (e.g. a background tab's transcript) before it is dropped.
+const MEASURE_SWEEP_INTERVAL: u64 = 8;
+const MEASURE_MAX_AGE: u64 = 32;
+
+pub fn deinitMeasureCache(allocator: std.mem.Allocator) void {
+    g_measure.cache.deinit(allocator);
+    g_measure.blocks.deinit(allocator);
+    g_measure = .{};
+}
 
 const TABLE_MAX_COLS = md.TABLE_MAX_COLS;
 const nextSourceLine = md.nextSourceLine;
@@ -27,6 +67,7 @@ const font = AppWindow.font;
 const titlebar = AppWindow.titlebar;
 const ui_pipeline = @import("../ui_pipeline.zig");
 const ai_chat_layout = @import("../../assistant/conversation/layout.zig");
+const transcript_wrap = @import("transcript_wrap.zig");
 
 pub const LINE_PAD_X: f32 = 18;
 pub const HEADER_H: f32 = 54;
@@ -46,8 +87,21 @@ const STOP_BUTTON_H: f32 = 28;
 // stops an in-flight request when the dot is busy/yellow.
 const STATUS_DOT_D: f32 = 9;
 const STATUS_DOT_HIT: f32 = 28;
-const COMPACT_STATUS_TRAILING_RESERVE: f32 = 36;
+// Trailing room after the status dot. It used to clear a × close button drawn
+// over the header's right end; the right dock's tab row now owns open/close,
+// so the dot only keeps a small gap from the panel edge.
+const COMPACT_STATUS_TRAILING_RESERVE: f32 = 4;
 const MODE_SLOT_W: f32 = 84;
+// Effort chip: gap before the mode label, and the model label width it must
+// leave before it is hidden on narrow headers.
+const EFFORT_CHIP_GAP: f32 = 16;
+const EFFORT_CHIP_MIN_MODEL_W: f32 = 52;
+// Gap between a header label and the next control (queue count, status).
+const HEADER_LABEL_GAP: f32 = 12;
+// "Esc Stop" label inset inside the stop button: icon column on the left,
+// padding on the right.
+const STOP_LABEL_X: f32 = 28;
+const STOP_LABEL_PAD_R: f32 = 6;
 const INPUT_SCROLLBAR_GUTTER: f32 = 10;
 const INPUT_SCROLLBAR_W: f32 = 4;
 const INPUT_SCROLLBAR_PAD: f32 = 7;
@@ -66,6 +120,12 @@ const BLOCK_COPY_BUTTON_PAD: f32 = 4;
 const DETAIL_PAD_X: f32 = 14;
 const DETAIL_PAD_Y: f32 = 10;
 const DETAIL_ARROW_W: f32 = 12;
+
+/// Collapse-arrow column: the wider of ">" and "v" as drawn (twice the 1x
+/// width on Retina), so the arrow is never truncated to nothing.
+fn detailArrowW() f32 {
+    return ai_chat_layout.labelSlotWidth(DETAIL_ARROW_W, @max(titlebarTextWidth(">"), titlebarTextWidth("v")), 0);
+}
 const DETAIL_RULE_W: f32 = 3;
 /// Gap between an expanded activity group's header row and its first card.
 const GROUP_HEADER_GAP: f32 = 6;
@@ -98,8 +158,11 @@ pub const HitTarget = union(enum) {
     /// cards between one summary row and individual cards.
     toggle_tool_group: usize,
     toggle_reasoning: usize,
-    /// Click on the Nth (zero-based) visible option of a pending ask_user card.
-    question_option: usize,
+    /// Press on the question or a visible option row of a pending ask_user
+    /// card. It starts a text selection; a release without a drag on an
+    /// option row chooses that option.
+    question_text: QuestionTextHit,
+    question_scrollbar: QuestionScrollbarHit,
 };
 
 pub const CopySpan = struct {
@@ -112,6 +175,13 @@ pub const CopySpan = struct {
 /// extra options are still answerable by typing the option number in the
 /// composer (consistent with the WeChat digit reply).
 const MAX_VISIBLE_QUESTION_OPTIONS: usize = 6;
+
+pub const QuestionTextHit = struct {
+    generation: u64,
+    point: question_select.Point,
+    /// Visible option under the press, chosen by a plain click.
+    option: ?usize,
+};
 
 pub const TranscriptTextHit = struct {
     message_index: usize,
@@ -216,33 +286,42 @@ pub fn render(
     // chip beside the dot in compact mode and give the model the reclaimed
     // header width.
     const chip_x = headerPermissionChipX(x, w, compact);
-    const mode_text = if (session.agent_enabled) "Agent" else "Chat";
-    const mode_slot_w = @max(MODE_SLOT_W, titlebarTextWidth(mode_text) + 20);
-    const mode_x = @max(x + LINE_PAD_X, chip_x - mode_slot_w - 8);
+    const mode_text = headerModeText(session);
+    const mode_slot_w = headerModeSlotW(mode_text);
+    const header_row = headerRowLocked(session, x, w, top, compact);
+    const mode_x = header_row.mode_x;
 
-    // Model label fills the space left of the mode slot; it is hidden when the
-    // panel (e.g. the narrow copilot sidebar) is too tight to show it without
-    // overlapping the controls.
+    // Model label fills the space left of the effort chip (or the mode slot);
+    // it is hidden when the panel (e.g. the narrow copilot sidebar) is too
+    // tight to show it without overlapping the controls.
     const model_x = x + LINE_PAD_X;
-    const model_limit = mode_x - model_x - 12;
-    if (model_limit > 24) {
-        _ = titlebar.renderTextLimited(session.model(), model_x, header_y + 10, mixColor(fg, accent, 0.12), model_limit);
+    if (header_row.model_limit > 24) {
+        _ = titlebar.renderTextLimited(session.model(), model_x, header_y + 10, mixColor(fg, accent, 0.12), header_row.model_limit);
     }
-    _ = titlebar.renderTextLimited(mode_text, mode_x, header_y + 10, mixColor(fg, accent, 0.18), mode_slot_w);
+    if (header_row.effort_x) |effort_x| {
+        const effort_w = titlebarTextWidth(session.reasoningEffort());
+        _ = titlebar.renderTextLimited(session.reasoningEffort(), effort_x, header_y + 10, mixColor(fg, accent, 0.18), effort_w + 2);
+        ui_pipeline.fillQuadAlpha(effort_x, header_y + 8, effort_w, 1, accent, 0.26);
+    }
+    if (header_row.show_mode) {
+        _ = titlebar.renderTextLimited(mode_text, mode_x, header_y + 10, mixColor(fg, accent, 0.18), mode_slot_w);
+    }
 
     const perm_text = permissionDisplayName(permission);
-    const perm_color = switch (permission) {
-        .confirm => mixColor(bg, fg, 0.66),
-        .auto => mixColor(fg, accent, 0.12),
-        .full => mixColor(fg, accent, 0.25),
-    };
-    _ = titlebar.renderTextLimited(perm_text, chip_x, header_y + 10, perm_color, PERMISSION_CHIP_W);
-    const perm_alpha: f32 = switch (permission) {
-        .confirm => 0.16,
-        .auto => 0.26,
-        .full => 0.38,
-    };
-    ui_pipeline.fillQuadAlpha(chip_x, header_y + 8, PERMISSION_CHIP_W - 8, 1, accent, perm_alpha);
+    if (header_row.show_permission) {
+        const perm_color = switch (permission) {
+            .confirm => mixColor(bg, fg, 0.66),
+            .auto => mixColor(fg, accent, 0.12),
+            .full => mixColor(fg, accent, 0.25),
+        };
+        _ = titlebar.renderTextLimited(perm_text, chip_x, header_y + 10, perm_color, PERMISSION_CHIP_W);
+        const perm_alpha: f32 = switch (permission) {
+            .confirm => 0.16,
+            .auto => 0.26,
+            .full => 0.38,
+        };
+        ui_pipeline.fillQuadAlpha(chip_x, header_y + 8, PERMISSION_CHIP_W - 8, 1, accent, perm_alpha);
+    }
 
     if (compact) {
         // Narrow copilot sidebar: collapse the status into a colored dot.
@@ -250,7 +329,9 @@ pub fn render(
         //   yellow (palette[3]) = in progress; the dot doubles as the click
         //                         target to stop the request (Esc also works)
         //   red    (palette[1]) = stopped / error; the dot keeps its actionable
-        //                         status text alongside it (e.g. "Missing API key")
+        //                         status text alongside it (e.g. "Missing API
+        //                         key"), which takes the mode/permission labels'
+        //                         space while it is shown
         const status_kind = session.statusKind();
         const dot_color = switch (status_kind) {
             .ready => AppWindow.g_theme.palette[2],
@@ -258,10 +339,8 @@ pub fn render(
             .stopped => AppWindow.g_theme.palette[1],
         };
         if (status_kind == .stopped) {
-            const status_text = if (session.missingApiKey()) MISSING_API_KEY_ACTION_TEXT else session.status();
-            const status_rect = statusActionRect(x, w, top, status_text, true);
-            _ = titlebar.renderTextLimited(status_text, status_rect.x, header_y + 10, dot_color, status_rect.w);
-            ui_pipeline.fillQuadAlpha(status_rect.x, header_y + 8, status_rect.w, 1, dot_color, 0.34);
+            _ = titlebar.renderTextLimited(headerStatusText(session), header_row.status_x, header_y + 10, dot_color, header_row.status_w);
+            ui_pipeline.fillQuadAlpha(header_row.status_x, header_y + 8, header_row.status_w, 1, dot_color, 0.34);
         }
         const dot_hit = statusDotRect(x, w, top);
         fillDot(dot_hit.x + dot_hit.w / 2, header_y + HEADER_H / 2, STATUS_DOT_D, dot_color);
@@ -270,26 +349,29 @@ pub fn render(
         renderStopButton(stopButtonRect(x, w, top), window_height, session.request_stopping);
     } else {
         const missing_api_key = session.missingApiKey();
-        const status_text = if (missing_api_key) MISSING_API_KEY_ACTION_TEXT else session.status();
+        const status_text = headerStatusText(session);
         const status_color = if (missing_api_key) mixColor(fg, accent, 0.22) else mixColor(bg, fg, 0.62);
-        const status_rect = statusActionRect(x, w, top, status_text, false);
-        _ = titlebar.renderTextLimited(status_text, status_rect.x, header_y + 10, status_color, STATUS_SLOT_W);
+        const status_rect = wideStatusRect(x, w, top, status_text);
+        _ = titlebar.renderTextLimited(status_text, status_rect.x, header_y + 10, status_color, status_rect.w);
         if (missing_api_key) {
             ui_pipeline.fillQuadAlpha(status_rect.x, header_y + 8, status_rect.w, 1, accent, 0.34);
         }
     }
 
-    // Busy 且有排队 prompt 时，在 header 状态区左侧显示队列计数。
+    // Busy 且有排队 prompt 时，在 header 状态区左侧显示队列计数；放不下时
+    // 缩成 "+N"，再放不下就隐藏，绝不压到权限标签上。
     if (session.request_inflight and session.prompt_queue.len() > 0) {
-        var queue_buf: [24]u8 = undefined;
-        const queue_text = std.fmt.bufPrint(&queue_buf, "Queued: {d}", .{session.prompt_queue.len()}) catch "";
-        if (queue_text.len > 0) {
-            const anchor_x = if (compact) statusDotRect(x, w, top).x else stopButtonRect(x, w, top).x;
-            const queue_w = titlebarTextWidth(queue_text);
-            const queue_x = anchor_x - queue_w - 12;
-            if (queue_x > x + LINE_PAD_X) {
-                _ = titlebar.renderTextLimited(queue_text, queue_x, header_y + 10, mixColor(fg, accent, 0.18), queue_w + 2);
-            }
+        var full_buf: [24]u8 = undefined;
+        var short_buf: [16]u8 = undefined;
+        const full = std.fmt.bufPrint(&full_buf, "Queued: {d}", .{session.prompt_queue.len()}) catch "";
+        const short = std.fmt.bufPrint(&short_buf, "+{d}", .{session.prompt_queue.len()}) catch "";
+        const anchor_x = if (compact) statusDotRect(x, w, top).x else stopButtonRect(x, w, top).x;
+        const left_bound = if (header_row.show_permission) chip_x + titlebarTextWidth(perm_text) + HEADER_LABEL_GAP else mode_x + mode_slot_w;
+        const full_w = titlebarTextWidth(full);
+        const short_w = titlebarTextWidth(short);
+        if (ai_chat_layout.queueLabel(anchor_x, @max(left_bound, x + LINE_PAD_X), HEADER_LABEL_GAP, full_w, short_w)) |q| {
+            const text = if (q.short) short else full;
+            _ = titlebar.renderTextLimited(text, q.x, header_y + 10, mixColor(fg, accent, 0.18), (if (q.short) short_w else full_w) + 2);
         }
     }
 
@@ -342,19 +424,22 @@ pub fn render(
         first_row = @min(first_row, max_first_row);
         session.input_scroll_row = first_row;
         const text_start = wrappedByteOffsetForLine(input_text, layout.text_w, first_row);
-        _ = renderWrappedText(
+        renderWrappedText(
             input_text[text_start..],
+            null,
             layout.text_x,
             window_height - layout.field_y - layout.field_h + composer_layout.Field.pad_top,
             layout.text_w,
             lineHeight(),
             fg,
             window_height,
-            window_height - layout.field_y,
+            .{ .top_px = -std.math.inf(f32), .bottom_px = window_height - layout.field_y },
         );
         renderInputScrollbar(layout, total_rows, visible_rows, first_row);
     }
-    if (!session.request_inflight and AppWindow.g_cursor_blink_visible) {
+    // The composer stays editable while a request runs: typing queues the next
+    // prompt or answers a pending ask_user question, so keep the caret.
+    if (AppWindow.g_cursor_blink_visible) {
         const cursor = inputCursorRect(input_text, session.inputCursorLocked(), layout.text_x, layout.text_w);
         const visible_rows = inputVisibleRowsForField(layout.field_h);
         const total_rows = countWrappedLines(input_text, layout.text_w);
@@ -378,7 +463,7 @@ pub fn render(
     // A pending question shares the footer slot with approval; they are mutually
     // exclusive (the worker blocks on one tool at a time), so at most one is set.
     const question = if (approval == null) session.questionView() else null;
-    const question_h: f32 = if (question) |view| questionCardHeight(view) + APPROVAL_GAP else 0;
+    const question_h: f32 = if (question) |view| questionCardHeight(view, w - LINE_PAD_X * 2) + APPROVAL_GAP else 0;
     const card_footer_h = approval_h + question_h;
 
     const transcript_viewport = ai_chat_layout.transcriptViewport(frame, window_height, input_h, card_footer_h, LINE_PAD_X, 18);
@@ -388,7 +473,10 @@ pub fn render(
     const content_x = transcript_viewport.content_x;
     const viewport_bottom_top_px = transcript_viewport.viewport_bottom_top_px;
 
-    const content_h = transcriptContentHeight(session.messages.items, content_w);
+    g_measure.cache.beginPass();
+    g_measure.in_pass = true;
+    defer endMeasurePass();
+    const content_h = measureTranscript(session.messages.items, content_w);
     const max_scroll = @max(0.0, content_h - transcript_h);
     session.scroll_px = @min(session.scroll_px, max_scroll);
 
@@ -402,10 +490,12 @@ pub fn render(
     const gravity_offset = @max(0.0, transcript_h - content_h);
     const palette = markdownPalette(bg, fg, accent);
     const transcript_selected = session.transcript_select_all;
+    const band: transcript_wrap.Band = .{ .top_px = transcript_top, .bottom_px = viewport_bottom_top_px };
     var cursor_top = transcript_top + gravity_offset - session.scroll_px;
 
     for (session.messages.items, 0..) |msg, message_index| {
-        const block_h = messageBlockHeight(session.messages.items, message_index, content_w);
+        const metrics = measuredBlock(session.messages.items, message_index, content_w);
+        const block_h = metrics.block_h;
         if (rendersAsCard(msg)) {
             if (sectionVisible(cursor_top, block_h, transcript_top, viewport_bottom_top_px)) {
                 switch (toolGroupPosition(session.messages.items, message_index)) {
@@ -414,9 +504,9 @@ pub fn render(
                     .expanded_first => {
                         renderToolGroupHeader(session.messages.items, message_index, content_x, cursor_top, content_w, window_height, transcript_selected);
                         const card_top = cursor_top + detailHeaderHeight() + GROUP_HEADER_GAP;
-                        renderToolCard(msg, content_x, card_top, content_w, toolCardHeight(msg, content_w), window_height, transcript_selected);
+                        renderToolCard(msg, content_x, card_top, content_w, toolCardHeight(msg, content_w), window_height, transcript_selected, band);
                     },
-                    .none, .expanded_member => renderToolCard(msg, content_x, cursor_top, content_w, block_h, window_height, transcript_selected),
+                    .none, .expanded_member => renderToolCard(msg, content_x, cursor_top, content_w, block_h, window_height, transcript_selected, band),
                 }
             }
         } else if (sectionVisible(cursor_top, block_h, transcript_top, viewport_bottom_top_px)) {
@@ -424,15 +514,30 @@ pub fn render(
                 selection.rangeForMessage(message_index)
             else
                 null;
-            renderMessageBubble(msg.role, msg.content, content_x, cursor_top, content_w, block_h, window_height, transcript_selected, selection_range, palette);
+            renderMessageBubble(
+                session,
+                message_index,
+                msg.role,
+                msg.content,
+                content_x,
+                cursor_top,
+                content_w,
+                block_h,
+                window_height,
+                transcript_selected,
+                selection_range,
+                palette,
+                transcript_viewport.clip,
+                band,
+            );
         }
         cursor_top += block_h;
 
         if (msg.reasoning) |reasoning| {
             if (reasoning.len > 0) {
-                const r_h = reasoningCardHeight(msg, content_w);
+                const r_h = metrics.reasoning_h;
                 if (sectionVisible(cursor_top, r_h, transcript_top, viewport_bottom_top_px)) {
-                    renderReasoningCard(reasoning, msg.reasoning_collapsed, content_x, cursor_top, content_w, r_h, window_height, transcript_selected);
+                    renderReasoningCard(reasoning, msg.reasoning_collapsed, content_x, cursor_top, content_w, r_h, window_height, transcript_selected, band);
                 }
                 cursor_top += r_h;
             }
@@ -440,15 +545,15 @@ pub fn render(
 
         if (msg.usage_footer) |footer| {
             if (footer.len > 0) {
-                const footer_h = usageFooterHeight(footer, content_w);
+                const footer_h = metrics.footer_h;
                 if (sectionVisible(cursor_top, footer_h, transcript_top, viewport_bottom_top_px)) {
-                    renderUsageFooter(footer, content_x, cursor_top, content_w, footer_h, window_height);
+                    renderUsageFooter(footer, content_x, cursor_top, content_w, footer_h, window_height, band);
                 }
                 cursor_top += footer_h;
             }
         }
 
-        cursor_top += blockGapAfter(session.messages.items, message_index);
+        cursor_top += metrics.gap;
     }
 
     ui_pipeline.endClip();
@@ -458,7 +563,7 @@ pub fn render(
     if (approval) |view| {
         renderApprovalCard(view, x + LINE_PAD_X, input_h + APPROVAL_GAP, w - LINE_PAD_X * 2, approvalCardHeight(view));
     } else if (question) |view| {
-        renderQuestionCard(view, x + LINE_PAD_X, input_h + APPROVAL_GAP, w - LINE_PAD_X * 2, questionCardHeight(view));
+        renderQuestionCard(session, view, x + LINE_PAD_X, input_h + APPROVAL_GAP, w - LINE_PAD_X * 2, questionCardHeight(view, w - LINE_PAD_X * 2));
     }
     if (session.queue_open) {
         renderPromptQueuePanel(session, layout);
@@ -490,7 +595,7 @@ pub fn interactionHitTest(
     const approval = session.approvalView();
     const approval_h: f32 = if (approval) |view| approvalCardHeight(view) + APPROVAL_GAP else 0;
     const question = if (approval == null) session.questionView() else null;
-    const question_h: f32 = if (question) |view| questionCardHeight(view) + APPROVAL_GAP else 0;
+    const question_h: f32 = if (question) |view| questionCardHeight(view, w - LINE_PAD_X * 2) + APPROVAL_GAP else 0;
     const input_h = inputLayout(x, w, session.input()).input_h;
     const transcript_top = titlebar_offset + HEADER_H + 18;
     const transcript_bottom = input_h + approval_h + question_h + 18;
@@ -502,18 +607,17 @@ pub fn interactionHitTest(
     const px: f32 = @floatCast(xpos);
     const py: f32 = @floatCast(ypos);
 
-    // Clicks on a visible option row of the question card resolve the question.
+    // Presses on the question card's text start a selection (option rows
+    // still answer on a plain click, see question_select.State.finish).
     if (question) |qv| {
-        const cell_h = font.g_titlebar_cell_height;
         const card_y = input_h + APPROVAL_GAP; // y-up bottom edge, matches the renderer
-        const lay = ai_chat_layout.questionLayout(cell_h, qv.options.len, MAX_VISIBLE_QUESTION_OPTIONS);
-        var k: usize = 0;
-        while (k < lay.visible_options) : (k += 1) {
-            const baseline = card_y + lay.first_option_y - @as(f32, @floatFromInt(k)) * lay.option_pitch;
-            const top_px = window_height - baseline - cell_h;
-            const rect = Rect{ .x = content_x, .top_px = top_px - 2, .w = content_w, .h = cell_h + 4 };
-            if (pointInRect(px, py, rect)) return .{ .question_option = k };
+        if (questionScrollbarGeometry(qv, content_x, card_y, content_w, window_height)) |geo| {
+            if (geo.hit(px, py)) |grab_offset| return .{ .question_scrollbar = .{
+                .drag_offset_px = grab_offset,
+                .generation = qv.generation,
+            } };
         }
+        if (questionTextAt(qv, content_x, card_y, content_w, window_height, px, py, false)) |hit| return .{ .question_text = hit };
     }
 
     const content_h = transcriptContentHeight(session.messages.items, content_w);
@@ -558,7 +662,7 @@ pub fn interactionHitTest(
                 const body_top = cursor_top + BUBBLE_PAD_Y + lineHeight();
                 const body_w = @max(1.0, bubble.w - BUBBLE_PAD_X * 2);
                 var hctx = BlockHitCtx{ .px = px, .py = py, .message_index = message_index };
-                forEachCopyBlock(msg.content, body_x, body_top, body_w, &hctx, checkBlockHit);
+                forEachCopyBlock(msg.content, body_x, body_top, body_w, std.math.inf(f32), &hctx, checkBlockHit);
                 if (hctx.hit) |h| return h;
             }
         }
@@ -603,7 +707,7 @@ pub fn transcriptTextHitTest(
 
     const approval = session.approvalView();
     const approval_h: f32 = if (approval) |view| approvalCardHeight(view) + APPROVAL_GAP else 0;
-    const question_h: f32 = if (approval == null) (if (session.questionView()) |view| questionCardHeight(view) + APPROVAL_GAP else 0) else 0;
+    const question_h: f32 = if (approval == null) (if (session.questionView()) |view| questionCardHeight(view, w - LINE_PAD_X * 2) + APPROVAL_GAP else 0) else 0;
     const input_h = inputLayout(x, w, session.input()).input_h;
     const transcript_top = titlebar_offset + HEADER_H + 18;
     const transcript_bottom = input_h + approval_h + question_h + 18;
@@ -632,7 +736,7 @@ pub fn transcriptTextHitTest(
             if (px >= body_x - hit_slop and px <= body_x + body_w + hit_slop and py >= body_top and py <= body_top + body_h) {
                 return .{
                     .message_index = message_index,
-                    .byte_offset = byteOffsetForMarkdownPoint(msg.content, body_x, body_top, body_w, px, py),
+                    .byte_offset = byteOffsetForMarkdownPoint(session, message_index, msg.content, body_x, body_top, body_w, px, py),
                 };
             }
         }
@@ -647,6 +751,117 @@ pub fn transcriptTextHitTest(
         cursor_top += blockGapAfter(session.messages.items, message_index);
     }
 
+    return null;
+}
+
+pub const WideTableHit = struct {
+    message_index: usize,
+    table_start: usize,
+    content_w: f32,
+    clip_w: f32,
+};
+
+/// Overflowing markdown table under the pointer, if any. Used to pan wide
+/// tables horizontally (issue #624) instead of wrapping every long cell.
+pub fn wideTableAtPoint(
+    session: *ai_chat.Session,
+    xpos: f64,
+    ypos: f64,
+    window_width: f32,
+    window_height: f32,
+    titlebar_offset: f32,
+    chat_x: f32,
+    chat_w: f32,
+) ?WideTableHit {
+    _ = window_width;
+    const x = @round(chat_x);
+    const w = @round(@max(1.0, chat_w));
+    if (w <= 1) return null;
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+
+    const approval = session.approvalView();
+    const approval_h: f32 = if (approval) |view| approvalCardHeight(view) + APPROVAL_GAP else 0;
+    const question = if (approval == null) session.questionView() else null;
+    const question_h: f32 = if (question) |view| questionCardHeight(view, w - LINE_PAD_X * 2) + APPROVAL_GAP else 0;
+    const input_h = inputLayout(x, w, session.input()).input_h;
+    const frame = ai_chat_layout.panelFrame(window_height, titlebar_offset, x, w, HEADER_H) orelse return null;
+    const transcript_viewport = ai_chat_layout.transcriptViewport(frame, window_height, input_h, approval_h + question_h, LINE_PAD_X, 18);
+    const content_w = transcript_viewport.content_w;
+    const content_x = transcript_viewport.content_x;
+    const transcript_top = transcript_viewport.transcript_top_px;
+    const transcript_h = transcript_viewport.clip.h;
+    const viewport_bottom_top_px = transcript_viewport.viewport_bottom_top_px;
+    const content_h = transcriptContentHeight(session.messages.items, content_w);
+    const scroll_px = @min(session.scroll_px, @max(0.0, content_h - transcript_h));
+    const gravity_offset = @max(0.0, transcript_h - content_h);
+    const px: f32 = @floatCast(xpos);
+    const py: f32 = @floatCast(ypos);
+    var cursor_top = transcript_top + gravity_offset - scroll_px;
+
+    for (session.messages.items, 0..) |msg, message_index| {
+        const block_h = messageBlockHeight(session.messages.items, message_index, content_w);
+        if (msg.role == .assistant and sectionVisible(cursor_top, block_h, transcript_top, viewport_bottom_top_px)) {
+            const bubble = bubbleGeometry(msg.role, content_x, content_w);
+            const body_x = bubble.x + BUBBLE_PAD_X;
+            const body_top = cursor_top + BUBBLE_PAD_Y + lineHeight();
+            const body_w = @max(1.0, bubble.w - BUBBLE_PAD_X * 2);
+            if (overflowingTableAt(msg.content, body_x, body_top, body_w, px, py)) |hit| {
+                return .{
+                    .message_index = message_index,
+                    .table_start = hit.start,
+                    .content_w = hit.content_w,
+                    .clip_w = hit.clip_w,
+                };
+            }
+        }
+        cursor_top += block_h;
+        if (msg.reasoning) |reasoning| {
+            if (reasoning.len > 0) cursor_top += reasoningCardHeight(msg, content_w);
+        }
+        if (msg.usage_footer) |footer| {
+            if (footer.len > 0) cursor_top += usageFooterHeight(footer, content_w);
+        }
+        cursor_top += blockGapAfter(session.messages.items, message_index);
+    }
+    return null;
+}
+
+const OverflowTableAt = struct { start: usize, content_w: f32, clip_w: f32 };
+
+fn overflowingTableAt(text: []const u8, x: f32, top_px: f32, max_w: f32, px: f32, py: f32) ?OverflowTableAt {
+    if (std.mem.trim(u8, text, " \t\r\n").len == 0) return null;
+    const palette = markdownPalette(AppWindow.g_theme.background, AppWindow.g_theme.foreground, AppWindow.g_theme.cursor_color);
+    var cursor: usize = 0;
+    var current_top = top_px;
+    var in_code = false;
+    while (cursor < text.len) {
+        if (!in_code and isMarkdownTableStart(text, cursor)) {
+            const start = cursor;
+            const end = tableBlockEnd(text, cursor);
+            const table = TableLayout.init(text, start, end, max_w);
+            const block_h = tableBlockHeight(text, start, end, max_w);
+            if (table.overflows and px >= x and px <= x + table.clipWidth() and py >= current_top and py <= current_top + block_h) {
+                return .{ .start = start, .content_w = table.width(), .clip_w = table.clipWidth() };
+            }
+            current_top += block_h;
+            cursor = end;
+            continue;
+        }
+        const info = nextSourceLine(text, cursor);
+        cursor = info.next;
+        var clean_buf: [1024]u8 = undefined;
+        const prepared = prepareMarkdownLine(&clean_buf, info.line, in_code, palette);
+        switch (prepared.kind) {
+            .fence => {
+                current_top += prepared.line_h;
+                in_code = !in_code;
+            },
+            .blank, .rule => current_top += prepared.line_h,
+            .text => current_top += plainContentHeight(prepared.text, @max(1.0, max_w - prepared.indent), prepared.line_h),
+        }
+    }
     return null;
 }
 
@@ -673,6 +888,7 @@ pub fn stopButtonHitTest(
 }
 
 pub fn permissionChipHitTest(
+    session: *ai_chat.Session,
     xpos: f64,
     ypos: f64,
     window_width: f32,
@@ -684,6 +900,10 @@ pub fn permissionChipHitTest(
     _ = window_width;
     const x = @round(chat_x);
     const w = @round(@max(1.0, chat_w));
+    session.mutex.lock();
+    const shown = headerRowLocked(session, x, w, titlebar_offset, compact).show_permission;
+    session.mutex.unlock();
+    if (!shown) return false;
     const chip_x = headerPermissionChipX(x, w, compact);
     return pointInRect(@floatCast(xpos), @floatCast(ypos), .{
         .x = chip_x,
@@ -696,14 +916,77 @@ pub fn permissionChipHitTest(
 /// Bounding box of the header model label (top-left of the panel), or null when
 /// the label is hidden because the panel is too narrow (mirrors the render-time
 /// `model_limit > 24` guard in `render`).
-fn modelLabelRect(session: *ai_chat.Session, x: f32, w: f32, titlebar_offset: f32, compact: bool) ?Rect {
-    const chip_x = headerPermissionChipX(x, w, compact);
-    const mode_x = @max(x + LINE_PAD_X, chip_x - MODE_SLOT_W - 8);
+fn modelLabelRectLocked(session: *ai_chat.Session, x: f32, w: f32, titlebar_offset: f32, compact: bool) ?Rect {
     const model_x = x + LINE_PAD_X;
-    const model_limit = mode_x - model_x - 12;
+    const model_limit = headerRowLocked(session, x, w, titlebar_offset, compact).model_limit;
     if (model_limit <= 24) return null;
     const text_w = @min(measureText(session.model()), model_limit);
     return .{ .x = model_x, .top_px = titlebar_offset + 8, .w = @max(1.0, text_w), .h = 32 };
+}
+
+fn headerModeText(session: *const ai_chat.Session) []const u8 {
+    return if (session.agent_enabled) "Agent" else "Chat";
+}
+
+fn headerModeSlotW(mode_text: []const u8) f32 {
+    return @max(MODE_SLOT_W, titlebarTextWidth(mode_text) + 20);
+}
+
+fn headerStatusText(session: *const ai_chat.Session) []const u8 {
+    return if (session.missingApiKey()) MISSING_API_KEY_ACTION_TEXT else session.status();
+}
+
+/// Header label placement shared by `render` and the header hit tests, from
+/// the same measured widths the renderer draws with. In the compact sidebar a
+/// stopped/error status claims the effort, mode, and permission labels' space
+/// beside the dot. Assumes `session.mutex` is held.
+fn headerRowLocked(session: *ai_chat.Session, x: f32, w: f32, titlebar_offset: f32, compact: bool) ai_chat_layout.HeaderRow {
+    const mode_text = headerModeText(session);
+    const effort_w: ?f32 = if (session.effort_levels.count > 0 and session.thinking_enabled)
+        titlebarTextWidth(session.reasoningEffort())
+    else
+        null;
+    const status: ?ai_chat_layout.StatusClaim = if (compact and session.statusKind() == .stopped) .{
+        .right = statusDotRect(x, w, titlebar_offset).x - 8,
+        .text_w = titlebarTextWidth(headerStatusText(session)),
+    } else null;
+    return ai_chat_layout.headerRow(x, .{
+        .chip_x = headerPermissionChipX(x, w, compact),
+        .permission_w = titlebarTextWidth(permissionDisplayName(ai_chat.agentPermission())),
+        .mode_slot_w = headerModeSlotW(mode_text),
+        .mode_w = titlebarTextWidth(mode_text),
+        .effort_w = effort_w,
+    }, status, .{
+        .line_pad_x = LINE_PAD_X,
+        .effort_gap = EFFORT_CHIP_GAP,
+        .min_model_w = EFFORT_CHIP_MIN_MODEL_W,
+    });
+}
+
+/// Reasoning-effort chip just left of the mode label, for sessions with
+/// switchable levels (Magpie). Null when there is none or the header has no
+/// room left for a readable model label beside it. Assumes the mutex is held.
+fn effortChipRectLocked(session: *ai_chat.Session, x: f32, w: f32, titlebar_offset: f32, compact: bool) ?Rect {
+    const effort_x = headerRowLocked(session, x, w, titlebar_offset, compact).effort_x orelse return null;
+    return .{ .x = effort_x, .top_px = titlebar_offset + 8, .w = @max(1.0, titlebarTextWidth(session.reasoningEffort())), .h = 32 };
+}
+
+/// Click on the effort chip cycles this session to the model's next level.
+pub fn effortChipHitTest(
+    session: *ai_chat.Session,
+    xpos: f64,
+    ypos: f64,
+    titlebar_offset: f32,
+    chat_x: f32,
+    chat_w: f32,
+    compact: bool,
+) bool {
+    const x = @round(chat_x);
+    const w = @round(@max(1.0, chat_w));
+    session.mutex.lock();
+    const rect = effortChipRectLocked(session, x, w, titlebar_offset, compact);
+    session.mutex.unlock();
+    return pointInRect(@floatCast(xpos), @floatCast(ypos), rect orelse return false);
 }
 
 pub fn modelLabelHitTest(
@@ -719,8 +1002,10 @@ pub fn modelLabelHitTest(
     _ = window_width;
     const x = @round(chat_x);
     const w = @round(@max(1.0, chat_w));
-    const rect = modelLabelRect(session, x, w, titlebar_offset, compact) orelse return false;
-    return pointInRect(@floatCast(xpos), @floatCast(ypos), rect);
+    session.mutex.lock();
+    const rect = modelLabelRectLocked(session, x, w, titlebar_offset, compact);
+    session.mutex.unlock();
+    return pointInRect(@floatCast(xpos), @floatCast(ypos), rect orelse return false);
 }
 
 pub fn missingApiKeyStatusHitTest(
@@ -734,14 +1019,16 @@ pub fn missingApiKeyStatusHitTest(
     compact: bool,
 ) bool {
     _ = window_width;
-    session.mutex.lock();
-    const clickable = !session.request_inflight and session.missingApiKey();
-    session.mutex.unlock();
-    if (!clickable) return false;
-
     const x = @round(chat_x);
     const w = @round(@max(1.0, chat_w));
-    const rect = statusActionRect(x, w, titlebar_offset, MISSING_API_KEY_ACTION_TEXT, compact);
+    session.mutex.lock();
+    const clickable = !session.request_inflight and session.missingApiKey();
+    const rect: Rect = if (!compact) wideStatusRect(x, w, titlebar_offset, MISSING_API_KEY_ACTION_TEXT) else row: {
+        const row = headerRowLocked(session, x, w, titlebar_offset, true);
+        break :row .{ .x = row.status_x, .top_px = titlebar_offset + 8, .w = row.status_w, .h = 32 };
+    };
+    session.mutex.unlock();
+    if (!clickable) return false;
     return pointInRect(@floatCast(xpos), @floatCast(ypos), rect);
 }
 
@@ -773,6 +1060,40 @@ pub fn inputFieldMetricsAt(
         .max_cols = inputWrapColumns(w),
         .visible_rows = inputVisibleRowsForField(layout.field_h),
     };
+}
+
+/// Composer byte offset under a click, or null when it misses the input field.
+/// Mirrors the paint path's wrap and scroll so the caret lands where clicked.
+pub fn inputTextOffsetAt(
+    session: *ai_chat.Session,
+    xpos: f64,
+    ypos: f64,
+    window_height: f32,
+    chat_x: f32,
+    chat_w: f32,
+) ?usize {
+    const x = @round(chat_x);
+    const w = @round(@max(1.0, chat_w));
+    if (w <= 1) return null;
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    const text = session.input();
+    const layout = inputLayout(x, w, text);
+
+    const px: f32 = @floatCast(xpos);
+    const py: f32 = @floatCast(ypos);
+    const field_top_px = window_height - layout.field_y - layout.field_h;
+    if (px < layout.field_x or px > layout.field_x + layout.field_w) return null;
+    if (py < field_top_px or py > field_top_px + layout.field_h) return null;
+
+    const visible_rows = inputVisibleRowsForField(layout.field_h);
+    const total_rows = countWrappedLines(text, layout.text_w);
+    const max_first_row = if (total_rows > visible_rows) total_rows - visible_rows else 0;
+    const first_row = @min(session.input_scroll_row, max_first_row);
+    const rel_y = @max(0.0, py - field_top_px - composer_layout.Field.pad_top);
+    const view_row = @min(@as(usize, @intFromFloat(rel_y / lineHeight())), visible_rows - 1);
+    return transcript_wrap.offsetAt(text, layout.text_w, &glyphAdvance, first_row + view_row, px - layout.text_x);
 }
 
 pub fn inputScrollbarHitTest(
@@ -869,7 +1190,7 @@ fn transcriptLayoutLocked(
 
     const approval = session.approvalView();
     const approval_h: f32 = if (approval) |view| approvalCardHeight(view) + APPROVAL_GAP else 0;
-    const question_h: f32 = if (approval == null) (if (session.questionView()) |view| questionCardHeight(view) + APPROVAL_GAP else 0) else 0;
+    const question_h: f32 = if (approval == null) (if (session.questionView()) |view| questionCardHeight(view, w - LINE_PAD_X * 2) + APPROVAL_GAP else 0) else 0;
     const input_h = inputLayout(x, w, session.input()).input_h;
     const transcript_viewport = ai_chat_layout.transcriptViewport(frame, window_height, input_h, approval_h + question_h, LINE_PAD_X, 18);
     const content_w = transcript_viewport.content_w;
@@ -983,19 +1304,103 @@ fn blockGapAfter(msgs: []const ai_chat.Message, index: usize) f32 {
     return if (toolGroupPosition(msgs, index) == .hidden) 0 else BUBBLE_GAP;
 }
 
+fn blockMetrics(msgs: []const ai_chat.Message, index: usize, content_w: f32) BlockMetrics {
+    const msg = msgs[index];
+    const reasoning_h: f32 = if (msg.reasoning) |reasoning|
+        (if (reasoning.len > 0) reasoningCardHeight(msg, content_w) else 0)
+    else
+        0;
+    const footer_h: f32 = if (msg.usage_footer) |footer|
+        (if (footer.len > 0) usageFooterHeight(footer, content_w) else 0)
+    else
+        0;
+    return .{
+        .block_h = messageBlockHeight(msgs, index, content_w),
+        .reasoning_h = reasoning_h,
+        .footer_h = footer_h,
+        .gap = blockGapAfter(msgs, index),
+    };
+}
+
+fn addBlockHeight(content_h: f32, metrics: BlockMetrics) f32 {
+    // Same accumulation order as the paint loop's cursor advance.
+    return content_h + metrics.block_h + metrics.reasoning_h + metrics.footer_h + metrics.gap;
+}
+
 fn transcriptContentHeight(msgs: []const ai_chat.Message, content_w: f32) f32 {
     var content_h: f32 = 0;
-    for (msgs, 0..) |msg, i| {
-        content_h += messageBlockHeight(msgs, i, content_w);
-        if (msg.reasoning) |reasoning| {
-            if (reasoning.len > 0) content_h += reasoningCardHeight(msg, content_w);
-        }
-        if (msg.usage_footer) |footer| {
-            if (footer.len > 0) content_h += usageFooterHeight(footer, content_w);
-        }
-        content_h += blockGapAfter(msgs, i);
+    for (0..msgs.len) |i| content_h = addBlockHeight(content_h, blockMetrics(msgs, i, content_w));
+    return content_h;
+}
+
+/// `transcriptContentHeight` for a paint pass: also records each message's
+/// metrics so the paint loop (`measuredBlock`) does not measure them again.
+fn measureTranscript(msgs: []const ai_chat.Message, content_w: f32) f32 {
+    g_measure.blocks.clearRetainingCapacity();
+    const allocator = AppWindow.g_allocator;
+    var content_h: f32 = 0;
+    for (0..msgs.len) |i| {
+        const metrics = blockMetrics(msgs, i, content_w);
+        content_h = addBlockHeight(content_h, metrics);
+        if (allocator) |a| g_measure.blocks.append(a, metrics) catch {};
     }
     return content_h;
+}
+
+fn measuredBlock(msgs: []const ai_chat.Message, index: usize, content_w: f32) BlockMetrics {
+    if (g_measure.blocks.items.len == msgs.len) return g_measure.blocks.items[index];
+    return blockMetrics(msgs, index, content_w);
+}
+
+fn endMeasurePass() void {
+    g_measure.in_pass = false;
+    if (g_measure.cache.pass % MEASURE_SWEEP_INTERVAL != 0) return;
+    const allocator = AppWindow.g_allocator orelse return;
+    g_measure.cache.sweep(allocator, MEASURE_MAX_AGE);
+}
+
+/// Cache key of a whole message body, hashing it at most once per pass.
+fn bodyKey(kind: transcript_wrap.Kind, text: []const u8, max_w: f32) transcript_wrap.Key {
+    const metrics = titlebarMetricsKey();
+    if (!g_measure.in_pass) return transcript_wrap.Key.of(kind, text, max_w, metrics);
+    const addr = @intFromPtr(text.ptr);
+    const slot = &g_measure.pass_hashes[(addr >> 4) % g_measure.pass_hashes.len];
+    if (slot.pass != g_measure.cache.pass or slot.ptr != addr or slot.len != text.len) {
+        slot.* = .{ .ptr = addr, .len = text.len, .hash = transcript_wrap.contentHash(text), .pass = g_measure.cache.pass };
+    }
+    return transcript_wrap.Key.init(kind, text.len, slot.hash, max_w, metrics);
+}
+
+/// Fingerprint of everything titlebar glyph advances depend on, so cached
+/// wraps go stale on a UI font, size, or DPI change.
+fn titlebarMetricsKey() u64 {
+    const parts = [_]u64{
+        font.g_titlebar_generation,
+        @as(u32, @bitCast(font.g_titlebar_cell_width)),
+        @as(u32, @bitCast(font.g_titlebar_cell_height)),
+    };
+    return std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(&parts));
+}
+
+/// Wrapped-line index of a whole message body at `max_w`, cached across
+/// frames. Null only when the cache cannot allocate (callers then wrap
+/// uncached). The anchors stay valid until the next cache sweep.
+fn wrappedIndex(text: []const u8, max_w: f32) ?transcript_wrap.Index {
+    const allocator = AppWindow.g_allocator orelse return null;
+    const key = bodyKey(.wrapped, text, max_w);
+    if (g_measure.cache.get(key)) |entry| return entry.index;
+    const index = transcript_wrap.Index.build(allocator, text, max_w, &glyphAdvance) catch return null;
+    const entry = g_measure.cache.put(allocator, key, .{ .index = index }) catch {
+        index.deinit(allocator);
+        return null;
+    };
+    return entry.index;
+}
+
+/// `plainContentHeight` for a whole message body (cached).
+fn bodyContentHeight(text: []const u8, max_w: f32, line_h: f32) f32 {
+    const lines = if (wrappedIndex(text, max_w)) |index| index.lines else countWrappedLines(text, max_w);
+    return @as(f32, @floatFromInt(@max(@as(usize, 1), lines))) * line_h;
 }
 
 fn bubbleHeight(role: ai_chat.Role, text: []const u8, max_w: f32) f32 {
@@ -1004,7 +1409,7 @@ fn bubbleHeight(role: ai_chat.Role, text: []const u8, max_w: f32) f32 {
     const body_h = if (role == .assistant)
         markdownContentHeight(text, inner_w)
     else
-        plainContentHeight(text, inner_w, lineHeight());
+        bodyContentHeight(text, inner_w, lineHeight());
     return BUBBLE_PAD_Y * 2 + lineHeight() + body_h;
 }
 
@@ -1012,7 +1417,7 @@ fn toolCardHeight(msg: ai_chat.Message, max_w: f32) f32 {
     const body_h = if (msg.content_collapsed)
         0
     else
-        plainContentHeight(msg.content, @max(1.0, max_w - DETAIL_PAD_X * 2), lineHeight()) + DETAIL_PAD_Y * 2;
+        bodyContentHeight(msg.content, @max(1.0, max_w - DETAIL_PAD_X * 2), lineHeight()) + DETAIL_PAD_Y * 2;
     return detailHeaderHeight() + body_h;
 }
 
@@ -1021,19 +1426,29 @@ fn reasoningCardHeight(msg: ai_chat.Message, max_w: f32) f32 {
     const body_h = if (msg.reasoning_collapsed)
         0
     else
-        plainContentHeight(reasoning, @max(1.0, max_w - DETAIL_PAD_X * 2), reasoningLineHeight()) + DETAIL_PAD_Y * 2;
+        bodyContentHeight(reasoning, @max(1.0, max_w - DETAIL_PAD_X * 2), reasoningLineHeight()) + DETAIL_PAD_Y * 2;
     return detailHeaderHeight() + body_h;
 }
 
 fn usageFooterHeight(text: []const u8, max_w: f32) f32 {
-    return USAGE_FOOTER_PAD_TOP + plainContentHeight(text, @max(1.0, max_w - BUBBLE_PAD_X * 2), reasoningLineHeight());
+    return USAGE_FOOTER_PAD_TOP + bodyContentHeight(text, @max(1.0, max_w - BUBBLE_PAD_X * 2), reasoningLineHeight());
 }
 
 fn plainContentHeight(text: []const u8, max_w: f32, line_h: f32) f32 {
     return @as(f32, @floatFromInt(@max(@as(usize, 1), countWrappedLines(text, max_w)))) * line_h;
 }
 
+/// Height of an assistant message's markdown body (cached across frames).
 fn markdownContentHeight(text: []const u8, max_w: f32) f32 {
+    const allocator = AppWindow.g_allocator orelse return measureMarkdownContentHeight(text, max_w);
+    const key = bodyKey(.markdown, text, max_w);
+    if (g_measure.cache.get(key)) |entry| return entry.height;
+    const height = measureMarkdownContentHeight(text, max_w);
+    _ = g_measure.cache.put(allocator, key, .{ .height = height }) catch {};
+    return height;
+}
+
+fn measureMarkdownContentHeight(text: []const u8, max_w: f32) f32 {
     if (std.mem.trim(u8, text, " \t\r\n").len == 0) return lineHeight();
 
     const palette = markdownPalette(AppWindow.g_theme.background, AppWindow.g_theme.foreground, AppWindow.g_theme.cursor_color);
@@ -1069,6 +1484,8 @@ fn markdownContentHeight(text: []const u8, max_w: f32) f32 {
 }
 
 fn renderMessageBubble(
+    session: *ai_chat.Session,
+    message_index: usize,
     role: ai_chat.Role,
     text: []const u8,
     x: f32,
@@ -1079,6 +1496,8 @@ fn renderMessageBubble(
     selected: bool,
     selection_range: ?ai_chat.TextSelectionRange,
     palette: MarkdownPalette,
+    transcript_clip: ai_chat_layout.DrawRect,
+    band: transcript_wrap.Band,
 ) void {
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
@@ -1105,10 +1524,23 @@ fn renderMessageBubble(
     const body_top = top_px + BUBBLE_PAD_Y + lineHeight();
     const body_w = @max(1.0, bubble.w - BUBBLE_PAD_X * 2);
     if (role == .assistant) {
-        _ = renderMarkdownContent(text, body_x, body_top, body_w, window_height, window_height, palette, selection_range);
+        renderMarkdownContent(
+            text,
+            body_x,
+            body_top,
+            body_w,
+            window_height,
+            band,
+            palette,
+            selection_range,
+            session,
+            message_index,
+            transcript_clip,
+        );
     } else {
-        renderWrappedSelection(text, 0, body_x, body_top, body_w, lineHeight(), selection_range, window_height, window_height);
-        _ = renderWrappedText(text, body_x, body_top, body_w, lineHeight(), fg, window_height, window_height);
+        const index = wrappedIndex(text, body_w);
+        renderWrappedSelection(text, index, 0, body_x, body_top, body_w, lineHeight(), selection_range, window_height, band);
+        renderWrappedText(text, index, body_x, body_top, body_w, lineHeight(), fg, window_height, band);
     }
 }
 
@@ -1131,11 +1563,11 @@ fn renderToolGroupHeader(msgs: []const ai_chat.Message, start: usize, x: f32, to
 
     const arrow_x = x + DETAIL_PAD_X;
     const text_y = y + @round((h - font.g_titlebar_cell_height) / 2);
-    _ = titlebar.renderTextLimited(if (collapsed) ">" else "v", arrow_x, text_y, mixColor(fg, accent, 0.16), DETAIL_ARROW_W);
+    _ = titlebar.renderTextLimited(if (collapsed) ">" else "v", arrow_x, text_y, mixColor(fg, accent, 0.16), detailArrowW());
 
-    var title_buf: [32]u8 = undefined;
-    const title = std.fmt.bufPrint(&title_buf, "{d} steps", .{end - start}) catch "steps";
-    var text_x = arrow_x + DETAIL_ARROW_W + 6;
+    var title_buf: [48]u8 = undefined;
+    const title = std.fmt.bufPrint(&title_buf, "{d}{s}", .{ end - start, i18n.s().ai_steps_suffix }) catch i18n.s().ai_steps_suffix;
+    var text_x = arrow_x + detailArrowW() + 6;
     const text_limit = x + w - DETAIL_PAD_X;
     text_x = titlebar.renderTextLimited(title, text_x, text_y, mixColor(fg, accent, 0.18), @max(24.0, text_limit - text_x)) + 10;
     if (collapsed and text_x + 12 < text_limit) {
@@ -1149,7 +1581,7 @@ fn renderToolGroupHeader(msgs: []const ai_chat.Message, start: usize, x: f32, to
     }
 }
 
-fn renderToolCard(msg: ai_chat.Message, x: f32, top_px: f32, w: f32, h: f32, window_height: f32, selected: bool) void {
+fn renderToolCard(msg: ai_chat.Message, x: f32, top_px: f32, w: f32, h: f32, window_height: f32, selected: bool, band: transcript_wrap.Band) void {
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
     const accent = AppWindow.g_theme.cursor_color;
@@ -1159,6 +1591,9 @@ fn renderToolCard(msg: ai_chat.Message, x: f32, top_px: f32, w: f32, h: f32, win
         .title = i18n.s().ai_summary_card_title,
         .name = "",
         .preview = ai_model_switch.cardPreview(msg.content),
+    } else if (msg.is_question_answer) ToolSectionMeta{
+        .title = i18n.s().ai_question_answered,
+        .preview = question_answer.answerLine(msg.content),
     } else toolSectionMeta(msg.content);
     const card_bg = if (selected) mixColor(bg, accent, 0.22) else mixColor(bg, fg, 0.055);
     const header_bg = if (selected) mixColor(bg, accent, 0.28) else mixColor(bg, fg, 0.08);
@@ -1172,9 +1607,9 @@ fn renderToolCard(msg: ai_chat.Message, x: f32, top_px: f32, w: f32, h: f32, win
 
     const arrow_x = x + DETAIL_PAD_X;
     const arrow_y = header_y + @round((header_h - font.g_titlebar_cell_height) / 2);
-    _ = titlebar.renderTextLimited(if (msg.content_collapsed) ">" else "v", arrow_x, arrow_y, mixColor(fg, accent, 0.16), DETAIL_ARROW_W);
+    _ = titlebar.renderTextLimited(if (msg.content_collapsed) ">" else "v", arrow_x, arrow_y, mixColor(fg, accent, 0.16), detailArrowW());
 
-    var text_x = arrow_x + DETAIL_ARROW_W + 6;
+    var text_x = arrow_x + detailArrowW() + 6;
     const text_y = header_y + @round((header_h - font.g_titlebar_cell_height) / 2);
     const copy_rect = detailCopyButtonRect(x, top_px, w);
     renderCopyButton(copy_rect, window_height, selected);
@@ -1189,20 +1624,22 @@ fn renderToolCard(msg: ai_chat.Message, x: f32, top_px: f32, w: f32, h: f32, win
     }
 
     if (!msg.content_collapsed) {
-        _ = renderWrappedText(
+        const body_w = @max(1.0, w - DETAIL_PAD_X * 2);
+        renderWrappedText(
             msg.content,
+            wrappedIndex(msg.content, body_w),
             x + DETAIL_PAD_X,
             top_px + header_h + DETAIL_PAD_Y,
-            @max(1.0, w - DETAIL_PAD_X * 2),
+            body_w,
             lineHeight(),
             mixColor(bg, fg, 0.84),
             window_height,
-            window_height,
+            band,
         );
     }
 }
 
-fn renderReasoningCard(text: []const u8, collapsed: bool, x: f32, top_px: f32, w: f32, h: f32, window_height: f32, selected: bool) void {
+fn renderReasoningCard(text: []const u8, collapsed: bool, x: f32, top_px: f32, w: f32, h: f32, window_height: f32, selected: bool, band: transcript_wrap.Band) void {
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
     const accent = AppWindow.g_theme.cursor_color;
@@ -1218,46 +1655,49 @@ fn renderReasoningCard(text: []const u8, collapsed: bool, x: f32, top_px: f32, w
 
     const arrow_x = x + DETAIL_PAD_X;
     const arrow_y = header_y + @round((header_h - font.g_titlebar_cell_height) / 2);
-    _ = titlebar.renderTextLimited(if (collapsed) ">" else "v", arrow_x, arrow_y, mixColor(fg, accent, 0.14), DETAIL_ARROW_W);
+    _ = titlebar.renderTextLimited(if (collapsed) ">" else "v", arrow_x, arrow_y, mixColor(fg, accent, 0.14), detailArrowW());
 
-    const title_x = arrow_x + DETAIL_ARROW_W + 6;
+    const title_x = arrow_x + detailArrowW() + 6;
     const title_y = header_y + @round((header_h - font.g_titlebar_cell_height) / 2);
     const preview = previewLine(text);
-    const title_end = titlebar.renderTextLimited("Thinking", title_x, title_y, mixColor(fg, accent, 0.14), w * 0.3);
+    const title_end = titlebar.renderTextLimited(i18n.s().ai_thinking_title, title_x, title_y, mixColor(fg, accent, 0.14), w * 0.3);
     if (collapsed and preview.len > 0) {
         _ = titlebar.renderTextLimited(preview, title_end + 10, title_y, mixColor(bg, fg, 0.56), @max(24.0, w - (title_end - x) - DETAIL_PAD_X - 16));
     }
 
     if (!collapsed) {
-        _ = renderWrappedText(
+        const body_w = @max(1.0, w - DETAIL_PAD_X * 2);
+        renderWrappedText(
             text,
+            wrappedIndex(text, body_w),
             x + DETAIL_PAD_X,
             top_px + header_h + DETAIL_PAD_Y,
-            @max(1.0, w - DETAIL_PAD_X * 2),
+            body_w,
             reasoningLineHeight(),
             mixColor(bg, fg, 0.58),
             window_height,
-            window_height,
+            band,
         );
     }
 }
 
-fn renderUsageFooter(text: []const u8, x: f32, top_px: f32, w: f32, h: f32, window_height: f32) void {
+fn renderUsageFooter(text: []const u8, x: f32, top_px: f32, w: f32, h: f32, window_height: f32, band: transcript_wrap.Band) void {
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
     const accent = AppWindow.g_theme.cursor_color;
     const body_x = x + BUBBLE_PAD_X;
     const body_w = @max(1.0, w - BUBBLE_PAD_X * 2);
     const top = top_px + USAGE_FOOTER_PAD_TOP;
-    _ = renderWrappedText(
+    renderWrappedText(
         text,
+        wrappedIndex(text, body_w),
         body_x,
         top,
         body_w,
         reasoningLineHeight(),
         mixColor(bg, fg, 0.58),
         window_height,
-        window_height,
+        band,
     );
     const y = window_height - top_px - h;
     ui_pipeline.fillQuadAlpha(body_x, y + h - 1, @max(1.0, @min(body_w, measureText(text))), 1, mixColor(bg, accent, 0.28), 0.34);
@@ -1410,7 +1850,13 @@ fn fillDot(cx: f32, cy: f32, diameter: f32, color: [3]f32) void {
 // Wide-tab "Esc Stop" button geometry (text mode). The compact sidebar uses
 // statusDotRect instead.
 fn stopButtonRect(x: f32, w: f32, titlebar_offset: f32) HeaderButtonRect {
-    return ai_chat_layout.stopButtonRect(x, w, titlebar_offset, LINE_PAD_X, STOP_BUTTON_W, STOP_BUTTON_H, HEADER_H);
+    // Fit the measured label (Retina glyphs are twice as wide), but never grow
+    // over the permission label on a narrow pane.
+    const label_w = @max(titlebarTextWidth("Esc Stop"), titlebarTextWidth("Stopping"));
+    const permission_end = headerPermissionChipX(x, w, false) + titlebarTextWidth(permissionDisplayName(ai_chat.agentPermission())) + HEADER_LABEL_GAP;
+    const room = x + w - LINE_PAD_X - permission_end;
+    const button_w = @max(STOP_BUTTON_W, @min(ai_chat_layout.labelSlotWidth(STOP_BUTTON_W, label_w, STOP_LABEL_X + STOP_LABEL_PAD_R), room));
+    return ai_chat_layout.stopButtonRect(x, w, titlebar_offset, LINE_PAD_X, button_w, STOP_BUTTON_H, HEADER_H);
 }
 
 fn renderStopButton(rect: HeaderButtonRect, window_height: f32, stopping: bool) void {
@@ -1430,15 +1876,15 @@ fn renderStopButton(rect: HeaderButtonRect, window_height: f32, stopping: bool) 
     ui_pipeline.fillQuad(icon_x, icon_y, icon_size, icon_size, if (stopping) mixColor(bg, fg, 0.62) else mixColor(fg, accent, 0.10));
 
     const label = if (stopping) "Stopping" else "Esc Stop";
-    _ = titlebar.renderTextLimited(label, rect.x + 28, y + @round((rect.h - font.g_titlebar_cell_height) / 2), if (stopping) mixColor(bg, fg, 0.72) else fg, rect.w - 34);
+    _ = titlebar.renderTextLimited(label, rect.x + STOP_LABEL_X, y + @round((rect.h - font.g_titlebar_cell_height) / 2), if (stopping) mixColor(bg, fg, 0.72) else fg, rect.w - STOP_LABEL_X - STOP_LABEL_PAD_R);
 }
 
-fn statusActionRect(x: f32, w: f32, titlebar_offset: f32, text: []const u8, compact: bool) Rect {
-    // Wide tab: text owns the far-right corner. Compact sidebar: text sits to
-    // the LEFT of the status dot. Either way it is clamped to the space right of
-    // the permission chip so it can't overlap the chip/dot on a narrow panel.
-    const right = if (compact) statusDotRect(x, w, titlebar_offset).x - 8 else x + w - LINE_PAD_X;
-    const avail = @max(1.0, right - (headerPermissionChipX(x, w, compact) + PERMISSION_CHIP_W + 12));
+fn wideStatusRect(x: f32, w: f32, titlebar_offset: f32, text: []const u8) Rect {
+    // Wide tab: text owns the far-right corner, clamped to the space right of
+    // the permission chip so it can't overlap the chip on a narrow pane. The
+    // compact sidebar's status span comes from `headerRowLocked` instead.
+    const right = x + w - LINE_PAD_X;
+    const avail = @max(1.0, right - (headerPermissionChipX(x, w, false) + PERMISSION_CHIP_W + 12));
     const status_w = @min(@min(measureText(text), STATUS_SLOT_W), avail);
     return .{
         .x = right - status_w,
@@ -1473,7 +1919,8 @@ const QUEUE_MAX_ROWS: usize = 6;
 /// picker): a header with the entry count and key hints, then one row per
 /// queued prompt — index, first-line text, [img] badge for attachments — with
 /// the selection highlighted and a scroll window keeping it in view. Row 0 is
-/// the queue head (the next prompt drainPromptQueue will send).
+/// the queue head (Enter send-now / drainPromptQueue). Esc returns the
+/// selected row to the composer for editing.
 fn renderPromptQueuePanel(session: *ai_chat.Session, layout: InputLayout) void {
     const entries = session.prompt_queue.entries.items;
     const total = entries.len;
@@ -1488,7 +1935,7 @@ fn renderPromptQueuePanel(session: *ai_chat.Session, layout: InputLayout) void {
     const row_h = @max(SUGGESTION_ROW_H + 8, font.g_titlebar_cell_height + REWIND_ROW_EXTRA);
     var title_buf: [40]u8 = undefined;
     const title = std.fmt.bufPrint(&title_buf, "Queued Prompts ({d})", .{total}) catch "Queued Prompts";
-    const hints = "Enter edit  Del  Alt+Up/Dn  Esc";
+    const hints = "Enter send  Esc edit  Del  Alt+Up/Dn";
     const split = ai_chat_layout.popupHeaderSplit(
         popup_x,
         popup_w,
@@ -1786,11 +2233,139 @@ fn approvalCardHeight(view: ai_chat.ApprovalView) f32 {
     return ai_chat_layout.approvalLayout(font.g_titlebar_cell_height, view.reason.len > 0).height;
 }
 
-fn questionCardHeight(view: ai_chat.QuestionView) f32 {
-    return ai_chat_layout.questionLayout(font.g_titlebar_cell_height, view.options.len, MAX_VISIBLE_QUESTION_OPTIONS).height;
+pub const QuestionScrollbarHit = struct {
+    drag_offset_px: f32,
+    generation: u64,
+};
+
+pub const QuestionScrollbarDrag = struct {
+    offset: f32,
+    content_w: f32,
+    clip_w: f32,
+};
+
+const QUESTION_MARK = "❓ ";
+
+fn questionContentWidth(view: ai_chat.QuestionView) f32 {
+    var width: f32 = 0;
+    for (0..1 + @min(view.options.len, MAX_VISIBLE_QUESTION_OPTIONS)) |index| {
+        var number_buf: [24]u8 = undefined;
+        const row = question_select.row(view, index, &number_buf);
+        var row_w: f32 = if (index == 0) titlebarTextWidth(QUESTION_MARK) else 0;
+        for (row.parts) |part| row_w += titlebarTextWidth(part);
+        width = @max(width, row_w);
+    }
+    return width;
 }
 
-fn renderQuestionCard(view: ai_chat.QuestionView, x: f32, y: f32, w: f32, h: f32) void {
+/// y-up bottom edge of card row `index` (0 = question, k + 1 = option k).
+fn questionRowY(lay: ai_chat_layout.QuestionLayout, card_y: f32, index: usize) f32 {
+    if (index == 0) return card_y + lay.title_y;
+    return card_y + lay.first_option_y - @as(f32, @floatFromInt(index - 1)) * lay.option_pitch;
+}
+
+/// x of row `index`'s first selectable glyph at the current pan offset.
+fn questionRowX(view: ai_chat.QuestionView, card_x: f32, card_w: f32, index: usize) f32 {
+    const clip_w = card_w - question_hscroll.TEXT_PAD * 2;
+    const offset = if (clip_w > 0) table_hscroll.clampOffset(view.scroll_offset, questionContentWidth(view), clip_w) else 0;
+    const text_x = card_x + question_hscroll.TEXT_PAD - offset;
+    return if (index == 0) text_x + titlebarTextWidth(QUESTION_MARK) else text_x;
+}
+
+/// Question-card text under the pointer. A press must land on a row; a drag
+/// (`clamp`) snaps to the nearest visible row so it can leave the card.
+fn questionTextAt(view: ai_chat.QuestionView, card_x: f32, card_y: f32, card_w: f32, window_h: f32, px: f32, py: f32, clamp: bool) ?QuestionTextHit {
+    const lay = questionCardLayout(view, card_w);
+    const cell_h = font.g_titlebar_cell_height;
+    var found: ?usize = null;
+    var best: f32 = std.math.inf(f32);
+    for (0..1 + lay.visible_options) |index| {
+        const top_px = window_h - questionRowY(lay, card_y, index) - cell_h;
+        if (clamp) {
+            const distance = @abs(py - (top_px + cell_h / 2));
+            if (distance < best) {
+                best = distance;
+                found = index;
+            }
+        } else if (pointInRect(px, py, .{ .x = card_x, .top_px = top_px - 2, .w = card_w, .h = cell_h + 4 })) {
+            found = index;
+            break;
+        }
+    }
+    const index = found orelse return null;
+    var number_buf: [24]u8 = undefined;
+    const row = question_select.row(view, index, &number_buf);
+    return .{
+        .generation = view.generation,
+        .point = .{ .row = index, .byte = question_select.byteAtX(row, px - questionRowX(view, card_x, card_w, index), &glyphAdvance) },
+        .option = if (index == 0) null else index - 1,
+    };
+}
+
+/// Question-card point for a selection drag, clamped to the nearest row.
+pub fn questionSelectionDragAt(session: *ai_chat.Session, xpos: f64, ypos: f64, window_h: f32, chat_x: f32, chat_w: f32) ?QuestionTextHit {
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    if (session.approvalView() != null) return null;
+    const view = session.questionView() orelse return null;
+    const x = @round(chat_x);
+    const w = @round(@max(1, chat_w));
+    const input_h = inputLayout(x, w, session.input()).input_h;
+    return questionTextAt(view, x + LINE_PAD_X, input_h + APPROVAL_GAP, w - LINE_PAD_X * 2, window_h, @floatCast(xpos), @floatCast(ypos), true);
+}
+
+fn questionCardLayout(view: ai_chat.QuestionView, w: f32) ai_chat_layout.QuestionLayout {
+    const overflow = questionContentWidth(view) > @max(0, w - question_hscroll.TEXT_PAD * 2);
+    return ai_chat_layout.questionLayoutScrollable(
+        font.g_titlebar_cell_height,
+        view.options.len,
+        MAX_VISIBLE_QUESTION_OPTIONS,
+        if (overflow) question_hscroll.TRACK_BAND_H else 0,
+    );
+}
+
+fn questionCardHeight(view: ai_chat.QuestionView, w: f32) f32 {
+    return questionCardLayout(view, w).height;
+}
+
+fn questionScrollbarGeometry(view: ai_chat.QuestionView, x: f32, y: f32, w: f32, window_h: f32) ?question_hscroll.Geometry {
+    const lay = questionCardLayout(view, w);
+    const scrollbar_y = lay.scrollbar_y orelse return null;
+    return question_hscroll.geometry(
+        x + question_hscroll.TEXT_PAD,
+        w - question_hscroll.TEXT_PAD * 2,
+        questionContentWidth(view),
+        view.scroll_offset,
+        window_h - y - scrollbar_y - question_hscroll.TRACK_H,
+    );
+}
+
+/// Recompute geometry on each move so resizing during a drag stays clamped.
+pub fn questionScrollbarDragAt(session: *ai_chat.Session, xpos: f64, window_h: f32, chat_x: f32, chat_w: f32, hit: QuestionScrollbarHit) ?QuestionScrollbarDrag {
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    if (session.approvalView() != null) return null;
+    const view = session.questionView() orelse return null;
+    if (view.generation != hit.generation) return null;
+    const x = @round(chat_x);
+    const w = @round(@max(1, chat_w));
+    const input_h = inputLayout(x, w, session.input()).input_h;
+    const card_w = w - LINE_PAD_X * 2;
+    const geo = questionScrollbarGeometry(view, x + LINE_PAD_X, input_h + APPROVAL_GAP, card_w, window_h) orelse return null;
+    return .{
+        .offset = geo.offsetAt(@floatCast(xpos), hit.drag_offset_px),
+        .content_w = questionContentWidth(view),
+        .clip_w = card_w - question_hscroll.TEXT_PAD * 2,
+    };
+}
+
+/// Render original text in pieces under a clip instead of truncating into a
+/// fixed buffer. Long descriptions remain available at every pan position.
+fn renderQuestionText(text: []const u8, x: f32, y: f32, color: [3]f32) f32 {
+    return titlebar.renderTextLimited(text, x, y, color, titlebarTextWidth(text) + 1);
+}
+
+fn renderQuestionCard(session: *ai_chat.Session, view: ai_chat.QuestionView, x: f32, y: f32, w: f32, h: f32) void {
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
     const accent = AppWindow.g_theme.cursor_color;
@@ -1801,30 +2376,51 @@ fn renderQuestionCard(view: ai_chat.QuestionView, x: f32, y: f32, w: f32, h: f32
     ui_pipeline.fillQuadAlpha(x, y, 4, h, accent, 0.85);
 
     const cell_h = font.g_titlebar_cell_height;
-    const lay = ai_chat_layout.questionLayout(cell_h, view.options.len, MAX_VISIBLE_QUESTION_OPTIONS);
-
-    var title_buf: [320]u8 = undefined;
-    const title = std.fmt.bufPrint(&title_buf, "❓ {s}", .{view.question}) catch view.question;
-    _ = titlebar.renderTextLimited(title, x + 16, y + lay.title_y, mixColor(fg, accent, 0.20), w - 32);
-
-    var k: usize = 0;
-    while (k < lay.visible_options) : (k += 1) {
-        const opt = view.options[k];
+    const lay = questionCardLayout(view, w);
+    for (0..lay.visible_options) |k| {
         const row_y = y + lay.first_option_y - @as(f32, @floatFromInt(k)) * lay.option_pitch;
-        // Subtle row background so each option reads as a clickable target.
-        ui_pipeline.fillQuadAlpha(x + 12, row_y - 2, w - 24, cell_h + 4, mixColor(bg, fg, 0.06), 0.9);
-        var row_buf: [320]u8 = undefined;
-        const line = if (opt.description.len != 0)
-            std.fmt.bufPrint(&row_buf, "{d}. {s} — {s}", .{ k + 1, opt.label, opt.description }) catch opt.label
-        else
-            std.fmt.bufPrint(&row_buf, "{d}. {s}", .{ k + 1, opt.label }) catch opt.label;
-        _ = titlebar.renderTextLimited(line, x + 20, row_y, fg, w - 40);
+        ui_pipeline.fillQuadAlpha(x + 12, row_y - 2, @max(0, w - 24), cell_h + 4, mixColor(bg, fg, 0.06), 0.9);
     }
 
+    const clip_w = w - question_hscroll.TEXT_PAD * 2;
+    if (clip_w > 0) {
+        const offset = table_hscroll.clampOffset(view.scroll_offset, questionContentWidth(view), clip_w);
+        _ = session.scrollQuestionTo(view.generation, offset, questionContentWidth(view), clip_w);
+        const title_color = mixColor(fg, accent, 0.20);
+        const selection_color = mixColor(bg, accent, 0.44);
+        const span = session.question_select.span(view.generation);
+        // Limit both edges, including negative glyph positions while panning.
+        ui_pipeline.beginClip(.{ .x = x + question_hscroll.TEXT_PAD, .y = y, .w = clip_w, .h = h });
+        _ = renderQuestionText(QUESTION_MARK, x + question_hscroll.TEXT_PAD - offset, y + lay.title_y, title_color);
+        for (0..1 + lay.visible_options) |index| {
+            const row_y = questionRowY(lay, y, index);
+            const row_x = questionRowX(view, x, w, index);
+            var number_buf: [24]u8 = undefined;
+            const row = question_select.row(view, index, &number_buf);
+            if (span) |s| if (question_select.rowRange(s, index, row.len())) |range| {
+                const sel_x = question_select.xAtByte(row, range.start, &glyphAdvance);
+                const sel_w = question_select.xAtByte(row, range.end, &glyphAdvance) - sel_x;
+                ui_pipeline.fillQuad(row_x + sel_x, row_y - 1, @max(1.0, sel_w), cell_h + 2, selection_color);
+            };
+            var pen = row_x;
+            for (row.parts) |part| {
+                if (part.len > 0) pen = renderQuestionText(part, pen, row_y, if (index == 0) title_color else fg);
+            }
+        }
+        ui_pipeline.endClip();
+    }
+
+    if (lay.scrollbar_y) |scrollbar_y| {
+        if (question_hscroll.geometry(x + question_hscroll.TEXT_PAD, clip_w, questionContentWidth(view), view.scroll_offset, 0)) |geo| {
+            ui_pipeline.fillQuadAlpha(geo.track_x, y + scrollbar_y, geo.track_w, geo.track_h, mixColor(bg, fg, 0.20), 0.75);
+            ui_pipeline.fillQuadAlpha(geo.thumb_x, y + scrollbar_y, geo.thumb_w, geo.track_h, accent, 0.85);
+        }
+    }
+    // Options past the visible rows can still be picked by typing their number.
     const hint = if (view.options.len > lay.visible_options)
-        "点选项，或在下方输入序号/你的答案"
+        i18n.s().ai_question_hint_numbered
     else
-        "点选项，或在下方直接输入你的答案";
+        i18n.s().ai_question_hint;
     _ = titlebar.renderTextLimited(hint, x + 16, y + lay.hint_y, mixColor(bg, fg, 0.62), w - 32);
 }
 
@@ -1841,9 +2437,10 @@ fn renderApprovalCard(view: ai_chat.ApprovalView, x: f32, y: f32, w: f32, h: f32
     const lay = ai_chat_layout.approvalLayout(font.g_titlebar_cell_height, view.reason.len > 0);
 
     var title_buf: [256]u8 = undefined;
-    const title = std.fmt.bufPrint(&title_buf, "Approve {s}?", .{view.tool}) catch "Approve tool?";
+    const strings = i18n.s();
+    const title = std.fmt.bufPrint(&title_buf, "{s}{s}{s}", .{ strings.ai_approve_prefix, view.tool, strings.ai_approve_suffix }) catch view.tool;
     _ = titlebar.renderTextLimited(title, x + 16, y + lay.title_y, mixColor(fg, accent, 0.20), w - 32);
-    _ = titlebar.renderTextLimited("Enter/Y to run, Esc/N to deny", x + 16, y + lay.hint_y, mixColor(bg, fg, 0.62), w - 32);
+    _ = titlebar.renderTextLimited(strings.ai_approve_hint, x + 16, y + lay.hint_y, mixColor(bg, fg, 0.62), w - 32);
     if (lay.has_reason) {
         _ = titlebar.renderTextLimited(view.reason, x + 16, y + lay.reason_y, mixColor(bg, fg, 0.70), w - 32);
     }
@@ -1891,10 +2488,14 @@ fn toolSectionMeta(text: []const u8) ToolSectionMeta {
         const rest = std.mem.trimLeft(u8, trimmed["running ".len..], " \t");
         var end: usize = 0;
         while (end < rest.len and rest[end] != ' ' and rest[end] != '\t' and rest[end] != '\r' and rest[end] != '\n') : (end += 1) {}
+        const name = rest[0..end];
+        const args = rest[end..];
+        // An ask_user row previews its question, not the raw JSON arguments.
+        const question = if (std.mem.eql(u8, name, question_answer.TOOL_NAME)) question_answer.callQuestion(args) else null;
         return .{
-            .title = "Tool call",
-            .name = if (end > 0) rest[0..end] else "",
-            .preview = if (end < rest.len) previewLine(rest[end..]) else "",
+            .title = i18n.s().ai_tool_call,
+            .name = name,
+            .preview = previewLine(question orelse args),
         };
     }
     if (std.mem.startsWith(u8, trimmed, "exit_code=") or
@@ -1903,9 +2504,9 @@ fn toolSectionMeta(text: []const u8) ToolSectionMeta {
         std.mem.startsWith(u8, trimmed, "stderr:") or
         std.mem.startsWith(u8, trimmed, "DENIED"))
     {
-        return .{ .title = "Tool result", .preview = previewLine(trimmed) };
+        return .{ .title = i18n.s().ai_tool_result, .preview = previewLine(trimmed) };
     }
-    return .{ .title = "Tool update", .preview = previewLine(trimmed) };
+    return .{ .title = i18n.s().ai_tool_update, .preview = previewLine(trimmed) };
 }
 
 fn previewLine(text: []const u8) []const u8 {
@@ -2011,24 +2612,46 @@ fn renderMarkdownContent(
     top_px: f32,
     max_w: f32,
     window_height: f32,
-    clip_bottom_top_px: f32,
+    band: transcript_wrap.Band,
     palette: MarkdownPalette,
     selection_range: ?ai_chat.TextSelectionRange,
-) f32 {
-    if (std.mem.trim(u8, text, " \t\r\n").len == 0) {
-        return renderWrappedText("", x, top_px, max_w, lineHeight(), palette.normal, window_height, clip_bottom_top_px);
-    }
+    session: ?*ai_chat.Session,
+    message_index: usize,
+    transcript_clip: ai_chat_layout.DrawRect,
+) void {
+    if (std.mem.trim(u8, text, " \t\r\n").len == 0) return;
 
     var cursor: usize = 0;
     var display_cursor: usize = 0;
     var current_top = top_px;
     var in_code = false;
+    // Below this nothing can reach the transcript viewport (one line of
+    // margin for glyphs overhanging their line box).
+    const stop_px = band.bottom_px + lineHeight();
 
-    while (cursor < text.len) {
+    while (cursor < text.len and current_top <= stop_px) {
         if (!in_code and isMarkdownTableStart(text, cursor)) {
             const table_start = cursor;
             const end = tableBlockEnd(text, cursor);
-            current_top += renderTableBlock(text, cursor, end, x, current_top, max_w, window_height, palette, display_cursor, selection_range);
+            const layout = TableLayout.init(text, table_start, end, max_w);
+            const hscroll = if (session) |s|
+                s.tableHScrollOffset(message_index, table_start, layout.width(), layout.clipWidth())
+            else
+                0;
+            current_top += renderTableBlock(
+                text,
+                cursor,
+                end,
+                x,
+                current_top,
+                max_w,
+                window_height,
+                palette,
+                display_cursor,
+                selection_range,
+                hscroll,
+                transcript_clip,
+            );
             display_cursor += md.tableBlockDisplayLen(text, table_start, end);
             cursor = end;
             continue;
@@ -2052,43 +2675,48 @@ fn renderMarkdownContent(
             },
             .text => {
                 const body_h = plainContentHeight(prepared.text, @max(1.0, max_w - prepared.indent), prepared.line_h);
-                if (prepared.background) |bg_color| {
-                    renderTopQuad(x - 8, max_w + 16, window_height, current_top, body_h, bg_color);
+                // Lines wholly above the viewport only advance the layout.
+                if (current_top + body_h + lineHeight() >= band.top_px) {
+                    if (prepared.background) |bg_color| {
+                        renderTopQuad(x - 8, max_w + 16, window_height, current_top, body_h, bg_color);
+                    }
+                    if (prepared.left_rule) |rule_color| {
+                        renderTopQuad(x - 8, DETAIL_RULE_W, window_height, current_top, body_h, rule_color);
+                    }
+                    if (prepared.underline) {
+                        renderTopQuad(x, max_w, window_height, current_top + body_h - 3, 1, mixColor(AppWindow.g_theme.background, AppWindow.g_theme.cursor_color, 0.32));
+                    }
+                    renderWrappedSelection(
+                        prepared.text,
+                        null,
+                        display_cursor,
+                        x + prepared.indent,
+                        current_top,
+                        @max(1.0, max_w - prepared.indent),
+                        prepared.line_h,
+                        selection_range,
+                        window_height,
+                        band,
+                    );
+                    renderWrappedText(
+                        prepared.text,
+                        null,
+                        x + prepared.indent,
+                        current_top,
+                        @max(1.0, max_w - prepared.indent),
+                        prepared.line_h,
+                        prepared.color,
+                        window_height,
+                        band,
+                    );
                 }
-                if (prepared.left_rule) |rule_color| {
-                    renderTopQuad(x - 8, DETAIL_RULE_W, window_height, current_top, body_h, rule_color);
-                }
-                if (prepared.underline) {
-                    renderTopQuad(x, max_w, window_height, current_top + body_h - 3, 1, mixColor(AppWindow.g_theme.background, AppWindow.g_theme.cursor_color, 0.32));
-                }
-                renderWrappedSelection(
-                    prepared.text,
-                    display_cursor,
-                    x + prepared.indent,
-                    current_top,
-                    @max(1.0, max_w - prepared.indent),
-                    prepared.line_h,
-                    selection_range,
-                    window_height,
-                    clip_bottom_top_px,
-                );
-                current_top = renderWrappedText(
-                    prepared.text,
-                    x + prepared.indent,
-                    current_top,
-                    @max(1.0, max_w - prepared.indent),
-                    prepared.line_h,
-                    prepared.color,
-                    window_height,
-                    clip_bottom_top_px,
-                );
+                current_top += body_h;
             },
         }
         display_cursor += prepared.text.len + 1;
     }
 
-    forEachCopyBlock(text, x, top_px, max_w, window_height, drawCopyBlockButton);
-    return current_top - top_px;
+    forEachCopyBlock(text, x, top_px, max_w, stop_px, window_height, drawCopyBlockButton);
 }
 
 const CopyBlock = struct {
@@ -2102,12 +2730,14 @@ const CopyBlock = struct {
 /// to draw the buttons and `interactionHitTest` calls it to detect clicks, so a
 /// button the user sees and the region a click maps to come from one geometry
 /// source. Vertical advance MUST stay in lockstep with markdownContentHeight /
-/// renderMarkdownContent, or the buttons drift off their blocks.
+/// renderMarkdownContent, or the buttons drift off their blocks. Blocks
+/// starting below `stop_px` are not visited.
 fn forEachCopyBlock(
     text: []const u8,
     x: f32,
     top_px: f32,
     max_w: f32,
+    stop_px: f32,
     ctx: anytype,
     comptime emit: anytype,
 ) void {
@@ -2117,12 +2747,12 @@ fn forEachCopyBlock(
     var current_top = top_px;
     var in_code = false;
 
-    while (cursor < text.len) {
+    while (cursor < text.len and current_top <= stop_px) {
         if (!in_code and isMarkdownTableStart(text, cursor)) {
             const start = cursor;
             const end = tableBlockEnd(text, cursor);
             const table = TableLayout.init(text, start, end, max_w);
-            emit(ctx, CopyBlock{ .button = blockCopyButtonRect(x, current_top, table.width()), .start = start, .end = end });
+            emit(ctx, CopyBlock{ .button = blockCopyButtonRect(x, current_top, table.clipWidth()), .start = start, .end = end });
             current_top += tableBlockHeight(text, start, end, max_w);
             cursor = end;
             continue;
@@ -2172,6 +2802,8 @@ fn checkBlockHit(ctx: *BlockHitCtx, block: CopyBlock) void {
 }
 
 fn byteOffsetForMarkdownPoint(
+    session: *ai_chat.Session,
+    message_index: usize,
     text: []const u8,
     x: f32,
     top_px: f32,
@@ -2194,7 +2826,9 @@ fn byteOffsetForMarkdownPoint(
             const end = tableBlockEnd(text, cursor);
             const block_h = tableBlockHeight(text, cursor, end, max_w);
             if (py < current_top + block_h) {
-                return display_cursor + tableByteOffsetForPoint(text, start, end, max_w, x, current_top, px, py);
+                const layout = TableLayout.init(text, start, end, max_w);
+                const hscroll = session.tableHScrollOffset(message_index, start, layout.width(), layout.clipWidth());
+                return display_cursor + tableByteOffsetForPoint(text, start, end, max_w, x, current_top, px, py, hscroll);
             }
             current_top += block_h;
             display_cursor += md.tableBlockDisplayLen(text, start, end);
@@ -2311,9 +2945,11 @@ const TableLayout = struct {
     alignments: [TABLE_MAX_COLS]md.TableAlignment = .{.left} ** TABLE_MAX_COLS,
     count: usize = 0,
     pad: f32 = TABLE_CELL_PAD_X,
+    clip_w: f32 = 0,
+    overflows: bool = false,
 
     fn init(text: []const u8, start: usize, end: usize, max_w: f32) TableLayout {
-        var self: TableLayout = .{};
+        var self: TableLayout = .{ .clip_w = @max(1.0, max_w) };
         var cells: [TABLE_MAX_COLS][]const u8 = undefined;
         const header = nextSourceLine(text, start);
         self.count = parseTableRowCells(header.line, &cells);
@@ -2338,7 +2974,13 @@ const TableLayout = struct {
         const n: f32 = @floatFromInt(self.count);
         self.pad = @min(TABLE_CELL_PAD_X, @max(0, (max_w / n - 16) / 2));
         const available = @max(n, max_w - n * (self.pad * 2 + 1) - 1);
-        md.fitTableWidths(self.widths[0..self.count], available, TABLE_MIN_COL_W);
+        if (self.width() > max_w) {
+            // Issue #624: keep natural column widths and pan horizontally
+            // instead of wrapping every long cell into a tall stack.
+            self.overflows = true;
+        } else {
+            md.fitTableWidths(self.widths[0..self.count], available, TABLE_MIN_COL_W);
+        }
         return self;
     }
 
@@ -2346,6 +2988,10 @@ const TableLayout = struct {
         var total: f32 = 1;
         for (self.widths[0..self.count]) |w| total += w + self.pad * 2 + 1;
         return total;
+    }
+
+    fn clipWidth(self: TableLayout) f32 {
+        return if (self.overflows) self.clip_w else self.width();
     }
 
     fn rowHeight(self: TableLayout, line: []const u8) f32 {
@@ -2399,11 +3045,13 @@ fn tableBlockHeight(text: []const u8, start: usize, end: usize, max_w: f32) f32 
         cursor = info.next;
         if (!isTableSeparatorLine(info.line)) total += table.rowHeight(info.line);
     }
+    if (table.overflows) total += table_hscroll.TRACK_H + 4;
     return total;
 }
 
-fn tableByteOffsetForPoint(text: []const u8, start: usize, end: usize, max_w: f32, x: f32, top: f32, px: f32, py: f32) usize {
+fn tableByteOffsetForPoint(text: []const u8, start: usize, end: usize, max_w: f32, x: f32, top: f32, px: f32, py: f32, hscroll: f32) usize {
     const table = TableLayout.init(text, start, end, max_w);
+    const local_x = px + hscroll;
     var cursor = start;
     var row_top = top + TABLE_TOOLBAR_H;
     var offset: usize = 0;
@@ -2422,11 +3070,11 @@ fn tableByteOffsetForPoint(text: []const u8, start: usize, end: usize, max_w: f3
             defer cell.deinit();
             if (col < table.count) {
                 const cell_w = table.widths[col] + table.pad * 2 + 1;
-                if (py < row_top + height and (px < cell_x + cell_w or col + 1 == table.count)) {
+                if (py < row_top + height and (local_x < cell_x + cell_w or col + 1 == table.count)) {
                     var lines = TableCellLines{ .text = cell.text, .width = table.widths[col], .alignment = table.alignments[col] };
                     var line_top = row_top + TABLE_CELL_PAD_Y;
                     while (lines.next()) |line| {
-                        if (py < line_top + lineHeight()) return byteOffsetForLineX(line.text, offset + line.offset, cell_x + table.pad + line.inset, px);
+                        if (py < line_top + lineHeight()) return byteOffsetForLineX(line.text, offset + line.offset, cell_x + table.pad + line.inset, local_x);
                         line_top += lineHeight();
                     }
                     return offset + cell.text.len;
@@ -2455,12 +3103,26 @@ fn renderTableBlock(
     palette: MarkdownPalette,
     base_offset: usize,
     selection_range: ?ai_chat.TextSelectionRange,
+    hscroll: f32,
+    transcript_clip: ai_chat_layout.DrawRect,
 ) f32 {
     const table = TableLayout.init(text, start, end, max_w);
     if (table.count == 0) return 0;
     const table_w = table.width();
+    const clip_w = table.clipWidth();
+    const block_h = tableBlockHeight(text, start, end, max_w);
+    const origin_x = x - hscroll;
+
+    const table_clip = intersectDrawRect(transcript_clip, .{
+        .x = x,
+        .y = window_height - top_px - block_h,
+        .w = clip_w,
+        .h = block_h,
+    });
+    if (table_clip.w > 0 and table_clip.h > 0) ui_pipeline.beginClip(pipelineRect(table_clip));
+
     // Give Copy its own band so it never covers the final header cell.
-    renderTopQuad(x, table_w, window_height, top_px, TABLE_TOOLBAR_H, palette.table_bg);
+    renderTopQuad(origin_x, table_w, window_height, top_px, TABLE_TOOLBAR_H, palette.table_bg);
     var row_top = top_px + TABLE_TOOLBAR_H;
     var cursor = start;
     var row_index: usize = 0;
@@ -2475,11 +3137,11 @@ fn renderTableBlock(
         const visible = row_top + row_h >= 0 and row_top < window_height;
         if (visible) {
             const bg = if (row_index == 0) mixColor(palette.table_bg, AppWindow.g_theme.cursor_color, 0.10) else if (row_index % 2 == 0) palette.table_bg else palette.table_alt;
-            renderTopQuad(x, table_w, window_height, row_top, row_h, bg);
-            renderTopQuad(x, table_w, window_height, row_top, 1, palette.table_border);
-            renderTopQuad(x, 1, window_height, row_top, row_h, palette.table_border);
+            renderTopQuad(origin_x, table_w, window_height, row_top, row_h, bg);
+            renderTopQuad(origin_x, table_w, window_height, row_top, 1, palette.table_border);
+            renderTopQuad(origin_x, 1, window_height, row_top, row_h, palette.table_border);
         }
-        var cell_x = x + 1;
+        var cell_x = origin_x + 1;
         for (0..table.count) |col| {
             if (col > 0 and col < cell_count) offset += 3;
             var scratch: [256]u8 = undefined;
@@ -2512,12 +3174,30 @@ fn renderTableBlock(
         row_top += row_h;
         row_index += 1;
     }
-    renderTopQuad(x, table_w, window_height, row_top, 1, palette.table_border);
-    return row_top - top_px + 1;
+    renderTopQuad(origin_x, table_w, window_height, row_top, 1, palette.table_border);
+    if (table_hscroll.thumb(x, clip_w, table_w, hscroll, top_px, block_h)) |thumb| {
+        renderTopQuad(thumb.track_x, thumb.track_w, window_height, thumb.track_top_px, thumb.track_h, mixColor(palette.table_bg, palette.table_border, 0.45));
+        renderTopQuad(thumb.x, thumb.w, window_height, thumb.track_top_px, thumb.track_h, mixColor(palette.table_border, AppWindow.g_theme.cursor_color, 0.35));
+    }
+    ui_pipeline.beginClip(pipelineRect(transcript_clip));
+    return block_h;
+}
+
+fn pipelineRect(r: ai_chat_layout.DrawRect) ui_pipeline.Rect {
+    return .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h };
+}
+
+fn intersectDrawRect(a: ai_chat_layout.DrawRect, b: ai_chat_layout.DrawRect) ai_chat_layout.DrawRect {
+    const x1 = @max(a.x, b.x);
+    const y1 = @max(a.y, b.y);
+    const x2 = @min(a.x + a.w, b.x + b.w);
+    const y2 = @min(a.y + a.h, b.y + b.h);
+    return .{ .x = x1, .y = y1, .w = @max(0, x2 - x1), .h = @max(0, y2 - y1) };
 }
 
 fn renderWrappedSelection(
     text: []const u8,
+    index: ?transcript_wrap.Index,
     base_offset: usize,
     x: f32,
     top_px: f32,
@@ -2525,36 +3205,15 @@ fn renderWrappedSelection(
     line_h: f32,
     selection_range: ?ai_chat.TextSelectionRange,
     window_height: f32,
-    clip_bottom_top_px: f32,
+    band: transcript_wrap.Band,
 ) void {
     const range = selection_range orelse return;
     if (range.start >= range.end) return;
 
-    var line_start: usize = 0;
-    var line_width: f32 = 0;
-    var i: usize = 0;
-    var current_top = top_px;
-    while (i < text.len) {
-        if (text[i] == '\n') {
-            renderTextLineSelection(text[line_start..i], base_offset + line_start, x, current_top, line_h, range, window_height, clip_bottom_top_px);
-            current_top += line_h;
-            i += 1;
-            line_start = i;
-            line_width = 0;
-            continue;
-        }
-        const item = nextCodepoint(text, i);
-        if (line_width > 0 and line_width + item.advance > max_w) {
-            renderTextLineSelection(text[line_start..i], base_offset + line_start, x, current_top, line_h, range, window_height, clip_bottom_top_px);
-            current_top += line_h;
-            line_start = i;
-            line_width = 0;
-            continue;
-        }
-        line_width += item.advance;
-        i += item.len;
+    var lines = transcript_wrap.Visible.init(text, index, top_px, max_w, line_h, band, &glyphAdvance);
+    while (lines.next()) |v| {
+        renderTextLineSelection(text[v.line.start..v.line.end], base_offset + v.line.start, x, v.top_px, line_h, range, window_height, window_height);
     }
-    renderTextLineSelection(text[line_start..i], base_offset + line_start, x, current_top, line_h, range, window_height, clip_bottom_top_px);
 }
 
 fn renderTextLineSelection(
@@ -2580,42 +3239,25 @@ fn renderTextLineSelection(
     renderTopQuad(x + prefix_w, selected_w, window_height, top_px + @max(0.0, (line_h - font.g_titlebar_cell_height) * 0.5) - 1, @max(1.0, font.g_titlebar_cell_height + 3), selection_color);
 }
 
+/// Paint `text` wrapped to `max_w` from `top_px`, only the lines that can
+/// reach `band`. With `index` (a whole-body `wrappedIndex`) wrapping resumes
+/// next to the first visible line instead of at byte 0, so a long body costs
+/// its visible lines, not its length.
 fn renderWrappedText(
     text: []const u8,
+    index: ?transcript_wrap.Index,
     x: f32,
     top_px: f32,
     max_w: f32,
     line_h: f32,
     color: [3]f32,
     window_height: f32,
-    clip_bottom_top_px: f32,
-) f32 {
-    var line_start: usize = 0;
-    var line_width: f32 = 0;
-    var i: usize = 0;
-    var current_top = top_px;
-    while (i < text.len) {
-        if (text[i] == '\n') {
-            renderTextLine(text[line_start..i], x, current_top, max_w, color, window_height, clip_bottom_top_px);
-            current_top += line_h;
-            i += 1;
-            line_start = i;
-            line_width = 0;
-            continue;
-        }
-        const item = nextCodepoint(text, i);
-        if (line_width > 0 and line_width + item.advance > max_w) {
-            renderTextLine(text[line_start..i], x, current_top, max_w, color, window_height, clip_bottom_top_px);
-            current_top += line_h;
-            line_start = i;
-            line_width = 0;
-            continue;
-        }
-        line_width += item.advance;
-        i += item.len;
+    band: transcript_wrap.Band,
+) void {
+    var lines = transcript_wrap.Visible.init(text, index, top_px, max_w, line_h, band, &glyphAdvance);
+    while (lines.next()) |v| {
+        renderTextLine(text[v.line.start..v.line.end], x, v.top_px, max_w, color, window_height, window_height);
     }
-    renderTextLine(text[line_start..i], x, current_top, max_w, color, window_height, clip_bottom_top_px);
-    return current_top + line_h;
 }
 
 fn renderTextLine(text: []const u8, x: f32, top_px: f32, max_w: f32, color: [3]f32, window_height: f32, clip_bottom_top_px: f32) void {
@@ -2643,26 +3285,7 @@ fn nextCodepoint(text: []const u8, i: usize) CodepointItem {
 }
 
 fn countWrappedLines(text: []const u8, max_w: f32) usize {
-    if (text.len == 0) return 1;
-    var lines: usize = 1;
-    var width: f32 = 0;
-    var i: usize = 0;
-    while (i < text.len) {
-        if (text[i] == '\n') {
-            lines += 1;
-            width = 0;
-            i += 1;
-            continue;
-        }
-        const item = nextCodepoint(text, i);
-        if (width > 0 and width + item.advance > max_w) {
-            lines += 1;
-            width = 0;
-        }
-        width += item.advance;
-        i += item.len;
-    }
-    return lines;
+    return transcript_wrap.countLines(text, max_w, &glyphAdvance);
 }
 
 pub fn inputLayout(panel_x: f32, panel_w: f32, text: []const u8) InputLayout {
@@ -2791,24 +3414,106 @@ fn mixColor(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
     };
 }
 
+test "question card measures descriptions beyond the old 320-byte row buffer" {
+    const long_description = "很长的选项描述 " ** 80;
+    const view = ai_chat.QuestionView{ .question = "Choose", .options = &.{.{ .label = "A", .description = long_description }} };
+    const short = ai_chat.QuestionView{ .question = "Choose", .options = &.{.{ .label = "A" }} };
+    try std.testing.expect(long_description.len > 320);
+    try std.testing.expect(questionContentWidth(view) > questionContentWidth(short) * 10);
+    try std.testing.expect(questionCardLayout(view, 400).scrollbar_y != null);
+    try std.testing.expect(questionCardLayout(view, questionContentWidth(view) + 40).scrollbar_y == null);
+    const long_question = ai_chat.QuestionView{ .question = long_description, .options = &.{} };
+    try std.testing.expect(questionCardLayout(long_question, 400).scrollbar_y != null);
+}
+
+test "question scrollbar hit does not select an option and panned rows remain clickable" {
+    var session = try ai_chat.Session.init(std.testing.allocator, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer session.deinit();
+    session.question_text = try std.testing.allocator.dupe(u8, "Choose");
+    session.question_options = try std.testing.allocator.alloc(ai_chat.QuestionOption, 1);
+    session.question_options[0] = .{
+        .label = try std.testing.allocator.dupe(u8, "A"),
+        .description = try std.testing.allocator.dupe(u8, "long description " ** 80),
+    };
+    session.question_pending = true;
+    const view = session.questionView().?;
+    const chat_x: f32 = 20;
+    const chat_w: f32 = 440;
+    const card_x = chat_x + LINE_PAD_X;
+    const card_w = chat_w - LINE_PAD_X * 2;
+    const card_y = inputLayout(chat_x, chat_w, session.input()).input_h + APPROVAL_GAP;
+    const geo = questionScrollbarGeometry(view, card_x, card_y, card_w, 900).?;
+    const hit = interactionHitTest(session, geo.thumb_x + 2, geo.track_top_px + 1, 500, 900, 40, chat_x, chat_w).?;
+    try std.testing.expect(hit == .question_scrollbar);
+    try std.testing.expectEqual(view.generation, hit.question_scrollbar.generation);
+    const drag = questionScrollbarDragAt(session, 2000, 900, chat_x, chat_w, hit.question_scrollbar).?;
+    try std.testing.expect(session.scrollQuestionTo(view.generation, drag.offset, drag.content_w, drag.clip_w));
+    try std.testing.expect(session.questionView() != null);
+    const lay = questionCardLayout(view, card_w);
+    const option_y = 900 - card_y - lay.first_option_y - font.g_titlebar_cell_height / 2;
+    const option = interactionHitTest(session, card_x + 30, option_y, 500, 900, 40, chat_x, chat_w).?;
+    try std.testing.expect(option == .question_text);
+    try std.testing.expectEqual(@as(?usize, 0), option.question_text.option);
+}
+
+test "question card presses land on the painted option text and drags clamp to rows" {
+    var session = try ai_chat.Session.init(std.testing.allocator, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer session.deinit();
+    session.question_text = try std.testing.allocator.dupe(u8, "Choose");
+    session.question_options = try std.testing.allocator.alloc(ai_chat.QuestionOption, 2);
+    session.question_options[0] = .{ .label = try std.testing.allocator.dupe(u8, "alpha"), .description = try std.testing.allocator.dupe(u8, "first") };
+    session.question_options[1] = .{ .label = try std.testing.allocator.dupe(u8, "beta"), .description = "" };
+    session.question_pending = true;
+    const view = session.questionView().?;
+    const chat_x: f32 = 20;
+    const chat_w: f32 = 440;
+    const card_x = chat_x + LINE_PAD_X;
+    const card_w = chat_w - LINE_PAD_X * 2;
+    const card_y = inputLayout(chat_x, chat_w, session.input()).input_h + APPROVAL_GAP;
+    const lay = questionCardLayout(view, card_w);
+    const window_h: f32 = 900;
+
+    // Just right of "1. " lands at the start of "alpha" on option 0's row.
+    var number_buf: [24]u8 = undefined;
+    const row = question_select.row(view, 1, &number_buf);
+    const px = questionRowX(view, card_x, card_w, 1) + question_select.xAtByte(row, 3, &glyphAdvance) + 0.5;
+    const py = window_h - questionRowY(lay, card_y, 1) - font.g_titlebar_cell_height / 2;
+    const hit = interactionHitTest(session, px, py, 500, window_h, 40, chat_x, chat_w).?;
+    try std.testing.expect(hit == .question_text);
+    try std.testing.expectEqual(question_select.Point{ .row = 1, .byte = 3 }, hit.question_text.point);
+    try std.testing.expectEqual(@as(?usize, 0), hit.question_text.option);
+
+    // A drag above the card reaches the question; below it, the last option.
+    const above = questionSelectionDragAt(session, px, 0, window_h, chat_x, chat_w).?;
+    try std.testing.expectEqual(@as(usize, 0), above.point.row);
+    const below = questionSelectionDragAt(session, px, window_h, window_h, chat_x, chat_w).?;
+    try std.testing.expectEqual(@as(usize, 2), below.point.row);
+}
+
 test "markdown table wrapping height and selection share cell geometry" {
     const text = "| Name | Path |\n| :--- | ---: |\n| 中文😀 | `C:/a/very/long/path/to/a/file.txt` |\n";
     const narrow = TableLayout.init(text, 0, text.len, 220);
     const wide = TableLayout.init(text, 0, text.len, 900);
-    try std.testing.expect(narrow.width() <= 220.01);
     try std.testing.expect(wide.width() <= 900.01);
-    try std.testing.expect(tableBlockHeight(text, 0, text.len, 220) >= tableBlockHeight(text, 0, text.len, 900));
+    try std.testing.expect(narrow.clipWidth() <= 220.01);
+    if (narrow.overflows) {
+        try std.testing.expect(narrow.width() > 220);
+        try std.testing.expect(tableBlockHeight(text, 0, text.len, 220) < tableBlockHeight(text, 0, text.len, 900) + 40);
+    } else {
+        try std.testing.expect(narrow.width() <= 220.01);
+        try std.testing.expect(tableBlockHeight(text, 0, text.len, 220) >= tableBlockHeight(text, 0, text.len, 900));
+    }
     const header = nextSourceLine(text, 0);
     const body_top = TABLE_TOOLBAR_H + narrow.rowHeight(header.line);
     const first_cell_x: f32 = 1 + narrow.pad;
     const row_offset = md.tableRowDisplayOffsetWithin(text, 0, text.len, 1);
-    try std.testing.expectEqual(row_offset, tableByteOffsetForPoint(text, 0, text.len, 220, 0, 0, first_cell_x, body_top + TABLE_CELL_PAD_Y + 1));
+    try std.testing.expectEqual(row_offset, tableByteOffsetForPoint(text, 0, text.len, 220, 0, 0, first_cell_x, body_top + TABLE_CELL_PAD_Y + 1, 0));
     const second_cell_x = 1 + narrow.widths[0] + narrow.pad * 2 + 1;
     const display = try md.allocDisplayText(std.testing.allocator, text);
     defer std.testing.allocator.free(display);
-    const offset = tableByteOffsetForPoint(text, 0, text.len, 220, 0, 0, second_cell_x, body_top + TABLE_CELL_PAD_Y + 1);
+    const offset = tableByteOffsetForPoint(text, 0, text.len, 220, 0, 0, second_cell_x, body_top + TABLE_CELL_PAD_Y + 1, 0);
     try std.testing.expectEqualStrings("C:/", display[offset..][0..3]);
-    try std.testing.expectEqual(display.len, tableByteOffsetForPoint(text, 0, text.len, 220, 0, 0, 0, 10000));
+    try std.testing.expectEqual(display.len, tableByteOffsetForPoint(text, 0, text.len, 220, 0, 0, 0, 10000, 0));
     var copy_ctx = struct {
         count: usize = 0,
         fn check(ctx: *@This(), block: CopyBlock) void {
@@ -2817,13 +3522,30 @@ test "markdown table wrapping height and selection share cell geometry" {
             std.debug.assert(block.button.top_px + block.button.h <= TABLE_TOOLBAR_H);
         }
     }{};
-    forEachCopyBlock(text, 0, 0, 220, &copy_ctx, @TypeOf(copy_ctx).check);
+    forEachCopyBlock(text, 0, 0, 220, std.math.inf(f32), &copy_ctx, @TypeOf(copy_ctx).check);
     try std.testing.expectEqual(@as(usize, 1), copy_ctx.count);
     const sparse = "| Name | Path |\n| --- | --- |\n| short\n| next | value |\n";
     const sparse_table = TableLayout.init(sparse, 0, sparse.len, 220);
     const sparse_top = TABLE_TOOLBAR_H + sparse_table.rowHeight(nextSourceLine(sparse, 0).line);
     const sparse_offset = md.tableRowDisplayOffsetWithin(sparse, 0, sparse.len, 1);
-    try std.testing.expectEqual(sparse_offset + "short".len, tableByteOffsetForPoint(sparse, 0, sparse.len, 220, 0, 0, 219, sparse_top + 6));
+    try std.testing.expectEqual(sparse_offset + "short".len, tableByteOffsetForPoint(sparse, 0, sparse.len, 220, 0, 0, 219, sparse_top + 6, 0));
+}
+
+test "wide table keeps natural column width so it can pan horizontally" {
+    const text = "| A | B |\n| --- | --- |\n| short | `C:/very/long/path/that/should/not/wrap/when/the/panel/is/narrow.txt` |\n";
+    const table = TableLayout.init(text, 0, text.len, 180);
+    try std.testing.expect(table.overflows);
+    try std.testing.expect(table.width() > 180);
+    try std.testing.expectEqual(table.clipWidth(), @as(f32, 180));
+    const header = nextSourceLine(text, 0);
+    const body_top = TABLE_TOOLBAR_H + table.rowHeight(header.line);
+    const second_cell_x = 1 + table.widths[0] + table.pad * 2 + 1;
+    const display = try md.allocDisplayText(std.testing.allocator, text);
+    defer std.testing.allocator.free(display);
+    const unpanned = tableByteOffsetForPoint(text, 0, text.len, 180, 0, 0, 10, body_top + TABLE_CELL_PAD_Y + 1, 0);
+    const panned = tableByteOffsetForPoint(text, 0, text.len, 180, 0, 0, 10, body_top + TABLE_CELL_PAD_Y + 1, second_cell_x);
+    try std.testing.expect(panned > unpanned);
+    try std.testing.expect(std.mem.startsWith(u8, display[panned..], "C:/") or std.mem.indexOf(u8, display[panned..], "long") != null);
 }
 
 test "table line wrapping preserves UTF-8 boundaries and right alignment" {

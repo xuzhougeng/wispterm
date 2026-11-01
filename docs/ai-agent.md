@@ -12,10 +12,10 @@ Windows, `~/Library/Application Support/wispterm/ai_profiles` on macOS, or
 on Linux — with fields hex encoded on disk.
 
 Copilot can speak OpenAI-compatible Chat Completions, the OpenAI Responses API,
-the Anthropic Messages API, or hand the whole conversation to an external agent
-over ACP (see [External Agents via ACP](#external-agents-via-acp)). Set the
+the Anthropic Messages API, or a subscription sign-in for ChatGPT Codex, Kimi
+Code, and xAI (see [Subscription sign-in](#subscription-sign-in)). Set the
 profile Protocol field to `chat_completions` (default), `responses`,
-`anthropic`, or `acp`:
+`anthropic`, `codex`, `kimi`, or `xai`:
 
 - `responses` profiles should use a base URL such as `https://api.openai.com/v1`
   or a full endpoint ending in `/responses`.
@@ -29,13 +29,17 @@ profile Protocol field to `chat_completions` (default), `responses`,
 The built-in defaults are:
 
 - Base URL: `https://api.deepseek.com`
-- Model: `deepseek-v4-pro`
+- Model: `deepseek-flash` (vision on for new profiles)
 - Protocol: `chat_completions`
 - System prompt: a platform-aware default compiled into the binary (defined in `src/platform/agent_prompt.zig`)
 - Request mode: DeepSeek thinking enabled, `reasoning_effort = high`, non-streaming
 
 The default agent prompt is platform-aware: on Windows it uses `powershell_exec`
-for local commands; on macOS and Linux it uses `shell_exec`. All variants route
+for local commands; on macOS and Linux it uses `shell_exec`. Those tools wait
+for the process to exit, bounded by `ai-agent-command-timeout-ms` (default 60s),
+and stop as soon as the direct child exits even if a grandchild still holds
+stdout/stderr. Start long-lived servers in a terminal tab rather than through
+the local command tool. All variants route
 open SSH/WSL terminals through WispTerm's terminal tools, avoid pasting shell
 commands into Codex/Claude Code REPLs, and keep Python environment management
 on `uv`. For existing AI profiles, clear the System field to use the current
@@ -64,54 +68,34 @@ and collapses the old turns into a `Conversation summary` card. You can keep
 typing while the summary runs; if the summary request fails, WispTerm keeps the
 full raw history instead.
 
-## External Agents via ACP
+## Subscription sign-in
 
-Instead of calling a model API directly, an AI profile can launch an external
-coding agent (Claude Code, Codex, or any other [ACP](https://agentclientprotocol.com)
-server) as a subprocess and let it drive the conversation. WispTerm speaks the
-Agent Client Protocol over the agent's stdio: your messages become
-`session/prompt` turns, the agent's streamed replies and tool calls render in
-the normal chat transcript, and the agent process is reused across turns within
-the session.
+`codex`, `kimi`, and `xai` use a subscription instead of a pay-per-token API key.
+Cycle Protocol onto one of them and the form fills a default base URL and model
+(you can still edit the model). Focus **Sign in** and press Enter. WispTerm
+opens the provider's device-login page and shows a one-time code; approve it in
+the browser. Tokens are stored in `oauth.json` next to `ai_profiles` (mode
+`0600` where the filesystem supports it) and refresh on their own.
 
-### Creating an ACP profile
+| Protocol | Subscription | Default endpoint | Request shape |
+|----------|----------------|------------------|---------------|
+| `codex` | ChatGPT Plus or Pro | `https://chatgpt.com/backend-api` | Codex responses (`/codex/responses`) |
+| `kimi` | Kimi Code | `https://api.kimi.com/coding` | Anthropic Messages, `Authorization: Bearer` |
+| `xai` | SuperGrok or X Premium | `https://api.x.ai/v1` | OpenAI Responses |
+| `opencode-go` | OpenCode Go API key | `https://opencode.ai/zen/go/v1` | Chat, responses, or messages, chosen from the model id |
 
-Open the AI profile form (session launcher → AI settings) and cycle the
-`Protocol` field to `acp`. An ACP profile only needs three fields:
+Codex requires the subscription sign-in. Kimi and xAI use the stored subscription
+when it exists, and otherwise send the profile API key as a bearer token.
+`KIMI_CODE_OAUTH_HOST` (or `KIMI_OAUTH_HOST`) overrides the Kimi login host.
+Streaming stays off for `kimi`, the same as `anthropic`.
 
-- **Profile name** — any label (falls back to the command if left empty).
-- **Protocol** — `acp`.
-- **Command** — the agent launch command, run through your shell.
-
-Base URL, API key, and model are not used — the form shows
-`(not needed for ACP)` in those fields and they can stay empty. The agent
-process brings its own model access and authentication (e.g. Claude Code uses
-your existing `claude` login).
-
-Two verified adapter commands:
-
-| Agent | Command |
-|-------|---------|
-| Claude Code | `npx -y @zed-industries/claude-code-acp` |
-| Codex | `npx -y @zed-industries/codex-acp` |
-
-Landing on `acp` in the Protocol field prefills the Claude Code command if the
-Command field is empty.
-
-### Permissions
-
-When the agent asks for permission (`session/request_permission`, e.g. before
-editing a file or running a command), WispTerm shows the question as a blocking
-prompt in the chat — pick an option to let the agent continue. Stopping the
-turn cancels the pending prompt.
-
-### Terminal capability
-
-On macOS and Linux, WispTerm advertises the ACP `terminal/*` capability: when
-the agent runs a command, it executes in a real WispTerm pane you can watch and
-scroll. On Windows this capability is currently disabled (agents fall back to
-their own command execution) until shell-argument escaping for `cmd.exe` is
-implemented.
+OpenCode Go is not a device-login. Paste the key from the OpenCode Zen console
+into API key. Each conversation sends that id in `x-opencode-session`, and the
+client identifies itself as `wispterm/<version>`. The same header is added for
+any profile whose base URL is `https://opencode.ai/zen/go`. A model such as
+`glm-5.3-flash` uses `/chat/completions`, `grok-4.7` uses `/responses`, and
+`minimax-m3` or `qwen3.7-plus` uses `/messages`. Messages models stay
+non-streaming.
 
 ## Sessions
 
@@ -148,6 +132,18 @@ download the provider's raw history file, `M` to export the parsed transcript as
 Markdown, or `A` to attach the transcript as a collapsed Copilot context card
 for a follow-up question.
 
+## Answering Agent Questions
+
+When an agent calls `ask_user`, a question card appears above the composer in
+AI Chat or the Copilot sidebar. Click an option to answer immediately, or type
+an option number or your own answer in the composer and submit it.
+
+If the question or a visible option is wider than the card, a horizontal
+scrollbar appears below the options. Drag its thumb or click its track to read
+the full question, labels, and descriptions. The answer hint stays in place;
+using the scrollbar does not choose an option. Each conversation keeps its own
+scroll position, and each new question starts at the left edge.
+
 ## In-context Copilot Sidebar
 
 Press `Ctrl+Shift+A` (`Cmd+Shift+A` on macOS) on a terminal tab to toggle a
@@ -174,7 +170,8 @@ terminal-only — it does not open on a Copilot tab or other non-terminal tabs.
 
 ## Pasting Images (Vision)
 
-Each AI profile has a **Vision** toggle (off by default). Enable it for a
+Each AI profile has a **Vision** toggle. It starts on for a new profile on
+`deepseek-flash` (the default model) and off for other models; enable it for a
 profile that uses a vision-capable model, then press `Ctrl+Shift+V`
 (`Cmd+Shift+V` on macOS) to paste an image from the clipboard into the chat
 composer. The image is sent to the model as a multimodal block and is re-sent
@@ -222,12 +219,63 @@ demand.
 - `/forget <name>` deletes a memory by its name.
 - Set `ai-memory-enabled = false` in the config to turn the system off.
 
+## Password Store
+
+An encrypted store for the passwords you type most (root, mysql, a jump host,
+...), shared by you and the agent. Open it from the Command Center
+(`Ctrl+Shift+P`, `Cmd+Shift+P` on macOS) → **Password Store**: a
+Settings-style page with your entries on the left and the selected entry's
+fields on the right (name, username, password, note, agent access).
+
+- **Encrypted at rest.** Each password is sealed with XChaCha20-Poly1305 in
+  `passwords` in the config directory. The key is never stored next to it: it
+  lives in the login Keychain on macOS and in a DPAPI-sealed `passwords.key`
+  on Windows (Linux, still experimental, falls back to an owner-only
+  `passwords.key`). Reading the file — or letting a shell command `cat` it —
+  shows names and notes but no password. An older plain `name = secret` file
+  is encrypted in place the first time it is loaded.
+- **Hidden by default.** The page shows `••••••••`; turn on **Show password**
+  to see it (it is hidden again when you switch entries), or use **Copy
+  password** / the Copy shortcut to put it on the clipboard. Editing a
+  password types (or pastes) a replacement; the old one is never shown.
+- **Keys:** `↑/↓` move, `Enter`/`→` open an entry or edit/toggle a field,
+  `←`/`Esc` back to the list, `Delete` (or `⌫` in the list) then `Enter` removes an entry. Mouse
+  clicks and the wheel work too. You can also type an entry name (or `pass`)
+  in the Command Center and press Enter on its `Password: <name>` row to copy it.
+- **The agent**: the `password_input` tool types one entry, by name, into a
+  terminal's password prompt for privileged work (sudo, su, a DB login, an
+  SSH password). The agent never sees the password: it names the entry, the
+  tool call and the chat history show only that name, and WispTerm decrypts
+  the password after you approve, writes it straight to the terminal followed
+  by Enter, and wipes it from memory.
+  - Every use shows an approval prompt naming the entry and the terminal, at
+    every permission level including `full`.
+  - The password is typed only while the terminal's last line is a password
+    prompt (`[sudo] password for …:`, `Password:`, `Enter passphrase …:`,
+    `密码：`, …). This is checked before the approval and again just before
+    typing, so a prompt that timed out meanwhile never turns the password
+    into a shell command.
+  - The screen returned to the agent masks the password as `••••••••`. For
+    the rest of the conversation, any tool output, note, or progress line
+    that contains it is masked the same way. WispTerm remembers only a keyed
+    fingerprint for this, not the password.
+  - Turn off **Allow agent** on an entry to refuse it outright. Calling the
+    tool without a name, or with an unknown name, returns the available names
+    with their username and note (never a password). Disable the tool in
+    Skill Center if the agent should never use stored passwords; turning off
+    the old `password_get` there carries over.
+- **On several computers**: Command Center → **Sync** keeps the store (and
+  agent history, SSH hosts, AI profiles) the same everywhere through WebDAV or
+  a synced folder, end-to-end encrypted with a sync passphrase. See
+  [Sync](sync.md).
+
 ## Markdown in replies
 
 AI Chat tabs and the Copilot sidebar share the native Markdown renderer. Tables
 have header shading, cell borders, and left/center/right alignment from their
-delimiter row. Long cells wrap within the message width; narrow panels give
-more space to long columns. Tables currently wrap rather than scroll horizontally.
+delimiter row. Tables that fit the message wrap long cells. Tables that are
+wider than the message keep their natural column widths and pan horizontally
+when you scroll the wheel over them, so long paths stay on one line.
 Escaped pipes (`\|`), Chinese text, emoji, and code-span punctuation are preserved,
 and cells longer than 256 bytes are no longer truncated.
 
@@ -294,6 +342,10 @@ Local slash commands (handled in the panel, without calling the model):
   `/cwd clear` remove the override and return to the default.
 - `/model` opens the saved-profile picker; `/model <name>` switches directly.
   `/模型` is the Chinese alias.
+- `/effort` shows a Magpie session's reasoning effort and the levels its model
+  supports; `/effort <level>` switches this session (see
+  [Magpie](magpie.md#switching-reasoning-effort-in-a-session)). `/推理强度` is
+  the Chinese alias.
 - `/permission` shows the agent tool permission; `/permission ask`,
   `/permission auto`, or `/permission full` changes it at runtime.
   `ask` prompts for normal tool use, `auto` runs ordinary tools automatically

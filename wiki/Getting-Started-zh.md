@@ -23,7 +23,8 @@
 
 - 新建一个 shell 标签，
 - 打开 **Copilot**（内置 AI 智能体，见 [[AI 副驾与智能体|AI-Copilot-zh]]），
-- 打开 **Sessions** 浏览并恢复 Codex / Claude Code 历史。
+- 打开 **Sessions** 浏览并恢复 Codex / Claude Code 历史，
+- 打开工作台页面：**端口转发**、**记忆中心**或**设置**。
 
 可以把更多终端作为**标签**排在标签栏上，或把一个标签**分屏** —— 分屏与焦点控制见
 [[标签、分屏与面板|Tabs-Splits-Panels-zh]]。

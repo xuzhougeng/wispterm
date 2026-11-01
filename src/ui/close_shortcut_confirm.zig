@@ -24,6 +24,7 @@ const std = @import("std");
 /// design and keeps this PR minimal.
 pub const State = struct {
     until_ms: i64 = 0,
+    graceful_close_requested: bool = false,
 
     /// Arm the confirm window so it stays active until `now_ms + duration_ms`.
     pub fn show(self: *State, now_ms: i64, duration_ms: i64) void {
@@ -60,6 +61,18 @@ pub const State = struct {
 
 /// Process-wide instance. Threadlocal to preserve the original ownership model.
 pub threadlocal var instance: State = .{};
+
+/// Request a whole-window close to be coordinated with Pi graceful shutdown.
+pub fn requestGracefulClose() void {
+    instance.graceful_close_requested = true;
+}
+
+/// Consume a pending whole-window graceful-close request exactly once.
+pub fn takeGracefulCloseRequest() bool {
+    const requested = instance.graceful_close_requested;
+    instance.graceful_close_requested = false;
+    return requested;
+}
 
 /// Arm the confirm window so it stays active until `now_ms + duration_ms`.
 pub fn show(now_ms: i64, duration_ms: i64) void {

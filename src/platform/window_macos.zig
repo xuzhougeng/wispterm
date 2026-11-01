@@ -51,6 +51,8 @@ extern fn wispterm_macos_app_consume_quit() bool;
 extern fn wispterm_macos_app_request_quit() void;
 extern fn wispterm_macos_app_pump_events(timeout_seconds: f64) void;
 extern fn wispterm_macos_post_wakeup() void;
+extern fn wispterm_macos_autorelease_pool_push() ?*anyopaque;
+extern fn wispterm_macos_autorelease_pool_pop(token: ?*anyopaque) void;
 
 pub fn appMessage(offset: u32) MessageId {
     return wm_app + offset;
@@ -265,6 +267,20 @@ pub fn pumpAppEvents(timeout_seconds: f64) void {
 /// 从任意线程唤醒阻塞中的事件泵：主线程的 NSApp 泵和 worker 窗口的条件等待都会被唤醒。
 pub fn postWakeup() void {
     wispterm_macos_post_wakeup();
+}
+
+/// Push an Objective-C autorelease pool for one window-loop iteration. The
+/// process is not started by NSApplicationMain, so no outer pool exists on the
+/// main thread or the window worker threads; without this, everything AppKit
+/// autoreleases outside an explicit @autoreleasepool is never freed. Same role
+/// as the AutoreleasePool Ghostty's Metal renderer opens around drawFrame.
+pub fn beginLoopIteration() ?*anyopaque {
+    return wispterm_macos_autorelease_pool_push();
+}
+
+/// Pop the pool `beginLoopIteration` pushed, on the same thread.
+pub fn endLoopIteration(token: ?*anyopaque) void {
+    wispterm_macos_autorelease_pool_pop(token);
 }
 
 pub fn registerEventWindow(hwnd: NativeHandle) void {

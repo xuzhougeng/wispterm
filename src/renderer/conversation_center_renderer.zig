@@ -342,25 +342,26 @@ fn renderList(
         const meta_color = if (selected) mixColor(fg, accent, 0.08) else muted;
         var tbuf: [32]u8 = undefined;
         const rel = copilot_picker.formatRelativeTime(now_ms, row.updated_at, &tbuf);
-        const rel_w = measure(rel, draw.glyphAdvance);
-        const meta_right = layout.list_x + layout.list_w - PAD_X;
+        const text_x = layout.list_x + PAD_X + 8;
+        const text_w = @max(0, layout.list_w - PAD_X * 2 - 8);
         const text_y = yTextFromTop(draw, window_height, row_top + 8);
-        _ = draw.renderTextLimited(rel, meta_right - rel_w, text_y, meta_color, rel_w);
         const tag = if (row.copilot) i18n.s().cmd_palette_sidebar_tag else row.model;
-        var title_right = meta_right - rel_w - 12;
-        if (tag.len > 0) {
-            const tag_w = measure(tag, draw.glyphAdvance);
-            _ = draw.renderTextLimited(tag, title_right - tag_w, text_y + draw.cell_h + 4, meta_color, tag_w);
-            title_right -= tag_w + 10;
-        }
-        _ = draw.renderTextLimited(row.title, layout.list_x + PAD_X + 8, text_y, title_color, @max(0, title_right - layout.list_x - PAD_X - 8));
+        const columns = ui_patterns.textColumns(text_w, measure(tag, draw.glyphAdvance), measure(rel, draw.glyphAdvance), 12);
+        // Metadata belongs below its title. GL y increases upwards; adding a
+        // line height here used to paint model IDs over the previous row/header.
+        const meta_y = text_y - draw.cell_h - 4;
+        _ = draw.renderTextLimited(row.title, text_x, text_y, title_color, text_w);
+        _ = draw.renderTextLimited(tag, text_x, meta_y, meta_color, columns.left_w);
+        _ = draw.renderTextLimited(rel, text_x + columns.right_x, meta_y, meta_color, columns.right_w);
     }
 }
 
 fn resumeButtonRect(layout: Layout, top: f32, cell_h: f32) struct { x: f32, top: f32, w: f32, h: f32 } {
     const header_h = headerHeight(cell_h);
     const label = i18n.s().conversation_center_resume;
-    const w = @max(72.0, @as(f32, @floatFromInt(label.len)) * 8.0 + 24.0);
+    const label_chars = std.unicode.utf8CountCodepoints(label) catch label.len;
+    const preferred_w = @max(72.0, @as(f32, @floatFromInt(label_chars)) * cell_h + 24.0);
+    const w = @min(preferred_w, @max(0, layout.detail_w - PAD_X * 2));
     return .{
         .x = layout.detail_x + layout.detail_w - PAD_X - w,
         .top = top + (header_h - (cell_h + 12)) / 2,
@@ -385,7 +386,7 @@ fn renderDetail(
     const header_h = headerHeight(draw.cell_h);
     draw.fillQuadAlpha(layout.detail_x, yFromTop(window_height, top, header_h), layout.detail_w, header_h, panel_strong, 0.82);
     draw.fillQuad(layout.detail_x, yFromTop(window_height, top + header_h, 1), layout.detail_w, 1, line);
-    _ = draw.renderTextLimited(i18n.s().conversation_center_detail, layout.detail_x + PAD_X, yTextFromTop(draw, window_height, top + 11), fg, layout.detail_w - PAD_X * 2 - 90);
+    _ = draw.renderTextLimited(i18n.s().conversation_center_detail, layout.detail_x + PAD_X, yTextFromTop(draw, window_height, top + 11), fg, @max(0, resumeButtonRect(layout, top, draw.cell_h).x - layout.detail_x - PAD_X - 12));
 
     const row = session.selectedRow() orelse {
         const empty = if (session.filteredCount() == 0)
@@ -575,5 +576,58 @@ test "conversation center hit-test finds source rows" {
     switch (hit) {
         .source => |src| try std.testing.expectEqual(conversation_center.SourceFilter.all, src),
         else => return error.ExpectedSourceHit,
+    }
+}
+
+test "conversation metadata stays below its title and inside the list column" {
+    const Probe = struct {
+        var left: f32 = 0;
+        var right: f32 = 0;
+        var title_y: f32 = 0;
+        var model_y: f32 = 0;
+        var escaped: bool = false;
+        fn quad(_: f32, _: f32, _: f32, _: f32, _: [3]f32) void {}
+        fn alpha(_: f32, _: f32, _: f32, _: f32, _: [3]f32, _: f32) void {}
+        fn advance(_: u32) f32 {
+            return 12;
+        }
+        fn text(s: []const u8, x: f32, y: f32, _: [3]f32, max_w: f32) f32 {
+            if (max_w > 0 and (x < left or x + max_w > right + 0.01)) escaped = true;
+            if (std.mem.eql(u8, s, "Conversation title")) title_y = y;
+            if (std.mem.startsWith(u8, s, "very-long-model")) model_y = y;
+            return x + @min(@max(0, max_w), @as(f32, @floatFromInt(s.len)) * 12);
+        }
+    };
+    var session = conversation_center.Session.init(std.testing.allocator);
+    defer session.deinit();
+    var rows = [_]@import("../agent/history.zig").Row{.{
+        .session_id = "test",
+        .title = "Conversation title",
+        .model = "very-long-model-name-that-used-to-overlap-the-source-column",
+        .updated_at = 0,
+    }};
+    session.rows = &rows;
+    try session.filtered.append(std.testing.allocator, 0);
+    for ([_]f32{ 380, 582, 1000 }) |width| {
+        for ([_]f32{ 20, 40 }) |cell_h| {
+            const l = computeLayout(220, width);
+            Probe.left = l.list_x;
+            Probe.right = l.list_x + l.list_w;
+            Probe.escaped = false;
+            const draw = DrawContext{
+                .bg = .{ 0, 0, 0 },
+                .fg = .{ 1, 1, 1 },
+                .accent = .{ 1, 1, 0 },
+                .cell_h = cell_h,
+                .fillQuad = Probe.quad,
+                .fillQuadAlpha = Probe.alpha,
+                .renderTextLimited = Probe.text,
+                .glyphAdvance = Probe.advance,
+            };
+            renderList(draw, &session, 0, l, 600, 34, 550, draw.fg, draw.fg, draw.accent, draw.bg, draw.bg);
+            try std.testing.expect(!Probe.escaped);
+            try std.testing.expect(Probe.model_y + cell_h <= Probe.title_y);
+            try std.testing.expect(Probe.model_y >= 600 - 34 - headerHeight(cell_h) - rowHeight(cell_h));
+        }
     }
 }

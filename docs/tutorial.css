@@ -30,7 +30,7 @@
 .guide-section:target h2 { color: var(--accent); }
 .guide-number { color: var(--accent); font-family: var(--font-mono); font-size: 0.74rem; letter-spacing: 0.06em; margin: 0 0 12px; }
 .guide-section h2 { font-size: 1.8rem; letter-spacing: -0.03em; line-height: 1.4; margin: 0 0 20px; }
-.guide-section h3 { font-size: 1.13rem; margin: 30px 0 12px; line-height: 1.5; }
+.guide-section h3 { font-size: 1.13rem; margin: 30px 0 12px; line-height: 1.5; scroll-margin-top: 90px; }
 .guide-section p, .guide-section li, .guide-section dd { font-size: 0.95rem; line-height: 1.95; color: var(--fg-muted); }
 .guide-section strong, .guide-section dt { color: var(--fg); }
 .guide-section p { margin: 12px 0; }

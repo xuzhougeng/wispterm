@@ -19,6 +19,8 @@ pub const Options = struct {
     // Working dir; null = cache next to the file. Used both as the `.webread_cache`
     // root and to resolve a relative file target.
     cache_dir: ?[]const u8 = null,
+    /// Explicit proxy from WispTerm HTTP settings; null keeps backend defaults.
+    proxy: ?[]const u8 = null,
 };
 
 pub const ReadResult = struct {
@@ -264,6 +266,7 @@ fn fetchUrl(gpa: std.mem.Allocator, url: []const u8, opts: Options) !platform_ht
         .headers = headers[0..n],
         .body = body,
         .timeout_ms = 60_000,
+        .proxy = opts.proxy,
     }) catch |err| {
         setNetworkErrorDetail(err);
         return error.Network;
@@ -291,6 +294,7 @@ fn uploadFile(gpa: std.mem.Allocator, lf: LocalFile, opts: Options) !platform_ht
         .headers = headers[0..n],
         .body = mp.body,
         .timeout_ms = 60_000,
+        .proxy = opts.proxy,
     }) catch |err| {
         setNetworkErrorDetail(err);
         return error.Network;

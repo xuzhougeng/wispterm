@@ -25,7 +25,8 @@ Press **`Ctrl+Shift+T`** to open the session launcher. From it you can:
 
 - open a new shell tab,
 - open **Copilot** (the built-in AI agent, see [[AI-Copilot]]),
-- open **Sessions** to browse and resume Codex / Claude Code history.
+- open **Sessions** to browse and resume Codex / Claude Code history,
+- open a workbench page: **Port Forwarding**, **Memory Center**, or **Settings**.
 
 Open more terminals as **tabs** along the strip, or divide one tab into
 **splits** — see [[Tabs-Splits-Panels]] for split and focus controls.

@@ -20,9 +20,14 @@ pub const Kind = enum {
     settings,
     help,
     copilot,
+    command_palette,
     minimize,
     maximize,
     restore,
+    /// Right-dock "Files" tab.
+    folder,
+    /// Right-dock open/close toggle: a window with its right pane marked.
+    panel_right,
 };
 
 pub const max_quads: usize = 64;
@@ -160,6 +165,16 @@ fn fillCopilot(out: []Quad, i: *usize, cx: f32, cy: f32, g: f32) void {
     append(out, i, .{ .x = bx + 2.0, .y = by - 2.4, .w = 3.2, .h = stroke });
 }
 
+fn fillCommandPalette(out: []Quad, i: *usize, cx: f32, cy: f32, g: f32) void {
+    // Magnifier: the command center is find-and-run, like VS Code's.
+    const r = g * 0.34;
+    const lx = cx - g * 0.12;
+    const ly = cy + g * 0.12;
+    appendOctagonRing(out, i, lx, ly, r, stroke);
+    const h0 = r * 0.72;
+    appendLine(out, i, lx + h0, ly - h0, cx + g * 0.42, cy - g * 0.42, stroke);
+}
+
 fn fillMinimize(out: []Quad, i: *usize, cx: f32, cy: f32, g: f32) void {
     appendHBar(out, i, cx, cy, g, stroke);
 }
@@ -179,6 +194,31 @@ fn fillRestore(out: []Quad, i: *usize, cx: f32, cy: f32, g: f32) void {
     appendRectStroke(out, i, cx - s / 2 - off * 0.35, cy - s / 2 - off * 0.15, s, s, stroke);
 }
 
+fn fillFolder(out: []Quad, i: *usize, cx: f32, cy: f32, g: f32) void {
+    const bw = g + 3.0;
+    const bh = g * 0.72;
+    const bx = cx - bw / 2;
+    const by = cy - bh / 2 - 0.8;
+    appendRectStroke(out, i, bx, by, bw, bh, stroke);
+    // Tab on the top-left edge (GL y-up: above the body).
+    const tab_w = bw * 0.42;
+    const tab_h: f32 = 2.2;
+    append(out, i, .{ .x = bx, .y = by + bh - stroke, .w = stroke, .h = tab_h + stroke });
+    append(out, i, .{ .x = bx, .y = by + bh + tab_h - stroke, .w = tab_w, .h = stroke });
+    append(out, i, .{ .x = bx + tab_w - stroke, .y = by + bh - stroke, .w = stroke, .h = tab_h });
+}
+
+fn fillPanelRight(out: []Quad, i: *usize, cx: f32, cy: f32, g: f32) void {
+    const bw = g + 3.0;
+    const bh = g * 0.86;
+    const bx = cx - bw / 2;
+    const by = cy - bh / 2;
+    appendRectStroke(out, i, bx, by, bw, bh, stroke);
+    // Divider marking the right-hand pane.
+    const split_x = bx + bw * 0.62;
+    append(out, i, .{ .x = split_x, .y = by, .w = stroke, .h = bh });
+}
+
 /// Write icon quads for `kind` into `out`. Returns the number of quads written.
 pub fn fill(out: []Quad, kind: Kind, x: f32, y: f32, w: f32, h: f32) usize {
     var i: usize = 0;
@@ -193,9 +233,12 @@ pub fn fill(out: []Quad, kind: Kind, x: f32, y: f32, w: f32, h: f32) usize {
         .settings => fillSettings(out, &i, cx, cy, g),
         .help => fillHelp(out, &i, cx, cy, g),
         .copilot => fillCopilot(out, &i, cx, cy, g),
+        .command_palette => fillCommandPalette(out, &i, cx, cy, g),
         .minimize => fillMinimize(out, &i, cx, cy, g),
         .maximize => fillMaximize(out, &i, cx, cy, g),
         .restore => fillRestore(out, &i, cx, cy, g),
+        .folder => fillFolder(out, &i, cx, cy, g),
+        .panel_right => fillPanelRight(out, &i, cx, cy, g),
     }
     return i;
 }

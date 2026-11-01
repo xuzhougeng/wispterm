@@ -1,5 +1,5 @@
 //! Live transcript for a terminal pane that runs Claude Code / Codex. Finds the
-//! agent's own session log (the OSC 7748 `transcript=` field when the hook
+//! agent's own session log (the OSC 7748 `session_path=` field when the hook
 //! sends it, else the newest log for the pane's cwd) and renders its tail as
 //! JSON for the remote layout, so a phone can show the pane as a conversation
 //! instead of a 1:1 terminal. Pure file I/O, no UI.
@@ -38,7 +38,7 @@ pub const LiveTranscript = struct {
         self.* = .{};
     }
 
-    /// Authoritative path from the agent hook (`transcript=` marker field).
+    /// Authoritative path from the agent hook (`session_path=` marker field).
     pub fn setPath(self: *LiveTranscript, allocator: std.mem.Allocator, path: []const u8) void {
         self.replacePath(allocator, path) catch return;
         self.from_marker = true;

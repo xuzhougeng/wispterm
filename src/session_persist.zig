@@ -13,6 +13,43 @@ pub const SCHEMA_VERSION: u32 = 2; // was 1: added LeafSnap.kind + preview
 
 pub const Layout = enum { horizontal, vertical };
 
+pub const PiLaunchKind = enum { local, wsl, ssh };
+
+/// Build the shell-neutral local/WSL restore command. The path is quoted with
+/// double quotes, which works in PowerShell and POSIX shells for ordinary
+/// session paths; interpolation/quote characters are rejected conservatively.
+pub fn formatPiSessionResumeCommand(buf: []u8, path: []const u8) ?[]const u8 {
+    if (path.len == 0 or std.mem.indexOfAny(u8, path, "\"`$\r\n") != null) return null;
+    return std.fmt.bufPrint(buf, "pi --session \"{s}\"\r", .{path}) catch null;
+}
+
+pub fn shouldRestorePiSession(path: []const u8, launch_kind: PiLaunchKind) bool {
+    switch (launch_kind) {
+        .wsl, .ssh => return path.len > 0,
+        .local => {},
+    }
+    if (path.len == 0 or path[0] == '/') return false;
+    std.fs.accessAbsolute(path, .{}) catch return false;
+    return true;
+}
+
+test "shouldRestorePiSession rejects stale host paths and allows remote paths" {
+    try std.testing.expect(!shouldRestorePiSession("/home/pi/.pi/session.jsonl", .local));
+    try std.testing.expect(!shouldRestorePiSession("", .wsl));
+    try std.testing.expect(shouldRestorePiSession("/home/pi/.pi/session.jsonl", .wsl));
+    try std.testing.expect(shouldRestorePiSession("/home/pi/.pi/session.jsonl", .ssh));
+}
+
+test "formatPiSessionResumeCommand preserves spaces and unicode" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "pi --session \"C:\\Users\\Inter User\\会话.jsonl\"\r",
+        formatPiSessionResumeCommand(&buf, "C:\\Users\\Inter User\\会话.jsonl").?,
+    );
+    try std.testing.expect(formatPiSessionResumeCommand(&buf, "C:\\bad\\$session.jsonl") == null);
+    try std.testing.expect(formatPiSessionResumeCommand(&buf, "C:\\bad\\\"session.jsonl") == null);
+}
+
 pub const SurfaceSnap = union(enum) {
     local_shell: LocalShellSnap,
     ssh: SshSnap,
@@ -20,6 +57,10 @@ pub const SurfaceSnap = union(enum) {
     pub const LocalShellSnap = struct {
         cwd: ?[]const u8 = null,
         command: ?[]const []const u8 = null,
+        /// Absolute Pi JSONL session path reported by the companion.
+        /// Absent in older snapshots and for ordinary shells.
+        pi_session_path: ?[]const u8 = null,
+        pi_launch_kind: PiLaunchKind = .local,
     };
 
     pub const SshSnap = struct {
@@ -31,6 +72,11 @@ pub const SurfaceSnap = union(enum) {
         // multi-hop). Defaulted so older session files without it still load.
         // Not a secret, so persisting it does not violate invariant I1.
         proxy_jump: []const u8 = "",
+        network_proxy_type: []const u8 = "",
+        network_proxy_host: []const u8 = "",
+        network_proxy_port: []const u8 = "",
+        /// Remote Pi JSONL session path for direct SSH restore.
+        pi_session_path: ?[]const u8 = null,
         // SECURITY INVARIANT (I1): NO password field. Adding one would
         // cause SSH passwords to be persisted to disk on every close.
     };
@@ -39,6 +85,15 @@ pub const SurfaceSnap = union(enum) {
 pub const PreviewSnap = struct {
     kind: @import("preview/markdown.zig").Kind = .markdown,
     path: []const u8 = "",
+    // Where `path` lives. A WSL/SSH preview reloaded as local can never open
+    // (`/home/...` is not a Windows path). Absent in older files → local.
+    source: Source = .local,
+
+    pub const Source = union(enum) {
+        local,
+        wsl,
+        ssh: SurfaceSnap.SshSnap, // endpoint only; no password (invariant I1)
+    };
 };
 
 pub const NodeSnap = union(enum) {
@@ -171,6 +226,8 @@ test "session_persist: round-trip simple local-shell session via JSON" {
     const leaf_node = NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{
         .cwd = "/home/user",
         .command = null,
+        .pi_session_path = "/home/user/会话 with spaces/.pi/agent/sessions/demo.jsonl",
+        .pi_launch_kind = .wsl,
     } } } };
     const tabs = [_]TabSnap{.{
         .title_override = null,
@@ -199,6 +256,8 @@ test "session_persist: round-trip simple local-shell session via JSON" {
     };
     try std.testing.expectEqualStrings("/home/user", sh.cwd.?);
     try std.testing.expect(sh.command == null);
+    try std.testing.expectEqualStrings("/home/user/会话 with spaces/.pi/agent/sessions/demo.jsonl", sh.pi_session_path.?);
+    try std.testing.expectEqual(PiLaunchKind.wsl, sh.pi_launch_kind);
 }
 
 test "session_persist: AI chat tab round-trips its ai_session_id" {
@@ -298,6 +357,43 @@ test "session_persist: preview leaf round-trips through JSON" {
     try std.testing.expect(leaf.preview != null);
     try std.testing.expectEqualStrings("README.md", leaf.preview.?.path);
     try std.testing.expectEqual(@import("preview/markdown.zig").Kind.markdown, leaf.preview.?.kind);
+    try std.testing.expect(leaf.preview.?.source == .local);
+}
+
+test "session_persist: preview source (wsl/ssh) round-trips; old previews default to local" {
+    const gpa = std.testing.allocator;
+    var wsl_leaf = NodeSnap{ .leaf = .{
+        .kind = .preview,
+        .preview = .{ .kind = .image, .path = "/home/me/a.png", .source = .wsl },
+    } };
+    var ssh_leaf = NodeSnap{ .leaf = .{
+        .kind = .preview,
+        .preview = .{ .kind = .image, .path = "/data/b.png", .source = .{ .ssh = .{
+            .user = "me",
+            .host = "10.0.0.2",
+            .port = 2222,
+            .proxy_jump = "jump",
+        } } },
+    } };
+    var tabs = [_]TabSnap{.{ .tree = .{ .split = .{ .layout = .horizontal, .ratio = 0.5, .left = &wsl_leaf, .right = &ssh_leaf } } }};
+    const json = try dumpSessionToString(gpa, .{ .tabs = &tabs });
+    defer gpa.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "password") == null);
+
+    var parsed = try loadSessionFromString(gpa, json);
+    defer parsed.deinit();
+    const sp = parsed.value.tabs[0].tree.split;
+    try std.testing.expect(sp.left.leaf.preview.?.source == .wsl);
+    const ssh = sp.right.leaf.preview.?.source.ssh;
+    try std.testing.expectEqualStrings("me", ssh.user);
+    try std.testing.expectEqualStrings("10.0.0.2", ssh.host);
+    try std.testing.expectEqual(@as(u16, 2222), ssh.port);
+    try std.testing.expectEqualStrings("jump", ssh.proxy_jump);
+
+    const old = "{\"tabs\":[{\"tree\":{\"leaf\":{\"kind\":\"preview\",\"preview\":{\"kind\":\"image\",\"path\":\"/x.png\"}}}}]}";
+    var old_parsed = try loadSessionFromString(gpa, old);
+    defer old_parsed.deinit();
+    try std.testing.expect(old_parsed.value.tabs[0].tree.leaf.preview.?.source == .local);
 }
 
 test "session_persist: old terminal leaf JSON (no kind field) still parses as terminal" {
@@ -542,6 +638,32 @@ test "session_persist: normalize() clamps ratio above 1" {
     try std.testing.expect(sp.ratio <= 0.95);
 }
 
+/// Format the SSH command suffix for a persisted Pi session. The returned
+/// slice is appended to the already-built `ssh` command in `buf`.
+pub fn formatPiRemoteSessionCommand(
+    allocator: std.mem.Allocator,
+    buf: []u8,
+    cwd: ?[]const u8,
+    path: []const u8,
+) ![]const u8 {
+    const escaped_path = try shellSingleQuoteEscape(allocator, path);
+    defer allocator.free(escaped_path);
+    if (cwd) |cwd_value| {
+        const escaped_cwd = try shellSingleQuoteEscape(allocator, cwd_value);
+        defer allocator.free(escaped_cwd);
+        return std.fmt.bufPrint(buf, " \\\"cd '{s}' 2>/dev/null && exec pi --session '{s}'\\\"", .{ escaped_cwd, escaped_path });
+    }
+    return std.fmt.bufPrint(buf, " \\\"exec pi --session '{s}'\\\"", .{escaped_path});
+}
+
+test "formatPiRemoteSessionCommand preserves remote cwd and session path" {
+    var buf: [512]u8 = undefined;
+    const with_cwd = try formatPiRemoteSessionCommand(std.testing.allocator, &buf, "/home/pi/project with space", "/home/pi/.pi/agent/sessions/a.jsonl");
+    try std.testing.expectEqualStrings(" \\\"cd '/home/pi/project with space' 2>/dev/null && exec pi --session '/home/pi/.pi/agent/sessions/a.jsonl'\\\"", with_cwd);
+    const without_cwd = try formatPiRemoteSessionCommand(std.testing.allocator, &buf, null, "/home/pi/.pi/agent/sessions/a.jsonl");
+    try std.testing.expectEqualStrings(" \\\"exec pi --session '/home/pi/.pi/agent/sessions/a.jsonl'\\\"", without_cwd);
+}
+
 /// Escape a path so that wrapping it in single quotes (`'...'`) produces a
 /// single shell argument. Inside single quotes, only the closing quote needs
 /// special handling: `'` becomes `'\''` (close, escape, reopen).
@@ -718,4 +840,20 @@ test "old TabSnap without copilot fields parses to null/false" {
     defer parsed.deinit();
     try std.testing.expectEqual(@as(?[]const u8, null), parsed.value.copilot_session_id);
     try std.testing.expect(!parsed.value.copilot_visible);
+}
+
+test "session snapshot network proxy round-trips without persisting commands or secrets" {
+    const allocator = std.testing.allocator;
+    const snap = SurfaceSnap.SshSnap{ .user = "alice", .host = "host.test", .network_proxy_type = "socks5", .network_proxy_host = "127.0.0.1", .network_proxy_port = "7897" };
+    const json = try std.json.Stringify.valueAlloc(allocator, snap, .{});
+    defer allocator.free(json);
+    const parsed = try std.json.parseFromSlice(SurfaceSnap.SshSnap, allocator, json, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("socks5", parsed.value.network_proxy_type);
+    try std.testing.expectEqualStrings("127.0.0.1", parsed.value.network_proxy_host);
+    try std.testing.expectEqualStrings("7897", parsed.value.network_proxy_port);
+    try std.testing.expect(std.mem.indexOf(u8, json, "ProxyCommand") == null);
+    const old = try std.json.parseFromSlice(SurfaceSnap.SshSnap, allocator, "{\"user\":\"alice\",\"host\":\"host.test\"}", .{});
+    defer old.deinit();
+    try std.testing.expectEqualStrings("", old.value.network_proxy_type);
 }

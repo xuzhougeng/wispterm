@@ -8,6 +8,7 @@ pub const AiHistorySourceChoice = enum { local, wsl, ssh };
 /// picker, stored opaque so this module stays compilable in the fast test suite
 /// without importing the heavy conversation session graph; `overlays.zig` casts it.
 pub const State = struct {
+    selected: usize = 0,
     ai_history_source_selected: usize = 0,
     switch_model_target: ?*anyopaque = null,
 

@@ -14,6 +14,19 @@ pub const DEFAULT_STREAM = "false";
 pub const DEFAULT_AGENT = "true";
 pub const DEFAULT_MAX_TOKENS = "8192";
 pub const DEFAULT_VISION = "off";
+
+/// Model ids known to accept image input (OpenAI-format `image_url` blocks).
+/// DeepSeek: `deepseek-flash` does; `deepseek-v4-pro` is text-only.
+pub fn modelSupportsVision(model: []const u8) bool {
+    return std.mem.eql(u8, model, "deepseek-flash");
+}
+
+/// Vision value for a fresh profile on `model`. Saved profiles keep their own
+/// flag, and a legacy profile without one still falls back to DEFAULT_VISION.
+pub fn defaultVisionForModel(model: []const u8) []const u8 {
+    return if (modelSupportsVision(model)) "on" else DEFAULT_VISION;
+}
+
 pub const TOOL_CALL_REASONING_FALLBACK = "Tool call is required before answering.";
 
 // ---------------------------------------------------------------------------
@@ -24,7 +37,15 @@ pub const ApiProtocol = enum {
     chat_completions,
     responses,
     anthropic,
-    acp,
+    /// ChatGPT Plus/Pro subscription. Wire format is the Codex responses API.
+    codex,
+    /// Kimi Code subscription. Wire format is the Anthropic Messages API.
+    kimi,
+    /// SuperGrok / X Premium subscription. Wire format is the OpenAI Responses API.
+    xai,
+    /// OpenCode Go subscription. API key plus a stable `x-opencode-session`.
+    /// The wire format follows the model: chat completions, responses, or messages.
+    opencode_go,
 
     pub fn parse(value: []const u8) ApiProtocol {
         const trimmed = std.mem.trim(u8, value, " \t\r\n");
@@ -40,7 +61,14 @@ pub const ApiProtocol = enum {
         {
             return .anthropic;
         }
-        if (std.ascii.eqlIgnoreCase(trimmed, "acp")) return .acp;
+        if (std.ascii.eqlIgnoreCase(trimmed, "codex") or std.ascii.eqlIgnoreCase(trimmed, "openai-codex")) return .codex;
+        if (std.ascii.eqlIgnoreCase(trimmed, "kimi") or std.ascii.eqlIgnoreCase(trimmed, "kimi-coding")) return .kimi;
+        if (std.ascii.eqlIgnoreCase(trimmed, "xai") or std.ascii.eqlIgnoreCase(trimmed, "grok")) return .xai;
+        if (std.ascii.eqlIgnoreCase(trimmed, "opencode-go") or
+            std.ascii.eqlIgnoreCase(trimmed, "opencode_go") or
+            std.ascii.eqlIgnoreCase(trimmed, "opencode")) return .opencode_go;
+        // Legacy ACP profiles no longer launch a subprocess. They parse as the
+        // default HTTP protocol so the saved line still loads.
         return .chat_completions;
     }
 
@@ -49,8 +77,50 @@ pub const ApiProtocol = enum {
             .chat_completions => DEFAULT_PROTOCOL,
             .responses => "responses",
             .anthropic => "anthropic",
-            .acp => "acp",
+            .codex => "codex",
+            .kimi => "kimi",
+            .xai => "xai",
+            .opencode_go => "opencode-go",
         };
+    }
+
+    pub fn isSubscription(self: ApiProtocol) bool {
+        return switch (self) {
+            .codex, .kimi, .xai => true,
+            else => false,
+        };
+    }
+
+    /// Fixed base URL and model filled in when the profile form lands on a
+    /// subscription protocol and the current values are still the defaults.
+    pub fn subscriptionPreset(self: ApiProtocol) ?struct { base_url: []const u8, model: []const u8 } {
+        return switch (self) {
+            .codex => .{ .base_url = "https://chatgpt.com/backend-api", .model = "gpt-5.4" },
+            .kimi => .{ .base_url = "https://api.kimi.com/coding", .model = "kimi-for-coding" },
+            .xai => .{ .base_url = "https://api.x.ai/v1", .model = "grok-4" },
+            .opencode_go => .{ .base_url = "https://opencode.ai/zen/go/v1", .model = "glm-5.3-flash" },
+            else => null,
+        };
+    }
+
+    pub fn isSubscriptionBaseUrl(value: []const u8) bool {
+        inline for (std.meta.fields(ApiProtocol)) |field| {
+            const protocol: ApiProtocol = @enumFromInt(field.value);
+            if (protocol.subscriptionPreset()) |preset| {
+                if (std.mem.eql(u8, value, preset.base_url)) return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn isSubscriptionModel(value: []const u8) bool {
+        inline for (std.meta.fields(ApiProtocol)) |field| {
+            const protocol: ApiProtocol = @enumFromInt(field.value);
+            if (protocol.subscriptionPreset()) |preset| {
+                if (std.mem.eql(u8, value, preset.model)) return true;
+            }
+        }
+        return false;
     }
 
     /// Cycle to the next/previous valid protocol (wraps). Used by the AI profile
@@ -60,39 +130,81 @@ pub const ApiProtocol = enum {
             return switch (self) {
                 .chat_completions => .responses,
                 .responses => .anthropic,
-                .anthropic => .acp,
-                .acp => .chat_completions,
+                .anthropic => .codex,
+                .codex => .kimi,
+                .kimi => .xai,
+                .xai => .opencode_go,
+                .opencode_go => .chat_completions,
             };
         }
         return switch (self) {
-            .chat_completions => .acp,
+            .chat_completions => .opencode_go,
             .responses => .chat_completions,
             .anthropic => .responses,
-            .acp => .anthropic,
+            .codex => .anthropic,
+            .kimi => .codex,
+            .xai => .kimi,
+            .opencode_go => .xai,
         };
     }
 };
 
 test "ApiProtocol.cycle toggles forward and backward through the valid set, wrapping" {
-    // forward
     try std.testing.expectEqual(ApiProtocol.responses, ApiProtocol.chat_completions.cycle(true));
     try std.testing.expectEqual(ApiProtocol.anthropic, ApiProtocol.responses.cycle(true));
-    try std.testing.expectEqual(ApiProtocol.acp, ApiProtocol.anthropic.cycle(true));
-    try std.testing.expectEqual(ApiProtocol.chat_completions, ApiProtocol.acp.cycle(true));
-    // backward
-    try std.testing.expectEqual(ApiProtocol.acp, ApiProtocol.chat_completions.cycle(false));
+    try std.testing.expectEqual(ApiProtocol.codex, ApiProtocol.anthropic.cycle(true));
+    try std.testing.expectEqual(ApiProtocol.kimi, ApiProtocol.codex.cycle(true));
+    try std.testing.expectEqual(ApiProtocol.xai, ApiProtocol.kimi.cycle(true));
+    try std.testing.expectEqual(ApiProtocol.opencode_go, ApiProtocol.xai.cycle(true));
+    try std.testing.expectEqual(ApiProtocol.chat_completions, ApiProtocol.opencode_go.cycle(true));
+    try std.testing.expectEqual(ApiProtocol.opencode_go, ApiProtocol.chat_completions.cycle(false));
     try std.testing.expectEqual(ApiProtocol.chat_completions, ApiProtocol.responses.cycle(false));
-    try std.testing.expectEqual(ApiProtocol.responses, ApiProtocol.anthropic.cycle(false));
-    try std.testing.expectEqual(ApiProtocol.anthropic, ApiProtocol.acp.cycle(false));
-    // a full forward loop returns to start
-    try std.testing.expectEqual(ApiProtocol.chat_completions, ApiProtocol.chat_completions.cycle(true).cycle(true).cycle(true).cycle(true));
+    try std.testing.expectEqual(ApiProtocol.xai, ApiProtocol.opencode_go.cycle(false));
+    var cursor = ApiProtocol.chat_completions;
+    for (0..7) |_| cursor = cursor.cycle(true);
+    try std.testing.expectEqual(ApiProtocol.chat_completions, cursor);
 }
 
-test "ApiProtocol parses and cycles acp" {
-    try std.testing.expectEqual(ApiProtocol.acp, ApiProtocol.parse("acp"));
-    try std.testing.expectEqualStrings("acp", ApiProtocol.acp.name());
-    try std.testing.expectEqual(ApiProtocol.acp, ApiProtocol.anthropic.cycle(true));
-    try std.testing.expectEqual(ApiProtocol.chat_completions, ApiProtocol.acp.cycle(true));
+test "subscription protocols parse and legacy acp does not" {
+    try std.testing.expectEqual(ApiProtocol.codex, ApiProtocol.parse("openai-codex"));
+    try std.testing.expectEqual(ApiProtocol.kimi, ApiProtocol.parse("kimi-coding"));
+    try std.testing.expectEqual(ApiProtocol.xai, ApiProtocol.parse("grok"));
+    try std.testing.expectEqualStrings("codex", ApiProtocol.codex.name());
+    try std.testing.expect(ApiProtocol.kimi.isSubscription());
+    try std.testing.expect(!ApiProtocol.responses.isSubscription());
+    try std.testing.expectEqual(ApiProtocol.chat_completions, ApiProtocol.parse("acp"));
+    const preset = ApiProtocol.xai.subscriptionPreset().?;
+    try std.testing.expectEqualStrings("https://api.x.ai/v1", preset.base_url);
+    try std.testing.expect(ApiProtocol.isSubscriptionBaseUrl("https://chatgpt.com/backend-api"));
+    try std.testing.expect(ApiProtocol.isSubscriptionModel("kimi-for-coding"));
+    try std.testing.expectEqual(ApiProtocol.opencode_go, ApiProtocol.parse("opencode-go"));
+    try std.testing.expect(!ApiProtocol.opencode_go.isSubscription());
+    const go = ApiProtocol.opencode_go.subscriptionPreset().?;
+    try std.testing.expectEqualStrings("https://opencode.ai/zen/go/v1", go.base_url);
+    try std.testing.expectEqualStrings("glm-5.3-flash", go.model);
+}
+
+test "opencode go routes models to chat, responses, or messages" {
+    const a = std.testing.allocator;
+    try std.testing.expectEqual(OpenCodeGoApi.chat, opencodeGoApi("glm-5.3-flash"));
+    try std.testing.expectEqual(OpenCodeGoApi.chat, opencodeGoApi("kimi-k2.7-code"));
+    try std.testing.expectEqual(OpenCodeGoApi.responses, opencodeGoApi("grok-4.7"));
+    try std.testing.expectEqual(OpenCodeGoApi.responses, opencodeGoApi("GPT-5.6-Luna"));
+    try std.testing.expectEqual(OpenCodeGoApi.messages, opencodeGoApi("opencode-go/qwen3.7-plus"));
+    try std.testing.expectEqual(OpenCodeGoApi.messages, opencodeGoApi("minimax-m3"));
+    try std.testing.expect(needsOpenCodeSession(.chat_completions, "https://opencode.ai/zen/go/v1"));
+    try std.testing.expect(!needsOpenCodeSession(.chat_completions, "https://api.openai.com/v1"));
+    try std.testing.expect(needsOpenCodeSession(.opencode_go, "https://example.test"));
+
+    const chat = try apiEndpointForModel(a, "https://opencode.ai/zen/go/v1", .opencode_go, "glm-5.3");
+    defer a.free(chat);
+    const responses = try apiEndpointForModel(a, "https://opencode.ai/zen/go/v1/", .opencode_go, "grok-4.6");
+    defer a.free(responses);
+    const messages = try apiEndpointForModel(a, "https://opencode.ai/zen/go/v1", .opencode_go, "minimax-m2.7");
+    defer a.free(messages);
+    try std.testing.expectEqualStrings("https://opencode.ai/zen/go/v1/chat/completions", chat);
+    try std.testing.expectEqualStrings("https://opencode.ai/zen/go/v1/responses", responses);
+    try std.testing.expectEqualStrings("https://opencode.ai/zen/go/v1/messages", messages);
 }
 
 pub const Role = enum {
@@ -200,6 +312,9 @@ pub const ApiResult = struct {
     tool_calls: ?[]ToolCall = null,
     usage: ?ApiUsage = null,
     api_error: bool = false,
+    /// Agent turns: time blocked on `ask_user` answers, kept out of the
+    /// reported duration and token rate (turn_stats.zig).
+    user_wait_ms: i64 = 0,
 
     pub fn deinit(self: ApiResult, allocator: std.mem.Allocator) void {
         allocator.free(self.content);
@@ -263,11 +378,10 @@ pub const RequestParams = struct {
 };
 
 pub fn buildRequestJson(allocator: std.mem.Allocator, params: RequestParams, messages: []const RequestMessage, include_tools: bool) ![]u8 {
-    return switch (params.protocol) {
-        // .acp never reaches HTTP request building; harmless defensive default.
-        .chat_completions, .acp => buildChatCompletionsRequestJsonForMessages(allocator, params, messages, include_tools),
-        .responses => buildResponsesRequestJsonForMessages(allocator, params, messages, include_tools),
-        .anthropic => buildAnthropicRequestJsonForMessages(allocator, params, messages, include_tools),
+    return switch (wireProtocol(params.protocol, params.model)) {
+        .chat_completions, .opencode_go => buildChatCompletionsRequestJsonForMessages(allocator, params, messages, include_tools),
+        .responses, .codex, .xai => buildResponsesRequestJsonForMessages(allocator, params, messages, include_tools),
+        .anthropic, .kimi => buildAnthropicRequestJsonForMessages(allocator, params, messages, include_tools),
     };
 }
 
@@ -324,12 +438,70 @@ pub fn isAnthropicBaseUrl(base_url: []const u8) bool {
 }
 
 pub fn apiEndpoint(allocator: std.mem.Allocator, base_url_raw: []const u8, protocol: ApiProtocol) ![]u8 {
-    return switch (protocol) {
-        // .acp never reaches HTTP endpoints; harmless defensive default.
-        .chat_completions, .acp => chatEndpoint(allocator, base_url_raw),
-        .responses => responsesEndpoint(allocator, base_url_raw),
-        .anthropic => messagesEndpoint(allocator, base_url_raw),
+    return apiEndpointForModel(allocator, base_url_raw, protocol, "");
+}
+
+/// OpenCode Go publishes three endpoints under one base URL. The model id
+/// selects which one a request uses. https://opencode.ai/docs/go/
+pub const OpenCodeGoApi = enum { chat, responses, messages };
+
+pub fn opencodeGoApi(model: []const u8) OpenCodeGoApi {
+    const trimmed = std.mem.trim(u8, model, " \t\r\n");
+    const prefix = "opencode-go/";
+    const id = if (trimmed.len >= prefix.len and std.ascii.eqlIgnoreCase(trimmed[0..prefix.len], prefix))
+        trimmed[prefix.len..]
+    else
+        trimmed;
+    if (eqlIgnore(id, "grok-4.7") or eqlIgnore(id, "grok-4.6") or eqlIgnore(id, "gpt-5.6-luna") or startsIgnore(id, "muse-spark-")) {
+        return .responses;
+    }
+    if (startsIgnore(id, "minimax-") or startsIgnore(id, "qwen")) return .messages;
+    return .chat;
+}
+
+pub fn isOpenCodeGoBaseUrl(base_url: []const u8) bool {
+    return std.ascii.indexOfIgnoreCase(base_url, "opencode.ai") != null and
+        std.ascii.indexOfIgnoreCase(base_url, "/zen/go") != null;
+}
+
+pub fn needsOpenCodeSession(protocol: ApiProtocol, base_url: []const u8) bool {
+    return protocol == .opencode_go or isOpenCodeGoBaseUrl(base_url);
+}
+
+/// Wire format used to build and parse a request. OpenCode Go keeps its own
+/// protocol value so the session header stays attached, but the body matches
+/// the model's endpoint.
+pub fn wireProtocol(protocol: ApiProtocol, model: []const u8) ApiProtocol {
+    if (protocol != .opencode_go) return protocol;
+    return switch (opencodeGoApi(model)) {
+        .chat => .chat_completions,
+        .responses => .responses,
+        .messages => .anthropic,
     };
+}
+
+pub fn apiEndpointForModel(allocator: std.mem.Allocator, base_url_raw: []const u8, protocol: ApiProtocol, model: []const u8) ![]u8 {
+    if (protocol == .opencode_go) {
+        return switch (opencodeGoApi(model)) {
+            .chat => chatEndpoint(allocator, base_url_raw),
+            .responses => responsesEndpoint(allocator, base_url_raw),
+            .messages => endpointWithSuffix(allocator, base_url_raw, "/messages"),
+        };
+    }
+    return switch (protocol) {
+        .chat_completions, .opencode_go => chatEndpoint(allocator, base_url_raw),
+        .responses, .xai => responsesEndpoint(allocator, base_url_raw),
+        .codex => endpointWithSuffix(allocator, base_url_raw, "/codex/responses"),
+        .anthropic, .kimi => messagesEndpoint(allocator, base_url_raw),
+    };
+}
+
+fn eqlIgnore(text: []const u8, expected: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(text, expected);
+}
+
+fn startsIgnore(text: []const u8, prefix: []const u8) bool {
+    return text.len >= prefix.len and std.ascii.eqlIgnoreCase(text[0..prefix.len], prefix);
 }
 
 pub fn chatEndpoint(allocator: std.mem.Allocator, base_url_raw: []const u8) ![]u8 {
@@ -417,10 +589,15 @@ fn buildChatCompletionsRequestJsonForMessages(
         }
         try out.append(allocator, '}');
     }
-    try out.appendSlice(allocator, "],\"thinking\":{\"type\":");
-    try appendJsonString(allocator, &out, if (params.thinking_enabled) "enabled" else "disabled");
-    try out.append(allocator, '}');
-    if (params.thinking_enabled) {
+    try out.append(allocator, ']');
+    const automatic_reasoning = params.thinking_enabled and std.mem.eql(u8, params.reasoning_effort, "auto");
+    if (!automatic_reasoning) {
+        try out.appendSlice(allocator, ",\"thinking\":{\"type\":");
+        try appendJsonString(allocator, &out, if (params.thinking_enabled) "enabled" else "disabled");
+        try out.append(allocator, '}');
+    }
+    if (params.max_tokens > 0) try out.print(allocator, ",\"max_tokens\":{d}", .{params.max_tokens});
+    if (params.thinking_enabled and !automatic_reasoning) {
         try out.appendSlice(allocator, ",\"reasoning_effort\":");
         try appendJsonString(allocator, &out, if (params.reasoning_effort.len > 0) params.reasoning_effort else "high");
     }
@@ -452,6 +629,8 @@ fn buildResponsesRequestJsonForMessages(
         try out.appendSlice(allocator, ",\"instructions\":");
         try appendJsonString(allocator, &out, params.system_prompt);
     }
+    // chatgpt.com/backend-api/codex/responses requires typed input items.
+    const codex_item = params.protocol == .codex;
     try out.appendSlice(allocator, ",\"input\":[");
     var wrote_item = false;
     for (messages) |msg| {
@@ -467,9 +646,9 @@ fn buildResponsesRequestJsonForMessages(
         if (msg.content.len > 0 or msg.hasImages()) {
             if (wrote_item) try out.append(allocator, ',');
             if (msg.hasImages()) {
-                try appendResponseUserImageMessage(allocator, &out, msg);
+                try appendResponseUserImageMessage(allocator, &out, msg, codex_item);
             } else {
-                try appendResponseMessage(allocator, &out, msg.role, msg.content);
+                try appendResponseMessage(allocator, &out, msg.role, msg.content, codex_item);
             }
             wrote_item = true;
         }
@@ -485,15 +664,22 @@ fn buildResponsesRequestJsonForMessages(
         }
     }
     try out.append(allocator, ']');
-    if (params.thinking_enabled and params.reasoning_effort.len > 0) {
+    if (params.thinking_enabled and params.reasoning_effort.len > 0 and !std.mem.eql(u8, params.reasoning_effort, "auto")) {
         try out.appendSlice(allocator, ",\"reasoning\":{\"effort\":");
         try appendJsonString(allocator, &out, params.reasoning_effort);
         try out.append(allocator, '}');
     }
+    // Native Codex subscriptions reject max_output_tokens; the generic Responses
+    // gateway accepts it and owns any downstream protocol conversion.
+    if (params.max_tokens > 0 and params.protocol != .codex) try out.print(allocator, ",\"max_output_tokens\":{d}", .{params.max_tokens});
+    // chatgpt.com/backend-api/codex/responses requires store:false and stream:true.
+    const wire_stream = params.stream or params.protocol == .codex;
     try out.appendSlice(allocator, ",\"stream\":");
-    try out.appendSlice(allocator, if (params.stream) "true" else "false");
+    try out.appendSlice(allocator, if (wire_stream) "true" else "false");
+    if (params.protocol == .codex) try out.appendSlice(allocator, ",\"store\":false");
     if (include_tools) {
         try appendResponseToolSchemas(allocator, &out, .{ .include_memory = params.memory_enabled, .toolset = params.toolset, .dynamic_tools = params.dynamic_tools, .mcp_tools = params.mcp_tools, .disabled_first_party_tools = params.disabled_first_party_tools });
+        if (params.protocol == .codex) try out.appendSlice(allocator, ",\"parallel_tool_calls\":true");
     }
     try out.append(allocator, '}');
 
@@ -598,7 +784,18 @@ fn appendAnthropicTools(allocator: std.mem.Allocator, out: *std.ArrayListUnmanag
     try out.append(allocator, ']');
 }
 
-fn appendResponseMessage(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), role: Role, content: []const u8) !void {
+fn appendResponseMessage(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), role: Role, content: []const u8, codex_item: bool) !void {
+    if (codex_item) {
+        const part = if (role == .assistant) "output_text" else "input_text";
+        try out.appendSlice(allocator, "{\"type\":\"message\",\"role\":");
+        try appendJsonString(allocator, out, role.apiName());
+        try out.appendSlice(allocator, ",\"content\":[{\"type\":\"");
+        try out.appendSlice(allocator, part);
+        try out.appendSlice(allocator, "\",\"text\":");
+        try appendJsonString(allocator, out, content);
+        try out.appendSlice(allocator, "}]}");
+        return;
+    }
     try out.appendSlice(allocator, "{\"role\":");
     try appendJsonString(allocator, out, role.apiName());
     try out.appendSlice(allocator, ",\"content\":");
@@ -664,8 +861,8 @@ fn appendAnthropicImageContent(allocator: std.mem.Allocator, out: *std.ArrayList
     try out.appendSlice(allocator, "]}");
 }
 
-fn appendResponseUserImageMessage(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), msg: RequestMessage) !void {
-    try out.appendSlice(allocator, "{\"role\":");
+fn appendResponseUserImageMessage(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), msg: RequestMessage, codex_item: bool) !void {
+    if (codex_item) try out.appendSlice(allocator, "{\"type\":\"message\",\"role\":") else try out.appendSlice(allocator, "{\"role\":");
     try appendJsonString(allocator, out, msg.role.apiName());
     try out.appendSlice(allocator, ",\"content\":[{\"type\":\"input_text\",\"text\":");
     try appendJsonString(allocator, out, msg.content);
@@ -743,6 +940,7 @@ pub fn builtinToolNameReserved(name: []const u8) bool {
         "subagent",
         "send_attachment",
         "get_system_time",
+        "password_input",
         "memory_save",
         "memory_recall",
         "memory_delete",
@@ -802,12 +1000,12 @@ fn forEachToolSpec(
     try Filtered.emitTool(ctx, opts, "terminal_focus", "Focus and activate an owned terminal surface in the visible WispTerm UI. Use this before ui_screenshot when the requested owned panel is not focused. This changes UI focus only; use terminal_select separately before terminal writes.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Owned surface id from terminal_list to focus in the visible UI.\"}}");
     try Filtered.emitTool(ctx, opts, "terminal_reconnect", "Reconnect an exited owned SSH terminal in place, preserving its tab, split, and ownership. The prior remote command outcome is unknown: do not automatically re-run it; wait and inspect the original surface with terminal_snapshot.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Owned exited SSH surface id from terminal_list.\"}}");
     try Filtered.emitTool(ctx, opts, platform_process.localCommandToolName(), platform_process.localCommandToolDescription(), "{\"command\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}");
-    try Filtered.emitTool(ctx, opts, "ssh_session_exec", "Run a POSIX shell command in the selected already-open SSH terminal surface. The surface_id must match the current terminal_select context. Use only when the surface is at a shell prompt and the command returns. Never use heredocs or multiline shell input to create or feed scripts; use write_file for the content, including large or temporary scripts, then run the file separately. For R, Python, Codex, Claude Code, other REPLs, or launching full-screen agent apps, use terminal_repl_exec.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Selected surface id from terminal_select.\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}");
+    try Filtered.emitTool(ctx, opts, "ssh_session_exec", "Run a POSIX shell command in the selected already-open SSH terminal surface. The surface_id must match the current terminal_select context. Use only when the surface is at a shell prompt and the command returns. Never use heredocs or multiline shell input to create or feed scripts; use write_file for the content, including large or temporary scripts, then run the file separately. For R, Python, Codex, Claude Code, Pi, other REPLs, or launching full-screen agent apps, use terminal_repl_exec.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Selected surface id from terminal_select.\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}");
     if (platform_pty_command.wslSessionToolsEnabled()) {
         try Filtered.emitTool(ctx, opts, platform_pty_command.wslSessionToolName(), platform_pty_command.wslSessionToolDescription(), platform_pty_command.wslSessionToolPropertiesJson());
     }
-    try Filtered.emitTool(ctx, opts, "terminal_repl_exec", "Send code or text to the selected already-open interactive REPL/app terminal without shell syntax. The surface_id must match the current terminal_select context. Use repl=r for R, repl=python for Python, repl=codex for Codex, repl=claude_code for Claude Code, or repl=plain for raw text input. For Codex and Claude Code, this waits until the app settles, requests approval/input, reports completion/failure, or reaches timeout_ms.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Selected surface id from terminal_select.\"},\"repl\":{\"type\":\"string\",\"description\":\"r, python, codex, claude_code, or plain\"},\"code\":{\"type\":\"string\",\"description\":\"Code or plain text to submit. To send a control key instead, set code to exactly one of <ctrl-c>, <ctrl-d>, <ctrl-u>, <esc>, <enter> — e.g. to interrupt a stuck command or leave a `>` continuation prompt.\"},\"timeout_ms\":{\"type\":\"integer\"}}");
-    try Filtered.emitTool(ctx, opts, "terminal_answer_prompt", "Answer a Claude Code or Codex confirmation/approval prompt in a terminal surface. Reads the on-screen options and sends the correct keystroke. Prefer this over terminal_repl_exec to confirm or reject an agent approval menu. Only acts when a prompt is awaiting input; otherwise it reports the screen and sends nothing.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Optional surface id; defaults to the focused terminal.\"},\"answer\":{\"type\":\"string\",\"description\":\"approve (the plain Yes), approve_all (Yes + allow all / don't ask again), reject (No / cancel), enter, esc, or an explicit option digit 1-9.\"}}");
+    try Filtered.emitTool(ctx, opts, "terminal_repl_exec", "Send code or text to the selected already-open interactive REPL/app terminal without shell syntax. The surface_id must match the current terminal_select context. Use repl=r for R, repl=python for Python, repl=codex for Codex, repl=claude_code for Claude Code, repl=pi for Pi, or repl=plain for raw text input. For Codex, Claude Code, and Pi, this waits until the app settles, requests approval/input, reports completion/failure, or reaches timeout_ms.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Selected surface id from terminal_select.\"},\"repl\":{\"type\":\"string\",\"description\":\"r, python, codex, claude_code, pi, or plain\"},\"code\":{\"type\":\"string\",\"description\":\"Code or plain text to submit. To send a control key instead, set code to exactly one of <ctrl-c>, <ctrl-d>, <ctrl-u>, <esc>, <enter> — e.g. to interrupt a stuck command or leave a `>` continuation prompt.\"},\"timeout_ms\":{\"type\":\"integer\"}}");
+    try Filtered.emitTool(ctx, opts, "terminal_answer_prompt", "Answer a Claude Code, Codex, or Pi confirmation/approval prompt in a terminal surface. Reads the on-screen options and sends the correct keystroke (digits for Claude Code/Codex menus, arrow keys + Enter for Pi selectors). Prefer this over terminal_repl_exec to confirm or reject an agent approval menu. Only acts when a prompt is awaiting input; otherwise it reports the screen and sends nothing.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Optional surface id; defaults to the focused terminal.\"},\"answer\":{\"type\":\"string\",\"description\":\"approve (the plain Yes), approve_all (Yes + allow all / don't ask again), reject (No / cancel), enter, esc, or an explicit option digit 1-9.\"}}");
     try Filtered.emitTool(ctx, opts, "ask_user", "Ask the user a single multiple-choice question and block until they answer. Use when you reach a genuine decision you should not guess (which target, which of several matches, a risky direction). Provide 2 or more options; the user may also type a custom free-text answer. Returns the user's choice. The question is shown as a card in the chat and, when the request came from WeChat, pushed there too.", "{\"question\":{\"type\":\"string\",\"description\":\"The question to ask. One sentence.\"},\"options\":{\"type\":\"array\",\"description\":\"Two or more answer options.\",\"items\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\",\"description\":\"Short option label.\"},\"description\":{\"type\":\"string\",\"description\":\"Optional one-line explanation of the option.\"}},\"required\":[\"label\"]}}}");
     try Filtered.emitToolWithRequired(ctx, opts, "continue_later", "Schedule this same Agent or Copilot session to continue later. Use when a terminal command, SSH command, Codex/Claude Code run, or REPL task is still running and immediate polling would waste tokens or risk duplicate side effects. At wake time WispTerm submits message back into this session; the message should inspect progress with terminal_snapshot before acting.", "{\"delay\":{\"type\":\"string\",\"description\":\"Required positive interval: integer plus s, m, h, or d, e.g. 30m, 2h, 1d.\"},\"message\":{\"type\":\"string\",\"description\":\"Optional follow-up prompt. Defaults to continuing the previous task and checking terminal_snapshot first.\"}}", &.{"delay"});
     try Filtered.emitTool(ctx, opts, "read_file", "Read a local, WSL, or SSH text file. Returns numbered lines. Set surface_id to an open terminal surface to read there; omitted surface_id follows the selected terminal context, or local when none is selected. Relative paths resolve against that surface cwd or the agent working directory.", "{\"path\":{\"type\":\"string\",\"description\":\"File path. Absolute, or relative to the selected surface cwd / working directory.\"},\"surface_id\":{\"type\":\"string\",\"description\":\"Optional terminal surface id (from terminal_list). Omit to use the selected terminal context, or local when none is selected.\"},\"offset\":{\"type\":\"integer\",\"description\":\"Optional 1-based first line to return.\"},\"limit\":{\"type\":\"integer\",\"description\":\"Optional maximum number of lines to return.\"}}");
@@ -815,7 +1013,7 @@ fn forEachToolSpec(
     try Filtered.emitToolWithRequired(ctx, opts, "transfer_between_contexts", "Transfer one exact file or directory between local disk and an SSH context. Use this for datasets and folders, including multi-GB trees. Never run scp, rsync, or ssh file copies through powershell_exec, shell_exec, or ssh_session_exec. source_context_id and destination_context_id are `local`, an open terminal surface_id from terminal_list, or a saved SSH profile name/host (for example CPU). SSH paths must be exact absolute or ~/ paths; local paths must be exact absolute paths. Globs, filesystem roots, '..', and existing destinations are rejected. Directories copy recursively via scp -r. For a local download, do not guess the destination — ask the user when destination_path is unspecified. copy_file is only for small artifacts such as chat attachments.", "{\"source_context_id\":{\"type\":\"string\",\"description\":\"`local`, an open terminal surface_id, or a saved SSH profile name/host.\"},\"source_path\":{\"type\":\"string\",\"description\":\"SSH: exact absolute or ~/ path. Local: exact existing absolute file or directory path. Globs are rejected.\"},\"destination_context_id\":{\"type\":\"string\",\"description\":\"`local` for a download, or an SSH surface_id/profile name for an upload.\"},\"destination_path\":{\"type\":\"string\",\"description\":\"SSH: exact absolute or ~/ path. Local: exact new absolute file or directory path. Do not guess it — ask the user when unspecified. Globs are rejected.\"}}", &.{ "source_context_id", "source_path", "destination_context_id" });
     try Filtered.emitTool(ctx, opts, "write_file", "Create or overwrite a local, WSL, or SSH text file with exact content. Always use this instead of a shell heredoc for multiline, large, or temporary scripts, even when the script will be deleted after execution. Shows a diff and (unless permission is full) asks for approval. Set surface_id to an open terminal surface to write there; omitted surface_id follows the selected terminal context, or local when none is selected. Relative paths resolve against that surface cwd or the agent working directory.", "{\"path\":{\"type\":\"string\",\"description\":\"File path. Absolute, or relative to the selected surface cwd / working directory.\"},\"content\":{\"type\":\"string\",\"description\":\"Full file content to write.\"},\"surface_id\":{\"type\":\"string\",\"description\":\"Optional terminal surface id. Omit to use the selected terminal context, or local when none is selected.\"}}");
     try Filtered.emitTool(ctx, opts, "edit_file", "Replace an exact unique string in a local, WSL, or SSH text file. old_string must match exactly and be unique unless replace_all is true. Shows a diff and (unless permission is full) asks for approval. Set surface_id to an open terminal surface to edit there; omitted surface_id follows the selected terminal context, or local when none is selected.", "{\"path\":{\"type\":\"string\",\"description\":\"File path. Absolute, or relative to the selected surface cwd / working directory.\"},\"old_string\":{\"type\":\"string\",\"description\":\"Exact text to replace. Must be unique unless replace_all is true.\"},\"new_string\":{\"type\":\"string\",\"description\":\"Replacement text. May be empty to delete.\"},\"replace_all\":{\"type\":\"boolean\",\"description\":\"Replace every occurrence instead of requiring a unique match.\"},\"surface_id\":{\"type\":\"string\",\"description\":\"Optional terminal surface id. Omit to use the selected terminal context, or local when none is selected.\"}}");
-    try Filtered.emitTool(ctx, opts, "ssh_profile_save", "Create or update a saved WispTerm SSH server profile. Use before ssh_profile_connect when the user provides SSH host, user, port, password, key, or credential-chain details.", "{\"name\":{\"type\":\"string\",\"description\":\"Optional profile name; defaults to host for new profiles.\"},\"host\":{\"type\":\"string\",\"description\":\"SSH host name or IP address.\"},\"user\":{\"type\":\"string\",\"description\":\"SSH username.\"},\"password\":{\"type\":\"string\",\"description\":\"Optional SSH password. Use only with auth_method=password; omitted password preserves an existing password when updating an existing password profile.\"},\"port\":{\"type\":\"string\",\"description\":\"Optional SSH port; defaults to 22 for new profiles.\"},\"proxy_jump\":{\"type\":\"string\",\"description\":\"Optional OpenSSH ProxyJump/jump host: [user@]host[:port], comma-separated for multi-hop. Omit for a direct connection.\"},\"auth_method\":{\"type\":\"string\",\"description\":\"Optional SSH auth method: password, key, or credentials. credentials means use OpenSSH config/default keys/agent/platform credentials.\"},\"identity_file\":{\"type\":\"string\",\"description\":\"Optional private key path for auth_method=key, equivalent to ssh -i <path>.\"}}");
+    try Filtered.emitTool(ctx, opts, "ssh_profile_save", "Create or update a saved WispTerm SSH server profile. Use before ssh_profile_connect when the user provides SSH host, user, port, password, key, or credential-chain details.", "{\"name\":{\"type\":\"string\",\"description\":\"Optional profile name; defaults to host for new profiles.\"},\"host\":{\"type\":\"string\",\"description\":\"SSH host name or IP address.\"},\"user\":{\"type\":\"string\",\"description\":\"SSH username.\"},\"password\":{\"type\":\"string\",\"description\":\"Optional SSH password. Use only with auth_method=password; omitted password preserves an existing password when updating an existing password profile.\"},\"port\":{\"type\":\"string\",\"description\":\"Optional SSH port; defaults to 22 for new profiles.\"},\"proxy_jump\":{\"type\":\"string\",\"description\":\"Optional OpenSSH ProxyJump/jump host: [user@]host[:port], comma-separated for multi-hop. Omit for a direct connection.\"},\"proxy_type\":{\"type\":\"string\",\"description\":\"Session network proxy: none, socks5, or http (CONNECT). Omit to preserve the route; cannot combine with proxy_jump.\"},\"proxy_host\":{\"type\":\"string\",\"description\":\"Proxy host without URL scheme, e.g. 127.0.0.1.\"},\"proxy_port\":{\"type\":\"string\",\"description\":\"Proxy TCP port, e.g. 7897. This is not the target SSH port.\"},\"auth_method\":{\"type\":\"string\",\"description\":\"Optional SSH auth method: password, key, or credentials. credentials means use OpenSSH config/default keys/agent/platform credentials.\"},\"identity_file\":{\"type\":\"string\",\"description\":\"Optional private key path for auth_method=key, equivalent to ssh -i <path>.\"}}");
     try Filtered.emitTool(ctx, opts, "ssh_profile_connect", "Create a new Agent-owned tab connected to a saved WispTerm SSH server profile by its profile name or host.", "{\"profile_name\":{\"type\":\"string\",\"description\":\"Saved SSH profile name or host to open in a new tab.\"}}");
     try Filtered.emitTool(ctx, opts, "tab_new", platform_pty_command.tabNewToolDescription(), platform_pty_command.tabNewToolPropertiesJson());
     try Filtered.emitTool(ctx, opts, "tab_close", "Close an Agent-owned terminal tab by tab_number (the one-based `tab` shown by terminal_list), surface_id, title, or the active terminal tab when no selector is provided. Cannot close another Agent's or the AI chat tab.", "{\"tab_number\":{\"type\":\"integer\",\"description\":\"One-based owned UI tab number — the `tab` value shown by terminal_list.\"},\"tab_index\":{\"type\":\"integer\",\"description\":\"Zero-based tab index (tab_number minus one). Prefer tab_number.\"},\"surface_id\":{\"type\":\"string\",\"description\":\"Owned surface id from terminal_list.\"},\"title\":{\"type\":\"string\",\"description\":\"Owned terminal tab title to close, such as CPU2.\"}}");
@@ -825,6 +1023,7 @@ fn forEachToolSpec(
     try Filtered.emitTool(ctx, opts, "mcp_activate", "Activate one of the user's configured MCP servers so its tools become callable in this conversation. Inactive servers are listed in the system prompt. If the server was never discovered, this connects to it once to list its tools. Call this before using any tool that belongs to an inactive MCP server.", "{\"server\":{\"type\":\"string\",\"description\":\"MCP server name, as listed in the system prompt or by mcp_config action=list.\"}}");
     try Filtered.emitTool(ctx, opts, "wispterm_config", "List or configure WispTerm's main config file. Use action=list with optional query to find editable keys; action=set with key/value to update one known single-value config key; action=remove with key to reset that key to its built-in default. The tool validates booleans, numbers, enums, colors, times, and ports before writing. Repeatable directives such as keybind, palette, and config-file are intentionally not edited by this tool. To include remote Claude Code and Codex histories, set memory-digest-scan-remote=true. Changes are saved to the main config file and applied through normal hot-reload.", "{\"action\":{\"type\":\"string\",\"description\":\"One of: list (default), set, remove.\"},\"query\":{\"type\":\"string\",\"description\":\"Optional filter for action=list, e.g. memory, remote, font.\"},\"key\":{\"type\":\"string\",\"description\":\"Known single-value WispTerm config key, e.g. font-size, theme, ai-agent-permission, remote-enabled, memory-digest-scan-remote.\"},\"value\":{\"type\":\"string\",\"description\":\"Value for action=set. Use the type shown by action=list.\"}}");
     try Filtered.emitTool(ctx, opts, "get_system_time", "Read WispTerm's current local system time on demand. Use this before resolving today, yesterday, or a month/day without a year, especially before memory_search. Do not guess the current date. The result includes a numeric UTC offset.", "{}");
+    try Filtered.emitToolWithRequired(ctx, opts, "password_input", "Type a password from the user's encrypted WispTerm password store (Command Center > Password Store) into a terminal's password prompt, for sudo, su, ssh, or a database login. You never see the password: WispTerm types it after the user approves, presses Enter, and returns the screen with the password masked. Start the command that asks for the password first (e.g. terminal_repl_exec repl=plain code=\"sudo -v\"), then call this while its prompt is the last line on screen; it refuses to type anywhere else. Call without name to list the available names with their username and note. Never ask the user to paste a stored password into the chat.", "{\"name\":{\"type\":\"string\",\"description\":\"Entry name in the store, e.g. root or mysql. Omit to list available names.\"},\"surface_id\":{\"type\":\"string\",\"description\":\"Terminal surface showing the password prompt.\"},\"timeout_ms\":{\"type\":\"integer\",\"description\":\"Optional wait for the screen to settle after Enter.\"}}", &.{});
     try Filtered.emitTool(ctx, opts, "websearch", "Search the web for current information via Jina. Returns the top results with titles, URLs, and page content. Use when you need facts newer than your training or to look something up online.", "{\"query\":{\"type\":\"string\",\"description\":\"The search query.\"},\"max_results\":{\"type\":\"integer\",\"description\":\"Optional max number of results (default 10, max 20).\"}}");
     try Filtered.emitTool(ctx, opts, "webread", "Read a web page or local file into clean markdown via Jina Reader. Pass an http(s):// URL to fetch a page, or a local file path (PDF, Word, Excel, PowerPoint) to upload and convert it. Use when you need the full content of one source, not a search.", "{\"url\":{\"type\":\"string\",\"description\":\"An http(s):// URL, or a local file path to upload.\"}}");
     try Filtered.emitTool(ctx, opts, "pubmed", "Search PubMed (NCBI) for biomedical and life-sciences literature and return matching articles with title, authors, journal, year, PMID, DOI, and abstract. Before calling, decompose the user's academic question into English keywords joined with PubMed boolean operators (AND/OR), then pass that as `query`. Use for scholarly/medical literature questions, not general web search.", "{\"query\":{\"type\":\"string\",\"description\":\"PubMed query: English keywords joined with AND/OR, e.g. metformin AND type 2 diabetes AND cardiovascular events.\"},\"max_results\":{\"type\":\"integer\",\"description\":\"Optional max number of articles (default 10, max 20).\"}}");
@@ -970,6 +1169,11 @@ fn appendResponseToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUn
 // ---------------------------------------------------------------------------
 
 pub fn parseApiResponse(allocator: std.mem.Allocator, body: []const u8, protocol: ApiProtocol) !ApiResult {
+    // Codex subscription calls are streamed even when the caller asked for one result.
+    const trimmed_lead = std.mem.trim(u8, body, " \t\r\n");
+    if (std.mem.startsWith(u8, trimmed_lead, "data:") or std.mem.startsWith(u8, trimmed_lead, "event:")) {
+        return parseApiStreamResponse(allocator, trimmed_lead);
+    }
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
         const trimmed = std.mem.trim(u8, body, " \t\r\n");
         if (trimmed.len == 0) return error.EmptyResponse;
@@ -982,7 +1186,7 @@ pub fn parseApiResponse(allocator: std.mem.Allocator, body: []const u8, protocol
     const obj = root.object;
 
     if (try parseApiErrorResult(allocator, root)) |result| return result;
-    if (protocol == .anthropic) return parseAnthropicResponse(allocator, root);
+    if (protocol == .anthropic or protocol == .kimi) return parseAnthropicResponse(allocator, root);
     if (obj.get("choices") != null) return parseChatCompletionsResponse(allocator, root);
     if (obj.get("output") != null or obj.get("output_text") != null) return parseResponsesResponse(allocator, root);
     return error.MissingChoices;
@@ -1506,6 +1710,28 @@ test "buildRequestJson chat_completions omits reasoning_effort when thinking dis
     try std.testing.expect(std.mem.indexOf(u8, json, "\"reasoning_effort\"") == null);
 }
 
+test "opencode go request json follows the model endpoint" {
+    const a = std.testing.allocator;
+    var msgs = [_]RequestMessage{.{ .role = .user, .content = @constCast("hello") }};
+    const chat = RequestParams{ .model = "glm-5.3-flash", .system_prompt = "sys", .protocol = .opencode_go, .thinking_enabled = false, .reasoning_effort = "", .stream = false };
+    const chat_json = try buildRequestJson(a, chat, &msgs, false);
+    defer a.free(chat_json);
+    try std.testing.expect(std.mem.indexOf(u8, chat_json, "\"messages\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, chat_json, "\"store\"") == null);
+
+    const responses = RequestParams{ .model = "grok-4.7", .system_prompt = "sys", .protocol = .opencode_go, .thinking_enabled = false, .reasoning_effort = "", .stream = false };
+    const responses_json = try buildRequestJson(a, responses, &msgs, false);
+    defer a.free(responses_json);
+    try std.testing.expect(std.mem.indexOf(u8, responses_json, "\"input\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, responses_json, "\"store\"") == null);
+
+    const messages = RequestParams{ .model = "minimax-m3", .system_prompt = "sys", .protocol = .opencode_go, .thinking_enabled = false, .reasoning_effort = "", .stream = false };
+    const messages_json = try buildRequestJson(a, messages, &msgs, false);
+    defer a.free(messages_json);
+    try std.testing.expect(std.mem.indexOf(u8, messages_json, "\"max_tokens\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, messages_json, "\"messages\":[") != null);
+}
+
 test "buildRequestJson responses uses input + instructions" {
     const a = std.testing.allocator;
     var msgs = [_]RequestMessage{.{ .role = .user, .content = @constCast("hi") }};
@@ -1514,6 +1740,27 @@ test "buildRequestJson responses uses input + instructions" {
     defer a.free(json);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"instructions\":") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"input\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"store\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"stream\":false") != null);
+}
+
+test "codex subscription request forces store false and a streamed typed input" {
+    const a = std.testing.allocator;
+    var calls = [_]ToolCall{.{ .id = @constCast("call_1"), .name = @constCast("terminal_list"), .arguments = @constCast("{}") }};
+    var msgs = [_]RequestMessage{
+        .{ .role = .user, .content = @constCast("hello") },
+        .{ .role = .assistant, .content = @constCast("checking"), .tool_calls = &calls },
+    };
+    const params = RequestParams{ .model = "gpt-5.4", .system_prompt = "sys", .protocol = .codex, .thinking_enabled = false, .reasoning_effort = "", .stream = false };
+    const json = try buildRequestJson(a, params, &msgs, true);
+    defer a.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"store\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"stream\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"stream\":false") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hello\"}]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"type\":\"output_text\",\"text\":\"checking\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"type\":\"function_call\",\"call_id\":\"call_1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"parallel_tool_calls\":true") != null);
 }
 
 test "parseApiResponse reads chat_completions content + usage" {
@@ -1583,6 +1830,13 @@ test "isDeepSeekBaseUrl" {
     try std.testing.expect(!isDeepSeekBaseUrl("https://api.openai.com/v1"));
 }
 
+test "defaultVisionForModel turns vision on only for image-capable models" {
+    try std.testing.expectEqualStrings("on", defaultVisionForModel("deepseek-flash"));
+    try std.testing.expectEqualStrings(DEFAULT_VISION, defaultVisionForModel("deepseek-v4-pro"));
+    try std.testing.expectEqualStrings(DEFAULT_VISION, defaultVisionForModel("gpt-5.4"));
+    try std.testing.expectEqualStrings(DEFAULT_VISION, defaultVisionForModel(""));
+}
+
 test "isAnthropicBaseUrl detects the anthropic api host" {
     try std.testing.expect(isAnthropicBaseUrl("https://api.anthropic.com"));
     try std.testing.expect(!isAnthropicBaseUrl("https://api.openai.com"));
@@ -1641,6 +1895,7 @@ test "terminal_repl_exec schema documents control keys" {
     // `<`/`>` escaping the JSON emitter might apply.
     try std.testing.expect(std.mem.indexOf(u8, json, "ctrl-c") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "ctrl-u") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "Pi") != null);
 }
 
 test "parseApiResponse reads responses-protocol output text" {
@@ -2036,6 +2291,11 @@ pub fn parseApiStreamResponse(allocator: std.mem.Allocator, body: []const u8) !A
     errdefer content.deinit(allocator);
     var reasoning: std.ArrayListUnmanaged(u8) = .empty;
     errdefer reasoning.deinit(allocator);
+    var tool_calls: ?[]ToolCall = null;
+    errdefer if (tool_calls) |calls| {
+        for (calls) |call| call.deinit(allocator);
+        allocator.free(calls);
+    };
     var usage: ?ApiUsage = null;
 
     var lines = std.mem.splitScalar(u8, body, '\n');
@@ -2072,11 +2332,12 @@ pub fn parseApiStreamResponse(allocator: std.mem.Allocator, body: []const u8) !A
                 }
                 continue;
             }
-            if (std.mem.eql(u8, event_type, "response.completed")) {
+            if (std.mem.eql(u8, event_type, "response.completed") or std.mem.eql(u8, event_type, "response.incomplete")) {
                 if (obj.get("response")) |response_value| {
                     if (parseApiUsage(response_value)) |u| usage = u;
                     if (content.items.len == 0) try appendResponsesOutputText(allocator, &content, response_value);
                     if (reasoning.items.len == 0) try appendResponsesReasoningText(allocator, &reasoning, response_value);
+                    if (tool_calls == null) tool_calls = try parseResponsesToolCalls(allocator, response_value);
                 }
                 break;
             }
@@ -2086,7 +2347,7 @@ pub fn parseApiStreamResponse(allocator: std.mem.Allocator, body: []const u8) !A
                         if (try parseApiErrorResult(allocator, response_value)) |result| return result;
                     }
                 }
-                return ApiResult{ .content = try allocator.dupe(u8, "API returned an error") };
+                return ApiResult{ .content = try allocator.dupe(u8, "API returned an error"), .api_error = true };
             }
         }
 
@@ -2109,15 +2370,21 @@ pub fn parseApiStreamResponse(allocator: std.mem.Allocator, body: []const u8) !A
         }
     }
 
-    if (content.items.len == 0 and reasoning.items.len == 0) {
+    if (content.items.len == 0 and reasoning.items.len == 0 and tool_calls == null) {
         const trimmed = std.mem.trim(u8, body, " \t\r\n");
         if (trimmed.len == 0) return error.EmptyResponse;
         return ApiResult{ .content = try allocator.dupe(u8, trimmed) };
     }
 
+    const content_slice = try content.toOwnedSlice(allocator);
+    errdefer allocator.free(content_slice);
+    const reasoning_slice = if (reasoning.items.len > 0) try reasoning.toOwnedSlice(allocator) else null;
+    const calls = tool_calls;
+    tool_calls = null;
     return .{
-        .content = try content.toOwnedSlice(allocator),
-        .reasoning = if (reasoning.items.len > 0) try reasoning.toOwnedSlice(allocator) else null,
+        .content = content_slice,
+        .reasoning = reasoning_slice,
+        .tool_calls = calls,
         .usage = usage,
     };
 }
@@ -2141,6 +2408,22 @@ test "ai chat stream response aggregates content and reasoning chunks" {
     try std.testing.expectEqual(@as(u64, 46), result.usage.?.total_tokens);
     try std.testing.expectEqual(@as(u64, 5), result.usage.?.prompt_cache_hit_tokens);
     try std.testing.expectEqual(@as(u64, 7), result.usage.?.prompt_cache_miss_tokens);
+}
+
+test "codex sse response keeps text and function calls from response.completed" {
+    const allocator = std.testing.allocator;
+    const body =
+        "event: response.completed\n" ++
+        "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":4,\"output_tokens\":2,\"total_tokens\":6},\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]},{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"terminal_list\",\"arguments\":\"{}\"}]}}\n\n";
+    var result = try parseApiResponse(allocator, body, .codex);
+    defer result.deinit(allocator);
+    try std.testing.expectEqualStrings("hi", result.content);
+    try std.testing.expect(result.tool_calls != null);
+    try std.testing.expectEqualStrings("terminal_list", result.tool_calls.?[0].name);
+    try std.testing.expectEqualStrings("call_1", result.tool_calls.?[0].id);
+    try std.testing.expectEqualStrings("{}", result.tool_calls.?[0].arguments);
+    try std.testing.expect(result.usage != null);
+    try std.testing.expectEqual(@as(u64, 6), result.usage.?.total_tokens);
 }
 
 test "ai chat Responses API stream aggregates output text and usage" {
@@ -2327,4 +2610,30 @@ test "subagent toolset gating applies to all three protocol emitters" {
     try std.testing.expect(std.mem.indexOf(u8, anthropic_out.items, "\"name\":\"subagent\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, anthropic_out.items, "\"name\":\"continue_later\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, anthropic_out.items, "\"write_file\"") == null);
+}
+
+test "request limits are emitted for chat and Responses without confusing context capacity" {
+    const a = std.testing.allocator;
+    for ([_]ApiProtocol{ .chat_completions, .responses, .codex }) |api| {
+        const json = try buildRequestJson(a, .{ .model = "m", .system_prompt = "", .protocol = api, .thinking_enabled = true, .reasoning_effort = "high", .stream = false, .max_tokens = 32768 }, &.{}, false);
+        defer a.free(json);
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, json, .{});
+        defer parsed.deinit();
+        const o = parsed.value.object;
+        if (api != .codex) {
+            try std.testing.expectEqual(@as(i64, 32768), o.get(if (api == .responses) "max_output_tokens" else "max_tokens").?.integer);
+        } else try std.testing.expect(o.get("max_output_tokens") == null);
+        try std.testing.expect(o.get("context_window") == null);
+    }
+}
+
+test "automatic gateway reasoning leaves the provider defaults untouched" {
+    const a = std.testing.allocator;
+    for ([_]ApiProtocol{ .chat_completions, .responses }) |api| {
+        const json = try buildRequestJson(a, .{ .model = "m", .system_prompt = "", .protocol = api, .thinking_enabled = true, .reasoning_effort = "auto", .stream = false }, &.{}, false);
+        defer a.free(json);
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, json, .{});
+        defer parsed.deinit();
+        for ([_][]const u8{ "thinking", "reasoning", "reasoning_effort" }) |key| try std.testing.expect(parsed.value.object.get(key) == null);
+    }
 }

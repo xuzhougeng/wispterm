@@ -8,6 +8,7 @@ const ai_chat_protocol = @import("protocol.zig");
 const ai_agent_access = @import("../../agent/access.zig");
 const terminal_lease = @import("../../agent/terminal_lease.zig");
 const ssh_connection = @import("../../ssh/connection.zig");
+const secret_redact = @import("../../credential/redact.zig");
 pub const SshConnection = ssh_connection.SshConnection;
 
 const DEFAULT_AGENT_TIMEOUT_MS: u32 = 60_000;
@@ -91,6 +92,13 @@ pub const ToolSurface = struct {
         allocator.free(self.title);
         allocator.free(self.cwd);
         allocator.free(self.snapshot);
+    }
+
+    /// The agent detection captured with this snapshot (UI thread, request
+    /// start). Tools that wait use `ToolHost.surfaceAgentState` for the live
+    /// value when the host provides it.
+    pub fn liveDetection(self: ToolSurface) agent_detector.Detection {
+        return .{ .app = self.agent_app, .state = self.agent_state, .confidence = self.agent_confidence };
     }
 
     /// The request snapshot is captured on the UI thread. Remove data a
@@ -249,6 +257,9 @@ pub const SshProfileSaveArgs = struct {
     password: []const u8 = "",
     port: []const u8 = "",
     proxy_jump: []const u8 = "",
+    proxy_type: []const u8 = "",
+    proxy_host: []const u8 = "",
+    proxy_port: []const u8 = "",
     auth_method: []const u8 = "",
     identity_file: []const u8 = "",
 };
@@ -301,6 +312,10 @@ pub const ToolHost = struct {
     /// Kill a surface's child process (ACP `terminal/kill`). Only the real
     /// AppWindow host sets this.
     killSurfaceChild: ?*const fn (*anyopaque, []const u8, *anyopaque) anyerror!void = null,
+    /// The surface's live agent detection (hook marker or screen detection),
+    /// readable from the tool worker thread. Only the real AppWindow host sets
+    /// this; without it, agent-app waits fall back to screen-quiet heuristics.
+    surfaceAgentState: ?*const fn (*anyopaque, []const u8, *anyopaque) ?agent_detector.Detection = null,
 };
 
 pub const OwnedReplyContext = struct {
@@ -361,6 +376,8 @@ pub const QuestionOption = struct {
 pub const QuestionView = struct {
     question: []const u8,
     options: []const QuestionOption,
+    scroll_offset: f32 = 0,
+    generation: u64 = 0,
 };
 
 /// Outcome of a blocking `askUser` call.
@@ -396,6 +413,9 @@ pub const ToolContext = struct {
     schedule_continuation: ?ScheduleContinuationFn = null,
     write_context_surface_id: [64]u8 = undefined,
     write_context_surface_id_len: usize = 0,
+    /// Conversation-owned filter that masks secrets `password_input` typed in
+    /// this conversation out of every later tool result. Null in test contexts.
+    secret_filter: ?*secret_redact.Filter = null,
 
     approve: *const fn (ctx: *anyopaque, tool: []const u8, command: []const u8, reason: []const u8) bool,
     cancelled: *const fn (ctx: *anyopaque) bool,

@@ -151,7 +151,7 @@ if (Test-Path -LiteralPath $destExe) {
 
 $payloads = @(
     'wispterm.exe'
-    'wispterm-ssh-askpass.exe'
+    'wispterm-ssh-askpass.exe', 'wispterm-ssh-proxy.exe'
     'version.txt'
     'WebView2Loader.dll'
     'conpty.dll'

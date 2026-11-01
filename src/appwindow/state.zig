@@ -10,6 +10,7 @@ pub const State = struct {
     window: WindowState = .{},
     remote: RemoteState = .{},
     ssh_latency: @import("../ssh/latency.zig").Monitor = .{},
+    ai_stream: @import("ai_stream_gate.zig").State = .{},
 };
 
 test "appwindow state aggregates window and remote state" {

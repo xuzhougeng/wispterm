@@ -127,6 +127,7 @@ extern fn wispterm_macos_window_pop_key_event(handle: NativeHandle, out: *RawKey
 extern fn wispterm_macos_window_pop_char_event(handle: NativeHandle, out: *RawCharEvent) bool;
 extern fn wispterm_macos_window_pop_mouse_button_event(handle: NativeHandle, out: *RawMouseButtonEvent) bool;
 extern fn wispterm_macos_window_pop_mouse_move_event(handle: NativeHandle, out: *RawMouseMoveEvent) bool;
+extern fn wispterm_macos_window_pointer_outside(handle: NativeHandle) bool;
 extern fn wispterm_macos_window_pop_mouse_wheel_event(handle: NativeHandle, out: *RawMouseWheelEvent) bool;
 extern fn wispterm_macos_window_pop_message_event(handle: NativeHandle, out: *RawMessageEvent) bool;
 extern fn wispterm_macos_window_pop_file_drop_event(handle: NativeHandle, out: *RawFileDropEvent) bool;
@@ -134,13 +135,20 @@ extern fn wispterm_macos_window_copy_ime_preedit(handle: NativeHandle, out: [*]u
 extern fn wispterm_macos_window_set_ime_caret(handle: NativeHandle, x: i32, y: i32, height: i32) void;
 extern fn wispterm_macos_window_test_push_key(handle: NativeHandle, key_code: usize, ctrl: bool, shift: bool, alt: bool) void;
 extern fn wispterm_macos_window_test_map_key_code(native_key_code: u16, characters_utf8: ?[*:0]const u8) usize;
+extern fn wispterm_macos_window_test_perform_key_equivalent(handle: NativeHandle, characters_utf8: [*:0]const u8, native_key_code: u16, shift: bool, alt: bool) bool;
 extern fn wispterm_macos_window_test_push_char(handle: NativeHandle, codepoint: u32, ctrl: bool, shift: bool, alt: bool) void;
 extern fn wispterm_macos_window_test_insert_text_after_key(handle: NativeHandle, codepoint: u32, ctrl: bool, shift: bool, alt: bool) void;
 extern fn wispterm_macos_window_test_push_mouse_button(handle: NativeHandle, button: u8, action: u8, x: i32, y: i32, ctrl: bool, shift: bool, alt: bool) void;
 extern fn wispterm_macos_window_test_push_mouse_move(handle: NativeHandle, x: i32, y: i32, ctrl: bool, shift: bool, alt: bool) void;
+extern fn wispterm_macos_window_test_set_pointer_outside(handle: NativeHandle, outside: bool) void;
 extern fn wispterm_macos_window_test_push_mouse_wheel(handle: NativeHandle, delta: i16, xpos: i32, ypos: i32, ctrl: bool, shift: bool, alt: bool) void;
 extern fn wispterm_macos_window_test_set_ime_preedit(handle: NativeHandle, text: [*:0]const u8) void;
+extern fn wispterm_macos_window_test_set_marked_text(handle: NativeHandle, text: [*:0]const u8, selection_location: u64, selection_length: u64) void;
+extern fn wispterm_macos_window_test_insert_text(handle: NativeHandle, text: [*:0]const u8) void;
+extern fn wispterm_macos_window_test_selected_range(handle: NativeHandle, location: *u64, length: *u64) void;
+extern fn wispterm_macos_window_test_marked_range(handle: NativeHandle, location: *u64, length: *u64) void;
 extern fn wispterm_macos_window_test_push_file_drop(handle: NativeHandle, path: [*:0]const u8, x: i32, y: i32) void;
+extern fn wispterm_macos_test_autorelease_into_caller_pool(deallocated: *bool) void;
 
 var global_window: ?*Window = null;
 var test_message_seen: bool = false;
@@ -164,8 +172,9 @@ pub const Window = struct {
     titlebar_height: i32 = platform_window.titlebar_height,
     sidebar_width: i32 = 0,
     tab_count: usize = 0,
-    mouse_x: i32 = 0,
-    mouse_y: i32 = 0,
+    /// -1 until the first pointer event, so nothing renders hovered at launch.
+    mouse_x: i32 = -1,
+    mouse_y: i32 = -1,
     hovered_button: platform_window.CaptionButton = .none,
     close_btn_x_start: [256]i32 = [_]i32{0} ** 256,
     close_btn_x_end: [256]i32 = [_]i32{0} ** 256,
@@ -186,6 +195,7 @@ pub const Window = struct {
     on_file_drop: ?FileDropHandler = null,
     ime_preedit_buf: [1024]u8 = undefined,
     ime_preedit_len: usize = 0,
+    ime_preedit_changed: bool = false,
     key_events: RingBuffer(platform_input.KeyEvent, 64) = .{},
     char_events: RingBuffer(platform_input.CharEvent, 64) = .{},
     mouse_button_events: RingBuffer(platform_input.MouseButtonEvent, 32) = .{},
@@ -252,6 +262,16 @@ pub const Window = struct {
 
     pub fn imePreeditText(self: *const Window) []const u8 {
         return self.ime_preedit_buf[0..self.ime_preedit_len];
+    }
+
+    /// One-shot: true when the marked text changed since the last call. The
+    /// preedit is painted by the render loop, and an update often comes with
+    /// no key event (dictation streams interim text, and an active IME
+    /// composition swallows the raw keys), so the loop must repaint for it.
+    pub fn takeImePreeditChanged(self: *Window) bool {
+        const changed = self.ime_preedit_changed;
+        self.ime_preedit_changed = false;
+        return changed;
     }
 
     pub fn clearTransientInputQueues(self: *Window) void {
@@ -335,6 +355,12 @@ pub const Window = struct {
                 .super = move.super,
             });
         }
+        // Mouse-moved events stop at the window edge; the tracking-area exit
+        // clears the last in-window position so hover state does not stick.
+        if (wispterm_macos_window_pointer_outside(self.hwnd)) {
+            self.mouse_x = -1;
+            self.mouse_y = -1;
+        }
 
         var wheel: RawMouseWheelEvent = undefined;
         while (wispterm_macos_window_pop_mouse_wheel_event(self.hwnd, &wheel)) {
@@ -348,10 +374,16 @@ pub const Window = struct {
             });
         }
 
-        self.ime_preedit_len = @min(
-            wispterm_macos_window_copy_ime_preedit(self.hwnd, self.ime_preedit_buf[0..].ptr, self.ime_preedit_buf.len),
-            self.ime_preedit_buf.len,
+        var preedit: [1024]u8 = undefined;
+        const preedit_len = @min(
+            wispterm_macos_window_copy_ime_preedit(self.hwnd, preedit[0..].ptr, preedit.len),
+            preedit.len,
         );
+        if (!std.mem.eql(u8, preedit[0..preedit_len], self.imePreeditText())) {
+            @memcpy(self.ime_preedit_buf[0..preedit_len], preedit[0..preedit_len]);
+            self.ime_preedit_len = preedit_len;
+            self.ime_preedit_changed = true;
+        }
         self.ime_composing = self.ime_preedit_len > 0;
     }
 
@@ -417,6 +449,35 @@ test "macOS backend drains translated key events" {
     try std.testing.expect(ev.alt);
 }
 
+fn ignoreMenuAction(_: @import("../keybind.zig").Action) void {}
+
+// ⌘Q used to do nothing while a terminal window had focus: the content view
+// claimed every ⌘ key for the keybinds, so AppKit never offered it to the main
+// menu's Quit item. WispTermAppDelegate answers terminate: with Cancel and
+// closes the windows itself, so the real Quit path is safe to drive here.
+test "macOS ⌘Q in a focused window quits through the menu; ⌘C still reaches the keybinds" {
+    const title = std.unicode.utf8ToUtf16LeStringLiteral("WispTerm Quit Shortcut");
+    var window = try Window.init(320, 180, title, null, null, false);
+    defer window.deinit();
+    @import("menu_macos.zig").install(ignoreMenuAction);
+    _ = window.pollEvents();
+    _ = window_macos.consumeQuitRequest();
+
+    // kVK_ANSI_C = 8: Copy is a WispTerm keybind, so it is pushed as a key event.
+    try std.testing.expect(wispterm_macos_window_test_perform_key_equivalent(window.hwnd, "c", 8, false, false));
+    try std.testing.expect(window.pollEvents());
+    const copy = window.key_events.pop() orelse return error.ExpectedKeyEvent;
+    try std.testing.expectEqual(@as(usize, 'C'), copy.key_code);
+    try std.testing.expect(copy.super);
+    try std.testing.expect(!window_macos.consumeQuitRequest());
+
+    // kVK_ANSI_Q = 12: Quit runs terminate:, which closes our window instead.
+    try std.testing.expect(wispterm_macos_window_test_perform_key_equivalent(window.hwnd, "q", 12, false, false));
+    try std.testing.expect(window_macos.consumeQuitRequest());
+    try std.testing.expect(!window.pollEvents());
+    try std.testing.expect(window.key_events.pop() == null);
+}
+
 test "macOS backend normalizes control-modified shortcut key codes" {
     const ctrl_p = [_:0]u8{0x10};
     try std.testing.expectEqual(@as(usize, 'P'), wispterm_macos_window_test_map_key_code(35, &ctrl_p));
@@ -448,6 +509,21 @@ test "macOS backend normalizes control-modified shortcut key codes" {
     try std.testing.expectEqual(@as(usize, 0xBA), wispterm_macos_window_test_map_key_code(41, ";"));
     try std.testing.expectEqual(@as(usize, 0xDC), wispterm_macos_window_test_map_key_code(42, "\\"));
     try std.testing.expectEqual(@as(usize, 0xBF), wispterm_macos_window_test_map_key_code(44, "/"));
+}
+
+test "macOS backend maps F2 to the shared function-key code" {
+    // kVK_F2 is 120. charactersIgnoringModifiers is NSF2FunctionKey (U+F705).
+    const nsf2 = "\u{F705}";
+    try std.testing.expectEqual(
+        @as(usize, platform_input.key_f2),
+        wispterm_macos_window_test_map_key_code(120, nsf2),
+    );
+    try std.testing.expectEqual(
+        @as(usize, platform_input.key_f2),
+        wispterm_macos_window_test_map_key_code(120, null),
+    );
+    try std.testing.expectEqual(@as(usize, platform_input.key_f1), wispterm_macos_window_test_map_key_code(122, null));
+    try std.testing.expectEqual(@as(usize, platform_input.key_f12), wispterm_macos_window_test_map_key_code(111, null));
 }
 
 test "macOS backend maps keypad Enter to normal Enter" {
@@ -502,6 +578,28 @@ test "macOS backend drains text, mouse, wheel, and IME preedit events" {
     try std.testing.expectEqualStrings("zhong", window.imePreeditText());
 }
 
+test "macOS backend clears the pointer position when it leaves the view" {
+    const title = std.unicode.utf8ToUtf16LeStringLiteral("WispTerm Pointer Exit Smoke");
+    var window = try Window.init(320, 180, title, null, null, false);
+    defer window.deinit();
+
+    try std.testing.expectEqual(@as(i32, -1), window.mouse_x);
+    wispterm_macos_window_test_push_mouse_move(window.hwnd, 30, 40, false, false, false);
+    _ = window.pollEvents();
+    try std.testing.expectEqual(@as(i32, 30), window.mouse_x);
+    try std.testing.expectEqual(@as(i32, 40), window.mouse_y);
+
+    wispterm_macos_window_test_set_pointer_outside(window.hwnd, true);
+    _ = window.pollEvents();
+    try std.testing.expectEqual(@as(i32, -1), window.mouse_x);
+    try std.testing.expectEqual(@as(i32, -1), window.mouse_y);
+
+    wispterm_macos_window_test_set_pointer_outside(window.hwnd, false);
+    wispterm_macos_window_test_push_mouse_move(window.hwnd, 50, 60, false, false, false);
+    _ = window.pollEvents();
+    try std.testing.expectEqual(@as(i32, 50), window.mouse_x);
+}
+
 test "macOS backend preserves Option modifier on text generated by keyDown" {
     const title = std.unicode.utf8ToUtf16LeStringLiteral("WispTerm Option Text Smoke");
     var window = try Window.init(320, 180, title, null, null, false);
@@ -515,6 +613,99 @@ test "macOS backend preserves Option modifier on text generated by keyDown" {
     try std.testing.expect(char.alt);
     try std.testing.expect(!char.ctrl);
     try std.testing.expect(!char.shift);
+}
+
+const ns_not_found: u64 = std.math.maxInt(i64);
+
+fn expectRange(expected_location: u64, expected_length: u64, query: *const fn (NativeHandle, *u64, *u64) callconv(.c) void, hwnd: NativeHandle) !void {
+    var location: u64 = 0xdead;
+    var length: u64 = 0xdead;
+    query(hwnd, &location, &length);
+    try std.testing.expectEqual(expected_location, location);
+    try std.testing.expectEqual(expected_length, length);
+}
+
+// Issue #671: dictation and voice input methods probe -selectedRange before
+// they start and refuse to run when it reports {NSNotFound, 0}.
+test "macOS text input client reports an insertion point so dictation can start" {
+    const title = std.unicode.utf8ToUtf16LeStringLiteral("WispTerm Dictation Range");
+    var window = try Window.init(320, 180, title, null, null, false);
+    defer window.deinit();
+
+    try expectRange(0, 0, &wispterm_macos_window_test_selected_range, window.hwnd);
+    try expectRange(ns_not_found, 0, &wispterm_macos_window_test_marked_range, window.hwnd);
+
+    // NSRange counts UTF-16 code units: "你好" is 2 units, not its 6 UTF-8 bytes.
+    wispterm_macos_window_test_set_marked_text(window.hwnd, "你好", 2, 0);
+    try expectRange(0, 2, &wispterm_macos_window_test_marked_range, window.hwnd);
+    try expectRange(2, 0, &wispterm_macos_window_test_selected_range, window.hwnd);
+
+    // An out-of-range IME selection is clamped to the end of the marked text.
+    wispterm_macos_window_test_set_marked_text(window.hwnd, "ab", 9, 4);
+    try expectRange(2, 0, &wispterm_macos_window_test_selected_range, window.hwnd);
+
+    // Committing ends the composition and restores the empty caret.
+    wispterm_macos_window_test_insert_text(window.hwnd, "ab");
+    try expectRange(0, 0, &wispterm_macos_window_test_selected_range, window.hwnd);
+    try expectRange(ns_not_found, 0, &wispterm_macos_window_test_marked_range, window.hwnd);
+}
+
+test "macOS backend delivers dictated text committed without a key event" {
+    const title = std.unicode.utf8ToUtf16LeStringLiteral("WispTerm Dictation Commit");
+    var window = try Window.init(320, 180, title, null, null, false);
+    defer window.deinit();
+    _ = window.pollEvents();
+    _ = window.takeImePreeditChanged();
+
+    // Interim result streamed as marked text: surfaced as a one-shot change
+    // so the loop repaints the preedit without any key event.
+    wispterm_macos_window_test_set_marked_text(window.hwnd, "你好世", 3, 0);
+    _ = window.pollEvents();
+    try std.testing.expectEqualStrings("你好世", window.imePreeditText());
+    try std.testing.expect(window.ime_composing);
+    try std.testing.expect(window.takeImePreeditChanged());
+    try std.testing.expect(!window.takeImePreeditChanged());
+    _ = window.pollEvents();
+    try std.testing.expect(!window.takeImePreeditChanged());
+
+    // Final result committed with -insertText: outside -keyDown:.
+    wispterm_macos_window_test_insert_text(window.hwnd, "你好世界");
+    _ = window.pollEvents();
+    try std.testing.expectEqualStrings("", window.imePreeditText());
+    try std.testing.expect(!window.ime_composing);
+    try std.testing.expect(window.takeImePreeditChanged());
+    for ([_]u21{ 0x4F60, 0x597D, 0x4E16, 0x754C }) |expected| {
+        const char = window.char_events.pop() orelse return error.ExpectedCharEvent;
+        try std.testing.expectEqual(expected, char.codepoint);
+        try std.testing.expect(!char.ctrl and !char.alt and !char.super);
+    }
+    try std.testing.expect(window.char_events.pop() == null);
+}
+
+test "macOS text committed outside a key event wakes the main-thread pump" {
+    const title = std.unicode.utf8ToUtf16LeStringLiteral("WispTerm Dictation Wake");
+    var window = try Window.init(320, 180, title, null, null, false);
+    defer window.deinit();
+
+    // Let the events window creation keeps producing settle (a pump that
+    // sleeps out its whole timeout), so only the commit can wake the next one.
+    var quiet = false;
+    var attempts: usize = 0;
+    while (!quiet and attempts < 20) : (attempts += 1) {
+        var settle = try std.time.Timer.start();
+        platform_window.pumpAppEvents(0.2);
+        quiet = settle.read() >= 150 * std.time.ns_per_ms;
+    }
+    if (!quiet) return error.SkipZigTest;
+    // Dictation inserts from a run-loop source, not an NSEvent: without a
+    // posted wakeup this pump would sleep out its full timeout.
+    wispterm_macos_window_test_insert_text(window.hwnd, "x");
+    var timer = try std.time.Timer.start();
+    platform_window.pumpAppEvents(5.0);
+    try std.testing.expect(timer.read() < 3 * std.time.ns_per_s);
+    _ = window.pollEvents();
+    const char = window.char_events.pop() orelse return error.ExpectedCharEvent;
+    try std.testing.expectEqual(@as(u21, 'x'), char.codepoint);
 }
 
 fn testMessageCallback(
@@ -827,4 +1018,44 @@ test "macOS pumpAppEvents on a worker thread wakes when input is pushed" {
     const elapsed = probe.elapsed_ms.load(.acquire);
     try std.testing.expect(elapsed >= 0);
     try std.testing.expect(elapsed < 3000);
+}
+
+test "macOS pumpAppEvents on a worker thread wakes when the IME preedit changes" {
+    const title = std.unicode.utf8ToUtf16LeStringLiteral("WispTerm Worker Pump Preedit");
+    var window = try Window.init(320, 180, title, null, null, false);
+    defer window.deinit();
+
+    var probe = WorkerPumpProbe{};
+    const worker = try std.Thread.spawn(.{}, WorkerPumpProbe.run, .{&probe});
+    probe.awaitReady();
+    wispterm_macos_window_test_set_marked_text(window.hwnd, "ni", 2, 0);
+    worker.join();
+
+    const elapsed = probe.elapsed_ms.load(.acquire);
+    try std.testing.expect(elapsed >= 0);
+    try std.testing.expect(elapsed < 3000);
+}
+
+test "macOS loop-iteration scope drains objects autoreleased during the iteration" {
+    // Regression for the 1.40.5 footprint leak: with no NSApplicationMain there
+    // is no outer pool, so objects AppKit autoreleased in the render loop were
+    // never freed. endLoopIteration must actually release them.
+    var deallocated = false;
+    const scope = platform_window.beginLoopIteration();
+    wispterm_macos_test_autorelease_into_caller_pool(&deallocated);
+    try std.testing.expect(!deallocated);
+    platform_window.endLoopIteration(scope);
+    try std.testing.expect(deallocated);
+}
+
+test "macOS isMaximized follows zoom/unzoom through the cached zoom state" {
+    const title = std.unicode.utf8ToUtf16LeStringLiteral("WispTerm Zoom Cache");
+    var window = try Window.init(320, 180, title, null, null, false);
+    defer window.deinit();
+
+    try std.testing.expect(!platform_window.isMaximized(window.hwnd));
+    _ = platform_window.showMaximized(window.hwnd);
+    try std.testing.expect(platform_window.isMaximized(window.hwnd));
+    _ = platform_window.showRestored(window.hwnd);
+    try std.testing.expect(!platform_window.isMaximized(window.hwnd));
 }

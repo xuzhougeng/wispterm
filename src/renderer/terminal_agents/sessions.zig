@@ -4,6 +4,7 @@ const types = @import("../../terminal_agents/sessions/types.zig");
 const i18n = @import("../../i18n.zig");
 const text_search = @import("../../text_search.zig");
 const panel_draw = @import("../panel_draw.zig");
+const ui_patterns = @import("../ui_patterns.zig");
 
 const HEADER_H: f32 = 54;
 const FILTER_H: f32 = 42;
@@ -16,8 +17,10 @@ const BUTTON_EXTRA_H: f32 = 10;
 const ACTION_BUTTON_GAP: f32 = 8;
 const RESUME_LABEL = "Resume";
 const ACTION_LABELS = [_][]const u8{ "Download", "Export", "Attach" };
-/// Width of the "r Retry" affordance sharing the Status value line (right-aligned).
+/// Width of the "r Retry" affordance sharing the Status value line
+/// (right-aligned) at 1x; `retryLabelWidth` grows it with the glyphs.
 const RETRY_LABEL_W: f32 = 70;
+const RETRY_LABEL = "r Retry";
 const MAX_DATE_BUCKETS: usize = 256;
 
 pub const DrawContext = panel_draw.DrawContext;
@@ -174,7 +177,7 @@ fn rowTextLayout(cell_h: f32) RowTextLayout {
 pub fn listVisibleCapacity(window_height: f32, titlebar_offset: f32, cell_h: f32) usize {
     const top = @round(titlebar_offset);
     const content_h = @round(@max(1.0, window_height - top));
-    const visible_h = @max(0, content_h - filterHeight(cell_h));
+    const visible_h = @max(0, content_h - filterHeight(cell_h) - ui_patterns.workbenchFooterHeight(cell_h));
     return @intFromFloat(@max(0, @floor(visible_h / rowHeight(cell_h))));
 }
 
@@ -197,6 +200,7 @@ pub fn interactionHitTest(
     const layout = computeLayout(content_x, content_w);
     const mx: f32 = @floatCast(mouse_x);
     const my: f32 = @floatCast(mouse_y);
+    if (my >= window_height - ui_patterns.workbenchFooterHeight(cell_h)) return .none;
 
     const lc = leftColumnLayout(top, cell_h);
     for (types.CATEGORY_ORDER, 0..) |cat, i| {
@@ -208,8 +212,9 @@ pub fn interactionHitTest(
 
     // Retry shares the Status value line, right-aligned; only that label is clickable.
     const refresh_top = refreshButtonTop(top, cell_h);
-    const retry_x = layout.left_x + layout.left_w - PAD_X - RETRY_LABEL_W;
-    if (rectContains(mx, my, retry_x, refresh_top, RETRY_LABEL_W, buttonHeight(cell_h))) {
+    const retry_w = retryLabelWidth(glyph_w);
+    const retry_x = layout.left_x + layout.left_w - PAD_X - retry_w;
+    if (rectContains(mx, my, retry_x, refresh_top, retry_w, buttonHeight(cell_h))) {
         return .refresh;
     }
 
@@ -298,6 +303,11 @@ pub fn render(
     renderLeftColumn(draw, session, layout, window_height, top, content_h, fg, muted, accent, panel_strong, line);
     renderList(draw, session, layout, window_height, top, content_h, fg, muted, accent, selected_bg, line);
     renderDetail(draw, session, layout, window_height, top, content_h, fg, muted, accent, panel_strong, line);
+    const footer_h = ui_patterns.workbenchFooterHeight(draw.cell_h);
+    draw.fillQuad(content_x, 0, content_w, footer_h, panel);
+    draw.fillQuad(content_x, footer_h - 1, content_w, 1, line);
+    const footer = if (i18n.lang() == .zh_CN) "Enter 继续会话  ·  空格 预览" else "Enter resumes  ·  Space previews";
+    _ = draw.renderTextLimited(footer, content_x + PAD_X, (footer_h - draw.cell_h) / 2, muted, content_w - PAD_X * 2);
 }
 
 fn drawDateRow(
@@ -358,8 +368,9 @@ fn renderLeftColumn(
 
     // Status label, plus the rescan affordance sharing the value line on the right.
     _ = draw.renderTextLimited("Status", layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.status_label_top), muted, layout.left_w - PAD_X * 2);
-    const retry_x = layout.left_x + layout.left_w - PAD_X - RETRY_LABEL_W;
-    _ = draw.renderTextLimited("r Retry", retry_x, yTextFromTop(draw, window_height, lc.retry_text_top), muted, RETRY_LABEL_W);
+    const retry_w = retryLabelWidth(@max(draw.glyphAdvance('W'), 1));
+    const retry_x = layout.left_x + layout.left_w - PAD_X - retry_w;
+    _ = draw.renderTextLimited(RETRY_LABEL, retry_x, yTextFromTop(draw, window_height, lc.retry_text_top), muted, retry_w);
     var status_buf: [48]u8 = undefined;
     const status_label = if (session.state == .scanning)
         ai_history_session.scanningStatusLabel(&status_buf, session.rows.items.len)
@@ -415,8 +426,6 @@ fn renderLeftColumn(
         }
     }
 
-    const footer = "Enter resumes  Space previews";
-    _ = draw.renderTextLimited(footer, layout.left_x + PAD_X, 12, muted, layout.left_w - PAD_X * 2);
     _ = content_h;
 }
 
@@ -498,6 +507,7 @@ fn renderList(
             .claude => "No Claude Code sessions",
             .kimi => "No Kimi sessions",
             .opencode => "No OpenCode sessions",
+            .pi => "No Pi sessions",
             .subagent => "No Subagent sessions",
         };
         _ = draw.renderTextLimited(empty, layout.list_x + PAD_X, yTextFromTop(draw, window_height, row_top + 24), muted, layout.list_w - PAD_X * 2);
@@ -695,7 +705,7 @@ fn renderTranscriptMessages(
     var drew_any = false;
     for (messages) |msg| {
         if (vis_index >= scroll_lines) {
-            if (top_px + line_h > window_height) return;
+            if (top_px + line_h > window_height - ui_patterns.workbenchFooterHeight(draw.cell_h)) return;
             const role_color = if (msg.role == .assistant) accent else muted;
             _ = draw.renderTextLimited(roleLabel(msg.role), text_x, yTextFromTop(draw, window_height, top_px), role_color, content_w);
             top_px += line_h;
@@ -706,7 +716,7 @@ fn renderTranscriptMessages(
         var it = LineWrap{ .text = msg.content, .max_w = wrap_w, .advance = draw.glyphAdvance };
         while (it.next()) |line| {
             if (vis_index >= scroll_lines) {
-                if (top_px + line_h > window_height) return;
+                if (top_px + line_h > window_height - ui_patterns.workbenchFooterHeight(draw.cell_h)) return;
                 _ = draw.renderTextLimited(line, text_x + indent, yTextFromTop(draw, window_height, top_px), fg, wrap_w);
                 top_px += line_h;
                 drew_any = true;
@@ -825,6 +835,11 @@ fn detailActionTop(top: f32, cell_h: f32) f32 {
     return resumeButtonTop(top, cell_h) + buttonHeight(cell_h) + 10;
 }
 
+/// Same per-glyph estimate as `labelButtonWidth`, so render and hit test agree.
+fn retryLabelWidth(glyph_w: f32) f32 {
+    return @max(RETRY_LABEL_W, @as(f32, @floatFromInt(RETRY_LABEL.len)) * @max(glyph_w, 1));
+}
+
 fn labelButtonWidth(label: []const u8, glyph_w: f32) f32 {
     return @as(f32, @floatFromInt(label.len)) * @max(glyph_w, 1) + BUTTON_PAD_X * 2;
 }
@@ -860,7 +875,7 @@ fn detailActionHit(layout: Layout, top: f32, cell_h: f32, glyph_w: f32, mx: f32,
 /// How many DATE rows (including the pinned "All dates" row) fit between
 /// `date_rows_top` and the bottom of the left column, reserving the footer.
 pub fn dateVisibleCapacity(window_height: f32, date_rows_top: f32, cell_h: f32) usize {
-    const footer_reserve = cell_h + 20; // bottom "Enter resumes  Space previews"
+    const footer_reserve = ui_patterns.workbenchFooterHeight(cell_h);
     const bottom_limit = window_height - footer_reserve;
     if (bottom_limit <= date_rows_top) return 0;
     const row_h = cell_h + 10; // == leftColumnLayout(...).date_row_h
@@ -968,6 +983,14 @@ test "terminal agent sessions renderer: interaction hit test maps buttons and ro
     const layout = computeLayout(0, 1000);
     const cell_h: f32 = 16;
     const top: f32 = 40;
+
+    // Retry keeps its 1x width at a 10px glyph and doubles with 2x glyphs.
+    try std.testing.expectEqual(RETRY_LABEL_W, retryLabelWidth(10));
+    try std.testing.expectEqual(@as(f32, 140), retryLabelWidth(20));
+    try std.testing.expectEqual(
+        Hit.refresh,
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, 20, layout.left_x + layout.left_w - PAD_X - 140 + 4, refreshButtonTop(top, cell_h) + 2),
+    );
 
     // Retry is right-aligned on the Status value line; click inside that label.
     try std.testing.expectEqual(
@@ -1251,7 +1274,13 @@ test "terminal agent sessions renderer: interaction hit test maps category rows"
         interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, 10, layout.left_x + 10, opencode_y),
     );
 
-    const subagent_y = lc.category_rows_top + lc.category_row_h * 5.5;
+    const pi_y = lc.category_rows_top + lc.category_row_h * 5.5;
+    try std.testing.expectEqual(
+        Hit{ .category = .pi },
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, 10, layout.left_x + 10, pi_y),
+    );
+
+    const subagent_y = lc.category_rows_top + lc.category_row_h * 6.5;
     try std.testing.expectEqual(
         Hit{ .category = .subagent },
         interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, 10, layout.left_x + 10, subagent_y),

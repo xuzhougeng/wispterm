@@ -37,6 +37,14 @@ const terminal_lease = @import("../../agent/terminal_lease.zig");
 const session_identity = @import("identity.zig");
 const prompt_queue = @import("prompt_queue.zig");
 const session_queue = @import("session_queue.zig");
+const session_effort = @import("session_effort.zig");
+pub const EffortLevels = @import("effort_levels.zig").EffortLevels;
+const table_hscroll = @import("table_hscroll.zig");
+const question_hscroll = @import("question_hscroll.zig");
+const question_select = @import("question_select.zig");
+const session_question_select = @import("session_question_select.zig");
+const turn_stats = @import("turn_stats.zig");
+const secret_redact = @import("../../credential/redact.zig");
 
 pub const AgentSettings = ai_chat_types.AgentSettings;
 pub const AgentPermission = ai_chat_types.AgentPermission;
@@ -59,7 +67,7 @@ pub const MAX_QUEUED_PROMPTS = prompt_queue.MAX_ENTRIES;
 
 pub const DEFAULT_NAME = "DeepSeek";
 pub const DEFAULT_BASE_URL = "https://api.deepseek.com";
-pub const DEFAULT_MODEL = "deepseek-v4-pro";
+pub const DEFAULT_MODEL = "deepseek-flash";
 pub const DEFAULT_SYSTEM_PROMPT = platform_agent_prompt.defaultSystemPrompt;
 pub const COPILOT_SYSTEM_PROMPT = platform_agent_prompt.copilotSystemPrompt;
 pub const DEFAULT_THINKING = ai_chat_protocol.DEFAULT_THINKING;
@@ -69,6 +77,7 @@ pub const DEFAULT_AGENT = ai_chat_protocol.DEFAULT_AGENT;
 pub const DEFAULT_PROTOCOL = ai_chat_protocol.DEFAULT_PROTOCOL;
 pub const DEFAULT_MAX_TOKENS = ai_chat_protocol.DEFAULT_MAX_TOKENS;
 pub const DEFAULT_VISION = ai_chat_protocol.DEFAULT_VISION;
+pub const defaultVisionForModel = ai_chat_protocol.defaultVisionForModel;
 
 /// Cap on a single pasted image (decoded PNG bytes) before base64. Larger images
 /// are dropped with a log rather than ballooning the request body.
@@ -120,6 +129,9 @@ pub const Message = struct {
     /// Synthetic "上文摘要" card produced by a model switch. Rendered like a
     /// collapsible tool card but sent to the model as a normal user message.
     is_context_summary: bool = false,
+    /// Answered `ask_user` summary card (session_question_answer.zig). Stays
+    /// out of activity groups so the choice is visible without expanding.
+    is_question_answer: bool = false,
     reasoning_collapsed: bool = true,
     reasoning_auto_expand: bool = false,
     /// Wall-clock time this message was appended (milliTimestamp). Set at
@@ -135,7 +147,7 @@ pub const Message = struct {
     /// tool messages: a real tool card that is not a context summary and not
     /// live (auto-expanded messages render individually while a request runs).
     pub fn groupableTool(self: Message) bool {
-        return self.role == .tool and !self.is_context_summary and !self.content_auto_expand;
+        return self.role == .tool and !self.is_context_summary and !self.is_question_answer and !self.content_auto_expand;
     }
 
     pub fn deinit(self: Message, allocator: std.mem.Allocator) void {
@@ -202,7 +214,6 @@ const ImageBlock = ai_chat_protocol.ImageBlock;
 const ai_chat_title = @import("title.zig");
 const ToolCall = ai_chat_protocol.ToolCall;
 const ai_chat_request = @import("request.zig");
-const acp_turn = @import("acp_turn.zig");
 const web_search = @import("../../research/web_search.zig");
 const pubmed = @import("../../research/pubmed.zig");
 const agent_memory = @import("../../agent/memory.zig");
@@ -230,7 +241,6 @@ pub const ChatRequest = struct {
     disabled_first_party_tools: []const []const u8 = &.{},
     schedule_session_id: []u8 = &.{},
     schedule_title: []u8 = &.{},
-    acp_command: []u8 = &.{},
     copilot: bool = false,
     tool_host: ?ToolHost,
     tool_snapshot: ?ToolSnapshot,
@@ -260,7 +270,6 @@ pub const ChatRequest = struct {
         freeOwnedStringList(self.allocator, self.disabled_first_party_tools);
         if (self.schedule_session_id.len > 0) self.allocator.free(self.schedule_session_id);
         if (self.schedule_title.len > 0) self.allocator.free(self.schedule_title);
-        if (self.acp_command.len > 0) self.allocator.free(self.acp_command);
         if (self.tool_snapshot) |snapshot| snapshot.deinit(self.allocator);
         if (self.reply_context) |*ctx| ctx.deinit(self.allocator);
         if (self.subagent_profile) |profile| profile.deinit(self.allocator);
@@ -461,8 +470,11 @@ var g_agent_mutex: std.Thread.Mutex = .{};
 var g_agent_settings: AgentSettings = .{};
 var g_access_rules_storage: ?ai_agent_access.AccessRules = null;
 var g_access_rules: ?*const ai_agent_access.AccessRules = null;
-var g_default_working_dir_buf: [WORKING_DIR_MAX_BYTES]u8 = undefined;
-var g_default_working_dir_len: usize = 0;
+const DefaultWorkingDirectory = struct {
+    buf: [WORKING_DIR_MAX_BYTES]u8 = undefined,
+    len: usize = 0,
+};
+var default_working_directory: DefaultWorkingDirectory = .{};
 const UiTriggers = struct {
     session_resume: ?*const fn () void = null,
     copilot_picker: ?*const fn () void = null,
@@ -471,6 +483,8 @@ const UiTriggers = struct {
     export_markdown: ?*const fn (*Session, MarkdownExportMode) void = null,
     copy: ?*const fn (*Session, MarkdownExportMode) void = null,
     fork_at_rewind: ?*const fn (*Session, usize) void = null,
+    /// Wakes the render loop after `markUiDirty` (window_backend.postWakeup).
+    ui_wake: ?*const fn () void = null,
 };
 var g_ui_triggers: UiTriggers = .{};
 threadlocal var g_dynamic_tool_specs: []ai_chat_protocol.DynamicToolSpec = &.{};
@@ -561,6 +575,14 @@ pub fn setTranscriptCopyTrigger(cb: ?*const fn (*Session, MarkdownExportMode) vo
 /// truncation point), already mapped by `requestForkAtRewindSelection`.
 pub fn setForkAtRewindTrigger(cb: ?*const fn (*Session, usize) void) void {
     g_ui_triggers.fork_at_rewind = cb;
+}
+
+/// Wire the callback `Session.markUiDirty` uses to wake the render loop from
+/// the request thread (the app layer passes `window_backend.postWakeup`).
+/// Without it the UI still repaints on the next loop wake, at most
+/// `render_gate.CAP_FOCUSED_MS` later.
+pub fn setUiWakeTrigger(cb: ?*const fn () void) void {
+    g_ui_triggers.ui_wake = cb;
 }
 threadlocal var g_tool_host: ?ToolHost = null;
 
@@ -876,16 +898,16 @@ pub fn deinitAccessRules() void {
 pub fn setDefaultWorkingDir(path: []const u8) void {
     g_agent_mutex.lock();
     defer g_agent_mutex.unlock();
-    const n = @min(path.len, g_default_working_dir_buf.len);
-    @memcpy(g_default_working_dir_buf[0..n], path[0..n]);
-    g_default_working_dir_len = n;
+    const n = @min(path.len, default_working_directory.buf.len);
+    @memcpy(default_working_directory.buf[0..n], path[0..n]);
+    default_working_directory.len = n;
 }
 
 pub fn defaultWorkingDir() ?[]const u8 {
     g_agent_mutex.lock();
     defer g_agent_mutex.unlock();
-    if (g_default_working_dir_len == 0) return null;
-    return g_default_working_dir_buf[0..g_default_working_dir_len];
+    if (default_working_directory.len == 0) return null;
+    return default_working_directory.buf[0..default_working_directory.len];
 }
 
 fn resolveHomeDir(allocator: std.mem.Allocator) ?[]u8 {
@@ -920,7 +942,7 @@ pub fn currentAgentSettings() AgentSettings {
     defer g_agent_mutex.unlock();
     var s = g_agent_settings;
     s.access_rules = g_access_rules;
-    if (g_default_working_dir_len > 0) s.working_dir = g_default_working_dir_buf[0..g_default_working_dir_len];
+    if (default_working_directory.len > 0) s.working_dir = default_working_directory.buf[0..default_working_directory.len];
     s.dynamic_tools = g_dynamic_tool_specs;
     s.dynamic_binary_tools = g_dynamic_binary_tools;
     s.mcp_tools = mcp_registry.cachedTools();
@@ -982,9 +1004,9 @@ fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8
         // .remember, .memory, .forget suppress output and emit their own messages;
         // this path is never reached, but the arm is required for exhaustiveness.
         .remember, .memory, .forget => allocator.dupe(u8, ""),
-        // .model_switch suppresses output and defers to the picker / by-name path;
-        // this path is never reached, but the arm is required for exhaustiveness.
-        .model_switch => allocator.dupe(u8, ""),
+        // .model_switch defers to the picker / by-name path and .effort emits its
+        // own message; this path is never reached, but the arm is required.
+        .model_switch, .effort => allocator.dupe(u8, ""),
         // .copy_transcript suppresses output (the copied Markdown must not
         // include its own progress message); this path is never reached.
         .copy_transcript => allocator.dupe(u8, ""),
@@ -1077,18 +1099,13 @@ pub const Session = struct {
     model_buf: [128]u8 = undefined,
     model_len: usize = 0,
     protocol: ApiProtocol = .chat_completions,
-    /// ACP external-agent launch command (e.g. "npx @zed-industries/claude-code-acp"),
-    /// owned; empty when the profile isn't ACP. Freed in deinit.
-    acp_command: []u8 = &.{},
-    /// Live ACP external-agent connection + per-turn state, lazily created by the
-    /// first ACP turn and reused across turns; torn down in deinit. Null for
-    /// non-ACP sessions. Owned by `acp_turn`.
-    acp_state: ?*acp_turn.AcpState = null,
     system_prompt_buf: [SYSTEM_PROMPT_MAX_BYTES]u8 = undefined,
     system_prompt_len: usize = 0,
     thinking_enabled: bool = true,
     reasoning_effort_buf: [16]u8 = undefined,
     reasoning_effort_len: usize = 0,
+    /// Levels `/effort` and the header chip may pick; runtime-only (Magpie).
+    effort_levels: EffortLevels = .{},
     stream: bool = false,
     max_tokens: u32 = 8192,
     agent_enabled: bool = false,
@@ -1096,18 +1113,28 @@ pub const Session = struct {
     // base64 images pasted into the composer, awaiting the next user message.
     pending_images: std.ArrayListUnmanaged(ai_chat_protocol.ImageBlock) = .empty,
     // busy（request_inflight）时提交的 prompt 进入这个内存队列，回到空闲后由
-    // drainPromptQueue（仅主循环 tick 调用）按 FIFO 自动发送。不持久化，
-    // 上限 prompt_queue.MAX_ENTRIES 条，重启即清空。
+    // drainPromptQueue（仅主循环 tick 调用）按 FIFO 自动发送。队列面板上
+    // Enter 会立刻 cancel-and-send 选中项（引导），Esc 取回 composer 编辑。
+    // 不持久化，上限 prompt_queue.MAX_ENTRIES 条，重启即清空。
     // 默认空壳仅供结构体字面量测试（Session{ .allocator = a }）编译；
     // 正常初始化走 Session.init 的 PromptQueue.init(allocator)。
     prompt_queue: PromptQueue = .{},
     queue_open: bool = false,
     queue_selected: usize = 0,
+    /// Fingerprints of secrets `password_input` typed in this conversation;
+    /// every later tool result, note and progress line is masked through it.
+    secret_filter: secret_redact.Filter = .{},
+    /// Pan offset for a markdown table that is wider than the message. UI thread.
+    table_hscroll: table_hscroll.State = .{},
     created_at_ms: i64 = 0,
     updated_at_ms: i64 = 0,
     history_on_change: ?HistoryChangeHook = null,
     request_inflight: bool = false,
     request_stopping: bool = false,
+    /// Set (any thread) when what the conversation renders changed; consumed
+    /// by the UI thread's frame gate (`takeUiDirty`). Replaces "repaint every
+    /// frame while `request_inflight`" — see appwindow/ai_stream_gate.zig.
+    ui_dirty: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     // —— UI 线程注意力跟踪（AppWindow.pollSessionAttention 每帧读写）——
     // ui_attention_phase：上一帧观察到的相位，用于边沿检测。
     // attention_done：「回合在你没看着时完成了」的粘性徽标，看到该 tab 即清除。
@@ -1157,6 +1184,8 @@ pub const Session = struct {
     question_answer: ?[]u8 = null, // owned; valid until the next askUser/deinit
     question_answer_is_custom: bool = false,
     question_selected_index: usize = 0,
+    question_scroll: question_hscroll.State = .{}, // protected by question_mutex
+    question_select: question_select.State = .{}, // UI drag selection; protected by mutex
     /// Copilot mode: when true, requests pre-target the bound surface and exec
     /// tools fall back to it when the model omits surface_id (Issue #98).
     copilot: bool = false,
@@ -1224,18 +1253,6 @@ pub const Session = struct {
 
     pub fn boundSurfaceId(self: *const Session) []const u8 {
         return self.bound_surface_id_buf[0..self.bound_surface_id_len];
-    }
-
-    /// Store an owned copy of the ACP launch command, replacing (and freeing)
-    /// any previous value. Silently no-ops on allocation failure. Takes the
-    /// session mutex: buildRequestLocked reads acp_command under it, and
-    /// applyProfileToSession can call this on a live session mid-request.
-    pub fn setAcpCommand(self: *Session, command: []const u8) void {
-        const copy = self.allocator.dupe(u8, command) catch return;
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        if (self.acp_command.len > 0) self.allocator.free(self.acp_command);
-        self.acp_command = copy;
     }
 
     pub fn pendingImageCount(self: *const Session) usize {
@@ -1399,11 +1416,6 @@ pub const Session = struct {
             @memcpy(session.working_dir_buf[0..record.cwd.len], record.cwd);
             session.working_dir_len = record.cwd.len;
         }
-        // Direct assignment: the mutex is held here and setAcpCommand would
-        // re-lock it; a fresh session's acp_command is empty, nothing to free.
-        if (record.acp_command.len > 0) {
-            session.acp_command = try allocator.dupe(u8, record.acp_command);
-        }
         for (record.messages) |msg| {
             var cloned_msg = Message{
                 .role = switch (msg.role) {
@@ -1453,12 +1465,6 @@ pub const Session = struct {
             thread.join();
             self.summary_thread = null;
         }
-        // After the turn thread (request_thread) is joined so no ACP turn is
-        // mid-flight; AcpState.deinit joins the connection's client threads.
-        if (self.acp_state) |st| {
-            st.deinit();
-            self.acp_state = null;
-        }
         terminal_lease.active().releaseOwner(self.agentInstanceId());
         for (self.messages.items) |msg| {
             msg.deinit(self.allocator);
@@ -1473,7 +1479,6 @@ pub const Session = struct {
         if (self.distill_candidate) |*candidate| candidate.deinit(self.allocator);
         self.freeQuestionPayloadLocked();
         self.freeQuestionAnswerLocked();
-        if (self.acp_command.len > 0) self.allocator.free(self.acp_command);
         self.allocator.destroy(self);
     }
 
@@ -1498,8 +1503,8 @@ pub const Session = struct {
     }
 
     pub fn missingApiKey(self: *const Session) bool {
-        // ACP sessions drive a local agent subprocess — no API key involved.
-        return self.api_key_len == 0 and self.protocol != .acp;
+        // Subscription protocols keep the token in oauth.json, not the profile key.
+        return self.api_key_len == 0 and !self.protocol.isSubscription();
     }
 
     /// Stash the `/model <name>` argument so the app-layer trigger can read it
@@ -1531,9 +1536,9 @@ pub const Session = struct {
     }
 
     /// Create the isolated chat session displayed by the `/btw` overlay. It
-    /// shares model credentials/configuration, but receives only a bounded
-    /// snapshot of this conversation and has tools disabled, so its turns can
-    /// never mutate or enter the source session's context.
+    /// shares model credentials/configuration and the source session's agent
+    /// tools, but receives only a bounded snapshot of this conversation, so
+    /// its turns can never enter the source session's context.
     pub fn createBtwSession(
         self: *Session,
         allocator: std.mem.Allocator,
@@ -1552,12 +1557,16 @@ pub const Session = struct {
             const snapshot = try ai_model_switch.buildSummaryUserContent(allocator, turns);
             defer allocator.free(snapshot);
             const snapshot_len = ai_model_switch.utf8SafeLen(snapshot, @min(snapshot.len, BTW_CONTEXT_MAX_BYTES));
+            const tools_clause: []const u8 = if (self.agent_enabled)
+                "You may use tools to inspect files, search the web, or gather extra context. "
+            else
+                "Do not execute tools. ";
             const side_system_prompt = try std.fmt.allocPrint(
                 allocator,
                 "You are handling a temporary BTW side conversation while another assistant session continues independently. " ++
                     "Answer concise questions using the source-session snapshot below. Do not claim that this side conversation changes, stops, or continues the source task. " ++
-                    "Do not execute tools. Reply in the user's language.\n\nSource status: {s}\n\nSource-session snapshot:\n{s}",
-                .{ self.status(), snapshot[0..snapshot_len] },
+                    "{s}Reply in the user's language.\n\nSource status: {s}\n\nSource-session snapshot:\n{s}",
+                .{ tools_clause, self.status(), snapshot[0..snapshot_len] },
             );
             defer allocator.free(side_system_prompt);
 
@@ -1572,7 +1581,7 @@ pub const Session = struct {
                 self.thinkingConfigValue(),
                 self.reasoningEffort(),
                 self.streamConfigValue(),
-                "false",
+                self.agentConfigValue(),
                 self.visionConfigValue(),
             );
             errdefer child.deinit();
@@ -1583,7 +1592,6 @@ pub const Session = struct {
                 @memcpy(child.working_dir_buf[0..self.working_dir_len], self.working_dir_buf[0..self.working_dir_len]);
                 child.working_dir_len = self.working_dir_len;
             }
-            if (self.acp_command.len > 0) child.acp_command = try allocator.dupe(u8, self.acp_command);
         }
 
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
@@ -1837,6 +1845,24 @@ pub const Session = struct {
             .inflight = self.request_inflight,
             .stopping = self.request_stopping,
         };
+    }
+
+    /// Any thread: the rendered conversation state changed (streamed delta,
+    /// status line, tool card, approval/question prompt, request end). Marks
+    /// the session for the next frame and wakes the render loop once per
+    /// pending frame — repeated marks before the UI consumes the flag do not
+    /// post more wakeups (same dedupe as `Surface.markOutputDirty`).
+    /// Safe to call while holding `mutex`: the renderer takes the mutex before
+    /// reading, so it cannot paint a half-applied mutation.
+    pub fn markUiDirty(self: *Session) void {
+        if (self.ui_dirty.swap(true, .release)) return;
+        if (g_ui_triggers.ui_wake) |wake| wake();
+    }
+
+    /// UI thread, once per frame decision: was a UI change reported since the
+    /// last call?
+    pub fn takeUiDirty(self: *Session) bool {
+        return self.ui_dirty.swap(false, .acq_rel);
     }
 
     /// Explicit (user-driven) rename. Marks the title as custom so a later
@@ -2108,10 +2134,17 @@ pub const Session = struct {
 
         if (self.queue_open) {
             // 队列面板打开时优先截获按键（仿 rewind 选择器）：↑↓ 选择、
-            // Alt+↑/↓ 重排、Delete/Backspace 删除、Enter 取回 composer 编辑、
-            // Esc 关闭。空面板或 composer 已有新文本时 Enter 不吞掉，落到
-            // 下面的 submit 路径（busy 时再次入队）。
-            if (session_queue.handlePanelKey(self, ev)) return;
+            // Alt+↑/↓ 重排、Delete/Backspace 删除、Enter 把选中项立即送进
+            // 对话当引导（cancel-and-send）、Esc 取回 composer 编辑。空面板
+            // 的 Enter 不吞掉，落到下面的 submit 路径。
+            switch (session_queue.handlePanelKey(self, ev)) {
+                .ignored, .fallthrough => {},
+                .consumed => return,
+                .send_now => {
+                    session_queue.sendQueuedPromptNow(self);
+                    return;
+                },
+            }
         }
 
         if (ev.ctrl and !ev.alt and ev.key == .key_a) {
@@ -2222,6 +2255,7 @@ pub const Session = struct {
         self.input_select_all = self.composer.len > 0;
         self.transcript_select_all = !self.input_select_all and self.messages.items.len > 0;
         self.transcript_selection = null;
+        self.question_select.clear();
     }
 
     pub fn clearSelection(self: *Session) void {
@@ -2235,7 +2269,8 @@ pub const Session = struct {
     pub fn hasSelection(self: *Session) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
-        return self.input_select_all or self.transcript_select_all or self.transcript_selection != null;
+        return self.input_select_all or self.transcript_select_all or self.transcript_selection != null or
+            session_question_select.hasSelectionLocked(self);
     }
 
     pub fn beginTranscriptSelection(self: *Session, message_index: usize, byte_offset: usize) void {
@@ -2256,6 +2291,7 @@ pub const Session = struct {
         const offset = byte_offset;
         self.input_select_all = false;
         self.transcript_select_all = false;
+        self.question_select.clear();
         self.transcript_selection = .{
             .message_index = message_index,
             .anchor = offset,
@@ -2292,6 +2328,7 @@ pub const Session = struct {
         if (self.input_select_all and self.composer.len > 0) {
             return allocator.dupe(u8, self.input());
         }
+        if (try session_question_select.allocTextLocked(self, allocator)) |selected| return selected;
         if (self.allocTranscriptSelectionTextLocked(allocator)) |selected| {
             return selected;
         } else |err| switch (err) {
@@ -2503,6 +2540,7 @@ pub const Session = struct {
     }
 
     pub fn requestApproval(self: *Session, tool: []const u8, command: []const u8, reason: []const u8) bool {
+        defer self.markUiDirty();
         if (self.stop_requested.load(.acquire)) return false;
         self.approval_mutex.lock();
         self.copyApprovalLocked(tool, command, reason);
@@ -2531,7 +2569,20 @@ pub const Session = struct {
         self.question_mutex.lock();
         defer self.question_mutex.unlock();
         if (!self.question_pending or self.question_resolved) return null;
-        return .{ .question = self.question_text, .options = self.question_options };
+        return .{
+            .question = self.question_text,
+            .options = self.question_options,
+            .scroll_offset = self.question_scroll.offset,
+            .generation = self.question_scroll.generation,
+        };
+    }
+
+    /// A drag belongs to one pending question; stale drags cannot move its successor.
+    pub fn scrollQuestionTo(self: *Session, generation: u64, offset: f32, content_w: f32, clip_w: f32) bool {
+        self.question_mutex.lock();
+        defer self.question_mutex.unlock();
+        if (!self.question_pending or self.question_resolved) return false;
+        return self.question_scroll.setOffset(generation, offset, content_w, clip_w);
     }
 
     /// Resolve a pending question by option index. Out-of-range index is a no-op
@@ -2571,6 +2622,7 @@ pub const Session = struct {
     /// Mirrors `requestApproval`. The returned `.custom` slice borrows Session
     /// memory valid until the next `askUser` call.
     pub fn askUser(self: *Session, question: []const u8, options: []const QuestionOption) AskResult {
+        defer self.markUiDirty();
         if (self.stop_requested.load(.acquire)) return .cancelled;
 
         self.question_mutex.lock();
@@ -2583,6 +2635,7 @@ pub const Session = struct {
         self.question_resolved = false;
         self.question_cancelled = false;
         self.question_answer_is_custom = false;
+        self.question_scroll.reset();
         self.question_mutex.unlock();
 
         self.setStatus("Waiting for your answer");
@@ -2705,7 +2758,7 @@ pub const Session = struct {
         @memcpy(self.approval_reason_buf[0..self.approval_reason_len], reason[0..self.approval_reason_len]);
     }
 
-    fn appendLocalToolMessageLocked(self: *Session, text: []const u8) !void {
+    pub fn appendLocalToolMessageLocked(self: *Session, text: []const u8) !void {
         const content = try self.allocator.dupe(u8, text);
         errdefer self.allocator.free(content);
         try self.messages.append(self.allocator, .{
@@ -2728,6 +2781,7 @@ pub const Session = struct {
     /// Thread-safe wrapper used by the tool layer (worker thread) to post a
     /// transcript note such as a diff. Swallows OOM (best-effort UI message).
     pub fn appendLocalToolMessage(self: *Session, text: []const u8) void {
+        defer self.markUiDirty();
         self.mutex.lock();
         defer self.mutex.unlock();
         self.appendLocalToolMessageLocked(text) catch {};
@@ -2803,19 +2857,29 @@ pub const Session = struct {
         }
         if (self.request_thread) |thread| {
             if (self.request_inflight) {
-                // Busy: queue the prompt instead of dropping it. Pending images
-                // move into the entry so the next normal submit cannot steal
-                // them; the reply context (if any) travels with the entry. On a
-                // full queue keep the original reject behavior (prompt stays in
-                // the composer, context is cleared).
+                // Busy: queue a non-empty prompt instead of dropping it.
+                // Pending images move into the entry so the next normal submit
+                // cannot steal them; the reply context (if any) travels with
+                // the entry. On a full queue keep the original reject behavior
+                // (prompt stays in the composer, context is cleared).
+                // Empty composer + queued items: Enter again sends the head
+                // now (Codex / Claude Code / Grok double-Enter), even if the
+                // queue panel was dismissed.
                 const queued_text = std.mem.trim(u8, self.input(), " \t\r\n");
-                if (queued_text.len != 0 and session_queue.enqueueQueuedPromptLocked(self, queued_text, true, null)) {
-                    self.clearSubmittedInputLocked();
-                    self.queue_open = true;
-                } else {
-                    self.clearPendingReplyContextLocked();
+                if (queued_text.len != 0) {
+                    if (session_queue.enqueueQueuedPromptLocked(self, queued_text, true, null)) {
+                        self.clearSubmittedInputLocked();
+                        self.queue_open = true;
+                    } else {
+                        self.clearPendingReplyContextLocked();
+                    }
+                    self.mutex.unlock();
+                    return;
                 }
+                const send_now = self.prompt_queue.len() > 0;
+                self.clearPendingReplyContextLocked();
                 self.mutex.unlock();
+                if (send_now) self.stopRequest();
                 return;
             }
             self.request_thread = null;
@@ -3024,10 +3088,7 @@ pub const Session = struct {
         self.mutex.unlock();
         if (!skill_preload_appended) self.notifyHistoryChange(history_change);
 
-        const thread = (if (request.protocol == .acp)
-            std.Thread.spawn(.{}, acp_turn.acpTurnThreadMain, .{request})
-        else
-            std.Thread.spawn(.{}, ai_chat_request.requestThreadMain, .{request})) catch {
+        const thread = std.Thread.spawn(.{}, ai_chat_request.requestThreadMain, .{request}) catch {
             request.deinit();
             self.mutex.lock();
             self.request_inflight = false;
@@ -3223,6 +3284,7 @@ pub const Session = struct {
                 self.setStatusLocked("Ready");
                 result.suppress_output = true;
             },
+            .effort => result.suppress_output = session_effort.runCommandLocked(self, arg),
             .btw => {
                 self.pending_btw_prompt_len = @min(arg.len, self.pending_btw_prompt_buf.len);
                 @memcpy(self.pending_btw_prompt_buf[0..self.pending_btw_prompt_len], arg[0..self.pending_btw_prompt_len]);
@@ -3743,6 +3805,24 @@ pub const Session = struct {
         self.scrollbar_show_time = std.time.milliTimestamp();
     }
 
+    /// UI-thread only (mirrors unlocked `queue_open` / `scroll_px` reads in the renderer).
+    pub fn tableHScrollOffset(self: *const Session, message_index: usize, table_start: usize, content_w: f32, clip_w: f32) f32 {
+        return self.table_hscroll.offsetFor(message_index, table_start, content_w, clip_w);
+    }
+
+    pub fn scrollTableHorizontal(
+        self: *Session,
+        message_index: usize,
+        table_start: usize,
+        delta: f32,
+        content_w: f32,
+        clip_w: f32,
+    ) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.table_hscroll.scroll(message_index, table_start, delta, content_w, clip_w);
+    }
+
     pub fn scrollToPx(self: *Session, px: f32) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -3864,6 +3944,18 @@ pub const Session = struct {
         self.suggestion_selected = 0;
     }
 
+    /// Place the caret at `offset` (clamped to a UTF-8 boundary), e.g. from a
+    /// mouse click in the composer.
+    pub fn setInputCursor(self: *Session, offset: usize) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.clearSelectionLocked();
+        self.composer.cursor = offset;
+        self.clampInputCursorLocked();
+        self.input_scroll_follow_cursor = true;
+        self.suggestion_selected = 0;
+    }
+
     fn moveInputCursorVertical(self: *Session, max_cols_raw: usize, delta: i32) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -3977,13 +4069,14 @@ pub const Session = struct {
         return if (rows > visible_rows) rows - visible_rows else 0;
     }
 
-    fn clearSelectionLocked(self: *Session) void {
+    pub fn clearSelectionLocked(self: *Session) void {
         self.input_select_all = false;
         self.transcript_select_all = false;
         self.transcript_selection = null;
+        self.question_select.clear();
     }
 
-    fn clearSubmittedInputLocked(self: *Session) void {
+    pub fn clearSubmittedInputLocked(self: *Session) void {
         self.clearComposerHistoryNavigationLocked();
         self.composer.clear();
         self.input_scroll_row = 0;
@@ -4164,6 +4257,13 @@ pub const Session = struct {
     pub const drainPromptQueue = session_queue.drainPromptQueue;
     pub const togglePromptQueuePanel = session_queue.togglePromptQueuePanel;
     pub const clearPromptQueue = session_queue.clearPromptQueue;
+    pub const sendQueuedPromptNow = session_queue.sendQueuedPromptNow;
+
+    /// True while the queued-prompts popup above the composer is open.
+    /// UI-thread only (mirrors the renderer's unlocked `queue_open` read).
+    pub fn queuePanelOpen(self: *const Session) bool {
+        return self.queue_open;
+    }
 
     /// 对话中 role == .user 的消息条数（回溯点数量）。持锁内部版本。
     fn rewindPointCountLocked(self: *Session) usize {
@@ -4510,7 +4610,7 @@ pub const Session = struct {
         }
     }
 
-    fn buildRequestLocked(self: *Session) !*ChatRequest {
+    pub fn buildRequestLocked(self: *Session) !*ChatRequest {
         const req = try self.allocator.create(ChatRequest);
         errdefer self.allocator.destroy(req);
 
@@ -4616,10 +4716,8 @@ pub const Session = struct {
         const schedule_title = try self.allocator.dupe(u8, self.title());
         var schedule_title_owned = true;
         errdefer if (schedule_title_owned) self.allocator.free(schedule_title);
-        const acp_command = try self.allocator.dupe(u8, self.acp_command);
-        var acp_command_owned = true;
-        errdefer if (acp_command_owned) self.allocator.free(acp_command);
 
+        const wire = ai_chat_protocol.wireProtocol(self.protocol, self.model());
         req.* = .{
             .allocator = self.allocator,
             .session = self,
@@ -4631,7 +4729,7 @@ pub const Session = struct {
             .messages = messages,
             .thinking_enabled = self.thinking_enabled,
             .reasoning_effort = reasoning_effort,
-            .stream = self.stream and !agent_enabled and self.protocol != .anthropic,
+            .stream = self.stream and !agent_enabled and wire != .anthropic and wire != .kimi,
             .max_tokens = self.max_tokens,
             .agent_enabled = agent_enabled,
             .agent_instance_id = self.agentInstanceId(),
@@ -4643,7 +4741,6 @@ pub const Session = struct {
             .disabled_first_party_tools = disabled_first_party_tools,
             .schedule_session_id = schedule_session_id,
             .schedule_title = schedule_title,
-            .acp_command = acp_command,
             .copilot = self.presentation().isSidebar(),
             .tool_host = tool_host,
             .tool_snapshot = tool_snapshot,
@@ -4665,7 +4762,6 @@ pub const Session = struct {
         disabled_first_party_tools_owned = false;
         schedule_session_id_owned = false;
         schedule_title_owned = false;
-        acp_command_owned = false;
         if (self.presentation().isSidebar() and self.bound_surface_id_len > 0) {
             // Inline the write-context seed directly on ChatRequest (the field
             // layout is identical to ToolContext; terminal tool helpers operate
@@ -4736,8 +4832,6 @@ pub const Session = struct {
         errdefer allocator.free(reasoning_effort);
         const cwd = try allocator.dupe(u8, self.effectiveWorkingDirLocked() orelse "");
         errdefer allocator.free(cwd);
-        const acp_command = try allocator.dupe(u8, self.acp_command);
-        errdefer allocator.free(acp_command);
 
         return .{
             .session_id = session_id,
@@ -4758,7 +4852,6 @@ pub const Session = struct {
             .created_at = self.created_at_ms,
             .updated_at = self.updated_at_ms,
             .cwd = cwd,
-            .acp_command = acp_command,
             .messages = messages,
         };
     }
@@ -4855,7 +4948,7 @@ pub const Session = struct {
         @memcpy(self.system_prompt_buf[0..self.system_prompt_len], value[0..self.system_prompt_len]);
     }
 
-    fn copyReasoningEffort(self: *Session, value: []const u8) void {
+    pub fn copyReasoningEffort(self: *Session, value: []const u8) void {
         self.reasoning_effort_len = @min(value.len, self.reasoning_effort_buf.len);
         @memcpy(self.reasoning_effort_buf[0..self.reasoning_effort_len], value[0..self.reasoning_effort_len]);
     }
@@ -4866,24 +4959,13 @@ pub const Session = struct {
         self.setStatusLocked(value);
     }
 
-    fn setCompletionStatusLocked(self: *Session, started_ms: i64, usage: ?ApiUsage) void {
-        if (started_ms <= 0 and usage == null) {
-            self.setStatusLocked("Ready");
-            return;
-        }
-
+    fn setCompletionStatusLocked(self: *Session, timing: turn_stats.Timing, usage: ?ApiUsage) void {
         var buf: [32]u8 = undefined;
-        const elapsed_ms: i64 = if (started_ms > 0) @max(@as(i64, 0), std.time.milliTimestamp() - started_ms) else 0;
-        const secs: i64 = @divTrunc(elapsed_ms, 1000);
-        const tenths: i64 = @divTrunc(@mod(elapsed_ms, 1000), 100);
-        const text = if (started_ms > 0)
-            std.fmt.bufPrint(&buf, "Done in {d}.{d}s", .{ secs, tenths }) catch "Ready"
-        else
-            "Done";
-        self.setStatusLocked(text);
+        self.setStatusLocked(turn_stats.formatDoneStatus(&buf, timing, usage != null));
     }
 
     pub fn setStatusLocked(self: *Session, value: []const u8) void {
+        defer self.markUiDirty();
         self.status_len = @min(value.len, self.status_buf.len);
         @memcpy(self.status_buf[0..self.status_len], value[0..self.status_len]);
     }
@@ -4930,60 +5012,10 @@ fn composeSystemPromptWithMemory(
     return std.fmt.allocPrint(allocator, "{s}\n\n{s}", .{ base, block });
 }
 
-fn tokenRateTenths(completion_tokens: u64, elapsed_ms: i64) ?u64 {
-    if (completion_tokens == 0 or elapsed_ms <= 0) return null;
-    const elapsed: u128 = @intCast(elapsed_ms);
-    const rate = (@as(u128, completion_tokens) * 10_000 + elapsed / 2) / elapsed;
-    return @intCast(@min(rate, std.math.maxInt(u64)));
-}
-
-fn allocUsageFooter(allocator: std.mem.Allocator, started_ms: i64, first_token_ms: i64, usage: ?ApiUsage) !?[]u8 {
-    return allocUsageFooterAt(allocator, started_ms, first_token_ms, std.time.milliTimestamp(), usage);
-}
-
-fn allocUsageFooterAt(allocator: std.mem.Allocator, started_ms: i64, first_token_ms: i64, finished_ms: i64, usage: ?ApiUsage) !?[]u8 {
+fn allocUsageFooter(allocator: std.mem.Allocator, timing: turn_stats.Timing, usage: ?ApiUsage) !?[]u8 {
     const u = usage orelse return null;
-    var buf: [224]u8 = undefined;
-    const text = if (started_ms > 0) blk: {
-        const elapsed_ms: i64 = @max(@as(i64, 0), finished_ms - started_ms);
-        const secs: i64 = @divTrunc(elapsed_ms, 1000);
-        const tenths: i64 = @divTrunc(@mod(elapsed_ms, 1000), 100);
-        const first_elapsed_ms: ?i64 = if (first_token_ms > 0) @max(@as(i64, 0), first_token_ms - started_ms) else null;
-        const rate_tenths = tokenRateTenths(u.completion_tokens, elapsed_ms);
-        if (first_elapsed_ms) |first_ms| {
-            const first_secs: i64 = @divTrunc(first_ms, 1000);
-            const first_tenths: i64 = @divTrunc(@mod(first_ms, 1000), 100);
-            if (rate_tenths) |rate| {
-                break :blk std.fmt.bufPrint(
-                    &buf,
-                    "time {d}.{d}s | first {d}.{d}s | {d}.{d} token/s | total {d} | input {d} | output {d} | cache {d}/{d}",
-                    .{ secs, tenths, first_secs, first_tenths, rate / 10, rate % 10, u.total_tokens, u.prompt_tokens, u.completion_tokens, u.prompt_cache_hit_tokens, u.prompt_cache_miss_tokens },
-                ) catch "usage unavailable";
-            }
-            break :blk std.fmt.bufPrint(
-                &buf,
-                "time {d}.{d}s | first {d}.{d}s | total {d} | input {d} | output {d} | cache {d}/{d}",
-                .{ secs, tenths, first_secs, first_tenths, u.total_tokens, u.prompt_tokens, u.completion_tokens, u.prompt_cache_hit_tokens, u.prompt_cache_miss_tokens },
-            ) catch "usage unavailable";
-        }
-        if (rate_tenths) |rate| {
-            break :blk std.fmt.bufPrint(
-                &buf,
-                "time {d}.{d}s | {d}.{d} token/s | total {d} | input {d} | output {d} | cache {d}/{d}",
-                .{ secs, tenths, rate / 10, rate % 10, u.total_tokens, u.prompt_tokens, u.completion_tokens, u.prompt_cache_hit_tokens, u.prompt_cache_miss_tokens },
-            ) catch "usage unavailable";
-        }
-        break :blk std.fmt.bufPrint(
-            &buf,
-            "time {d}.{d}s | total {d} | input {d} | output {d} | cache {d}/{d}",
-            .{ secs, tenths, u.total_tokens, u.prompt_tokens, u.completion_tokens, u.prompt_cache_hit_tokens, u.prompt_cache_miss_tokens },
-        ) catch "usage unavailable";
-    } else std.fmt.bufPrint(
-        &buf,
-        "total {d} | input {d} | output {d} | cache {d}/{d}",
-        .{ u.total_tokens, u.prompt_tokens, u.completion_tokens, u.prompt_cache_hit_tokens, u.prompt_cache_miss_tokens },
-    ) catch "usage unavailable";
-    return try allocator.dupe(u8, text);
+    var buf: [turn_stats.FOOTER_MAX]u8 = undefined;
+    return try allocator.dupe(u8, turn_stats.formatFooter(&buf, timing, u));
 }
 
 const VisualCursor = ai_chat_input_text.VisualCursor;
@@ -5128,6 +5160,7 @@ pub fn sessionCancelled(session: *Session) bool {
 }
 
 pub fn finishStoppedRequest(session: *Session) void {
+    defer session.markUiDirty();
     if (session.closing.load(.acquire)) return;
     session.mutex.lock();
     defer session.mutex.unlock();
@@ -5144,6 +5177,7 @@ pub fn finishStoppedRequest(session: *Session) void {
 /// user has not manually renamed it (a manual rename in the meantime always
 /// wins) and the session is not closing.
 pub fn applyGeneratedTitle(session: *Session, raw: []const u8) void {
+    defer session.markUiDirty();
     if (session.closing.load(.acquire)) return;
     var buf: [ai_chat_title.max_title_bytes]u8 = undefined;
     const cleaned = ai_chat_title.cleanTitle(raw, &buf) orelse return;
@@ -5162,6 +5196,7 @@ pub fn applyProviderProfile(
     protocol_str: []const u8,
     thinking_str: []const u8,
     reasoning_effort: []const u8,
+    effort_levels: EffortLevels,
     max_tokens: u32,
     vision_str: []const u8,
 ) void {
@@ -5207,6 +5242,7 @@ pub fn applyProviderProfile(
         session.protocol = ApiProtocol.parse(protocol_str);
         session.thinking_enabled = !std.mem.eql(u8, thinking_str, "disabled");
         session.copyReasoningEffort(reasoning_effort);
+        session.effort_levels = effort_levels;
         session.max_tokens = max_tokens;
         session.vision_enabled = std.mem.eql(u8, vision_str, "on") or std.mem.eql(u8, vision_str, "enabled") or std.mem.eql(u8, vision_str, "true");
 
@@ -5301,6 +5337,7 @@ fn buildSummaryRequestLocked(session: *Session, turns: []const ai_model_switch.T
 /// Runs under the mutex; safe even if a request is in flight because each request
 /// snapshots its messages under the mutex at start.
 pub fn applySummaryResult(session: *Session, summary: []const u8, boundary: usize, from_model: []const u8) void {
+    defer session.markUiDirty();
     if (session.closing.load(.acquire)) return;
     const allocator = session.allocator;
     var history_change: ?PendingHistoryChange = null;
@@ -5351,6 +5388,7 @@ pub fn applySummaryResult(session: *Session, summary: []const u8, boundary: usiz
 /// Summary request failed (e.g. the new model is also overloaded): keep the full
 /// raw history, just clear the in-progress status.
 pub fn failSummaryResult(session: *Session) void {
+    defer session.markUiDirty();
     if (session.closing.load(.acquire)) return;
     session.mutex.lock();
     defer session.mutex.unlock();
@@ -5455,6 +5493,7 @@ pub fn maybeAutoTitle(session: *Session) void {
 // to assistant/conversation/request.zig.
 
 pub fn appendAssistantResult(session: *Session, result: ApiResult, started_ms: i64) void {
+    defer session.markUiDirty();
     const allocator = session.allocator;
     if (session.closing.load(.acquire)) return;
     if (session.stop_requested.load(.acquire)) {
@@ -5483,7 +5522,8 @@ pub fn appendAssistantResult(session: *Session, result: ApiResult, started_ms: i
         session.setStatusLocked("Out of memory");
         return;
     };
-    var usage_footer = allocUsageFooter(allocator, started_ms, 0, result.usage) catch null;
+    const timing = turn_stats.Timing{ .started_ms = started_ms, .finished_ms = std.time.milliTimestamp(), .user_wait_ms = result.user_wait_ms };
+    var usage_footer = allocUsageFooter(allocator, timing, result.usage) catch null;
     var reasoning_copy: ?[]u8 = null;
     if (result.reasoning) |reasoning| {
         reasoning_copy = allocator.dupe(u8, reasoning) catch null;
@@ -5511,7 +5551,7 @@ pub fn appendAssistantResult(session: *Session, result: ApiResult, started_ms: i
     session.distill_inflight = false;
     session.collapseAutoExpandedDetailsLocked();
     session.scroll_px = 1_000_000;
-    session.setCompletionStatusLocked(started_ms, result.usage);
+    session.setCompletionStatusLocked(timing, result.usage);
     session.maybeAppendDistillSuggestionLocked();
     history_change = session.captureHistoryChangeLocked();
 }
@@ -5520,6 +5560,7 @@ pub fn appendAssistantResult(session: *Session, result: ApiResult, started_ms: i
 /// finish the in-flight request. Called from the web-search worker thread with
 /// no lock held. Mirrors the closing-guarded shape of `appendAssistantResult`.
 pub fn appendWebSearchResult(session: *Session, text: []const u8) void {
+    defer session.markUiDirty();
     if (session.closing.load(.acquire)) return;
     session.mutex.lock();
     defer session.mutex.unlock();
@@ -5534,6 +5575,7 @@ pub fn appendWebSearchResult(session: *Session, text: []const u8) void {
 }
 
 pub fn applyDistillCandidate(session: *Session, candidate: *ai_skill_distill.Candidate) void {
+    defer session.markUiDirty();
     const allocator = session.allocator;
     const root = ai_chat_skills.defaultWritableSkillRootPath(allocator) catch |err| {
         candidate.deinit(allocator);
@@ -5582,6 +5624,7 @@ pub fn applyDistillCandidate(session: *Session, candidate: *ai_skill_distill.Can
 }
 
 pub fn failDistillRequest(session: *Session, err: anyerror) void {
+    defer session.markUiDirty();
     const allocator = session.allocator;
     const text = std.fmt.allocPrint(allocator, "Could not distill this conversation: {}.", .{err}) catch null;
     defer if (text) |msg| allocator.free(msg);
@@ -5603,6 +5646,13 @@ pub fn failDistillRequest(session: *Session, err: anyerror) void {
 }
 
 pub fn appendProgressMessage(session: *Session, text: []const u8) !void {
+    return appendProgressMessageCollapsed(session, text, false);
+}
+
+/// Live progress row; `collapsed` shows only its header row (the ask_user
+/// call, whose question card already shows the arguments).
+pub fn appendProgressMessageCollapsed(session: *Session, text: []const u8, collapsed: bool) !void {
+    defer session.markUiDirty();
     if (sessionCancelled(session)) return error.Canceled;
     const allocator = session.allocator;
     const content = try allocator.dupe(u8, text);
@@ -5616,7 +5666,7 @@ pub fn appendProgressMessage(session: *Session, text: []const u8) !void {
         .content = content,
         .reasoning = null,
         .persist_to_history = false,
-        .content_collapsed = false,
+        .content_collapsed = collapsed,
         .content_auto_expand = true,
         .ts_ms = std.time.milliTimestamp(),
     });
@@ -5630,6 +5680,7 @@ pub fn appendReplayableToolMessage(
     tool_name: []const u8,
     text: []const u8,
 ) !void {
+    defer session.markUiDirty();
     if (sessionCancelled(session)) return error.Canceled;
     const allocator = session.allocator;
     const content = try allocator.dupe(u8, text);
@@ -5671,6 +5722,7 @@ pub fn appendReplayableToolMessage(
 }
 
 pub fn beginAssistantStream(session: *Session) !usize {
+    defer session.markUiDirty();
     const allocator = session.allocator;
     if (sessionCancelled(session)) return error.Canceled;
 
@@ -5779,6 +5831,7 @@ pub fn appendAssistantStreamDelta(session: *Session, message_idx: usize, content
 }
 
 pub fn finishAssistantStream(session: *Session, message_idx: usize, started_ms: i64, first_token_ms: i64, usage: ?ApiUsage) void {
+    defer session.markUiDirty();
     if (session.closing.load(.acquire)) return;
     if (session.stop_requested.load(.acquire)) {
         finishStoppedRequest(session);
@@ -5800,25 +5853,26 @@ pub fn finishAssistantStream(session: *Session, message_idx: usize, started_ms: 
         session.setStatusLocked("Stopped");
         return;
     }
-    history_change = sealStreamMessageLocked(session, message_idx, started_ms, first_token_ms, usage);
+    const timing = turn_stats.Timing{ .started_ms = started_ms, .finished_ms = std.time.milliTimestamp(), .first_token_ms = first_token_ms };
+    history_change = sealStreamMessageLocked(session, message_idx, timing, usage);
     session.request_inflight = false;
     session.distill_inflight = false;
     session.collapseAutoExpandedDetailsLocked();
     session.scroll_px = 1_000_000;
-    session.setCompletionStatusLocked(started_ms, usage);
+    session.setCompletionStatusLocked(timing, usage);
     session.maybeAppendDistillSuggestionLocked();
 }
 
 /// Seal a stream bubble's message in place: fill an all-empty message with
 /// "No response", attach the usage footer, and capture the history change.
 /// Message-only — request state and status stay with the caller.
-fn sealStreamMessageLocked(session: *Session, message_idx: usize, started_ms: i64, first_token_ms: i64, usage: ?ApiUsage) ?PendingHistoryChange {
+fn sealStreamMessageLocked(session: *Session, message_idx: usize, timing: turn_stats.Timing, usage: ?ApiUsage) ?PendingHistoryChange {
     if (message_idx >= session.messages.items.len) return null;
     const msg = &session.messages.items[message_idx];
     if (msg.content.len == 0 and msg.reasoning == null) {
         appendOwnedBytes(session.allocator, &msg.content, &msg.content_capacity, "No response") catch {};
     }
-    if (allocUsageFooter(session.allocator, started_ms, first_token_ms, usage) catch null) |footer| {
+    if (allocUsageFooter(session.allocator, timing, usage) catch null) |footer| {
         if (msg.usage_footer) |old_footer| session.allocator.free(old_footer);
         msg.usage_footer = footer;
     }
@@ -5838,10 +5892,11 @@ pub fn sealCancelledAssistantStream(session: *Session, message_idx: usize, start
         session.notifyHistoryChange(history_change);
     }
     if (session.closing.load(.acquire)) return;
-    history_change = sealStreamMessageLocked(session, message_idx, started_ms, 0, usage);
+    history_change = sealStreamMessageLocked(session, message_idx, .{ .started_ms = started_ms, .finished_ms = std.time.milliTimestamp() }, usage);
 }
 
 pub fn failAssistantStream(session: *Session, message_idx: ?usize, text: []const u8) void {
+    defer session.markUiDirty();
     if (session.stop_requested.load(.acquire)) {
         finishStoppedRequest(session);
         return;
@@ -5911,6 +5966,7 @@ pub fn applyApiStreamLineToSession(
     usage_out: *?ApiUsage,
     first_token_ms: *i64,
 ) !bool {
+    defer session.markUiDirty();
     const line = std.mem.trim(u8, line_raw, " \t\r");
     if (!std.mem.startsWith(u8, line, "data:")) return false;
 
@@ -6221,46 +6277,6 @@ test "/btw opens an isolated overlay without adding user context" {
     try std.testing.expectEqual(@as(usize, 0), reqs.len);
 }
 
-test "btw child session receives a bounded snapshot and disables tools" {
-    const allocator = std.testing.allocator;
-    const source = try Session.init(
-        allocator,
-        "Source",
-        "https://example.invalid",
-        "test-key",
-        "test-model",
-        "source system prompt",
-        "disabled",
-        "low",
-        "false",
-        "true",
-    );
-    defer source.deinit();
-    source.mutex.lock();
-    try source.messages.append(allocator, .{
-        .role = .user,
-        .content = try allocator.dupe(u8, "original goal"),
-    });
-    try source.messages.append(allocator, .{
-        .role = .assistant,
-        .content = try allocator.dupe(u8, "working on it"),
-    });
-    source.setStatusLocked("Running");
-    source.mutex.unlock();
-
-    const child = try source.createBtwSession(allocator, "");
-    defer child.deinit();
-
-    try std.testing.expectEqualStrings("BTW", child.title());
-    try std.testing.expectEqualStrings("test-model", child.model());
-    try std.testing.expect(!child.agent_enabled);
-    try std.testing.expectEqual(@as(usize, 0), child.messages.items.len);
-    try std.testing.expect(std.mem.indexOf(u8, child.systemPrompt(), "Source status: Running") != null);
-    try std.testing.expect(std.mem.indexOf(u8, child.systemPrompt(), "User: original goal") != null);
-    try std.testing.expect(std.mem.indexOf(u8, child.systemPrompt(), "Assistant: working on it") != null);
-    try std.testing.expectEqual(@as(usize, 2), source.messages.items.len);
-}
-
 test "/rewind via submit opens picker without adding transcript noise" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
@@ -6409,15 +6425,17 @@ test "/resume defers to copilot picker for copilot sessions, external resume oth
 
 test "ai chat dollar skill suggestions filter and enter completes with trailing space" {
     const allocator = std.testing.allocator;
-    const root = ".zig-cache/skill-suggestion-test";
-    std.fs.cwd().deleteTree(root) catch {};
-    defer std.fs.cwd().deleteTree(root) catch {};
-
-    try std.fs.cwd().makePath(root ++ "/skills/pdf");
-    try std.fs.cwd().writeFile(.{
-        .sub_path = root ++ "/skills/pdf/SKILL.md",
+    // Per-run tmp dir: this file's tests run in several app-test shards at once,
+    // so a fixed path raced with another shard's deleteTree.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("skills/pdf");
+    try tmp.dir.writeFile(.{
+        .sub_path = "skills/pdf/SKILL.md",
         .data = "---\nname: pdf\ndescription: Work with PDF files.\n---\n# PDF\n",
     });
+    const skills_root = try tmp.dir.realpathAlloc(allocator, "skills");
+    defer allocator.free(skills_root);
 
     const session = try Session.init(
         allocator,
@@ -6433,7 +6451,7 @@ test "ai chat dollar skill suggestions filter and enter completes with trailing 
     );
     defer session.deinit();
 
-    try session.loadSkillSuggestionsFromRoots(&.{root ++ "/skills"});
+    try session.loadSkillSuggestionsFromRoots(&.{skills_root});
     session.appendInputText("$p");
 
     // "$p" matches both the reserved "$pubmed" command and the installed "pdf" skill.
@@ -6662,29 +6680,16 @@ test "ai_chat: non-anthropic base url keeps chat_completions protocol" {
     try std.testing.expectEqual(ApiProtocol.chat_completions, session.protocol);
 }
 
-test "setAcpCommand stores an owned copy and survives source mutation" {
-    const allocator = std.testing.allocator;
-    const session = try Session.init(
-        allocator,
-        "ACP Test",
-        "https://api.example.com",
-        "secret",
-        "model-a",
-        "system",
-        "enabled",
-        "high",
-        "false",
-        "false",
-    );
-    defer session.deinit();
-
-    var buf: [32]u8 = undefined;
-    @memcpy(buf[0..4], "abcd");
-    session.setAcpCommand(buf[0..4]);
-    buf[0] = 'X'; // source mutated after set must not affect the stored copy
-    try std.testing.expectEqualStrings("abcd", session.acp_command);
-    session.setAcpCommand("second"); // second set frees the old copy (testing.allocator catches leaks)
-    try std.testing.expectEqualStrings("second", session.acp_command);
+test "missingApiKey: subscription protocols do not store the OAuth token on the session" {
+    var session = Session{ .allocator = std.testing.allocator };
+    session.protocol = .codex;
+    try std.testing.expect(!session.missingApiKey());
+    session.protocol = .kimi;
+    try std.testing.expect(!session.missingApiKey());
+    session.protocol = .xai;
+    try std.testing.expect(!session.missingApiKey());
+    session.protocol = .responses;
+    try std.testing.expect(session.missingApiKey());
 }
 
 test "ai_chat: response protocol survives history record round trip" {
@@ -7380,28 +7385,9 @@ test "ai chat parses Responses API output text tool calls and usage" {
     try std.testing.expectEqual(@as(u64, 28), result.usage.?.total_tokens);
 }
 
-test "ai chat usage footer includes time token and cache fields" {
-    const footer = try allocUsageFooterAt(std.testing.allocator, 1000, 1800, 3300, .{
-        .prompt_tokens = 12,
-        .completion_tokens = 34,
-        .prompt_cache_hit_tokens = 5,
-        .prompt_cache_miss_tokens = 7,
-        .total_tokens = 46,
-    });
-    defer if (footer) |text| std.testing.allocator.free(text);
-    try std.testing.expect(footer != null);
-    try std.testing.expect(std.mem.indexOf(u8, footer.?, "time 2.") != null);
-    try std.testing.expect(std.mem.indexOf(u8, footer.?, "first 0.8s") != null);
-    try std.testing.expect(std.mem.indexOf(u8, footer.?, "14.8 token/s") != null);
-    try std.testing.expect(std.mem.indexOf(u8, footer.?, "total 46") != null);
-    try std.testing.expect(std.mem.indexOf(u8, footer.?, "input 12") != null);
-    try std.testing.expect(std.mem.indexOf(u8, footer.?, "output 34") != null);
-    try std.testing.expect(std.mem.indexOf(u8, footer.?, "cache 5/7") != null);
-}
-
 test "ai chat completion status stays compact while usage is message footer" {
     var session = Session{ .allocator = std.testing.allocator };
-    session.setCompletionStatusLocked(std.time.milliTimestamp() - 2300, .{
+    session.setCompletionStatusLocked(.{ .started_ms = std.time.milliTimestamp() - 2300, .finished_ms = std.time.milliTimestamp() }, .{
         .prompt_tokens = 12,
         .completion_tokens = 34,
         .total_tokens = 46,
@@ -8436,12 +8422,6 @@ test "statusKind: missing api key maps to stopped" {
     try std.testing.expectEqual(Session.StatusKind.stopped, session.statusKind());
 }
 
-test "missingApiKey: acp sessions never need an API key" {
-    var session = Session{ .allocator = std.testing.allocator };
-    session.protocol = .acp;
-    try std.testing.expect(!session.missingApiKey());
-}
-
 test "statusKind: idle error and stopped states map to stopped" {
     var session = Session{ .allocator = std.testing.allocator };
     session.copyApiKey("k");
@@ -8956,10 +8936,10 @@ test "ai chat double esc after stop opens rewind picker" {
 }
 
 // ---------------------------------------------------------------------------
-// Request-layer tests that need private Session methods (buildRequestLocked,
+// Request-layer tests that need Session internals (buildRequestLocked,
 // assignSessionId, copyTitle, copyBaseUrl, copyApiKey, copyModel,
-// copySystemPrompt, copyReasoningEffort).  They are co-located here so those
-// methods can remain private.  The request-serialization helpers they exercise
+// copySystemPrompt, copyReasoningEffort).  Most of those stay private, so the
+// tests are co-located here.  The request-serialization helpers they exercise
 // (buildRequestJson / buildRequestJsonForMessages) are pub on ai_chat_request.
 // ---------------------------------------------------------------------------
 
@@ -9838,6 +9818,34 @@ test "askUser returns a free-text custom answer" {
     try std.testing.expectEqualStrings("用 DuckDB", runner.result.custom);
 }
 
+test "question scrolling keeps the answer pending and resets for the next question" {
+    var session = try Session.init(std.testing.allocator, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer session.deinit();
+    var runner = AskRunner{ .session = session, .question = "Pick one", .options = &.{.{ .label = "A" }} };
+    var thread = try std.Thread.spawn(.{}, AskRunner.run, .{&runner});
+    waitForQuestion(session);
+    const first = session.questionView().?;
+    try std.testing.expect(session.scrollQuestionTo(first.generation, 100, 500, 200));
+    try std.testing.expectEqual(@as(f32, 100), session.questionView().?.scroll_offset);
+    try std.testing.expect(session.question_pending);
+    try std.testing.expect(!session.question_resolved);
+    try std.testing.expect(session.scrollQuestionTo(first.generation, 100, 500, 480));
+    try std.testing.expectEqual(@as(f32, 20), session.questionView().?.scroll_offset);
+    try std.testing.expect(session.resolveQuestionOption(0));
+    thread.join();
+    try std.testing.expect(!session.scrollQuestionTo(first.generation, 50, 500, 200));
+    thread = try std.Thread.spawn(.{}, AskRunner.run, .{&runner});
+    waitForQuestion(session);
+    const second = session.questionView().?;
+    try std.testing.expect(second.generation != first.generation);
+    try std.testing.expectEqual(@as(f32, 0), second.scroll_offset);
+    try std.testing.expect(!session.scrollQuestionTo(first.generation, 50, 500, 200));
+    try std.testing.expectEqual(@as(f32, 0), session.questionView().?.scroll_offset);
+    try std.testing.expect(session.resolveQuestionCustom("Custom answer"));
+    thread.join();
+    try std.testing.expectEqualStrings("Custom answer", runner.result.custom);
+}
+
 test "askUser returns cancelled when the request is stopped" {
     var session = try Session.init(std.testing.allocator, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
     defer session.deinit();
@@ -9913,32 +9921,6 @@ test "composer submit of free text answers a pending question as custom" {
 
     try std.testing.expect(runner.result == .custom);
     try std.testing.expectEqualStrings("neither, use C", runner.result.custom);
-}
-
-test "acp_command survives toHistoryRecord -> initFromHistoryRecord round-trip" {
-    const allocator = std.testing.allocator;
-    const session = try Session.init(
-        allocator,
-        "ACP",
-        "https://x",
-        "k",
-        "m",
-        "sys",
-        "disabled",
-        "low",
-        "true",
-        "true",
-    );
-    defer session.deinit();
-    session.setAcpCommand("npx codex-acp");
-
-    var record = try session.toHistoryRecord(allocator);
-    defer agent_history.freeOwnedRecord(allocator, &record);
-    try std.testing.expectEqualStrings("npx codex-acp", record.acp_command);
-
-    const restored = try Session.initFromHistoryRecord(allocator, record);
-    defer restored.deinit();
-    try std.testing.expectEqualStrings("npx codex-acp", restored.acp_command);
 }
 
 test "copilot flag survives toHistoryRecord -> initFromHistoryRecord round-trip" {

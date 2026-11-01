@@ -57,8 +57,9 @@ test "platform pty exposes size and lifecycle API" {
     try std.testing.expect(set_size_info.params[1].type.? == @This().winsize);
 
     const start_command_info = @typeInfo(@TypeOf(PtyType.startCommand)).@"fn";
-    try std.testing.expectEqual(@as(usize, 4), start_command_info.params.len);
+    try std.testing.expectEqual(@as(usize, 5), start_command_info.params.len);
     try std.testing.expect(start_command_info.params[0].type.? == *PtyType);
+    try std.testing.expect(start_command_info.params[4].type.? == bool);
 }
 
 test "platform pty owns pipe IO operations" {

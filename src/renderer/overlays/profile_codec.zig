@@ -6,9 +6,10 @@
 //! re-exports these symbols so its call sites are unchanged.
 const std = @import("std");
 const ai_chat_protocol = @import("../../assistant/conversation/protocol.zig");
+const effort_levels = @import("../../assistant/conversation/effort_levels.zig");
 const ssh_connection = @import("../../ssh/connection.zig");
 
-pub const SSH_FIELD_COUNT = 8;
+pub const SSH_FIELD_COUNT = 11;
 pub const SSH_FIELD_MAX = ssh_connection.IDENTITY_FILE_MAX;
 pub const AI_FIELD_COUNT = 13;
 pub const AI_FIELD_MAX = 8192;
@@ -22,6 +23,9 @@ pub const SshField = enum(usize) {
     proxy_jump = 5,
     auth_method = 6,
     identity_file = 7,
+    proxy_type = 8,
+    proxy_host = 9,
+    proxy_port = 10,
 };
 
 pub const AiField = enum(usize) {
@@ -46,6 +50,12 @@ pub const SshProfile = struct {
 };
 
 pub const AiProfile = struct {
+    /// Runtime-only origin; never serialized into ai_profiles.
+    managed_by_magpie: bool = false,
+    /// Model capacity metadata, not an output limit or a request parameter.
+    context_window: u32 = 0,
+    /// Runtime-only levels a session may switch to; empty for personal profiles.
+    efforts: effort_levels.EffortLevels = .{},
     fields: [AI_FIELD_COUNT][AI_FIELD_MAX]u8 = undefined,
     lens: [AI_FIELD_COUNT]usize = .{0} ** AI_FIELD_COUNT,
 };
@@ -109,6 +119,48 @@ pub fn decodeHexFieldToSlice(value: []const u8, out: []u8) ?usize {
 
 pub fn decodeHexField(value: []const u8, out: *[SSH_FIELD_MAX]u8) ?usize {
     return decodeHexFieldToSlice(value, out[0..]);
+}
+
+/// Identity of a profile name in a cached list's "already seen" set.
+pub fn profileNameHash(name: []const u8) u64 {
+    return std.hash.Wyhash.hash(0x5157_7e4d, name);
+}
+
+/// Append the profile lines of `disk` that appeared after a cached list was
+/// loaded: their name is neither in `current` (being saved) nor in `known`
+/// (seen by the cache, so a missing one was deleted here). A sync or another
+/// window added them; a save from the stale cache must not drop them.
+pub fn appendNewDiskLines(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    disk: []const u8,
+    current: []const []const u8,
+    known: []const u64,
+) !void {
+    var lines = std.mem.splitScalar(u8, disk, '\n');
+    next_line: while (lines.next()) |raw| {
+        const line = std.mem.trimRight(u8, raw, "\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        var name_buf: [SSH_FIELD_MAX]u8 = undefined;
+        const name_hex = line[0 .. std.mem.indexOfScalar(u8, line, '\t') orelse line.len];
+        const name_len = decodeHexFieldToSlice(name_hex, &name_buf) orelse continue;
+        const name = name_buf[0..name_len];
+        for (current) |c| if (std.mem.eql(u8, c, name)) continue :next_line;
+        if (std.mem.indexOfScalar(u64, known, profileNameHash(name)) != null) continue;
+        try out.appendSlice(allocator, line);
+        try out.append(allocator, '\n');
+    }
+}
+
+test "profile codec keeps only profiles that appeared on disk after the cache loaded" {
+    const allocator = std.testing.allocator;
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(allocator);
+    // "box" (being saved), "old" (seen, deleted here), "new" (added elsewhere).
+    const disk = "# header\n626F78\t31\n6F6C64\t32\n6E6577\t33\n";
+    const known = [_]u64{ profileNameHash("box"), profileNameHash("old") };
+    try appendNewDiskLines(allocator, &out, disk, &.{"box"}, &known);
+    try std.testing.expectEqualStrings("6E6577\t33\n", out.items);
 }
 
 /// Decode one tab-separated, hex-encoded SSH profile line into an `SshProfile`.
@@ -324,4 +376,15 @@ test "legacy 12-field ai profile line decodes with empty command" {
     try std.testing.expectEqualStrings("4096", aiProfileField(&profile, .max_tokens));
     try std.testing.expectEqualStrings("off", aiProfileField(&profile, .vision));
     try std.testing.expectEqual(@as(usize, 0), aiProfileField(&profile, .command).len);
+}
+
+test "SSH network proxy fields round trip and old profiles default to no proxy" {
+    var buf: [2048]u8 = undefined;
+    const encoded = testEncodeProfileLine(&buf, &.{ "ViaProxy", "host.test", "alice", "", "22", "", "credentials", "", "socks5", "127.0.0.1", "7897" });
+    const p = decodeSshProfileLine(encoded).?;
+    try std.testing.expectEqualStrings("socks5", profileField(&p, .proxy_type));
+    try std.testing.expectEqualStrings("127.0.0.1", profileField(&p, .proxy_host));
+    try std.testing.expectEqualStrings("7897", profileField(&p, .proxy_port));
+    const legacy = decodeSshProfileLine(testEncodeProfileLine(&buf, &.{ "Old", "host.test", "alice", "", "22", "", "credentials", "" })).?;
+    try std.testing.expectEqualStrings("", profileField(&legacy, .proxy_type));
 }

@@ -140,29 +140,8 @@ fn renderTitlebarText(text: []const u8, x_start: f32, y: f32, color: [3]f32) voi
 }
 
 fn renderTitlebarTextLimited(text: []const u8, x_start: f32, y: f32, color: [3]f32, max_w: f32) void {
-    if (max_w <= 0) return;
-
-    var x = @round(x_start);
-    const y_aligned = @round(y);
-    var view = std.unicode.Utf8View.init(text) catch {
-        renderTitlebarText(text, x, y_aligned, color);
-        return;
-    };
-    var it = view.iterator();
-    var drew_any = false;
-    while (it.nextCodepoint()) |cp| {
-        const advance = titlebar.titlebarGlyphAdvance(cp);
-        if (x + advance > x_start + max_w) {
-            const ellipsis_w = titlebar.titlebarGlyphAdvance('.') * 3;
-            if (drew_any and x + ellipsis_w <= x_start + max_w) {
-                renderTitlebarText("...", x, y_aligned, color);
-            }
-            return;
-        }
-        titlebar.renderTitlebarChar(cp, x, y_aligned, color);
-        x += advance;
-        drew_any = true;
-    }
+    const x = @round(x_start);
+    _ = titlebar.renderTextLimited(text, x, @round(y), color, @max(0, x_start + max_w - x));
 }
 
 fn writeActionShortcut(writer: anytype, action: keybind.Action) !bool {

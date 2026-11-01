@@ -233,6 +233,15 @@ pub fn postWakeup() void {
     }
 }
 
+/// No per-iteration platform scope here; see window_macos.zig.
+pub fn beginLoopIteration() ?*anyopaque {
+    return null;
+}
+
+pub fn endLoopIteration(token: ?*anyopaque) void {
+    _ = token;
+}
+
 pub fn registerEventWindow(hwnd: NativeHandle) void {
     event_windows_mutex.lock();
     defer event_windows_mutex.unlock();

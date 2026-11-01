@@ -183,6 +183,17 @@ char *wispterm_coretext_font_copy_path(void *handle) {
     return result;
 }
 
+char *wispterm_coretext_font_copy_postscript_name(void *handle) {
+    CTFontRef font = (CTFontRef)handle;
+    if (font == NULL) return NULL;
+
+    CFStringRef name = CTFontCopyPostScriptName(font);
+    if (name == NULL) return NULL;
+    char *result = wispterm_coretext_copy_cfstring(name);
+    CFRelease(name);
+    return result;
+}
+
 static void wispterm_write_u32_be(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)(v >> 24);
     p[1] = (uint8_t)(v >> 16);

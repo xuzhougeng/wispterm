@@ -19,6 +19,10 @@
 > [!NOTE]
 > WispTerm 提供 **Windows** 与 **macOS**（Apple Silicon 与 Intel）版本。**Linux**
 > AppImage 会作为社区测试版本发布，仍属实验性质。
+>
+> macOS 版运行于 **macOS 13 Ventura 及以上**。**macOS 12 Monterey 为尽力支持**：
+> 应用按 macOS 12 构建，CI 会拦截更新的 API，但没有 CI runner 能启动 macOS 12，
+> 因此未在 macOS 12 上测试。
 
 ## 功能特性
 
@@ -35,10 +39,11 @@
 - **AI 智能体会话** —— 启动 OpenAI 兼容的智能体标签页，配置 profile、恢复历史，导出完整或精简的 Markdown 对话记录
 - **命令中心副驾历史** —— 搜索已保存的 AI Chat 与 Copilot 侧栏对话，按日期分组，并可按侧栏/标签页来源筛选
 - **会话内切换模型** —— 输入 `/model` 或点击模型标签，把当前 AI Chat/Copilot 会话切到另一个已保存 profile，并用摘要交接上下文
-- **Prompt 队列** —— Copilot 请求进行中提交的 prompt 自动排队，会话空闲后按序发送；队列面板里可查看、重排、编辑或删除
+- **Prompt 队列** —— Copilot 请求进行中提交的 prompt 自动排队，会话空闲后按序发送。队列面板里按 Enter 立即把选中项送进对话当引导（与 Codex / Claude Code / Grok 相同），按 Esc 回到输入框编辑；也可重排或删除。命令面板可打开或清空队列
 - **Send to Chat** —— 把终端选中文本（或最近输出）作为折叠上下文卡片发给 Copilot，可走命令面板或可绑定的 `send_to_copilot` 快捷键动作
 - **分叉会话** —— 在任意 rewind 点复制当前 AI 对话（rewind 选择器按 `f`，或从命令面板整体复制），带着共享历史分别尝试不同方案
 - **工作区 Recipe** —— 把当前窗口的标签/分屏布局保存为命名 recipe，从命令面板一键恢复到新窗口，并可导出/导入 recipe JSON 文件分享工作环境
+- **密码库** —— 命令中心 → 密码库，打开类似设置页的页面管理 root/mysql 等密码；密码在本机加密保存（密钥由 macOS 钥匙串 / Windows DPAPI 保管），默认隐藏，显示或复制需手动操作；Agent 通过 `password_input` 在你每次批准后把密码直接输入终端的密码提示符，Agent 本身看不到密码，工具调用和对话历史里也不会留下密码
 - **AI 历史浏览器** —— 浏览本地、WSL 与 SSH 上的 Codex / Claude Code / Kimi Code / OpenCode 历史，并从原始项目目录恢复会话
 - **Kitty 图形协议** —— 通过 `imgcat.py` / `pdfcat.py` 在远程 shell 中内联显示图片和 PDF
 - **可选的远程访问** —— 通过 Cloudflare 托管的中继分享会话密钥（默认关闭）
@@ -57,7 +62,7 @@
 
 ## 版本
 
-桌面应用版本来自仓库根目录的 `build.zig.zon`（当前为 `1.38.0`），也是
+桌面应用版本来自仓库根目录的 `build.zig.zon`（当前为 `1.46.1`），也是
 `wispterm --version`、release notes、桌面发布包和命令中心 `Version` 条目使用的版本。
 
 `remote/` 下的 WispTerm Remote 网页控制台/中继有独立的 npm/web 版本（当前为
@@ -74,7 +79,7 @@ zig build -Doptimize=ReleaseFast  # 用于分发的 ReleaseFast 构建
 Remove-Item -Recurse -Force .\zig-out, .\.zig-cache -ErrorAction SilentlyContinue
 ```
 
-macOS（需要 macOS 13+ 与 Zig 0.15.2）：
+macOS（构建需要 macOS 13+ 与 Zig 0.15.2；构建出的应用也可在 macOS 12 上运行，属尽力支持）：
 
 ```bash
 zig build macos-app -Dtarget=aarch64-macos   # Apple Silicon 的 .app 包（Intel 用 x86_64-macos）
@@ -123,6 +128,11 @@ wispterm [options]
 
 配置文件细节见[配置](docs/configuration.md)。
 
+Windows 用户可从 [Releases](https://github.com/xuzhougeng/wispterm/releases)
+下载 `wispterm-windows-setup-vX.Y.Z.exe` 安装到当前用户（带开始菜单快捷方式和
+“应用和功能”条目），也可以下载便携 zip 解压到任意目录运行。两者都已签名，
+都支持原地自动更新。
+
 Windows 版本支持可选的 **在 WispTerm 中打开** 文件夹右键菜单（含文件夹空白区域）。在附带受信任签名身份包的发行版中运行 `Add-Context-Menu.cmd` 启用，运行 `Remove-Context-Menu.cmd` 移除。签名要求和安装说明见 [Windows 右键菜单](docs/windows-context-menu.md)。
 
 ## 键盘快捷键
@@ -149,7 +159,8 @@ keybind = global:ctrl+backquote=toggle_quake
 
 如果想清除全部默认绑定并从头重建，请在自定义绑定前加上 `keybind = clear`。要确认正在
 运行的桌面版本，打开命令中心（Windows 上 `Ctrl+Shift+P`，macOS 上 `Cmd+Shift+P`），输入
-`version` 并回车。
+`version` 并回车。也可以不用键盘打开命令中心：Windows 标题栏里 Copilot 按钮旁的放大镜按钮，
+或 macOS 菜单栏的 **View › Open Command Center**。
 
 > **macOS 修饰键映射：** 多数快捷键用 **Cmd** 代替 Ctrl、用 **Opt** 代替 Alt。有两个例外
 > 保留 Ctrl 以避免与系统快捷键冲突：**Ctrl+`**（Quake —— `Cmd+`` 是系统窗口切换器）以及
@@ -178,6 +189,7 @@ keybind = global:ctrl+backquote=toggle_quake
 | tmux 鼠标模式开启时选择终端文本 | **Shift 拖选** | **Shift 拖选** |
 | 选择 AI 回答的一部分 | 拖选 AI 回答文本 | 拖选 AI 回答文本 |
 | 选择并复制 AI 回答的一部分 | Shift 拖选 AI 回答文本 | Shift 拖选 AI 回答文本 |
+| 复制 Agent 提问或选项的一部分（直接单击仍是选择该选项） | 拖选提问卡片文本后按 **Ctrl+C**（或 Shift 拖选） | 拖选提问卡片文本后按 **Cmd+C**（或 Shift 拖选） |
 | 选择 AI 聊天输入；输入为空时选择整段记录 | 在 AI 聊天中 **Ctrl+A** | 在 AI 聊天中 **Cmd+A** |
 | 复制 AI 聊天选区或完整记录 | 在 AI 聊天中 **Ctrl+C** | 在 AI 聊天中 **Cmd+C** |
 | 删除选中的已保存智能体会话 | 在智能体历史中 **D** / **Delete** | 在智能体历史中 **D** / **Delete** |
@@ -193,6 +205,8 @@ keybind = global:ctrl+backquote=toggle_quake
 | 刷新本地 AI 历史扫描 | 本地 AI 历史中 **R** | 本地 AI 历史中 **R** |
 | 编辑 AI 聊天输入光标 | Left/Right/Home/End/Delete/Backspace | Left/Right/Home/End/Delete/Backspace |
 | 停止进行中的 AI 聊天或智能体请求 | 工作时在 AI 聊天中按 **Esc** | 工作时在 AI 聊天中按 **Esc** |
+| 把排队的 follow-up 立即送进对话 | 在 Queued Prompts 上按 **Enter** | 在 Queued Prompts 上按 **Enter** |
+| 把排队的 follow-up 取回输入框编辑 | 在 Queued Prompts 上按 **Esc** | 在 Queued Prompts 上按 **Esc** |
 | 复制选区（右键） | 右键点击选区 | 右键点击选区 |
 | 粘贴文本 | **Ctrl+V**；剪贴板没有图片时，**Ctrl+Shift+V** 也会粘贴文本 | **Cmd+V**；剪贴板没有图片时，**Cmd+Shift+V** 也会粘贴文本 |
 | 粘贴剪贴板图片 | **Ctrl+Shift+V** | **Cmd+Shift+V** |
@@ -278,7 +292,7 @@ MIT
 
 ## 引用
 
-Xu, Z.-G. (2026). *WispTerm* (Version 1.38.0) [Computer software]. Zenodo.
+Xu, Z.-G. (2026). *WispTerm* (Version 1.46.1) [Computer software]. Zenodo.
 https://doi.org/10.5281/zenodo.20660541
 
 可直接复制的致谢模板：
@@ -287,6 +301,6 @@ https://doi.org/10.5281/zenodo.20660541
 我们在生命科学数据分析中使用 WispTerm 作为计算环境的一部分，用于远程计算流程、
 可重复的命令行处理，以及相关文献与分析代码的整理。
 
-Xu, Z.-G. (2026). WispTerm (Version 1.38.0) [Computer software]. Zenodo.
+Xu, Z.-G. (2026). WispTerm (Version 1.46.1) [Computer software]. Zenodo.
 https://doi.org/10.5281/zenodo.20660541
 ```

@@ -12,9 +12,10 @@ const scan = @import("scan.zig");
 const app_window = @embedFile("../AppWindow.zig");
 
 /// Frozen at the current baseline; the ratchet may only ratchet DOWN.
-/// AppWindow re-exports 17 modules today (the unused `fbo` re-export was
-/// removed), so the ceiling already equals the actual.
-const reexport_ceiling: usize = 17;
+/// AppWindow re-exports 16 modules today (the unused `fbo` re-export was
+/// removed, and `titlebar.zig` imports `ui_pipeline` directly), so the ceiling
+/// already equals the actual.
+const reexport_ceiling: usize = 16;
 
 fn reexportCount(source: []const u8) usize {
     return scan.countTopLevelLinesContaining(source, "pub const ", "= @import(");

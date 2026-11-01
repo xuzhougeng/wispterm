@@ -33,8 +33,111 @@ pub fn isDelimiter(cp: u21) bool {
     return switch (cp) {
         '"', '\'', '`', '<', '>', '(', ')', '[', ']', '{', '}', '|', '\t', '\r', '\n' => true,
         0xFF08, 0xFF09 => true, // fullwidth parentheses
+        0x3001, 0xFF0C => true, // ideographic / fullwidth comma
         else => false,
     };
+}
+
+/// Wide-character spacer cells (Ghostty `spacer_tail` / `spacer_head`) are not
+/// part of the text. Grids that don't model them omit `isSpacer`.
+fn gridSkipsCell(grid: anytype, row: usize, col: usize) bool {
+    const Grid = @TypeOf(grid);
+    if (!@hasDecl(Grid, "isSpacer")) return false;
+    return grid.isSpacer(row, col);
+}
+
+fn previousGridCell(grid: anytype, cell: GridCell) ?GridCell {
+    if (cell.col > 0) return .{ .row = cell.row, .col = cell.col - 1 };
+    if (cell.row == 0) return null;
+    const prev_row = cell.row - 1;
+    if (!grid.continuesFromPrev(cell.row) or !grid.wrapsNext(prev_row)) return null;
+    const cols = grid.colCount(prev_row);
+    if (cols == 0) return null;
+    return .{ .row = prev_row, .col = cols - 1 };
+}
+
+fn nextGridCell(grid: anytype, cell: GridCell) ?GridCell {
+    const cols = grid.colCount(cell.row);
+    if (cell.col + 1 < cols) return .{ .row = cell.row, .col = cell.col + 1 };
+    const next_row = cell.row + 1;
+    if (next_row >= grid.rowCount()) return null;
+    if (!grid.wrapsNext(cell.row) or !grid.continuesFromPrev(next_row)) return null;
+    if (grid.colCount(next_row) == 0) return null;
+    return .{ .row = next_row, .col = 0 };
+}
+
+fn previousContentCodepoint(grid: anytype, row: usize, col: usize) ?u21 {
+    var cell = GridCell{ .row = row, .col = col };
+    while (true) {
+        cell = previousGridCell(grid, cell) orelse return null;
+        if (gridSkipsCell(grid, cell.row, cell.col)) continue;
+        return grid.codepoint(cell.row, cell.col);
+    }
+}
+
+fn nextContentCell(grid: anytype, cell: GridCell) ?GridCell {
+    var cur = cell;
+    while (true) {
+        cur = nextGridCell(grid, cur) orelse return null;
+        if (!gridSkipsCell(grid, cur.row, cur.col)) return cur;
+    }
+}
+
+fn startsWithAscii(grid: anytype, start: GridCell, literal: []const u8) bool {
+    var cell = start;
+    for (literal, 0..) |expected, i| {
+        if (gridSkipsCell(grid, cell.row, cell.col)) return false;
+        if (grid.codepoint(cell.row, cell.col) != expected) return false;
+        if (i + 1 == literal.len) return true;
+        cell = nextContentCell(grid, cell) orelse return false;
+    }
+    return true;
+}
+
+fn cellIsHardBoundary(grid: anytype, row: usize, col: usize) bool {
+    if (gridSkipsCell(grid, row, col)) return false;
+    return isDelimiter(grid.codepoint(row, col));
+}
+
+/// True when this cell opens a new token after non-ASCII prose: a colon
+/// (`文档在:docs/a.md`) or a URL (`见https://…`). The cell itself still belongs
+/// to the token on its right. A drive letter or an ASCII scheme (`C:/`,
+/// `https://`) is not a split.
+fn cellIsProseSplitStart(grid: anytype, row: usize, col: usize) bool {
+    if (gridSkipsCell(grid, row, col)) return false;
+    const cp = grid.codepoint(row, col);
+    if (isDelimiter(cp)) return false;
+    const prev = previousContentCodepoint(grid, row, col) orelse return false;
+    if (prev <= 0x7f) return false;
+    if (cp == ':' or cp == 0xFF1A) return true;
+    const here = GridCell{ .row = row, .col = col };
+    if (startsWithAscii(grid, here, "https://")) return true;
+    if (startsWithAscii(grid, here, "http://")) return true;
+    if (startsWithAscii(grid, here, "www.")) return true;
+    return false;
+}
+
+/// Include the spacer that belongs to this glyph. A tail sits on the same row
+/// just after the head. A head-spacer sits at the end of the previous wrapped
+/// row. The tail of the previous character (for example the comma before
+/// `docs/a.md`) is left outside the token.
+fn extendOverOwnedSpacer(grid: anytype, cell: GridCell, forward: bool) GridCell {
+    if (forward) {
+        var cur = cell;
+        const cols = grid.colCount(cur.row);
+        while (cur.col + 1 < cols and gridSkipsCell(grid, cur.row, cur.col + 1)) {
+            cur.col += 1;
+        }
+        return cur;
+    }
+    if (cell.col != 0 or cell.row == 0) return cell;
+    const prev_row = cell.row - 1;
+    if (!grid.continuesFromPrev(cell.row) or !grid.wrapsNext(prev_row)) return cell;
+    const cols = grid.colCount(prev_row);
+    if (cols == 0) return cell;
+    const prev_col = cols - 1;
+    if (!gridSkipsCell(grid, prev_row, prev_col)) return cell;
+    return .{ .row = prev_row, .col = prev_col };
 }
 
 fn appendInitialSegments(
@@ -91,6 +194,9 @@ pub fn trimSpan(token: []const u8) Span {
 /// - codepoint(row, col) u21
 /// - wrapsNext(row) bool
 /// - continuesFromPrev(row) bool
+/// - isSpacer(row, col) bool, optional. Wide-character spacer cells (codepoint
+///   0 beside a CJK / emoji head) are skipped, the same way Ghostty's screen
+///   formatter skips `spacer_head` / `spacer_tail` when it builds selection text.
 ///
 /// Soft-wrapped rows are joined only when both adjacent row flags agree:
 /// previous row `wrapsNext` and next row `continuesFromPrev`.
@@ -105,48 +211,25 @@ pub fn extractGridTokenAtCell(
     const clicked_cols = grid.colCount(cell.row);
     if (clicked_cols == 0) return null;
     const click_col = @min(cell.col, clicked_cols - 1);
-    if (isDelimiter(grid.codepoint(cell.row, click_col))) return null;
+    if (cellIsHardBoundary(grid, cell.row, click_col)) return null;
+    // A colon after CJK is only a separator. The URL character that follows
+    // CJK is the start of the link, so a click on it still selects the link.
+    const click_cp = grid.codepoint(cell.row, click_col);
+    if ((click_cp == ':' or click_cp == 0xFF1A) and cellIsProseSplitStart(grid, cell.row, click_col)) return null;
 
     var start = GridCell{ .row = cell.row, .col = click_col };
     while (true) {
-        if (start.col > 0) {
-            const prev_col = start.col - 1;
-            if (isDelimiter(grid.codepoint(start.row, prev_col))) break;
-            start.col = prev_col;
-            continue;
-        }
-
-        if (start.row == 0) break;
-        const prev_row = start.row - 1;
-        if (!grid.continuesFromPrev(start.row) or !grid.wrapsNext(prev_row)) break;
-
-        const prev_cols = grid.colCount(prev_row);
-        if (prev_cols == 0) break;
-        const prev_col = prev_cols - 1;
-        if (isDelimiter(grid.codepoint(prev_row, prev_col))) break;
-
-        start = .{ .row = prev_row, .col = prev_col };
+        if (cellIsProseSplitStart(grid, start.row, start.col)) break;
+        const prev = previousGridCell(grid, start) orelse break;
+        if (cellIsHardBoundary(grid, prev.row, prev.col)) break;
+        start = prev;
     }
 
     var end = GridCell{ .row = cell.row, .col = click_col };
     while (true) {
-        const cols = grid.colCount(end.row);
-        if (end.col + 1 < cols) {
-            const next_col = end.col + 1;
-            if (isDelimiter(grid.codepoint(end.row, next_col))) break;
-            end.col = next_col;
-            continue;
-        }
-
-        const next_row = end.row + 1;
-        if (next_row >= rows) break;
-        if (!grid.wrapsNext(end.row) or !grid.continuesFromPrev(next_row)) break;
-
-        const next_cols = grid.colCount(next_row);
-        if (next_cols == 0) break;
-        if (isDelimiter(grid.codepoint(next_row, 0))) break;
-
-        end = .{ .row = next_row, .col = 0 };
+        const next = nextGridCell(grid, end) orelse break;
+        if (cellIsHardBoundary(grid, next.row, next.col) or cellIsProseSplitStart(grid, next.row, next.col)) break;
+        end = next;
     }
 
     var segments: std.ArrayListUnmanaged(Segment) = .empty;
@@ -165,8 +248,9 @@ pub fn extractGridTokenAtCell(
     for (segments.items) |segment| {
         var col = segment.start_col;
         while (col <= segment.end_col) : (col += 1) {
+            if (gridSkipsCell(grid, segment.row, col)) continue;
             const cp = grid.codepoint(segment.row, col);
-            if (isDelimiter(cp)) return null;
+            if (cellIsHardBoundary(grid, segment.row, col)) return null;
 
             var buf: [4]u8 = undefined;
             const len = std.unicode.utf8Encode(cp, &buf) catch return null;
@@ -182,11 +266,13 @@ pub fn extractGridTokenAtCell(
     const kept_cells = utf8CodepointCount(token.items[span.start..span.end]);
     if (kept_cells == 0 or leading_cells + kept_cells > positions.items.len) return null;
 
+    // The reported range covers the spacer tail of a trailing wide character so
+    // the hover underline spans the whole glyph, not just its head cell.
     const text = allocator.dupe(u8, token.items[span.start..span.end]) catch return null;
     return .{
         .text = text,
-        .start = positions.items[leading_cells],
-        .end = positions.items[leading_cells + kept_cells - 1],
+        .start = extendOverOwnedSpacer(grid, positions.items[leading_cells], false),
+        .end = extendOverOwnedSpacer(grid, positions.items[leading_cells + kept_cells - 1], true),
     };
 }
 
@@ -292,9 +378,9 @@ test "trim drops leading mention marker before markdown path" {
 }
 
 test "trim drops leading colon left by a sentence separator" {
-    // "文档在:docs/foo.md" — the wide CJK char before the colon ends the token
-    // at the colon, so the extracted token starts with ':'. A path never begins
-    // with a colon, so it must be trimmed.
+    // "文档在:docs/foo.md" — a colon after CJK is a token boundary, so the
+    // extracted token can still start with ':'. A path never begins with a
+    // colon, so it must be trimmed.
     try std.testing.expectEqualStrings("docs/readme.md", trim(":docs/readme.md"));
     // Fullwidth colon (U+FF1A), common in Chinese text.
     try std.testing.expectEqualStrings("docs/readme.md", trim("\xEF\xBC\x9Adocs/readme.md"));
@@ -480,4 +566,96 @@ test "extractGridTokenAtCell drops a leading colon separator before a path" {
     defer token.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("docs/x.md", token.text);
     try std.testing.expectEqual(GridCell{ .row = 0, .col = 5 }, token.start); // 'd' of docs
+}
+
+const WideGrid = struct {
+    cells: []const u21,
+    spacer: []const bool,
+
+    fn rowCount(_: @This()) usize {
+        return 1;
+    }
+    fn colCount(self: @This(), _: usize) usize {
+        return self.cells.len;
+    }
+    fn codepoint(self: @This(), _: usize, col: usize) u21 {
+        return self.cells[col];
+    }
+    fn wrapsNext(_: @This(), _: usize) bool {
+        return false;
+    }
+    fn continuesFromPrev(_: @This(), _: usize) bool {
+        return false;
+    }
+    fn isSpacer(self: @This(), _: usize, col: usize) bool {
+        return self.spacer[col];
+    }
+};
+
+fn expectWideToken(grid: WideGrid, col: usize, text: []const u8, start_col: usize, end_col: usize) !void {
+    const token = extractGridTokenAtCell(std.testing.allocator, grid, .{
+        .row = 0,
+        .col = col,
+    }) orelse return error.ExpectedToken;
+    defer token.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(text, token.text);
+    try std.testing.expectEqual(GridCell{ .row = 0, .col = start_col }, token.start);
+    try std.testing.expectEqual(GridCell{ .row = 0, .col = end_col }, token.end);
+}
+
+test "extractGridTokenAtCell joins CJK wide characters across spacer tails" {
+    // 分析内容.docx — each Han character is a head cell plus a spacer tail.
+    // Ctrl+click on the head, the spacer, or the extension must take the whole name.
+    const cells = [_]u21{ '分', 0, '析', 0, '内', 0, '容', 0, '.', 'd', 'o', 'c', 'x' };
+    const spacer = [_]bool{ false, true, false, true, false, true, false, true, false, false, false, false, false };
+    const grid = WideGrid{ .cells = &cells, .spacer = &spacer };
+    try expectWideToken(grid, 0, "分析内容.docx", 0, 12);
+    try expectWideToken(grid, 1, "分析内容.docx", 0, 12);
+    try expectWideToken(grid, 8, "分析内容.docx", 0, 12);
+}
+
+test "extractGridTokenAtCell underline covers the trailing spacer of a wide character" {
+    const cells = [_]u21{ '分', 0, '析', 0 };
+    const spacer = [_]bool{ false, true, false, true };
+    try expectWideToken(WideGrid{ .cells = &cells, .spacer = &spacer }, 2, "分析", 0, 3);
+}
+
+test "extractGridTokenAtCell keeps a colon after ASCII and splits one after CJK" {
+    const drive = [_]u21{ 'C', ':', '/', '分', 0, '析', 0, '.', 'm', 'd' };
+    const drive_sp = [_]bool{ false, false, false, false, true, false, true, false, false, false };
+    try expectWideToken(WideGrid{ .cells = &drive, .spacer = &drive_sp }, 3, "C:/分析.md", 0, 9);
+
+    const labeled = [_]u21{ '文', 0, '档', 0, '在', 0, ':', 'd', 'o', 'c', 's', '/', 'a', '.', 'm', 'd' };
+    const labeled_sp = [_]bool{ false, true, false, true, false, true, false, false, false, false, false, false, false, false, false, false };
+    const prose = WideGrid{ .cells = &labeled, .spacer = &labeled_sp };
+    try expectWideToken(prose, 12, "docs/a.md", 7, 15);
+    try expectWideToken(prose, 0, "文档在", 0, 5);
+    try std.testing.expect(extractGridTokenAtCell(std.testing.allocator, prose, .{ .row = 0, .col = 6 }) == null);
+}
+
+test "extractGridTokenAtCell splits a URL that follows CJK with no space" {
+    const cells = [_]u21{ '见', 0, 'h', 't', 't', 'p', 's', ':', '/', '/', 'e', 'x', '.', 'c', 'o', 'm' };
+    const spacer = [_]bool{ false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false };
+    const grid = WideGrid{ .cells = &cells, .spacer = &spacer };
+    try expectWideToken(grid, 2, "https://ex.com", 2, 15);
+    try expectWideToken(grid, 0, "见", 0, 1);
+}
+
+test "extractGridTokenAtCell keeps ideographic full stop inside a path and splits on a comma" {
+    const cells = [_]u21{ 'd', 'o', 'c', 's', '/', '设', 0, '计', 0, '。', 0, 'n', 'o', 't', 'e', 's', '.', 'm', 'd' };
+    const spacer = [_]bool{ false, false, false, false, false, false, true, false, true, false, true, false, false, false, false, false, false, false, false };
+    try expectWideToken(WideGrid{ .cells = &cells, .spacer = &spacer }, 11, "docs/设计。notes.md", 0, 18);
+
+    const comma_cells = [_]u21{ '见', 0, '，', 0, 'd', 'o', 'c', 's', '/', 'a', '.', 'm', 'd' };
+    const comma_sp = [_]bool{ false, true, false, true, false, false, false, false, false, false, false, false, false };
+    try expectWideToken(WideGrid{ .cells = &comma_cells, .spacer = &comma_sp }, 4, "docs/a.md", 4, 12);
+}
+
+test "extractGridTokenAtCell still treats a real empty cell as a boundary" {
+    const cells = [_]u21{ 'a', 'b', 0, 'c', 'd' };
+    const spacer = [_]bool{ false, false, false, false, false };
+    const grid = WideGrid{ .cells = &cells, .spacer = &spacer };
+    try expectWideToken(grid, 0, "ab", 0, 1);
+    try expectWideToken(grid, 4, "cd", 3, 4);
+    try std.testing.expect(extractGridTokenAtCell(std.testing.allocator, grid, .{ .row = 0, .col = 2 }) == null);
 }

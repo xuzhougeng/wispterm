@@ -43,6 +43,12 @@ pub fn upload(self: Buffer, bytes: []const u8) void {
     self.bind();
     Context.gl.BufferSubData.?(self.target, 0, @intCast(bytes.len), bytes.ptr);
 }
+/// Overwrite from offset 0 with data only the current frame's draws read.
+/// GL orders BufferSubData against earlier draws itself, so this is `upload`
+/// (the Metal backend sub-allocates it from a per-frame arena).
+pub fn uploadTransient(self: Buffer, bytes: []const u8) void {
+    self.upload(bytes);
+}
 pub fn deinit(self: *Buffer) void {
     if (self.handle != 0) {
         Context.gl.DeleteBuffers.?(1, &self.handle);

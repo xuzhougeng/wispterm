@@ -5,6 +5,7 @@
 //! in AppWindow.zig.
 
 const std = @import("std");
+const update_inplace = @import("update_inplace.zig");
 const builtin = @import("builtin");
 const Config = @import("config.zig");
 const App = @import("App.zig");
@@ -180,6 +181,9 @@ pub fn main() !void {
     defer if (build_options.debug_console) diag_log.close();
 
     std.debug.print("WispTerm starting...\n", .{});
+    // Relaunched by an in-place update: tell the old version we are up, wait
+    // for it to exit (it owns ports we bind), and clean up after the swap.
+    update_inplace.onStartup(allocator);
     rerootCwdFromBundleRootIfNeeded();
     image_decoder.install();
 
@@ -278,6 +282,8 @@ pub fn main() !void {
     app.startAgentControl(&cfg);
 
     try app.run();
+    // Quitting with an update staged installs it: the next launch runs it.
+    app.installStagedUpdateOnExit();
 
     std.debug.print("WispTerm exiting...\n", .{});
 }

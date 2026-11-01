@@ -7,6 +7,7 @@ const agent_prompt_answer = @import("../terminal_agents/prompt_answer.zig");
 const ai_agent_access = @import("../agent/access.zig");
 const terminal_lease = @import("../agent/terminal_lease.zig");
 const platform_process = @import("../platform/process.zig");
+const process_runner = @import("../process_runner.zig");
 const terminal_tools = @import("terminal.zig");
 const tool_access = @import("access.zig");
 const tool_output = @import("output.zig");
@@ -93,133 +94,46 @@ pub fn runShellCommand(allocator: std.mem.Allocator, command: []const u8, cwd: ?
     return if (last_err) |err| err else error.NoLocalShellFallback;
 }
 
-pub const CaptureOutput = struct {
-    allocator: std.mem.Allocator,
-    file: std.fs.File,
-    max_bytes: usize,
-    data: []u8 = &.{},
-    truncated: bool = false,
-    failed: bool = false,
+fn toolContextCancelled(ptr: *const anyopaque) bool {
+    const ctx: *const ToolContext = @ptrCast(@alignCast(ptr));
+    return ctx.isCancelled();
+}
 
-    fn deinit(self: *CaptureOutput) void {
-        self.allocator.free(self.data);
-        self.data = &.{};
-    }
-};
-
+/// Spawn `argv`, capture bounded stdout/stderr, and always reap. Delegates to
+/// `process_runner.runCapture` so a grandchild that inherits the pipe write
+/// end cannot hang the caller on blocking pipe reads or thread join.
 pub fn runArgv(allocator: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const u8, output_limit: u32, timeout_ms: u32, cancel_ctx: ?*const ToolContext) !ShellResult {
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-    child.cwd = cwd;
-    child.create_no_window = true;
-    try child.spawn();
-
-    var stdout_capture = CaptureOutput{
-        .allocator = allocator,
-        .file = child.stdout.?,
-        .max_bytes = output_limit,
-    };
-    errdefer stdout_capture.deinit();
-    var stderr_capture = CaptureOutput{
-        .allocator = allocator,
-        .file = child.stderr.?,
-        .max_bytes = output_limit,
-    };
-    errdefer stderr_capture.deinit();
-
-    const stdout_thread = try std.Thread.spawn(.{}, captureOutputThread, .{&stdout_capture});
-    const stderr_thread = try std.Thread.spawn(.{}, captureOutputThread, .{&stderr_capture});
-
-    const wait_ms = @max(timeout_ms, 1);
-    const deadline = std.time.milliTimestamp() + @as(i64, @intCast(wait_ms));
-    var timed_out = false;
-    var canceled = false;
-    while (true) {
-        switch (platform_process.childExited(child.id, 25)) {
-            .running => {},
-            .exited => |code| {
-                // On POSIX childExited() already reaped the zombie via
-                // waitpid(WNOHANG). Pre-set Child.term so the child.wait()
-                // below takes std's cleanup-only fast path instead of calling
-                // waitpid() a second time — that second wait would hit ECHILD,
-                // which Zig's std.posix.waitpid treats as `unreachable` (abort).
-                // On Windows the process handle is NOT consumed by the poll, so
-                // leave term unset and let child.wait() close the handle.
-                if (builtin.os.tag != .windows) child.term = .{ .Exited = @intCast(code) };
-                break;
-            },
-            .gone => {
-                if (builtin.os.tag != .windows) child.term = .{ .Unknown = 0 };
-                break;
-            },
-        }
-        if (cancel_ctx) |c| {
-            if (c.isCancelled()) {
-                canceled = true;
-                _ = child.kill() catch {};
-                break;
-            }
-        }
-        if (std.time.milliTimestamp() >= deadline) {
-            timed_out = true;
-            _ = child.kill() catch {};
-            break;
-        }
+    var token = process_runner.CancelToken.init();
+    if (cancel_ctx) |c| {
+        token.probe = .{
+            .ctx = @ptrCast(c),
+            .is_cancelled = toolContextCancelled,
+        };
     }
 
-    stdout_thread.join();
-    stderr_thread.join();
+    const wait_ms: u64 = @max(timeout_ms, 1);
+    const captured = process_runner.runCapture(allocator, argv, .{
+        .timeout_ms = wait_ms,
+        .cancel = if (cancel_ctx != null) &token else null,
+        .max_stdout_bytes = output_limit,
+        .max_stderr_bytes = output_limit,
+        .kill_on_output_cap = false,
+        .cwd = cwd,
+    }) catch |err| switch (err) {
+        error.SpawnFailed => return error.SpawnFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
 
-    const exit_code: i32 = if (timed_out or canceled) 124 else blk: {
-        const term = try child.wait();
-        break :blk switch (term) {
-            .Exited => |code| @intCast(code),
-            .Signal => |sig| -@as(i32, @intCast(sig)),
-            .Stopped => |sig| -@as(i32, @intCast(sig)),
-            .Unknown => |code| @intCast(code),
-        };
+    const timed_out = captured.timed_out or captured.cancelled;
+    const exit_code: i32 = if (timed_out) 124 else switch (captured.termination) {
+        .exited => |code| std.math.cast(i32, code) orelse -1,
+        .killed => 124,
     };
     return .{
         .exit_code = exit_code,
-        .stdout = stdout_capture.data,
-        .stderr = stderr_capture.data,
-        .timed_out = timed_out or canceled,
-    };
-}
-
-pub fn captureOutputThread(capture: *CaptureOutput) void {
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    defer {
-        if (capture.failed) out.deinit(capture.allocator);
-    }
-
-    var buf: [4096]u8 = undefined;
-    while (true) {
-        const n = capture.file.read(&buf) catch {
-            break;
-        };
-        if (n == 0) break;
-        if (out.items.len < capture.max_bytes) {
-            const remaining = capture.max_bytes - out.items.len;
-            const take = @min(remaining, n);
-            out.appendSlice(capture.allocator, buf[0..take]) catch {
-                capture.failed = true;
-                return;
-            };
-            if (take < n) capture.truncated = true;
-        } else {
-            capture.truncated = true;
-        }
-    }
-
-    if (capture.truncated) {
-        out.appendSlice(capture.allocator, "\n...[truncated]\n") catch {};
-    }
-    capture.data = out.toOwnedSlice(capture.allocator) catch blk: {
-        capture.failed = true;
-        break :blk &.{};
+        .stdout = captured.stdout,
+        .stderr = captured.stderr,
+        .timed_out = timed_out,
     };
 }
 
@@ -256,19 +170,14 @@ pub const UnixSessionKind = enum {
 fn agentAppDisplayName(app: agent_detector.App) []const u8 {
     return switch (app) {
         .none => "terminal app",
-        .codex => "Codex",
-        .claude_code => "Claude Code",
-        // In-app sessions never appear on a PTY surface; arm exists for exhaustiveness.
-        .assistant => "Copilot",
+        else => app.displayName(),
     };
 }
 
 fn agentAppReplName(app: agent_detector.App) []const u8 {
     return switch (app) {
         .none => "plain",
-        .codex => "codex",
-        .claude_code => "claude_code",
-        .assistant => "assistant",
+        else => app.label(),
     };
 }
 
@@ -300,6 +209,7 @@ fn commandWordApp(command: []const u8) ?agent_detector.App {
     if (std.mem.lastIndexOfAny(u8, word, "/\\")) |slash| word = word[slash + 1 ..];
     if (std.ascii.eqlIgnoreCase(word, "codex")) return .codex;
     if (std.ascii.eqlIgnoreCase(word, "claude") or std.ascii.eqlIgnoreCase(word, "claude-code")) return .claude_code;
+    if (std.ascii.eqlIgnoreCase(word, "pi")) return .pi;
     return null;
 }
 
@@ -386,6 +296,7 @@ pub const ReplKind = enum {
     python,
     codex,
     claude_code,
+    pi,
     plain,
 
     pub fn parse(value: []const u8) ?ReplKind {
@@ -398,6 +309,7 @@ pub const ReplKind = enum {
         {
             return .claude_code;
         }
+        if (std.ascii.eqlIgnoreCase(value, "pi")) return .pi;
         if (std.ascii.eqlIgnoreCase(value, "plain") or std.ascii.eqlIgnoreCase(value, "text")) return .plain;
         return null;
     }
@@ -408,6 +320,7 @@ pub const ReplKind = enum {
             .python => "Python",
             .codex => "Codex",
             .claude_code => "Claude Code",
+            .pi => "Pi",
             .plain => "plain",
         };
     }
@@ -456,7 +369,7 @@ fn sendControlKey(ctx: *const ToolContext, host: ToolHost, surface: ToolSurface,
 }
 
 pub fn terminalReplExec(ctx: *ToolContext, surface_id: []const u8, repl_name: []const u8, code: []const u8, timeout_ms: u32) ![]u8 {
-    const repl = ReplKind.parse(repl_name) orelse return std.fmt.allocPrint(ctx.allocator, "Unsupported repl \"{s}\". Use r, python, codex, claude_code, or plain.", .{repl_name});
+    const repl = ReplKind.parse(repl_name) orelse return std.fmt.allocPrint(ctx.allocator, "Unsupported repl \"{s}\". Use r, python, codex, claude_code, pi, or plain.", .{repl_name});
     if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
     const control = controlKeyByte(code);
     const gate = accessGate(ctx, code, null);
@@ -487,7 +400,7 @@ pub fn terminalReplExec(ctx: *ToolContext, surface_id: []const u8, repl_name: []
 
     return switch (repl) {
         .r, .python, .plain => lineReplEvalTool(ctx, host, surface, repl, code, timeout_ms),
-        .codex, .claude_code => plainReplInputTool(ctx, host, surface, repl, code, timeout_ms),
+        .codex, .claude_code, .pi => plainReplInputTool(ctx, host, surface, repl, code, timeout_ms),
     };
 }
 
@@ -542,7 +455,11 @@ pub fn terminalAnswerPrompt(ctx: *ToolContext, surface_id: ?[]const u8, answer: 
 
     var options_buf: [12]agent_prompt_answer.Option = undefined;
     const n = agent_prompt_answer.parsePromptOptions(screen, &options_buf);
-    const keystroke = agent_prompt_answer.resolveAnswer(options_buf[0..n], screen, intent, option_number) orelse {
+    var arrow_bytes: [40]u8 = undefined;
+    const keystroke = (if (agent_prompt_answer.optionsAreArrowStyle(options_buf[0..n]))
+        agent_prompt_answer.resolveArrowAnswer(options_buf[0..n], intent, option_number, &arrow_bytes)
+    else
+        agent_prompt_answer.resolveAnswer(options_buf[0..n], screen, intent, option_number)) orelse {
         const out = try allocPromptOptionsHint(ctx.allocator, options_buf[0..n], screen);
         return tool_output.truncateTailOwned(ctx.allocator, ctx.settings, out);
     };
@@ -605,8 +522,8 @@ pub fn allocPlainReplInput(allocator: std.mem.Allocator, repl: ReplKind, surface
 
 pub fn plainReplInputTool(ctx: *const ToolContext, host: ToolHost, surface: ToolSurface, repl: ReplKind, text: []const u8, timeout_ms: u32) ![]u8 {
     // Line REPLs (.r/.python/.plain) go through lineReplEvalTool instead; this
-    // tool is only for the agent TUIs, whose completion is judged by busy markers.
-    std.debug.assert(repl == .codex or repl == .claude_code);
+    // tool is for the agent TUIs, whose completion is judged by busy markers.
+    std.debug.assert(repl == .codex or repl == .claude_code or repl == .pi);
     if (repl == .codex) {
         // Codex's TUI treats a fast input burst as a paste and folds a trailing
         // Enter into the pasted text, leaving a literal newline that never
@@ -628,9 +545,15 @@ pub fn plainReplInputTool(ctx: *const ToolContext, host: ToolHost, surface: Tool
         }
     }
 
-    // Only Codex / Claude Code reach this tool now (line REPLs use
-    // lineReplEvalTool); both settle on the busy-marker-aware waiter.
+    // Only Codex / Claude Code / Pi reach this tool now (line REPLs use
+    // lineReplEvalTool); all settle on the busy-marker-aware waiter.
     return waitForAgentAppReplResult(ctx, host, surface, repl, timeout_ms);
+}
+
+test "replSnapshotLooksBusy matches the Pi working indicator" {
+    try std.testing.expect(replSnapshotLooksBusy(.pi, "Working (esc to interrupt)"));
+    try std.testing.expect(replSnapshotLooksBusy(.pi, "Custom (esc to interrupt)"));
+    try std.testing.expect(!replSnapshotLooksBusy(.pi, "? for shortcuts"));
 }
 
 fn replSnapshotLooksBusy(repl: ReplKind, snapshot: []const u8) bool {
@@ -651,6 +574,8 @@ fn replSnapshotLooksBusy(repl: ReplKind, snapshot: []const u8) bool {
             std.ascii.indexOfIgnoreCase(snapshot, "Task(") != null or
             std.ascii.indexOfIgnoreCase(snapshot, "TodoWrite(") != null or
             std.ascii.indexOfIgnoreCase(snapshot, "WebFetch(") != null,
+        .pi => std.ascii.indexOfIgnoreCase(snapshot, "Working (") != null or
+            std.ascii.indexOfIgnoreCase(snapshot, "esc to interrupt") != null,
         .r, .python, .plain => false,
     };
 }
@@ -695,6 +620,13 @@ fn waitForAgentAppReplResult(ctx: *const ToolContext, host: ToolHost, surface: T
     defer ctx.allocator.free(last_text);
     var last_change_ms = started;
 
+    // Live agent state (hook marker or screen detection) is the authority when
+    // the host can read it: it keeps us waiting through long quiet "thinking"
+    // stretches that look settled, returns the moment the agent stops for a
+    // decision, and finishes on the agent's own idle instead of a guess.
+    var live: agent_detector.Detection = surface.liveDetection();
+    var saw_running = live.state == .running;
+
     while (std.time.milliTimestamp() < deadline) {
         if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
         std.Thread.sleep(150 * std.time.ns_per_ms);
@@ -709,9 +641,46 @@ fn waitForAgentAppReplResult(ctx: *const ToolContext, host: ToolHost, surface: T
             last_change_ms = now;
         }
 
-        // Settle on a screen that has been stable for quiet_ms (after a min-wait
-        // floor) and shows no active busy marker. The busy-marker gate keeps us
-        // waiting while Codex/Claude Code is still working.
+        if (host.surfaceAgentState) |read_state| {
+            if (read_state(host.ctx, surface.id, surface.ptr)) |det| live = det;
+        }
+        if (live.app != .none and live.state != .none) {
+            switch (live.state) {
+                .waiting_approval, .needs_input => return allocAgentAppReplResult(
+                    ctx.allocator,
+                    ctx.settings,
+                    repl,
+                    live.app,
+                    live.state,
+                    live.confidence,
+                    "stopped for a decision (approval or question); answer it with terminal_answer_prompt or terminal_repl_exec control keys",
+                    last_text,
+                ),
+                .running => {
+                    saw_running = true;
+                    continue;
+                },
+                .idle, .done, .halted, .failed => if (saw_running or now - started >= min_wait_ms) {
+                    return allocAgentAppReplResult(
+                        ctx.allocator,
+                        ctx.settings,
+                        repl,
+                        live.app,
+                        live.state,
+                        live.confidence,
+                        "reports it is no longer working",
+                        last_text,
+                    );
+                },
+                .none => {},
+            }
+            continue;
+        }
+
+        // No live state: settle on a screen that has been stable for quiet_ms
+        // (after a min-wait floor) and shows no active busy marker. The
+        // busy-marker gate keeps us waiting while Codex/Claude Code is still
+        // working.
         const settled = now - started >= min_wait_ms and now - last_change_ms >= quiet_ms;
         if (settled and !replSnapshotLooksBusy(repl, last_text)) {
             return allocAgentAppReplResult(
@@ -737,9 +706,9 @@ fn waitForAgentAppReplResult(ctx: *const ToolContext, host: ToolHost, surface: T
         ctx.allocator,
         ctx.settings,
         repl,
-        surface.agent_app,
-        surface.agent_state,
-        surface.agent_confidence,
+        if (live.app != .none) live.app else surface.agent_app,
+        if (live.app != .none) live.state else surface.agent_state,
+        if (live.app != .none) live.confidence else surface.agent_confidence,
         note,
         last_text,
     );
@@ -773,7 +742,7 @@ fn lineReplEvalTool(ctx: *const ToolContext, host: ToolHost, surface: ToolSurfac
 /// `quiet_ms` (after a `min_wait_ms` floor) AND a ready prompt has returned, then
 /// hand back the screen. On timeout, return the latest screen tagged as still in
 /// progress so the model does not treat a partial result as final.
-fn waitForReplPromptReturn(
+pub fn waitForReplPromptReturn(
     ctx: *const ToolContext,
     host: ToolHost,
     surface: ToolSurface,
@@ -828,7 +797,7 @@ fn waitForReplPromptReturn(
 /// The trailing prompt of a terminal snapshot: the last non-empty line, trimmed
 /// of surrounding whitespace. Returns "" when no non-empty line exists. Used to
 /// learn a REPL's prompt dynamically so completion detection is language-agnostic.
-fn extractPromptLine(snapshot: []const u8) []const u8 {
+pub fn extractPromptLine(snapshot: []const u8) []const u8 {
     var it = std.mem.splitBackwardsScalar(u8, snapshot, '\n');
     while (it.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r\n");
@@ -1267,6 +1236,16 @@ test "shell exec refuses interactive Codex launcher commands" {
     try std.testing.expect(try shellExecInteractiveAgentCommandRefusal(allocator, .wsl, "which codex") == null);
     try std.testing.expect(try shellExecInteractiveAgentCommandRefusal(allocator, .wsl, "codex --version") == null);
 }
+test "shell exec refuses interactive Pi launcher commands" {
+    const allocator = std.testing.allocator;
+    const refused = (try shellExecInteractiveAgentCommandRefusal(allocator, .wsl, "pi --model default")).?;
+    defer allocator.free(refused);
+    try std.testing.expect(std.mem.indexOf(u8, refused, "Refusing to start interactive Pi") != null);
+    try std.testing.expect(std.mem.indexOf(u8, refused, "repl=plain") != null);
+
+    try std.testing.expect(try shellExecInteractiveAgentCommandRefusal(allocator, .wsl, "pi --version") == null);
+}
+
 test "shell exec refuses bare REPL launchers but allows run-and-exit invocations" {
     const allocator = std.testing.allocator;
     const bare = [_][]const u8{ "python", "python3", "ipython", "R", "node", "irb", "/usr/bin/python", "python " };
@@ -1839,6 +1818,11 @@ test "accessGate: no working dir leaves behavior unchanged" {
     try std.testing.expect(!g.skip);
     try std.testing.expect(!g.force);
 }
+test "ReplKind parses and labels the Pi agent kind" {
+    try std.testing.expectEqual(ReplKind.pi, ReplKind.parse("pi").?);
+    try std.testing.expectEqualStrings("Pi", ReplKind.pi.label());
+}
+
 test "terminal_answer_prompt sends the Yes digit for an approve answer" {
     const a = std.testing.allocator;
     const screen =
@@ -1968,4 +1952,73 @@ test "terminal_answer_prompt cannot read another Agent's screen" {
     try std.testing.expect(std.mem.indexOf(u8, result, "Terminal access denied") != null);
     try std.testing.expectEqual(@as(usize, 0), host_ctx.snap_calls);
     try std.testing.expectEqual(@as(usize, 0), host_ctx.all_len);
+}
+
+test "runArgv uses process_runner instead of drain threads" {
+    const source = @embedFile("exec.zig");
+    // Split the needles so this guard's own source does not match them.
+    const raw_spawn = "std.process." ++ "Child.init";
+    const runner_call = "process_runner." ++ "runCapture";
+    const drain_thread = "captureOutput" ++ "Thread";
+    try std.testing.expect(std.mem.indexOf(u8, source, runner_call) != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, raw_spawn) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, drain_thread) == null);
+}
+
+test "runArgv returns when a grandchild keeps stdout open" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    const argv = [_][]const u8{ "sh", "-c", "( sleep 30 ) & printf done; exit 0" };
+    const started = std.time.milliTimestamp();
+    const result = try runArgv(a, &argv, null, 4096, 10_000, null);
+    defer a.free(result.stdout);
+    defer a.free(result.stderr);
+    const elapsed = std.time.milliTimestamp() - started;
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "done") != null);
+    try std.testing.expect(!result.timed_out);
+    try std.testing.expectEqual(@as(i32, 0), result.exit_code);
+    try std.testing.expect(elapsed < 2000);
+}
+
+test "runArgv times out a child that never exits" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    const argv = [_][]const u8{ "sh", "-c", "sleep 30" };
+    const started = std.time.milliTimestamp();
+    const result = try runArgv(a, &argv, null, 4096, 150, null);
+    defer a.free(result.stdout);
+    defer a.free(result.stderr);
+    const elapsed = std.time.milliTimestamp() - started;
+    try std.testing.expect(result.timed_out);
+    try std.testing.expectEqual(@as(i32, 124), result.exit_code);
+    try std.testing.expect(elapsed < 5000);
+}
+
+test "runArgv cancels via ToolContext without waiting for the timeout" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    const cancelledTrue = struct {
+        fn call(_: *anyopaque) bool {
+            return true;
+        }
+    }.call;
+    var dummy: u8 = 0;
+    const ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{},
+        .approve = fakeApprove,
+        .cancelled = cancelledTrue,
+    };
+    const argv = [_][]const u8{ "sh", "-c", "sleep 30" };
+    const started = std.time.milliTimestamp();
+    const result = try runArgv(a, &argv, null, 4096, 10_000, &ctx);
+    defer a.free(result.stdout);
+    defer a.free(result.stderr);
+    const elapsed = std.time.milliTimestamp() - started;
+    try std.testing.expect(result.timed_out);
+    try std.testing.expectEqual(@as(i32, 124), result.exit_code);
+    try std.testing.expect(elapsed < 5000);
 }

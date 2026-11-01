@@ -33,7 +33,7 @@ keybind = global:ctrl+backquote=toggle_quake
 | --- | --- | --- |
 | `Ctrl+backquote`（全局） | `toggle_quake` | 显示/隐藏 Quake 下拉窗口 |
 | `Ctrl+Shift+P` | `toggle_command_palette` | 打开命令中心 |
-| `Ctrl+Shift+T` | `new_session` | 打开会话启动器（shell / Copilot / Sessions） |
+| `Ctrl+Shift+T` | `new_session` | 打开会话启动器（终端、副驾、会话、端口转发、记忆中心、设置） |
 | `Ctrl+Shift+N` | `new_window` | 新建窗口 |
 | `Ctrl+Shift++` | `split_right` | 向右分屏当前面板 |
 | `Ctrl+Shift+-` | `split_down` | 向下分屏当前面板 |

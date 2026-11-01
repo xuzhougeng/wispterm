@@ -2,9 +2,11 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 
+#include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define WISPTERM_METAL_MAX_BUFFERS 4096
@@ -30,26 +32,61 @@ typedef struct WispTermMetalContext {
 typedef struct WispTermMetalBufferSlot {
     id<MTLBuffer> buffer;
     unsigned int target;
+    // Where this slot's bytes start inside `buffer` and how many there are.
+    // Dedicated buffers use offset 0; transient uploads point into the shared
+    // per-frame arena (see wispterm_metal_buffer_upload_transient).
+    size_t offset;
+    size_t length;
 } WispTermMetalBufferSlot;
 
-// These registries are _Thread_local: each AppWindow runs its render loop on
+// The slot registries are per thread: each AppWindow runs its render loop on
 // its own worker thread and the zig-side GPU handles (ui_pipeline, cell
 // pipelines, font atlas, …) are likewise threadlocal. Keeping the slot tables
 // and handle counters per-thread gives every window an independent handle
 // namespace, so two windows rendering concurrently can't clobber each other's
 // buffers/textures/pipelines or the active-texture binding. (Process-global
-// here was the multi-window "one window renders incomplete" bug.)
-//
-// The ObjC-pointer-bearing slot arrays carry __attribute__((aligned(16))):
-// macOS TLS (_Thread_local via __tlv_descriptor) does not by default guarantee
-// 16-byte alignment for the array start, and Zig's Debug-mode alignment
-// sanitizer (correctly) flags member access through a misaligned base as
-// undefined behavior. Without the explicit alignment, Debug builds panic at
-// startup on the first wispterm_metal_buffer_create call, and Release builds
-// can hit a #GP later when a SIMD store derived from TLS-resident state lands
-// on a non-16-byte boundary (the original "agent tab SIGSEGV" crash).
-static _Thread_local __attribute__((aligned(16))) WispTermMetalBufferSlot wispterm_metal_buffers[WISPTERM_METAL_MAX_BUFFERS];
+// here was the multi-window "one window renders incomplete" bug.) The tables
+// themselves live in a calloc'd WispTermMetalRegistry (see below).
 static _Thread_local unsigned int wispterm_metal_next_buffer = 1;
+
+// Per-frame arena for transient vertex data (immediate-mode UI quads and
+// batched glyph instances). Instead of one newBufferWithBytes per upload,
+// wispterm_metal_buffer_upload_transient bump-allocates from one shared
+// MTLBuffer, so a frame's UI uploads cost one allocation. Same idea as
+// Ghostty's per-frame buffers (renderer/generic.zig SwapChain + Metal
+// Buffer.sync), minus their triple-buffer reuse: an arena is written only
+// while it is current, and frame_end seals it after commit by dropping this
+// reference. Bytes already encoded are therefore never overwritten (the
+// deferred-read hazard in docs/macos-ui-lessons.md), and no fence is needed.
+// Each slot retains the arena it points into, and the command buffer retains
+// it until the GPU finishes, so a sealed arena dies once both let go.
+#define WISPTERM_METAL_ARENA_MIN ((size_t)64 * 1024)
+// Offset alignment for setVertexBuffer:offset: — 256 also satisfies
+// constant-address-space buffers on Intel/AMD Macs.
+#define WISPTERM_METAL_ARENA_ALIGN ((size_t)256)
+static _Thread_local id<MTLBuffer> wispterm_metal_arena = nil;
+static _Thread_local size_t wispterm_metal_arena_used = 0;
+// Bytes uploaded since the last seal; sizes the next frame's arena.
+static _Thread_local size_t wispterm_metal_arena_frame_bytes = 0;
+static _Thread_local size_t wispterm_metal_arena_capacity = WISPTERM_METAL_ARENA_MIN;
+
+static size_t wispterm_metal_align_up(size_t value, size_t alignment) {
+    return (value + alignment - 1) / alignment * alignment;
+}
+
+// Retire the current arena once its frame has been committed: the next
+// transient upload starts a fresh one sized from this frame's usage.
+static void wispterm_metal_arena_seal(void) {
+    if (wispterm_metal_arena != nil) {
+        [wispterm_metal_arena release];
+        wispterm_metal_arena = nil;
+    }
+    wispterm_metal_arena_used = 0;
+    if (wispterm_metal_arena_frame_bytes > 0) {
+        wispterm_metal_arena_capacity = wispterm_metal_align_up(wispterm_metal_arena_frame_bytes, WISPTERM_METAL_ARENA_MIN);
+    }
+    wispterm_metal_arena_frame_bytes = 0;
+}
 
 typedef struct WispTermMetalTextureSlot {
     id<MTLTexture> texture;
@@ -60,7 +97,6 @@ typedef struct WispTermMetalTextureSlot {
     size_t bpp;
 } WispTermMetalTextureSlot;
 
-static _Thread_local __attribute__((aligned(16))) WispTermMetalTextureSlot wispterm_metal_textures[WISPTERM_METAL_MAX_TEXTURES];
 static _Thread_local unsigned int wispterm_metal_next_texture = 1;
 
 typedef struct WispTermMetalPipelineSlot {
@@ -80,9 +116,57 @@ typedef struct WispTermMetalPipelineSlot {
     } uniforms;
 } WispTermMetalPipelineSlot;
 
-static _Thread_local __attribute__((aligned(16))) WispTermMetalPipelineSlot wispterm_metal_pipelines[WISPTERM_METAL_MAX_PIPELINES];
 static _Thread_local unsigned int wispterm_metal_next_pipeline = 1;
 static _Thread_local unsigned int wispterm_metal_active_textures[16];
+
+// The ObjC-pointer-bearing slot tables, one heap block per render thread
+// behind a _Thread_local pointer. They used to be _Thread_local arrays marked
+// __attribute__((aligned(16))), but macOS TLV storage does not reliably honour
+// that alignment: where an array landed depended on every other threadlocal in
+// the binary, so an unrelated new threadlocal could misalign it. Debug builds
+// then panic in the alignment sanitizer on the first slot access, and Release
+// builds can #GP when a SIMD store lands on a non-16-byte boundary (the
+// original "agent tab SIGSEGV" crash). calloc'd memory is 16-byte aligned. A
+// pthread key frees the block at thread exit; like the old TLV arrays, the
+// ObjC objects still referenced there are not released.
+typedef struct WispTermMetalRegistry {
+    WispTermMetalBufferSlot buffers[WISPTERM_METAL_MAX_BUFFERS];
+    WispTermMetalTextureSlot textures[WISPTERM_METAL_MAX_TEXTURES];
+    WispTermMetalPipelineSlot pipelines[WISPTERM_METAL_MAX_PIPELINES];
+    // Lazily-built MTLSamplerState cache, indexed by (filter, wrap).
+    id<MTLSamplerState> samplers[4]; // idx = filter*2 + wrap
+} WispTermMetalRegistry;
+
+static _Thread_local WispTermMetalRegistry *wispterm_metal_registry_block = NULL;
+static pthread_key_t wispterm_metal_registry_key;
+static pthread_once_t wispterm_metal_registry_key_once = PTHREAD_ONCE_INIT;
+
+static void wispterm_metal_registry_free(void *block) {
+    free(block);
+}
+
+static void wispterm_metal_registry_make_key(void) {
+    (void)pthread_key_create(&wispterm_metal_registry_key, wispterm_metal_registry_free);
+}
+
+static WispTermMetalRegistry *wispterm_metal_registry(void) {
+    WispTermMetalRegistry *registry = wispterm_metal_registry_block;
+    if (registry != NULL) return registry;
+    registry = calloc(1, sizeof(*registry));
+    if (registry == NULL) {
+        fprintf(stderr, "Metal: out of memory allocating the slot registry\n");
+        abort();
+    }
+    (void)pthread_once(&wispterm_metal_registry_key_once, wispterm_metal_registry_make_key);
+    (void)pthread_setspecific(wispterm_metal_registry_key, registry);
+    wispterm_metal_registry_block = registry;
+    return registry;
+}
+
+#define wispterm_metal_buffers (wispterm_metal_registry()->buffers)
+#define wispterm_metal_textures (wispterm_metal_registry()->textures)
+#define wispterm_metal_pipelines (wispterm_metal_registry()->pipelines)
+#define wispterm_metal_samplers (wispterm_metal_registry()->samplers)
 
 // Encoder render state recorded by the Zig render_state layer (GL lower-left
 // convention) and applied on the active encoder before each draw. The drawable
@@ -118,7 +202,9 @@ void wispterm_metal_arm_capture(void) {
 
 const unsigned char *wispterm_metal_capture_pixels(void) {
     if (wispterm_metal_capture_buffer == nil) return NULL;
-    return (const unsigned char *)[wispterm_metal_capture_buffer contents];
+    @autoreleasepool {
+        return (const unsigned char *)[wispterm_metal_capture_buffer contents];
+    }
 }
 
 int wispterm_metal_capture_width(void) { return wispterm_metal_capture_w; }
@@ -155,11 +241,11 @@ void wispterm_metal_set_blend_mode(int premultiplied) {
     wispterm_metal_blend_premult = (premultiplied != 0);
 }
 
-// Lazily-built MTLSamplerState cache, indexed by (filter, wrap). Replaces the
-// per-shader `constexpr sampler` so a texture's configured filter/wrap (e.g.
-// nearest for pixel-exact bitmaps) actually applies, mirroring the GL backend's
-// sampler parameters. Threadlocal to match the per-render-thread registries.
-static _Thread_local __attribute__((aligned(16))) id<MTLSamplerState> wispterm_metal_samplers[4]; // idx = filter*2 + wrap
+// Lazily-built MTLSamplerState cache (WispTermMetalRegistry.samplers),
+// indexed by (filter, wrap). Replaces the per-shader `constexpr sampler` so a
+// texture's configured filter/wrap (e.g. nearest for pixel-exact bitmaps)
+// actually applies, mirroring the GL backend's sampler parameters. Per render
+// thread, like the other registries.
 
 static id<MTLSamplerState> wispterm_metal_sampler_for(id<MTLDevice> device, unsigned int filter, unsigned int wrap) {
     if (device == nil) return nil;
@@ -385,6 +471,7 @@ void wispterm_metal_context_deinit(WispTermMetalContext *ctx) {
     @autoreleasepool {
         char ignored[1] = {0};
         (void)wispterm_metal_frame_end(ctx, ignored, sizeof(ignored));
+        wispterm_metal_arena_seal();
         if (ctx->layer != NULL) {
             [(id)ctx->layer release];
             ctx->layer = NULL;
@@ -439,6 +526,8 @@ bool wispterm_metal_buffer_allocate(unsigned int handle, void *device_handle, si
             [wispterm_metal_buffers[handle].buffer release];
         }
         wispterm_metal_buffers[handle].buffer = buffer;
+        wispterm_metal_buffers[handle].offset = 0;
+        wispterm_metal_buffers[handle].length = len;
         wispterm_metal_set_error(error_buf, error_buf_len, "");
         return true;
     }
@@ -469,6 +558,8 @@ bool wispterm_metal_buffer_upload_data(unsigned int handle, void *device_handle,
             [wispterm_metal_buffers[handle].buffer release];
         }
         wispterm_metal_buffers[handle].buffer = buffer;
+        wispterm_metal_buffers[handle].offset = 0;
+        wispterm_metal_buffers[handle].length = len;
         wispterm_metal_set_error(error_buf, error_buf_len, "");
         return true;
     }
@@ -496,7 +587,9 @@ bool wispterm_metal_buffer_upload(unsigned int handle, void *device_handle, cons
     // overlay/quad gets stamped at the same coordinates. The previous buffer
     // is released here; Metal keeps it alive via the encoder's retain until
     // commit completes, then deallocates asynchronously. The per-call alloc
-    // cost is negligible for the small vertex blobs ui_pipeline uses (~96B/quad).
+    // cost is fine for persistent data uploaded occasionally (cell instances
+    // re-upload only when dirty); per-draw UI vertex data goes through
+    // wispterm_metal_buffer_upload_transient instead.
     @autoreleasepool {
         id<MTLBuffer> old_buffer = wispterm_metal_buffers[handle].buffer;
         id<MTLBuffer> new_buffer = wispterm_metal_new_buffer(device_handle, bytes, len);
@@ -505,7 +598,60 @@ bool wispterm_metal_buffer_upload(unsigned int handle, void *device_handle, cons
             return false;
         }
         wispterm_metal_buffers[handle].buffer = new_buffer;
+        wispterm_metal_buffers[handle].offset = 0;
+        wispterm_metal_buffers[handle].length = len;
         if (old_buffer != nil) [old_buffer release];
+        wispterm_metal_set_error(error_buf, error_buf_len, "");
+        return true;
+    }
+}
+
+// Upload vertex data that only draws encoded before the frame commits will
+// read: copy it into the current frame arena and point the slot at it.
+bool wispterm_metal_buffer_upload_transient(unsigned int handle, void *device_handle, const void *bytes, size_t len, char *error_buf, size_t error_buf_len) {
+    if (!wispterm_metal_buffer_valid(handle)) {
+        wispterm_metal_set_error(error_buf, error_buf_len, "invalid Metal buffer handle");
+        return false;
+    }
+    if (bytes == NULL && len > 0) {
+        wispterm_metal_set_error(error_buf, error_buf_len, "missing Metal buffer update bytes");
+        return false;
+    }
+    if (len == 0) {
+        wispterm_metal_set_error(error_buf, error_buf_len, "");
+        return true;
+    }
+
+    @autoreleasepool {
+        size_t offset = wispterm_metal_align_up(wispterm_metal_arena_used, WISPTERM_METAL_ARENA_ALIGN);
+        if (wispterm_metal_arena == nil || offset + len > [wispterm_metal_arena length]) {
+            // Full (or first upload since the last seal): start a new arena.
+            // The old one stays alive through the slots and command buffer
+            // that still reference it.
+            size_t capacity = wispterm_metal_arena_capacity;
+            if (capacity < len) capacity = wispterm_metal_align_up(len, WISPTERM_METAL_ARENA_MIN);
+            id<MTLBuffer> arena = wispterm_metal_new_buffer(device_handle, NULL, capacity);
+            if (arena == nil) {
+                wispterm_metal_set_error(error_buf, error_buf_len, "newBufferWithLength returned nil for the upload arena");
+                return false;
+            }
+            if (wispterm_metal_arena != nil) [wispterm_metal_arena release];
+            wispterm_metal_arena = arena;
+            offset = 0;
+        }
+
+        memcpy((unsigned char *)[wispterm_metal_arena contents] + offset, bytes, len);
+        wispterm_metal_arena_used = offset + len;
+        wispterm_metal_arena_frame_bytes += wispterm_metal_align_up(len, WISPTERM_METAL_ARENA_ALIGN);
+
+        WispTermMetalBufferSlot *slot = &wispterm_metal_buffers[handle];
+        if (slot->buffer != wispterm_metal_arena) {
+            [wispterm_metal_arena retain];
+            if (slot->buffer != nil) [slot->buffer release];
+            slot->buffer = wispterm_metal_arena;
+        }
+        slot->offset = offset;
+        slot->length = len;
         wispterm_metal_set_error(error_buf, error_buf_len, "");
         return true;
     }
@@ -513,9 +659,8 @@ bool wispterm_metal_buffer_upload(unsigned int handle, void *device_handle, cons
 
 size_t wispterm_metal_buffer_length(unsigned int handle) {
     if (!wispterm_metal_buffer_valid(handle)) return 0;
-    id<MTLBuffer> buffer = wispterm_metal_buffers[handle].buffer;
-    if (buffer == nil) return 0;
-    return [buffer length];
+    if (wispterm_metal_buffers[handle].buffer == nil) return 0;
+    return wispterm_metal_buffers[handle].length;
 }
 
 void wispterm_metal_buffer_destroy(unsigned int handle) {
@@ -527,6 +672,8 @@ void wispterm_metal_buffer_destroy(unsigned int handle) {
         }
         wispterm_metal_buffers[handle].buffer = nil;
         wispterm_metal_buffers[handle].target = 0;
+        wispterm_metal_buffers[handle].offset = 0;
+        wispterm_metal_buffers[handle].length = 0;
     }
 }
 
@@ -1014,6 +1161,8 @@ bool wispterm_metal_frame_end(WispTermMetalContext *ctx, char *error_buf, size_t
             }
         }];
         [command_buffer commit];
+        // Everything uploaded into the arena so far belongs to this commit.
+        wispterm_metal_arena_seal();
         // Capture frames must block until the blit finishes so the shared buffer
         // is populated before readback.zig reads it. Rare (agent-triggered) only.
         if (captured_this_frame) [command_buffer waitUntilCompleted];
@@ -1068,8 +1217,8 @@ static bool wispterm_metal_encode_draw(
 
         id<MTLBuffer> vertex0 = wispterm_metal_buffer_object(buffer0);
         id<MTLBuffer> vertex1 = wispterm_metal_buffer_object(buffer1);
-        if (vertex0 != nil) [encoder setVertexBuffer:vertex0 offset:0 atIndex:0];
-        if (vertex1 != nil) [encoder setVertexBuffer:vertex1 offset:0 atIndex:1];
+        if (vertex0 != nil) [encoder setVertexBuffer:vertex0 offset:wispterm_metal_buffers[buffer0].offset atIndex:0];
+        if (vertex1 != nil) [encoder setVertexBuffer:vertex1 offset:wispterm_metal_buffers[buffer1].offset atIndex:1];
 
         NSUInteger uniform_index = vertex1 != nil ? 2 : 1;
         [encoder setVertexBytes:&slot->uniforms length:sizeof(slot->uniforms) atIndex:uniform_index];

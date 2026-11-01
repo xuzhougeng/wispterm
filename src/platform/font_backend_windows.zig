@@ -40,6 +40,7 @@ pub fn titlebarIconGlyph(icon: anytype) u32 {
         .settings => 0xE713,
         .help => 0xE897,
         .copilot => 0xE8F2,
+        .command_palette => 0xE721, // Segoe MDL2 Search
     };
 }
 
@@ -81,6 +82,13 @@ pub fn fontFilePathAlloc(allocator: std.mem.Allocator, font: *FallbackFont) ?Fon
 pub fn fontDataAlloc(allocator: std.mem.Allocator, font: *FallbackFont) ?[]u8 {
     // DirectWrite fonts resolve to openable file paths, so the path-based
     // loader in the font manager is sufficient on Windows.
+    _ = allocator;
+    _ = font;
+    return null;
+}
+
+pub fn fontPostScriptNameAlloc(allocator: std.mem.Allocator, font: *FallbackFont) ?[]u8 {
+    // File path + face index already identifies a font uniquely here.
     _ = allocator;
     _ = font;
     return null;

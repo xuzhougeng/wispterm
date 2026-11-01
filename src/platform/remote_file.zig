@@ -173,6 +173,12 @@ pub fn sshExecCaptureFullCapped(allocator: std.mem.Allocator, conn: anytype, com
         argv_buf[argc] = "Ciphers=+aes128-cbc,3des-cbc";
         argc += 1;
     }
+    if (conn.network_proxy.kind != .none) {
+        argv_buf[argc] = "-o";
+        argc += 1;
+        argv_buf[argc] = conn.network_proxy.option();
+        argc += 1;
+    }
     var proxy_buf: [272]u8 = undefined;
     if (conn.proxyJump().len > 0) {
         argv_buf[argc] = "-o";

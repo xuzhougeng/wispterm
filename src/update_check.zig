@@ -8,6 +8,8 @@ pub const latest_release_page_url = "https://github.com/xuzhougeng/wispterm/rele
 pub const repo_url = "https://github.com/xuzhougeng/wispterm";
 pub const asset_name_buffer_len = 128;
 pub const asset_download_url_buffer_len = 512;
+/// "sha256:" + 64 hex digits, as GitHub reports a release asset's digest.
+pub const asset_digest_buffer_len = 80;
 
 pub const Order = enum { older, equal, newer, unknown };
 pub const State = enum {
@@ -28,6 +30,8 @@ pub const ReleaseAsset = struct {
     name: []const u8,
     download_url: []const u8,
     size: u64 = 0,
+    /// GitHub's "digest" for the asset ("sha256:<hex>"), or "" when absent.
+    digest: []const u8 = "",
 };
 
 pub const ReleaseInfo = struct {
@@ -42,11 +46,7 @@ pub const ReleaseInfo = struct {
         if (!self.owned) return;
         allocator.free(self.tag_name);
         allocator.free(self.html_url);
-        for (self.assets) |asset| {
-            allocator.free(asset.name);
-            allocator.free(asset.download_url);
-        }
-        allocator.free(self.assets);
+        freeAssets(allocator, self.assets);
     }
 };
 
@@ -57,6 +57,7 @@ pub const CheckResult = struct {
     asset_name: []const u8 = "",
     asset_download_url: []const u8 = "",
     asset_size: u64 = 0,
+    asset_digest: []const u8 = "",
 };
 
 pub const CheckResultBuffers = struct {
@@ -64,6 +65,9 @@ pub const CheckResultBuffers = struct {
     release_url: []u8,
     asset_name: []u8,
     asset_download_url: []u8,
+    /// Optional: without room the digest is dropped (the in-place updater
+    /// then declines and the manual download flow applies).
+    asset_digest: []u8 = &.{},
 };
 
 const Semver = struct {
@@ -159,10 +163,7 @@ fn parseAssets(allocator: std.mem.Allocator, root: std.json.Value) ![]const Rele
 
     var out: std.ArrayListUnmanaged(ReleaseAsset) = .empty;
     errdefer {
-        for (out.items) |asset| {
-            allocator.free(asset.name);
-            allocator.free(asset.download_url);
-        }
+        for (out.items) |asset| freeAsset(allocator, asset);
         out.deinit(allocator);
     }
 
@@ -174,21 +175,27 @@ fn parseAssets(allocator: std.mem.Allocator, root: std.json.Value) ![]const Rele
         errdefer allocator.free(name_owned);
         const url_owned = try allocator.dupe(u8, url);
         errdefer allocator.free(url_owned);
+        const digest_owned = try allocator.dupe(u8, jsonString(item, "digest") orelse "");
+        errdefer allocator.free(digest_owned);
         try out.append(allocator, .{
             .name = name_owned,
             .download_url = url_owned,
             .size = jsonInt(item, "size"),
+            .digest = digest_owned,
         });
     }
 
     return try out.toOwnedSlice(allocator);
 }
 
+fn freeAsset(allocator: std.mem.Allocator, asset: ReleaseAsset) void {
+    allocator.free(asset.name);
+    allocator.free(asset.download_url);
+    allocator.free(asset.digest);
+}
+
 fn freeAssets(allocator: std.mem.Allocator, assets: []const ReleaseAsset) void {
-    for (assets) |asset| {
-        allocator.free(asset.name);
-        allocator.free(asset.download_url);
-    }
+    for (assets) |asset| freeAsset(allocator, asset);
     allocator.free(assets);
 }
 
@@ -216,6 +223,7 @@ pub fn evaluateReleaseForPackage(current_version: []const u8, release: ReleaseIn
                 .asset_name = asset.name,
                 .asset_download_url = asset.download_url,
                 .asset_size = asset.size,
+                .asset_digest = asset.digest,
             };
         },
         .older, .equal, .unknown => .{ .state = .up_to_date },
@@ -246,6 +254,7 @@ pub fn copyResult(
     const release_url = copyExact(buffers.release_url, result.release_url) orelse return .{ .state = .failed };
     const asset_name = copyExact(buffers.asset_name, result.asset_name) orelse return .{ .state = .failed };
     const asset_download_url = copyExact(buffers.asset_download_url, result.asset_download_url) orelse return .{ .state = .failed };
+    const asset_digest = copyExact(buffers.asset_digest, result.asset_digest) orelse "";
 
     return .{
         .state = result.state,
@@ -254,6 +263,7 @@ pub fn copyResult(
         .asset_name = asset_name,
         .asset_download_url = asset_download_url,
         .asset_size = result.asset_size,
+        .asset_digest = asset_digest,
     };
 }
 
@@ -447,7 +457,7 @@ test "update_check: selects supported Windows portable assets" {
         \\  "draft":false,
         \\  "prerelease":false,
         \\  "assets":[
-        \\    {{"name":"{s}","browser_download_url":"https://example.test/portable.zip","size":11}},
+        \\    {{"name":"{s}","browser_download_url":"https://example.test/portable.zip","size":11,"digest":"sha256:ab12"}},
         \\    {{"name":"{s}","browser_download_url":"https://example.test/compat.zip","size":22}},
         \\    {{"name":"{s}","browser_download_url":"https://example.test/opengl.zip","size":33}}
         \\  ]
@@ -468,11 +478,15 @@ test "update_check: selects supported Windows portable assets" {
     try std.testing.expectEqualStrings(portable_name, normal.name);
     try std.testing.expectEqualStrings("https://example.test/portable.zip", normal.download_url);
     try std.testing.expectEqual(@as(u64, 11), normal.size);
+    try std.testing.expectEqualStrings("sha256:ab12", normal.digest);
+    const evaluated = evaluateReleaseForPackage("0.27.0", release, portable_package);
+    try std.testing.expectEqualStrings("sha256:ab12", evaluated.asset_digest);
 
     const compat = selectReleaseAsset(release, compat_package) orelse return error.ExpectedAsset;
     try std.testing.expectEqualStrings(compat_name, compat.name);
     try std.testing.expectEqualStrings("https://example.test/compat.zip", compat.download_url);
     try std.testing.expectEqual(@as(u64, 22), compat.size);
+    try std.testing.expectEqualStrings("", compat.digest);
 
     const opengl = selectReleaseAsset(release, opengl_package) orelse return error.ExpectedAsset;
     try std.testing.expectEqualStrings(opengl_name, opengl.name);

@@ -5,7 +5,7 @@ pub const SSH_FIELD_COUNT = profile_codec.SSH_FIELD_COUNT;
 pub const SSH_FIELD_MAX = profile_codec.SSH_FIELD_MAX;
 pub const SSH_PROFILE_MAX: usize = 128;
 pub const SSH_PROFILE_NONE: usize = std.math.maxInt(usize);
-/// Form rows = 8 fields + 3 action rows (save+connect, save, cancel).
+/// Form rows = SSH fields + 3 action rows (save+connect, save, cancel).
 pub const SSH_FORM_ROW_COUNT = SSH_FIELD_COUNT + 3;
 pub const SshField = profile_codec.SshField;
 pub const SshProfile = profile_codec.SshProfile;
@@ -19,12 +19,20 @@ pub const SshListMode = enum {
 };
 
 pub const State = struct {
+    list_visible: bool = false,
+    form_visible: bool = false,
+    proxy_display_buf: [80]u8 = undefined,
     focus: usize = @intFromEnum(SshField.name),
     bufs: [SSH_FIELD_COUNT][SSH_FIELD_MAX]u8 = undefined,
     lens: [SSH_FIELD_COUNT]usize = .{0} ** SSH_FIELD_COUNT,
     profiles: [SSH_PROFILE_MAX]SshProfile = undefined,
     profile_count: usize = 0,
     profiles_loaded: bool = false,
+    /// Hashes of every profile name this cache has seen (loaded or saved), so
+    /// a save keeps profiles added on disk meanwhile (by a sync or another
+    /// window) but not ones deleted here.
+    known_names: [SSH_PROFILE_MAX * 2]u64 = undefined,
+    known_count: usize = 0,
     list_selected: usize = 0,
     list_mode: SshListMode = .manage,
     list_filter_buf: [SSH_FIELD_MAX]u8 = undefined,
@@ -42,6 +50,21 @@ pub const State = struct {
         const len = @min(value.len, SSH_FIELD_MAX);
         @memcpy(self.bufs[idx][0..len], value[0..len]);
         self.lens[idx] = len;
+    }
+
+    pub fn knownNames(self: *const State) []const u64 {
+        return self.known_names[0..self.known_count];
+    }
+
+    /// Record the names now in `profiles` (after a load or a save).
+    pub fn rememberProfileNames(self: *State) void {
+        for (self.profiles[0..self.profile_count]) |*profile| {
+            const h = profile_codec.profileNameHash(profile_codec.profileField(profile, .name));
+            if (std.mem.indexOfScalar(u64, self.knownNames(), h) != null) continue;
+            if (self.known_count == self.known_names.len) return;
+            self.known_names[self.known_count] = h;
+            self.known_count += 1;
+        }
     }
 
     pub fn resetForm(self: *State) void {

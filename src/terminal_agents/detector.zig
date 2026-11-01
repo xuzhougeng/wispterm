@@ -1,5 +1,9 @@
 const std = @import("std");
 
+/// Terminal agents WispTerm can recognize. The wire labels (`label()`) are the
+/// canonical names herdr uses for the same agents, so the screen-detection
+/// manifests under `manifests/` and the OSC 7748 marker share one vocabulary.
+/// `claude_code` keeps its historical label; "claude" is accepted as an alias.
 pub const App = enum {
     none,
     codex,
@@ -7,6 +11,26 @@ pub const App = enum {
     /// In-app AI session (AI-chat tab / copilot sidebar), not a PTY agent.
     /// Lets tab badges reuse Detection for those sessions.
     assistant,
+    pi,
+    gemini,
+    cursor,
+    devin,
+    agy,
+    cline,
+    opencode,
+    copilot,
+    kimi,
+    kiro,
+    droid,
+    amp,
+    grok,
+    hermes,
+    kilo,
+    qodercli,
+    qwen,
+    letta,
+    maki,
+    muse,
 
     pub fn label(self: App) []const u8 {
         return switch (self) {
@@ -14,6 +38,26 @@ pub const App = enum {
             .codex => "codex",
             .claude_code => "claude_code",
             .assistant => "assistant",
+            .pi => "pi",
+            .gemini => "gemini",
+            .cursor => "cursor",
+            .devin => "devin",
+            .agy => "agy",
+            .cline => "cline",
+            .opencode => "opencode",
+            .copilot => "copilot",
+            .kimi => "kimi",
+            .kiro => "kiro",
+            .droid => "droid",
+            .amp => "amp",
+            .grok => "grok",
+            .hermes => "hermes",
+            .kilo => "kilo",
+            .qodercli => "qodercli",
+            .qwen => "qwen",
+            .letta => "letta",
+            .maki => "maki",
+            .muse => "muse",
         };
     }
 
@@ -24,12 +68,56 @@ pub const App = enum {
             .codex => "Codex",
             .claude_code => "Claude Code",
             .assistant => "Copilot",
+            .pi => "Pi",
+            .gemini => "Gemini CLI",
+            .cursor => "Cursor Agent",
+            .devin => "Devin CLI",
+            .agy => "Antigravity CLI",
+            .cline => "Cline",
+            .opencode => "OpenCode",
+            .copilot => "Copilot CLI",
+            .kimi => "Kimi Code",
+            .kiro => "Kiro CLI",
+            .droid => "Droid",
+            .amp => "Amp",
+            .grok => "Grok CLI",
+            .hermes => "Hermes Agent",
+            .kilo => "Kilo Code",
+            .qodercli => "Qoder CLI",
+            .qwen => "Qwen Code",
+            .letta => "Letta Code",
+            .maki => "Maki",
+            .muse => "Muse Code",
+        };
+    }
+
+    /// True for agents that run in a PTY and have a screen-detection manifest.
+    pub fn isTerminalAgent(self: App) bool {
+        return switch (self) {
+            .none, .assistant => false,
+            else => true,
+        };
+    }
+
+    /// Executable that starts the agent's interactive session (what
+    /// `wisptermctl spawn --kind` runs). Mirrors herdr's kind → command table.
+    pub fn executable(self: App) []const u8 {
+        return switch (self) {
+            .none, .assistant => "",
+            .claude_code => "claude",
+            .cursor => "cursor-agent",
+            .kiro => "kiro-cli",
+            else => self.label(),
         };
     }
 };
 
 pub const State = enum {
     none,
+    /// Agent is at its prompt, ready for input, and nothing has finished
+    /// since the user last looked (screen detection's "idle"; `done` is the
+    /// unseen-completion variant).
+    idle,
     running,
     waiting_approval,
     needs_input,
@@ -40,6 +128,7 @@ pub const State = enum {
     pub fn label(self: State) []const u8 {
         return switch (self) {
             .none => "none",
+            .idle => "idle",
             .running => "running",
             .waiting_approval => "waiting_approval",
             .needs_input => "needs_input",
@@ -52,6 +141,7 @@ pub const State = enum {
     pub fn badge(self: State) []const u8 {
         return switch (self) {
             .none => "",
+            .idle => "idle",
             .running => "run",
             .waiting_approval => "ask",
             .needs_input => "!",
@@ -81,6 +171,24 @@ pub const Detection = struct {
 
     pub fn badge(self: Detection) []const u8 {
         return self.state.badge();
+    }
+
+    /// Pack into one word so a Detection can be mirrored through an atomic
+    /// for readers on other threads (ctl server, Copilot tool worker).
+    pub fn pack(self: Detection) u32 {
+        return (@as(u32, @intFromEnum(self.app)) << 16) |
+            (@as(u32, @intFromEnum(self.state)) << 8) |
+            @as(u32, self.confidence);
+    }
+
+    pub fn unpack(word: u32) Detection {
+        const app_raw: u8 = @truncate(word >> 16);
+        const state_raw: u8 = @truncate(word >> 8);
+        return .{
+            .app = std.meta.intToEnum(App, app_raw) catch .none,
+            .state = std.meta.intToEnum(State, state_raw) catch .none,
+            .confidence = @truncate(word),
+        };
     }
 };
 
@@ -213,13 +321,14 @@ test "agent detector ignores legacy Codex ready screen" {
 /// Emitted by agent hooks (e.g. Claude Code) for an AUTHORITATIVE state signal
 /// that overrides the heuristic `detect`. The wire labels are this module's own
 /// State/App `.label()` strings (running/waiting_approval/needs_input/halted/
-/// failed/done; codex/claude_code), so no separate vocabulary exists.
+/// failed/done; codex/claude_code/pi), so no separate vocabulary exists.
 pub const OSC_NUM: u16 = 7748;
 pub const TAG = "wispterm-agent";
 
 /// Inverse of State.label().
 pub fn stateFromLabel(s: []const u8) ?State {
     if (std.mem.eql(u8, s, "none")) return .none;
+    if (std.mem.eql(u8, s, "idle")) return .idle;
     if (std.mem.eql(u8, s, "running")) return .running;
     if (std.mem.eql(u8, s, "waiting_approval")) return .waiting_approval;
     if (std.mem.eql(u8, s, "needs_input")) return .needs_input;
@@ -229,60 +338,177 @@ pub fn stateFromLabel(s: []const u8) ?State {
     return null;
 }
 
-/// Inverse of App.label().
+/// Inverse of App.label(). Accepts "claude" for `.claude_code` so the herdr
+/// canonical label round-trips too.
 pub fn appFromLabel(s: []const u8) ?App {
     if (std.mem.eql(u8, s, "none")) return .none;
-    if (std.mem.eql(u8, s, "codex")) return .codex;
-    if (std.mem.eql(u8, s, "claude_code")) return .claude_code;
     if (std.mem.eql(u8, s, "assistant")) return .assistant;
+    if (std.mem.eql(u8, s, "claude_code")) return .claude_code;
+    inline for (std.meta.fields(App)) |field| {
+        const app: App = @enumFromInt(field.value);
+        if (app != .none and app != .assistant and std.mem.eql(u8, s, app.label())) return app;
+    }
+    if (std.mem.eql(u8, s, "claude")) return .claude_code;
     return null;
+}
+
+/// Executable / process names (and the aliases herdr accepts) for each
+/// terminal agent. Lookups go through `appFromProcessName`.
+const process_aliases = [_]struct { name: []const u8, app: App }{
+    .{ .name = "pi", .app = .pi },
+    .{ .name = "claude", .app = .claude_code },
+    .{ .name = "claude-code", .app = .claude_code },
+    .{ .name = "codex", .app = .codex },
+    .{ .name = "gemini", .app = .gemini },
+    .{ .name = "cursor", .app = .cursor },
+    .{ .name = "cursor-agent", .app = .cursor },
+    .{ .name = "devin", .app = .devin },
+    .{ .name = "devin-cli", .app = .devin },
+    .{ .name = "agy", .app = .agy },
+    .{ .name = "antigravity", .app = .agy },
+    .{ .name = "antigravity-cli", .app = .agy },
+    .{ .name = "cline", .app = .cline },
+    .{ .name = ".cline", .app = .cline },
+    .{ .name = "opencode", .app = .opencode },
+    .{ .name = "opencode2", .app = .opencode },
+    .{ .name = "open-code", .app = .opencode },
+    .{ .name = "copilot", .app = .copilot },
+    .{ .name = "github-copilot", .app = .copilot },
+    .{ .name = "ghcs", .app = .copilot },
+    .{ .name = "kimi", .app = .kimi },
+    .{ .name = "kimi-code", .app = .kimi },
+    .{ .name = "kiro", .app = .kiro },
+    .{ .name = "kiro-cli", .app = .kiro },
+    .{ .name = "droid", .app = .droid },
+    .{ .name = "amp", .app = .amp },
+    .{ .name = "amp-local", .app = .amp },
+    .{ .name = "grok", .app = .grok },
+    .{ .name = "grok-build", .app = .grok },
+    .{ .name = "hermes", .app = .hermes },
+    .{ .name = "hermes-agent", .app = .hermes },
+    .{ .name = "kilo", .app = .kilo },
+    .{ .name = "kilo-code", .app = .kilo },
+    .{ .name = "qodercli", .app = .qodercli },
+    .{ .name = "qoderclicn", .app = .qodercli },
+    .{ .name = "qoder", .app = .qodercli },
+    .{ .name = "qodercn", .app = .qodercli },
+    .{ .name = "qwen", .app = .qwen },
+    .{ .name = "qwen-code", .app = .qwen },
+    .{ .name = "letta", .app = .letta },
+    .{ .name = "letta-code", .app = .letta },
+    .{ .name = "maki", .app = .maki },
+    .{ .name = "muse", .app = .muse },
+    .{ .name = "muse-code", .app = .muse },
+    .{ .name = "muse-cli", .app = .muse },
+};
+
+/// Map a process or executable name to an App: the basename is taken, a
+/// Windows launcher extension (`.exe`, `.cmd`, `.bat`, `.ps1`) is dropped,
+/// and the lookup is case-insensitive. Muse's versioned launcher
+/// (`muse-bin-<version>`) is recognized like herdr does. Unknown → `.none`.
+pub fn appFromProcessName(name: []const u8) App {
+    var buf: [128]u8 = undefined;
+    const trimmed = std.mem.trim(u8, name, " \t\r\n");
+    var base = std.fs.path.basename(trimmed);
+    if (std.mem.lastIndexOfScalar(u8, base, '\\')) |i| base = base[i + 1 ..];
+    if (base.len == 0 or base.len > buf.len) return .none;
+    const lower = std.ascii.lowerString(buf[0..base.len], base);
+    var stem: []const u8 = lower;
+    inline for (.{ ".exe", ".cmd", ".bat", ".ps1" }) |ext| {
+        if (std.mem.endsWith(u8, stem, ext)) stem = stem[0 .. stem.len - ext.len];
+    }
+    for (process_aliases) |alias| if (std.mem.eql(u8, stem, alias.name)) return alias.app;
+    if (std.mem.startsWith(u8, stem, "muse-bin-") and stem.len > "muse-bin-".len and std.ascii.isDigit(stem["muse-bin-".len])) return .muse;
+    return .none;
 }
 
 /// Map a tmux `#{pane_current_command}` (process basename) to an App.
 pub fn appFromCommand(cmd: []const u8) App {
-    const base = std.fs.path.basename(std.mem.trim(u8, cmd, " "));
-    if (std.mem.eql(u8, base, "claude")) return .claude_code;
-    if (std.mem.eql(u8, base, "codex")) return .codex;
-    return .none;
+    return appFromProcessName(cmd);
+}
+
+pub const AgentCapabilities = packed struct {
+    graceful_exit: bool = false,
+    session_path: bool = false,
+};
+
+pub const MarkerInfo = struct {
+    detection: Detection,
+    capabilities: AgentCapabilities = .{},
+    session_path: []const u8 = "",
+};
+
+fn hexValue(byte: u8) ?u8 {
+    return switch (byte) {
+        '0'...'9' => byte - '0',
+        'a'...'f' => byte - 'a' + 10,
+        'A'...'F' => byte - 'A' + 10,
+        else => null,
+    };
+}
+
+fn decodeSessionPath(encoded: []const u8, out: ?[]u8) ?[]const u8 {
+    const buffer = out orelse return "";
+    var pos: usize = 0;
+    var i: usize = 0;
+    while (i < encoded.len) : (i += 1) {
+        const byte = if (encoded[i] == '%') blk: {
+            if (i + 2 >= encoded.len) return null;
+            const hi = hexValue(encoded[i + 1]) orelse return null;
+            const lo = hexValue(encoded[i + 2]) orelse return null;
+            i += 2;
+            break :blk (hi << 4) | lo;
+        } else encoded[i];
+        if (pos >= buffer.len) return null;
+        buffer[pos] = byte;
+        pos += 1;
+    }
+    return buffer[0..pos];
 }
 
 /// Parse the OSC 7748 payload (after `OSC 7748;`, terminator stripped):
-/// `wispterm-agent;state=running;app=claude_code`. Returns an authoritative
-/// Detection (confidence 100). Requires a recognized `state=`; `app=` optional
-/// (defaults .none). Returns null if the tag is missing or state is absent/unknown.
-pub fn parseMarker(payload: []const u8) ?Detection {
+/// `wispterm-agent;state=running;app=pi;capabilities=graceful_exit,session_path;session_path=%2F...`.
+/// `session_path` is percent-decoded into `path_buf` when supplied. Returns
+/// authoritative detection plus capability metadata; malformed encoded paths
+/// are rejected rather than persisted as an unsafe restore command.
+pub fn parseMarkerInfo(payload: []const u8, path_buf: ?[]u8) ?MarkerInfo {
     var it = std.mem.splitScalar(u8, payload, ';');
     const first = it.next() orelse return null;
     if (!std.mem.eql(u8, std.mem.trim(u8, first, " "), TAG)) return null;
+
     var st: ?State = null;
     var app: App = .none;
+    var capabilities: AgentCapabilities = .{};
+    var session_path: []const u8 = "";
+
     while (it.next()) |field| {
         const f = std.mem.trim(u8, field, " ");
         if (std.mem.startsWith(u8, f, "state=")) {
             st = stateFromLabel(f["state=".len..]);
         } else if (std.mem.startsWith(u8, f, "app=")) {
             if (appFromLabel(f["app=".len..])) |a| app = a;
+        } else if (std.mem.startsWith(u8, f, "capabilities=")) {
+            var caps = std.mem.splitScalar(u8, f["capabilities=".len..], ',');
+            while (caps.next()) |cap| {
+                if (std.mem.eql(u8, cap, "graceful_exit")) capabilities.graceful_exit = true;
+                if (std.mem.eql(u8, cap, "session_path")) capabilities.session_path = true;
+            }
+        } else if (std.mem.startsWith(u8, f, "session_path=")) {
+            session_path = decodeSessionPath(f["session_path=".len..], path_buf) orelse return null;
         }
     }
+
     const state = st orelse return null;
-    return .{ .app = app, .state = state, .confidence = 100 };
+    return .{
+        .detection = .{ .app = app, .state = state, .confidence = 100 },
+        .capabilities = capabilities,
+        .session_path = session_path,
+    };
 }
 
-/// Value of an extra `key=value` field in an OSC 7748 payload (e.g. the
-/// `transcript=` session-log path a Claude Code hook can add). Null when absent.
-pub fn markerField(payload: []const u8, key: []const u8) ?[]const u8 {
-    var it = std.mem.splitScalar(u8, payload, ';');
-    while (it.next()) |field| {
-        const f = std.mem.trim(u8, field, " ");
-        if (f.len > key.len + 1 and std.mem.startsWith(u8, f, key) and f[key.len] == '=') return f[key.len + 1 ..];
-    }
-    return null;
-}
-
-test "markerField reads an optional transcript path" {
-    try std.testing.expectEqualStrings("/home/me/.claude/projects/-x/s.jsonl", markerField("wispterm-agent;state=running;app=claude_code;transcript=/home/me/.claude/projects/-x/s.jsonl", "transcript").?);
-    try std.testing.expect(markerField("wispterm-agent;state=running", "transcript") == null);
-    try std.testing.expect(markerField("wispterm-agent;transcript=", "transcript") == null);
+/// Backward-compatible detection-only parser for existing callers.
+pub fn parseMarker(payload: []const u8) ?Detection {
+    return if (parseMarkerInfo(payload, null)) |info| info.detection else null;
 }
 
 /// Aggregate pane states into one tab-level indicator by attention priority.
@@ -298,11 +524,12 @@ pub fn aggregate(states: []const State) State {
 fn rank(s: State) u8 {
     return switch (s) {
         .none => 0,
-        .done => 1,
-        .running => 2,
-        .halted, .failed => 3,
-        .needs_input => 4,
-        .waiting_approval => 5,
+        .idle => 1,
+        .done => 2,
+        .running => 3,
+        .halted, .failed => 4,
+        .needs_input => 5,
+        .waiting_approval => 6,
     };
 }
 
@@ -314,9 +541,41 @@ test "parseMarker yields an authoritative Detection in the existing vocabulary" 
     try std.testing.expect(d.visible());
 }
 
+test "parseMarker maps Pi as an authoritative app" {
+    const d = parseMarker("wispterm-agent;state=running;app=pi").?;
+    try std.testing.expectEqual(App.pi, d.app);
+    try std.testing.expectEqual(State.running, d.state);
+}
+
+test "parseMarkerInfo decodes Pi restore metadata and capabilities" {
+    var path_buf: [256]u8 = undefined;
+    const info = parseMarkerInfo("wispterm-agent;state=running;app=pi;capabilities=graceful_exit,session_path;session_path=%2Fhome%2Fpi%2F.pi%2Fagent%2Fsessions%2Fa%3Bb.jsonl", &path_buf).?;
+    try std.testing.expectEqual(App.pi, info.detection.app);
+    try std.testing.expect(info.capabilities.graceful_exit);
+    try std.testing.expect(info.capabilities.session_path);
+    try std.testing.expectEqualStrings("/home/pi/.pi/agent/sessions/a;b.jsonl", info.session_path);
+}
+
+test "parseMarker remains compatible with metadata markers" {
+    const detection = parseMarker("wispterm-agent;state=done;app=pi;capabilities=graceful_exit;session_path=%2Ftmp%2Fpi.jsonl").?;
+    try std.testing.expectEqual(App.pi, detection.app);
+    try std.testing.expectEqual(State.done, detection.state);
+}
+
+test "parseMarkerInfo rejects malformed session paths" {
+    var path_buf: [64]u8 = undefined;
+    try std.testing.expect(parseMarkerInfo("wispterm-agent;state=running;app=pi;session_path=%ZZ", &path_buf) == null);
+    try std.testing.expect(parseMarkerInfo("wispterm-agent;state=running;app=pi;session_path=%2", &path_buf) == null);
+}
+
 test "parseMarker maps waiting_approval and done" {
     try std.testing.expectEqual(State.waiting_approval, parseMarker("wispterm-agent;state=waiting_approval;app=claude_code").?.state);
     try std.testing.expectEqual(State.done, parseMarker("wispterm-agent;state=done;app=claude_code").?.state);
+}
+
+test "parseMarker keeps similarly named app labels distinct from Pi" {
+    const d = parseMarker("wispterm-agent;state=running;app=pilot").?;
+    try std.testing.expectEqual(App.none, d.app);
 }
 
 test "parseMarker rejects wrong tag / missing or unknown state" {
@@ -328,15 +587,77 @@ test "parseMarker rejects wrong tag / missing or unknown state" {
 test "appFromCommand maps known agents" {
     try std.testing.expectEqual(App.claude_code, appFromCommand("claude"));
     try std.testing.expectEqual(App.codex, appFromCommand("/usr/bin/codex"));
+    try std.testing.expectEqual(App.pi, appFromCommand("pi"));
     try std.testing.expectEqual(App.none, appFromCommand("bash"));
+}
+
+test "appFromProcessName accepts herdr aliases, Windows launchers, and paths" {
+    try std.testing.expectEqual(App.claude_code, appFromProcessName("claude.exe"));
+    try std.testing.expectEqual(App.claude_code, appFromProcessName("C:\\Users\\me\\AppData\\Local\\Programs\\claude\\Claude.exe"));
+    try std.testing.expectEqual(App.codex, appFromProcessName("codex.cmd"));
+    try std.testing.expectEqual(App.cursor, appFromProcessName("cursor-agent"));
+    try std.testing.expectEqual(App.agy, appFromProcessName("antigravity-cli"));
+    try std.testing.expectEqual(App.copilot, appFromProcessName("ghcs"));
+    try std.testing.expectEqual(App.kimi, appFromProcessName("kimi-code"));
+    try std.testing.expectEqual(App.opencode, appFromProcessName("opencode2"));
+    try std.testing.expectEqual(App.muse, appFromProcessName("/opt/muse/muse-bin-0.1.0-R708.1"));
+    try std.testing.expectEqual(App.none, appFromProcessName("muse-binary"));
+    try std.testing.expectEqual(App.none, appFromProcessName("node"));
+    try std.testing.expectEqual(App.none, appFromProcessName(""));
+    try std.testing.expectEqual(App.none, appFromProcessName("pilot"));
+}
+
+test "App labels round-trip for every terminal agent" {
+    inline for (std.meta.fields(App)) |field| {
+        const app: App = @enumFromInt(field.value);
+        try std.testing.expectEqual(app, appFromLabel(app.label()).?);
+        try std.testing.expect(app.displayName().len > 0);
+    }
+    try std.testing.expectEqual(App.claude_code, appFromLabel("claude").?);
+    try std.testing.expect(App.gemini.isTerminalAgent());
+    try std.testing.expect(!App.assistant.isTerminalAgent());
+    try std.testing.expect(!App.none.isTerminalAgent());
+}
+
+test "Detection packs and unpacks losslessly; garbage unpacks to none" {
+    const det = Detection{ .app = .gemini, .state = .waiting_approval, .confidence = 90 };
+    try std.testing.expectEqual(det, Detection.unpack(det.pack()));
+    try std.testing.expectEqual(Detection{}, Detection.unpack(0));
+    const bogus = Detection.unpack(0x00FF_FF00 | 7);
+    try std.testing.expectEqual(App.none, bogus.app);
+    try std.testing.expectEqual(State.none, bogus.state);
+    try std.testing.expectEqual(@as(u8, 7), bogus.confidence);
+}
+
+test "App.executable names the interactive launcher" {
+    try std.testing.expectEqualStrings("claude", App.claude_code.executable());
+    try std.testing.expectEqualStrings("cursor-agent", App.cursor.executable());
+    try std.testing.expectEqualStrings("kiro-cli", App.kiro.executable());
+    try std.testing.expectEqualStrings("codex", App.codex.executable());
+    try std.testing.expectEqualStrings("", App.none.executable());
+    // Every launcher name maps back to its agent.
+    inline for (std.meta.fields(App)) |field| {
+        const app: App = @enumFromInt(field.value);
+        if (app.isTerminalAgent()) try std.testing.expectEqual(app, appFromProcessName(app.executable()));
+    }
+}
+
+test "idle state ranks below every attention state and round-trips its label" {
+    try std.testing.expectEqual(State.idle, stateFromLabel("idle").?);
+    try std.testing.expectEqualStrings("idle", State.idle.badge());
+    try std.testing.expectEqual(State.done, aggregate(&.{ .idle, .done }));
+    try std.testing.expectEqual(State.idle, aggregate(&.{ .none, .idle }));
+    try std.testing.expectEqual(State.running, aggregate(&.{ .idle, .running, .done }));
 }
 
 test "assistant App round-trips its label and has a display name" {
     try std.testing.expectEqualStrings("assistant", App.assistant.label());
     try std.testing.expectEqual(App.assistant, appFromLabel("assistant").?);
+    try std.testing.expectEqual(App.pi, appFromLabel("pi").?);
     try std.testing.expectEqualStrings("Copilot", App.assistant.displayName());
     try std.testing.expectEqualStrings("Claude Code", App.claude_code.displayName());
     try std.testing.expectEqualStrings("Codex", App.codex.displayName());
+    try std.testing.expectEqualStrings("Pi", App.pi.displayName());
     try std.testing.expectEqualStrings("Agent", App.none.displayName());
 }
 

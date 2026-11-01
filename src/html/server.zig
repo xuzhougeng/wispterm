@@ -60,6 +60,7 @@ const Server = struct {
     host_len: usize = 0,
     ssh_port_buf: [16]u8 = undefined,
     ssh_port_len: usize = 0,
+    network_proxy: @import("../ssh/network_proxy.zig").Config = .{},
     proxy_jump_buf: [128]u8 = undefined,
     proxy_jump_len: usize = 0,
 
@@ -77,6 +78,7 @@ const Server = struct {
             server.user_len = copyBounded(server.user_buf[0..], conn.user());
             server.host_len = copyBounded(server.host_buf[0..], conn.host());
             server.ssh_port_len = copyBounded(server.ssh_port_buf[0..], conn.port());
+            server.network_proxy = conn.network_proxy;
             server.proxy_jump_len = copyBounded(server.proxy_jump_buf[0..], conn.proxyJump());
         }
         return server;
@@ -111,7 +113,7 @@ const Server = struct {
         return std.mem.eql(u8, self.user(), conn.user()) and
             std.mem.eql(u8, self.host(), conn.host()) and
             std.mem.eql(u8, self.sshPort(), conn.port()) and
-            std.mem.eql(u8, self.proxyJump(), conn.proxyJump());
+            std.mem.eql(u8, self.proxyJump(), conn.proxyJump()) and self.network_proxy.eql(&conn.network_proxy);
     }
 };
 
@@ -489,6 +491,7 @@ fn spawnSshCommand(
         argv_buf[argc] = conn.identityFile();
         argc += 1;
     }
+    if (conn.network_proxy.kind != .none) appendSshOption(&argv_buf, &argc, conn.network_proxy.option());
     var proxy_opt_buf: [288]u8 = undefined;
     if (conn.proxyJump().len > 0) {
         const opt = std.fmt.bufPrint(&proxy_opt_buf, "ProxyJump={s}", .{conn.proxyJump()}) catch return null;

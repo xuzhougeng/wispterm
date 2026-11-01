@@ -24,6 +24,7 @@ zig build -Dtarget="${ARCH}-linux-gnu" -Doptimize=ReleaseFast
 
 echo "==> Staging AppDir at ${APPDIR}"
 rm -rf "$APPDIR"
+install -Dm755 "$ROOT/zig-out/bin/wispterm-ssh-proxy" "$APPDIR/usr/bin/wispterm-ssh-proxy"
 install -Dm755 "$ROOT/zig-out/bin/wispterm"                          "$APPDIR/usr/bin/wispterm"
 install -Dm644 "$HERE/wispterm.desktop"                              "$APPDIR/usr/share/applications/wispterm.desktop"
 install -Dm644 "$HERE/com.wispterm.terminal.metainfo.xml"            "$APPDIR/usr/share/metainfo/com.wispterm.terminal.metainfo.xml"

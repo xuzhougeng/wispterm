@@ -32,11 +32,12 @@ pub const Pty = struct {
         return error.UnsupportedPty;
     }
 
-    pub fn startCommand(self: *Pty, command: *pty_command.Command, command_line: pty_command.CommandLine, cwd: pty_command.Cwd) !void {
+    pub fn startCommand(self: *Pty, command: *pty_command.Command, command_line: pty_command.CommandLine, cwd: pty_command.Cwd, advertise_terminal_capabilities: bool) !void {
         _ = self;
         _ = command;
         _ = command_line;
         _ = cwd;
+        _ = advertise_terminal_capabilities;
         return error.UnsupportedPty;
     }
 

@@ -17,10 +17,12 @@ const platform_com = @import("platform/com.zig");
 const platform_display = @import("platform/display.zig");
 const font_backend = @import("platform/font_backend.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
+const platform_shell_env = @import("platform/shell_env.zig");
 const platform_notifications = @import("platform/notifications.zig");
 const platform_thread_control = @import("platform/thread_control.zig");
 const window_backend = @import("platform/window_backend.zig");
 const remote = @import("remote_client.zig");
+const sync_service = @import("sync/service.zig");
 const weixin = @import("weixin/controller.zig");
 const weixin_types = @import("weixin/types.zig");
 const feishu = @import("feishu/controller.zig");
@@ -34,6 +36,7 @@ const platform_open_url = @import("platform/open_url.zig");
 const update_check = @import("update_check.zig");
 const update_install = @import("update_install.zig");
 const update_apply = @import("platform/update_apply.zig");
+const update_inplace_mod = @import("update_inplace.zig");
 const whats_new_gate = @import("whats_new_gate.zig");
 const platform_window_state = @import("platform/window_state.zig");
 
@@ -88,6 +91,7 @@ copy_on_select: bool,
 right_click_action: Config.RightClickAction,
 url_open_mode: Config.UrlOpenMode,
 ssh_legacy_algorithms: bool,
+ssh_advertise_terminal_capabilities: bool,
 weixin_notify_forward: bool,
 
 // Background image
@@ -131,14 +135,21 @@ restore_tabs_on_startup: bool,
 
 // Update check state
 auto_update_check: bool,
+/// `auto-update = download`: stage a found release in the background.
+auto_update_download: bool,
+/// Background download + in-place swap for signed Windows portable installs.
+update_inplace: update_inplace_mod.Controller,
 whats_new_on_update: bool,
 copilot_hint: bool,
+window_show_toolbar: Config.WindowShowToolbar,
+file_explorer_position: Config.FileExplorerPosition,
 update_mutex: std.Thread.Mutex,
 update_result: update_check.CheckResult,
 update_latest_version_buf: [32]u8,
 update_release_url_buf: [256]u8,
 update_asset_name_buf: [update_check.asset_name_buffer_len]u8,
 update_asset_download_url_buf: [update_check.asset_download_url_buffer_len]u8,
+update_asset_digest_buf: [update_check.asset_digest_buffer_len]u8,
 available_update: update_check.CheckResult,
 available_update_package: update_check.ReleasePackage,
 pending_download_update: update_check.CheckResult,
@@ -147,6 +158,7 @@ download_latest_version_buf: [32]u8,
 download_release_url_buf: [256]u8,
 download_asset_name_buf: [update_check.asset_name_buffer_len]u8,
 download_asset_download_url_buf: [update_check.asset_download_url_buffer_len]u8,
+download_asset_digest_buf: [update_check.asset_digest_buffer_len]u8,
 update_thread: ?std.Thread,
 update_check_in_flight: bool,
 download_thread: ?std.Thread,
@@ -251,6 +263,11 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         }
     }
 
+    // Ghostty `env` config: shared by every PTY the platform backends spawn.
+    platform_shell_env.set(allocator, &cfg.env) catch |err| {
+        std.log.warn("failed to apply env config: {}", .{err});
+    };
+
     var app = App{
         .allocator = allocator,
         .shell_cmd_buf = undefined,
@@ -283,6 +300,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .right_click_action = cfg.@"right-click-action",
         .url_open_mode = cfg.@"url-open-mode",
         .ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms",
+        .ssh_advertise_terminal_capabilities = cfg.@"ssh-advertise-terminal-capabilities",
         .weixin_notify_forward = cfg.@"weixin-notify-forward",
         .background_image = background_image,
         .background_opacity = cfg.@"background-opacity",
@@ -309,15 +327,20 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .ai_distill_suggest = cfg.@"ai-distill-suggest",
         .console_host_preference = cfg.@"windows-conpty",
         .restore_tabs_on_startup = cfg.@"restore-tabs-on-startup",
-        .auto_update_check = cfg.@"auto-update-check",
+        .auto_update_check = autoUpdateChecks(&cfg),
+        .auto_update_download = cfg.@"auto-update" == .download,
+        .update_inplace = update_inplace_mod.Controller.init(allocator, window_backend.postWakeup),
         .whats_new_on_update = cfg.@"whats-new-on-update",
         .copilot_hint = cfg.@"copilot-hint",
+        .window_show_toolbar = cfg.@"window-show-toolbar",
+        .file_explorer_position = cfg.@"file-explorer-position",
         .update_mutex = .{},
         .update_result = .{ .state = .idle },
         .update_latest_version_buf = undefined,
         .update_release_url_buf = undefined,
         .update_asset_name_buf = undefined,
         .update_asset_download_url_buf = undefined,
+        .update_asset_digest_buf = undefined,
         .available_update = .{ .state = .idle },
         .available_update_package = update_install.defaultPackage(),
         .pending_download_update = .{ .state = .idle },
@@ -326,6 +349,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .download_release_url_buf = undefined,
         .download_asset_name_buf = undefined,
         .download_asset_download_url_buf = undefined,
+        .download_asset_digest_buf = undefined,
         .update_thread = null,
         .update_check_in_flight = false,
         .download_thread = null,
@@ -553,6 +577,9 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     defer self.mutex.unlock();
 
     self.scrollback_limit = cfg.@"scrollback-limit";
+    platform_shell_env.set(self.allocator, &cfg.env) catch |err| {
+        std.log.warn("failed to apply env config: {}", .{err});
+    };
     self.replaceStr(&self.font_family, cfg.@"font-family");
     self.replaceOptStr(&self.font_family_cjk, cfg.@"font-family-cjk");
     self.replaceOptStr(&self.font_family_fallback, cfg.@"font-family-fallback");
@@ -575,6 +602,7 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.right_click_action = cfg.@"right-click-action";
     self.url_open_mode = cfg.@"url-open-mode";
     self.ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";
+    self.ssh_advertise_terminal_capabilities = cfg.@"ssh-advertise-terminal-capabilities";
     self.weixin_notify_forward = cfg.@"weixin-notify-forward";
     self.replaceOptStr(&self.background_image, cfg.@"background-image");
     self.background_opacity = cfg.@"background-opacity";
@@ -598,9 +626,12 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.ai_distill_suggest = cfg.@"ai-distill-suggest";
     self.console_host_preference = cfg.@"windows-conpty";
     self.restore_tabs_on_startup = cfg.@"restore-tabs-on-startup";
-    self.auto_update_check = cfg.@"auto-update-check";
+    self.auto_update_check = autoUpdateChecks(cfg);
+    self.auto_update_download = cfg.@"auto-update" == .download;
     self.whats_new_on_update = cfg.@"whats-new-on-update";
     self.copilot_hint = cfg.@"copilot-hint";
+    self.window_show_toolbar = cfg.@"window-show-toolbar";
+    self.file_explorer_position = cfg.@"file-explorer-position";
     self.shell_cmd_len = resolveShellCommandLine(&self.shell_cmd_buf, cfg.shell);
 }
 
@@ -670,6 +701,7 @@ fn updateCheckThreadMain(app: *App, show_failures: bool) void {
     var release_url_buf: [256]u8 = undefined;
     var asset_name_buf: [update_check.asset_name_buffer_len]u8 = undefined;
     var asset_download_url_buf: [update_check.asset_download_url_buffer_len]u8 = undefined;
+    var asset_digest_buf: [update_check.asset_digest_buffer_len]u8 = undefined;
     const package = update_install.currentPackage(app.allocator) catch update_install.defaultPackage();
     var result = update_check.fetchLatestReleaseForPackage(
         app.allocator,
@@ -680,12 +712,43 @@ fn updateCheckThreadMain(app: *App, show_failures: bool) void {
             .release_url = &release_url_buf,
             .asset_name = &asset_name_buf,
             .asset_download_url = &asset_download_url_buf,
+            .asset_digest = &asset_digest_buf,
         },
     );
     if (!show_failures and result.state != .update_available and result.release_url.len == 0) {
         result = .{ .state = .idle };
     }
+    // `auto-update = download` on an install that can replace itself: stage
+    // it quietly; the titlebar pill appears once it is verified. A manual
+    // check still says so.
+    if (result.state == .update_available and app.auto_update_download and
+        app.update_inplace.startStaging(stageRequest(result)))
+    {
+        const staged = app.update_inplace.currentPhase() == .ready;
+        if (show_failures and staged) app.update_inplace.noteManualCheck();
+        app.storeUpdateResult(if (show_failures and !staged) .{
+            .state = .downloading,
+            .latest_version = result.latest_version,
+            .release_url = result.release_url,
+        } else .{ .state = .idle }, package);
+        return;
+    }
     app.storeUpdateResult(result, package);
+}
+
+fn stageRequest(result: update_check.CheckResult) update_inplace_mod.StageRequest {
+    return .{
+        .tag = result.latest_version,
+        .asset_name = result.asset_name,
+        .asset_url = result.asset_download_url,
+        .asset_digest = result.asset_digest,
+    };
+}
+
+/// `auto-update-check = false` (older spelling) or `auto-update = off`
+/// turn the startup check off.
+fn autoUpdateChecks(cfg: *const Config) bool {
+    return cfg.@"auto-update-check" and cfg.@"auto-update" != .off;
 }
 
 fn storeUpdateResult(self: *App, result: update_check.CheckResult, package: update_check.ReleasePackage) void {
@@ -702,6 +765,7 @@ fn storeUpdateResult(self: *App, result: update_check.CheckResult, package: upda
             .release_url = &self.update_release_url_buf,
             .asset_name = &self.update_asset_name_buf,
             .asset_download_url = &self.update_asset_download_url_buf,
+            .asset_digest = &self.update_asset_digest_buf,
         },
     );
     self.update_result = copied;
@@ -749,6 +813,27 @@ pub fn hasDownloadableUpdate(self: *App) bool {
 pub fn requestUpdateDownload(self: *App) void {
     self.joinFinishedUpdateThread();
     self.joinFinishedDownloadThread();
+
+    // An install that replaces itself stages the release next to it instead
+    // of saving the zip to Downloads; the titlebar pill takes it from there.
+    {
+        self.update_mutex.lock();
+        const available = self.available_update;
+        const busy = self.download_in_flight or self.download_worker_running;
+        self.update_mutex.unlock();
+        if (!busy and available.state == .update_available and
+            self.update_inplace.startStaging(stageRequest(available)))
+        {
+            if (self.update_inplace.currentPhase() == .ready) {
+                self.update_inplace.noteManualCheck();
+                return;
+            }
+            self.update_mutex.lock();
+            defer self.update_mutex.unlock();
+            self.update_result = .{ .state = .downloading, .latest_version = available.latest_version };
+            return;
+        }
+    }
 
     {
         self.update_mutex.lock();
@@ -835,6 +920,7 @@ fn copyPendingDownloadUpdateLocked(self: *App) bool {
             .release_url = &self.download_release_url_buf,
             .asset_name = &self.download_asset_name_buf,
             .asset_download_url = &self.download_asset_download_url_buf,
+            .asset_digest = &self.download_asset_digest_buf,
         },
     );
     if (copied.state != .update_available or copied.asset_download_url.len == 0) return false;
@@ -901,6 +987,27 @@ pub fn requestUpdateInstall(self: *App) bool {
 
     window_backend.requestQuit();
     return true;
+}
+
+/// UI thread, once per loop iteration: what the in-place updater finished.
+pub fn pollInPlaceUpdate(self: *App) update_inplace_mod.Outcome {
+    return self.update_inplace.takeOutcome();
+}
+
+/// The staged release's tag while the titlebar Update pill is up.
+pub fn inPlaceReadyVersion(self: *App, buf: []u8) ?[]const u8 {
+    return self.update_inplace.readyVersion(buf);
+}
+
+/// Swap the staged release in and restart into it (confirmed by the user).
+/// The result arrives through `pollInPlaceUpdate`.
+pub fn requestInPlaceRestart(self: *App) bool {
+    return self.update_inplace.startRestart();
+}
+
+/// As the app exits: install a staged release so the next launch runs it.
+pub fn installStagedUpdateOnExit(self: *App) void {
+    self.update_inplace.installOnExit();
 }
 
 fn copyBounded(out: []u8, value: []const u8) ?[]const u8 {
@@ -1210,7 +1317,10 @@ pub fn deinit(self: *App) void {
     self.joinAllWindowThreads();
     self.joinUpdateThread();
     self.joinDownloadThread();
+    self.update_inplace.deinit();
     memory_digest_scheduler.deinit();
+    // Joins the sync worker (it waits for an in-flight request to finish).
+    sync_service.stop();
 
     if (self.remote_client) |client| {
         client.destroy();

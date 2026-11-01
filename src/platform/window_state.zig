@@ -147,6 +147,20 @@ pub fn setCopilotHintShown(allocator: std.mem.Allocator) void {
     savePersisted(allocator, current);
 }
 
+/// The remembered right-dock width, or null when none was saved yet.
+pub fn rightDockWidth(allocator: std.mem.Allocator) ?i32 {
+    return loadPersisted(allocator).right_dock_width;
+}
+
+/// Remember the right-dock width (read-modify-write to preserve geometry and
+/// onboarding flags). No-op when unchanged.
+pub fn setRightDockWidth(allocator: std.mem.Allocator, width: i32) void {
+    var current = loadPersisted(allocator);
+    if (current.right_dock_width) |w| if (w == width) return;
+    current.right_dock_width = width;
+    savePersisted(allocator, current);
+}
+
 /// The last app version whose "What's New" the user has seen (empty when none).
 /// The returned slice is copied into `buf`; pass a buffer at least
 /// `codec.version_max_len` bytes.

@@ -25,8 +25,13 @@ static NSString *wispterm_macos_http_string(const char *text) {
     return [NSString stringWithUTF8String:text];
 }
 
+// Dispatch objects are only reference-counted for us by the compiler under
+// ARC (OS_OBJECT_USE_OBJC_RETAIN_RELEASE). These bridges build without ARC, so
+// OS_OBJECT_USE_OBJC is 1 while nothing balances the +1 from
+// dispatch_semaphore_create: gating on OS_OBJECT_USE_OBJC compiled this release
+// out and leaked one semaphore per HTTP request.
 static void wispterm_macos_http_release_semaphore(dispatch_semaphore_t sema) {
-#if !OS_OBJECT_USE_OBJC
+#if !OS_OBJECT_USE_OBJC_RETAIN_RELEASE
     dispatch_release(sema);
 #else
     (void)sema;

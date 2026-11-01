@@ -978,6 +978,8 @@ ai-default-profile = $profileName
 background-image = $backgroundImagePath
 background-opacity = 0.18
 background-image-mode = fill
+# Keep the toolbar buttons drawn so the pixel checks see them without hovering.
+window-show-toolbar = always
 "@ | Set-Content -LiteralPath $configPath -Encoding UTF8
 
 $oldAppData = $env:APPDATA

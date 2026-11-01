@@ -36,8 +36,8 @@ Copilot 支持兼容 OpenAI 的 **Chat Completions**、OpenAI 的 **Responses** 
 
 内置默认针对 DeepSeek：
 
-- base URL `https://api.deepseek.com`，模型 `deepseek-v4-pro`，协议
-  `chat_completions`。
+- base URL `https://api.deepseek.com`，模型 `deepseek-flash`，协议
+  `chat_completions`，开启 Vision。
 - 开启 DeepSeek thinking，`reasoning_effort = high`，非流式。
 - 一个与平台相关的系统提示编译进了二进制；在已有 profile 上清空 System 字段即可
   在下次启动时采用当前内置默认提示。
@@ -60,7 +60,7 @@ Copilot 支持兼容 OpenAI 的 **Chat Completions**、OpenAI 的 **Responses** 
 
 ## 粘贴图片（Vision）
 
-每个 AI profile 都有 **Vision** 开关（默认关闭）。在使用视觉模型的 profile 上启用后，
+每个 AI profile 都有 **Vision** 开关：默认模型 `deepseek-flash` 的新 profile 默认开启，其他模型默认关闭。在使用视觉模型的 profile 上启用后，
 按 `Ctrl+Shift+V`（macOS 上 `Cmd+Shift+V`）即可把剪贴板图片粘贴进聊天输入框。图片会作为
 多模态块发送，并在之后每一轮都重新发送，使模型持续看到它。把图片粘贴进非视觉 profile 会
 被忽略，并给出日志和提示。

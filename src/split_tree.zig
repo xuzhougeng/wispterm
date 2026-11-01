@@ -1211,6 +1211,8 @@ pub fn fromSnapshot(
         snap: *const @import("session_persist.zig").SurfaceSnap,
         gpa: Allocator,
     ) ?*Surface,
+    // Maps a persisted preview to where it is read from; null → local.
+    preview_source: ?*const fn (snap: *const @import("session_persist.zig").PreviewSnap) PreviewPane.PreviewSourceKind,
 ) !SplitTree {
     const session_persist = @import("session_persist.zig");
     const total = countSnapNodes(snap);
@@ -1229,6 +1231,7 @@ pub fn fromSnapshot(
             snap: *const session_persist.SurfaceSnap,
             gpa: Allocator,
         ) ?*Surface,
+        preview_source: ?*const fn (snap: *const session_persist.PreviewSnap) PreviewPane.PreviewSourceKind,
 
         fn writeNode(self: *@This(), n: *const session_persist.NodeSnap) !Node.Handle {
             const my_handle: Node.Handle = @enumFromInt(@as(Node.Handle.Backing, @intCast(self.idx)));
@@ -1243,9 +1246,10 @@ pub fn fromSnapshot(
                         // Mirror the surface path: a failed allocation aborts the
                         // rebuild (same fail-fast semantics as a null factory).
                         const pane = PreviewPane.create(self.gpa) catch return error.SurfaceCreationFailed;
-                        if (leaf.preview) |ps| {
-                            // Best-effort async reload; basename is the title.
-                            _ = pane.beginAsyncLoad(ps.kind, std.fs.path.basename(ps.path), ps.path, .local);
+                        if (leaf.preview) |*ps| {
+                            // Best-effort async reload from the persisted source
+                            // (local/WSL/SSH); basename is the title.
+                            _ = pane.beginAsyncLoad(ps.kind, std.fs.path.basename(ps.path), ps.path, if (self.preview_source) |f| f(ps) else .local);
                         }
                         self.nodes[my_handle.idx()] = .{ .leaf = .{ .preview = pane } };
                     },
@@ -1273,7 +1277,7 @@ pub fn fromSnapshot(
         }
     };
 
-    var ctx = Ctx{ .nodes = nodes, .gpa = gpa, .factory = factory };
+    var ctx = Ctx{ .nodes = nodes, .gpa = gpa, .factory = factory, .preview_source = preview_source };
     _ = try ctx.writeNode(snap);
 
     return .{
@@ -1472,7 +1476,7 @@ test "SplitTree: fromSnapshot rebuilds nested topology with correct handles and 
     };
     Stub.counter = 0;
 
-    var tree = try fromSnapshot(std.testing.allocator, &root, Stub.make);
+    var tree = try fromSnapshot(std.testing.allocator, &root, Stub.make, null);
     defer {
         // Sentinel leaves can't be unref'd via the real Surface path, so we
         // free the arena directly without invoking the destructor.
@@ -1527,7 +1531,7 @@ test "SplitTree: fromSnapshot clamps ratios" {
     };
     Stub.counter = 0;
 
-    var tree = try fromSnapshot(std.testing.allocator, &root, Stub.make);
+    var tree = try fromSnapshot(std.testing.allocator, &root, Stub.make, null);
     defer {
         if (tree.nodes.len > 0) tree.arena.deinit();
         tree = undefined;
@@ -1722,7 +1726,7 @@ test "SplitTree: swapLeaves exchanges leaf surfaces and preserves topology" {
     };
     Stub.counter = 0;
 
-    var tree = try fromSnapshot(std.testing.allocator, &root, Stub.make);
+    var tree = try fromSnapshot(std.testing.allocator, &root, Stub.make, null);
     defer {
         // Sentinel leaves can't be unref'd; free the arena directly.
         if (tree.nodes.len > 0) tree.arena.deinit();
@@ -1780,7 +1784,7 @@ test "SplitTree: parentOf finds the immediate split; root has none" {
     };
     Stub.counter = 0;
 
-    var tree = try fromSnapshot(std.testing.allocator, &root, Stub.make);
+    var tree = try fromSnapshot(std.testing.allocator, &root, Stub.make, null);
     defer {
         if (tree.nodes.len > 0) tree.arena.deinit();
         tree = undefined;
@@ -1820,7 +1824,7 @@ test "SplitTree: flipSplitLayoutInPlace toggles only the targeted split" {
     };
     Stub.counter = 0;
 
-    var tree = try fromSnapshot(std.testing.allocator, &root, Stub.make);
+    var tree = try fromSnapshot(std.testing.allocator, &root, Stub.make, null);
     defer {
         if (tree.nodes.len > 0) tree.arena.deinit();
         tree = undefined;
@@ -1908,7 +1912,7 @@ test "SplitTree: readingOrder is row-major top-left to bottom-right" {
     };
     Stub.counter = 0;
 
-    var tree = try fromSnapshot(std.testing.allocator, &root, Stub.make);
+    var tree = try fromSnapshot(std.testing.allocator, &root, Stub.make, null);
     defer {
         if (tree.nodes.len > 0) tree.arena.deinit();
         tree = undefined;
@@ -1951,7 +1955,7 @@ test "SplitTree: surfaces() and panes() agree for an all-terminal tree" {
     };
     Stub.counter = 0;
 
-    var tree = try fromSnapshot(std.testing.allocator, &root, Stub.make);
+    var tree = try fromSnapshot(std.testing.allocator, &root, Stub.make, null);
     defer {
         // Sentinel leaves can't be unref'd via the real Surface path.
         if (tree.nodes.len > 0) tree.arena.deinit();

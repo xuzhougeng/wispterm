@@ -99,6 +99,13 @@ jobs:
       - name: Full tests
         run: zig build test-full -Dtarget=native
 
+      # macOS 12 is best-effort and no hosted runner can run it, so guard the
+      # floor statically: fail on an Objective-C API newer than the minimum in
+      # build.zig that is not wrapped in @available, and on a release-style
+      # .app whose binary minos or Info.plist LSMinimumSystemVersion drifts.
+      - name: macOS minimum version checks
+        run: zig build check-macos-availability check-macos-minimum -Dtarget=aarch64-macos
+
   remote-ts:
     name: Remote TypeScript
     needs: changes
@@ -135,6 +142,21 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: CodeSignTool failure detection
+        shell: pwsh
+        run: pwsh -NoProfile -File .\packaging\windows\sign-esigner.test.ps1
+
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis -y --no-progress
+
+      # Builds the setup exe from a stub payload, installs it silently into a
+      # temp folder, checks the shortcut and Add/Remove Programs entry, then
+      # uninstalls silently. No zig build involved.
+      - name: Installer silent install and uninstall
+        shell: pwsh
+        run: pwsh -NoProfile -File .\packaging\windows\installer\installer.test.ps1
 
       - uses: mlugg/setup-zig@v2
         with:
@@ -176,6 +198,13 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          # No Zig cache here. setup-zig saves the global cache in its post
+          # step even when the run is cancelled, and a cache saved mid-build
+          # carries manifests whose objects were never written. Every later
+          # run then restores it and lld-link fails with "could not open
+          # .zig-cache\o\...\shell_extension.obj". This job compiles two
+          # small C++ files, so a cold libc++/compiler-rt build costs little.
+          use-cache: false
       - name: Build COM extension and test driver
         shell: pwsh
         run: |

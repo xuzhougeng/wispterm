@@ -21,6 +21,8 @@ pub const Options = struct {
     api_key: []const u8,
     with_content: bool,
     max_results: usize = 10,
+    /// Explicit proxy from WispTerm HTTP settings; null keeps backend defaults.
+    proxy: ?[]const u8 = null,
 };
 
 pub const Results = struct {
@@ -353,6 +355,7 @@ fn searchJina(arena: std.mem.Allocator, gpa: std.mem.Allocator, query: []const u
         .headers = headers[0..header_len],
         .body = body,
         .timeout_ms = 30_000,
+        .proxy = opts.proxy,
     }) catch |err| {
         setNetworkErrorDetail(err);
         std.log.warn("{s}", .{errorText(error.Network)});

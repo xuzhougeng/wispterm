@@ -30,6 +30,8 @@ pub const Article = struct {
 pub const Options = struct {
     max_results: usize = 10,
     tool_name: []const u8 = "wispterm",
+    /// Explicit proxy from WispTerm HTTP settings; null keeps backend defaults.
+    proxy: ?[]const u8 = null,
 };
 
 pub const Results = struct {
@@ -718,13 +720,14 @@ pub fn formatErrorText(allocator: std.mem.Allocator, err: anyerror) ![]u8 {
     };
 }
 
-fn httpGet(gpa: std.mem.Allocator, url: []const u8) !platform_http.Response {
+fn httpGet(gpa: std.mem.Allocator, url: []const u8, proxy: ?[]const u8) !platform_http.Response {
     return platform_http.fetch(gpa, .{
         .method = .GET,
         .url = url,
         .headers = &.{},
         .body = "",
         .timeout_ms = 30_000,
+        .proxy = proxy,
     });
 }
 
@@ -743,7 +746,7 @@ pub fn executeSearch(gpa: std.mem.Allocator, query_in: []const u8, opts: Options
     // 1. esearch -> PMIDs
     const es_url = try buildEsearchUrl(gpa, query, opts);
     defer gpa.free(es_url);
-    var es_resp = httpGet(gpa, es_url) catch |err| {
+    var es_resp = httpGet(gpa, es_url, opts.proxy) catch |err| {
         setNetworkErrorDetail(err, es_url);
         std.log.warn("{s}", .{errorText(error.Network)});
         return error.Network;
@@ -763,7 +766,7 @@ pub fn executeSearch(gpa: std.mem.Allocator, query_in: []const u8, opts: Options
     // 2. efetch -> articles
     const ef_url = try buildEfetchUrl(gpa, pmids, opts);
     defer gpa.free(ef_url);
-    var ef_resp = httpGet(gpa, ef_url) catch |err| {
+    var ef_resp = httpGet(gpa, ef_url, opts.proxy) catch |err| {
         setNetworkErrorDetail(err, ef_url);
         std.log.warn("{s}", .{errorText(error.Network)});
         return error.Network;

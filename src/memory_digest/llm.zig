@@ -82,7 +82,7 @@ pub const Client = struct {
         const body = try protocol.buildRequestJson(gpa, params, &messages, false);
         defer gpa.free(body);
 
-        const endpoint = try protocol.apiEndpoint(gpa, config.base_url, config.protocol);
+        const endpoint = try protocol.apiEndpointForModel(gpa, config.base_url, config.protocol, config.model);
         defer gpa.free(endpoint);
 
         const bearer = try std.fmt.allocPrint(gpa, "Bearer {s}", .{config.api_key});
@@ -94,11 +94,22 @@ pub const Client = struct {
         };
         defer client.deinit();
 
-        const is_anthropic = config.protocol == .anthropic;
-        const anthropic_headers = [_]std.http.Header{
-            .{ .name = "x-api-key", .value = config.api_key },
-            .{ .name = "anthropic-version", .value = "2023-06-01" },
-        };
+        const wire = protocol.wireProtocol(config.protocol, config.model);
+        var extra_headers: [4]std.http.Header = undefined;
+        var extra_len: usize = 0;
+        if (wire == .anthropic) {
+            extra_headers[extra_len] = .{ .name = "x-api-key", .value = config.api_key };
+            extra_len += 1;
+            extra_headers[extra_len] = .{ .name = "anthropic-version", .value = "2023-06-01" };
+            extra_len += 1;
+        } else if (wire == .kimi) {
+            extra_headers[extra_len] = .{ .name = "anthropic-version", .value = "2023-06-01" };
+            extra_len += 1;
+        }
+        if (protocol.needsOpenCodeSession(config.protocol, config.base_url)) {
+            extra_headers[extra_len] = .{ .name = "x-opencode-session", .value = "wispterm-memory-digest" };
+            extra_len += 1;
+        }
 
         const uri = try std.Uri.parse(endpoint);
         var timer = try std.time.Timer.start();
@@ -115,9 +126,10 @@ pub const Client = struct {
             .redirect_behavior = .unhandled,
             .headers = .{
                 .content_type = .{ .override = "application/json" },
-                .authorization = if (is_anthropic) .omit else .{ .override = bearer },
+                .authorization = if (wire == .anthropic) .omit else .{ .override = bearer },
+                .user_agent = if (protocol.needsOpenCodeSession(config.protocol, config.base_url)) .{ .override = "wispterm" } else .default,
             },
-            .extra_headers = if (is_anthropic) &anthropic_headers else &.{},
+            .extra_headers = extra_headers[0..extra_len],
         }) catch |err| {
             std.log.warn("memory_digest: llm request connect failed (model={s}): {s}", .{ config.model, @errorName(err) });
             return err;
@@ -201,7 +213,7 @@ pub const Client = struct {
             return error.LlmHttpError;
         }
 
-        var api_result = try protocol.parseApiResponse(gpa, resp_list.items, config.protocol);
+        var api_result = try protocol.parseApiResponse(gpa, resp_list.items, wire);
         if (api_result.api_error) {
             std.log.warn("memory_digest: llm api error model={s} elapsed_ms={d}", .{ config.model, timer.read() / std.time.ns_per_ms });
             api_result.deinit(gpa);

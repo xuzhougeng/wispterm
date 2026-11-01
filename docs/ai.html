@@ -89,7 +89,7 @@
         <div class="feature-grid">
           <div class="feature">
             <h3>DeepSeek V4 profiles</h3>
-            <p>The default profile targets OpenAI-compatible Chat Completions at <code>https://api.deepseek.com</code> with <code>deepseek-v4-pro</code>. Use <code>deepseek-v4-flash</code> when you want a faster, lighter profile.</p>
+            <p>The default profile targets OpenAI-compatible Chat Completions at <code>https://api.deepseek.com</code> with <code>deepseek-flash</code>. It accepts pasted images, so Vision starts on for it.</p>
           </div>
           <div class="feature">
             <h3>Switch models in-session</h3>
@@ -127,12 +127,13 @@
                 <tr><th>Profile name</th><td><code>DeepSeek</code></td></tr>
                 <tr><th>Base URL</th><td><code>https://api.deepseek.com</code></td></tr>
                 <tr><th>API key</th><td>Your DeepSeek key, or leave empty when <code>DEEPSEEK_API_KEY</code> is set</td></tr>
-                <tr><th>Model</th><td><code>deepseek-v4-pro</code></td></tr>
+                <tr><th>Model</th><td><code>deepseek-flash</code></td></tr>
                 <tr><th>Protocol</th><td><code>chat_completions</code>; use <code>responses</code> for OpenAI Responses API providers</td></tr>
                 <tr><th>Thinking</th><td><code>enabled</code></td></tr>
                 <tr><th>Effort</th><td><code>max</code> for coding-heavy agent work; <code>high</code> is WispTerm's built-in default</td></tr>
                 <tr><th>Stream</th><td><code>false</code></td></tr>
                 <tr><th>Agent</th><td><code>true</code></td></tr>
+                <tr><th>Vision</th><td><code>on</code>; <code>deepseek-flash</code> accepts images</td></tr>
               </tbody>
             </table>
           </div>
@@ -362,7 +363,7 @@ ai-agent-output-limit       = 16384</code></pre>
           </div>
           <div class="feature">
             <h3>Model aliases</h3>
-            <p>Use current DeepSeek V4 model IDs such as <code>deepseek-v4-pro</code> or <code>deepseek-v4-flash</code> rather than legacy aliases. To switch a running conversation to a different saved profile, use <code>/model</code> or click the model label.</p>
+            <p>Use the current DeepSeek model ID <code>deepseek-flash</code>; <code>deepseek-v4-flash</code> is a legacy alias. <code>deepseek-v4-pro</code> is text-only and is no longer set up for you, so add it as its own profile if you want it. To switch a running conversation to a different saved profile, use <code>/model</code> or click the model label.</p>
           </div>
         </div>
         <p class="section-foot">References: <a href="https://api-docs.deepseek.com/quick_start/pricing/" target="_blank" rel="noopener">DeepSeek model details</a> and <a href="https://api-docs.deepseek.com/guides/thinking_mode" target="_blank" rel="noopener">DeepSeek thinking mode</a>.</p>

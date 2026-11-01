@@ -21,11 +21,14 @@ const conversation_center_session = @import("../conversation_center/session.zig"
 const ai_history_source = @import("../terminal_agents/sessions/source.zig");
 const skill_center = @import("../skill/center.zig");
 const port_forwarding = @import("../port_forward/forwarding.zig");
+const password_store_page = @import("../credential/page.zig");
+const sync_page = @import("../sync/page.zig");
 const ai_history_time = @import("../terminal_agents/sessions/time.zig");
 const agent_history = @import("../agent/history.zig");
 const platform_pty_command = @import("../platform/pty_command.zig");
 const Pty = @import("../platform/pty.zig").Pty;
 const active_tab_state = @import("active_tab.zig");
+const right_dock_state = @import("right_dock.zig");
 const i18n = @import("../i18n.zig");
 const agent_detector = @import("../terminal_agents/detector.zig");
 
@@ -57,6 +60,7 @@ pub const TAB_CLOSE_BTN_W: f32 = 36;
 pub const TAB_CLOSE_FADE_SPEED: f32 = 6.0;
 
 pub threadlocal var g_ssh_legacy_algorithms: bool = false;
+pub threadlocal var g_ssh_terminal_capabilities: bool = false;
 
 // ============================================================================
 // Tab model — each tab owns a SplitTree of Surfaces
@@ -76,10 +80,11 @@ pub const TabState = struct {
     /// `ai_chat_session`, which backs a dedicated AI-chat tab. Lazily created
     /// the first time the copilot sidebar is opened on this tab.
     copilot_session: ?*ai_chat.Session = null,
-    /// Whether this terminal tab's right-side Copilot sidebar is currently
-    /// open. The session is also per-tab; this flag prevents a Copilot opened
-    /// on one tab from appearing on another tab.
-    copilot_visible: bool = false,
+    /// This tab's right dock: whether it is open and which panel (Copilot or
+    /// Files) is selected. Per tab, like Ghostty's per-surface inspector, so a
+    /// Copilot opened on one tab never appears on another. Replaces the old
+    /// `copilot_visible` flag (now `right_dock.showing(.copilot)`).
+    right_dock: right_dock_state.TabDock = .{},
 
     /// tmux control-mode window id this tab mirrors (Phase 3c-2), or null for a
     /// normal local tab. `tmux_owner` is the controller/bridge that owns this
@@ -100,6 +105,8 @@ pub const TabState = struct {
         skill_center,
         port_forwarding,
         settings,
+        password_store,
+        sync,
     };
 
     /// Get the focused surface in this tab, or null if tree is empty
@@ -133,7 +140,7 @@ pub const TabState = struct {
             return session.tabTitle();
         }
         if (self.kind == .memory_center) {
-            return "Memory Center";
+            return i18n.s().memory_center_title;
         }
         if (self.kind == .conversation_center) {
             return i18n.s().conversation_center_title;
@@ -146,6 +153,12 @@ pub const TabState = struct {
         }
         if (self.kind == .settings) {
             return i18n.s().settings_title;
+        }
+        if (self.kind == .password_store) {
+            return i18n.s().password_store_title;
+        }
+        if (self.kind == .sync) {
+            return i18n.s().sync_title;
         }
         const surface = self.focusedSurface() orelse return "wispterm";
         return surface.getTitle();
@@ -238,6 +251,10 @@ pub const TabState = struct {
                 }
             },
             .settings => {},
+            // Wipes any revealed password and the vault from memory.
+            .password_store => password_store_page.state().close(),
+            // Wipes any half-typed password or passphrase.
+            .sync => sync_page.state().close(),
         }
     }
 };
@@ -281,6 +298,9 @@ pub threadlocal var g_tmux_restore_hook: ?*const fn (profile_name: []const u8) b
 /// Re-supply a restored SSH surface's password from its saved profile and arm
 /// autofill (the snapshot carries no password). Registered by AppWindow.
 pub threadlocal var g_ssh_restore_arm_hook: ?*const fn (*Surface) void = null;
+/// Copy the saved profile's password into a restored SSH preview connection.
+/// Registered by AppWindow; returns false when no password profile matches.
+pub threadlocal var g_ssh_restore_password_hook: ?*const fn (*Surface.SshConnection) bool = null;
 
 // Forced title from config (overrides all tab titles)
 pub threadlocal var g_forced_title: ?[]const u8 = null;
@@ -365,22 +385,31 @@ pub fn activeCopilotSession(
 
 pub fn activeCopilotVisible() bool {
     const t = activeTab() orelse return false;
-    return t.kind == .terminal and t.copilot_visible;
+    return t.kind == .terminal and t.right_dock.showing(.copilot);
 }
 
+/// Show (dock open on Copilot) or hide (close the dock only if Copilot is the
+/// panel showing) the active terminal tab's Copilot. Returns true on change.
 pub fn setActiveCopilotVisible(visible: bool) bool {
     const t = activeTab() orelse return false;
     if (t.kind != .terminal) return false;
-    if (t.copilot_visible == visible) return false;
-    t.copilot_visible = visible;
-    return true;
+    return if (visible)
+        right_dock_state.show(&t.right_dock, .copilot)
+    else
+        right_dock_state.hidePanel(&t.right_dock, .copilot);
 }
 
 pub fn toggleActiveCopilotVisible() bool {
     const t = activeTab() orelse return false;
     if (t.kind != .terminal) return false;
-    t.copilot_visible = !t.copilot_visible;
-    return t.copilot_visible;
+    _ = right_dock_state.toggle(&t.right_dock, .copilot);
+    return t.right_dock.showing(.copilot);
+}
+
+/// The active tab's right-dock state (any tab kind), or null with no tab.
+pub fn activeRightDock() ?*right_dock_state.TabDock {
+    const t = activeTab() orelse return null;
+    return &t.right_dock;
 }
 
 pub fn findAiTabBySessionId(session_id: []const u8) ?usize {
@@ -451,6 +480,8 @@ fn splitSshCommand(
         .password_auth = conn.password_auth,
         .legacy_algorithms = conn.legacy_algorithms,
         .proxy_jump = conn.proxyJump(),
+        .network_proxy = conn.network_proxy,
+        .terminal_capabilities = g_ssh_terminal_capabilities,
     }) orelse return null;
 
     return platform_pty_command.allocCommandLineFromUtf8(allocator, command) catch null;
@@ -506,6 +537,7 @@ pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: 
         cursor_style,
         cursor_blink,
         cwd,
+        g_ssh_terminal_capabilities,
     ) catch {
         std.debug.print("Failed to create Surface for new tab\n", .{});
         return false;
@@ -541,7 +573,7 @@ pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: 
     t.tmux_window_id = null;
     t.tmux_owner = null;
     t.tmux_name_len = 0;
-    t.copilot_visible = false;
+    t.right_dock = .{};
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -616,7 +648,7 @@ pub fn spawnBenchmarkTab(
     t.tmux_window_id = null;
     t.tmux_owner = null;
     t.tmux_name_len = 0;
-    t.copilot_visible = false;
+    t.right_dock = .{};
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -635,11 +667,11 @@ pub fn spawnAiChatTab(
     system_prompt: []const u8,
     thinking: []const u8,
     reasoning_effort: []const u8,
+    effort_levels: ai_chat.EffortLevels,
     stream_val: []const u8,
     agent_val: []const u8,
     max_tokens: u32,
     vision_val: []const u8,
-    command: []const u8,
 ) bool {
     if (g_tab_count >= MAX_TABS) return false;
 
@@ -661,7 +693,7 @@ pub fn spawnAiChatTab(
         return false;
     };
     session.setMaxTokens(max_tokens);
-    session.setAcpCommand(command);
+    session.effort_levels = effort_levels;
 
     if (!spawnAiChatSession(allocator, session)) {
         session.deinit();
@@ -692,7 +724,7 @@ pub fn spawnAiChatSession(allocator: std.mem.Allocator, session: *ai_chat.Sessio
     t.tmux_window_id = null;
     t.tmux_owner = null;
     t.tmux_name_len = 0;
-    t.copilot_visible = false;
+    t.right_dock = .{};
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -742,7 +774,7 @@ pub fn spawnAiHistoryTab(allocator: std.mem.Allocator, source: ai_history_source
     t.tmux_window_id = null;
     t.tmux_owner = null;
     t.tmux_name_len = 0;
-    t.copilot_visible = false;
+    t.right_dock = .{};
     t.ai_history_session = session_ptr;
     t.memory_center_session = null;
     t.conversation_center_session = null;
@@ -775,7 +807,7 @@ pub fn spawnMemoryCenterTab(allocator: std.mem.Allocator) bool {
     t.skill_center_session = null;
     t.port_forwarding_session = null;
     t.copilot_session = null;
-    t.copilot_visible = false;
+    t.right_dock = .{};
     t.tmux_window_id = null;
     t.tmux_owner = null;
     t.tmux_name_len = 0;
@@ -815,7 +847,7 @@ pub fn spawnConversationCenterTab(allocator: std.mem.Allocator) bool {
     t.skill_center_session = null;
     t.port_forwarding_session = null;
     t.copilot_session = null;
-    t.copilot_visible = false;
+    t.right_dock = .{};
     t.tmux_window_id = null;
     t.tmux_owner = null;
     t.tmux_name_len = 0;
@@ -847,7 +879,7 @@ pub fn spawnSkillCenterTab(allocator: std.mem.Allocator) bool {
     t.skill_center_session = session_ptr;
     t.port_forwarding_session = null;
     t.copilot_session = null;
-    t.copilot_visible = false;
+    t.right_dock = .{};
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -879,7 +911,7 @@ pub fn spawnPortForwardingTab(allocator: std.mem.Allocator) bool {
     t.skill_center_session = null;
     t.port_forwarding_session = session_ptr;
     t.copilot_session = null;
-    t.copilot_visible = false;
+    t.right_dock = .{};
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -900,6 +932,46 @@ pub fn openSettingsTab(allocator: std.mem.Allocator) bool {
 
     const t = allocator.create(TabState) catch return false;
     t.* = .{ .kind = .settings, .tree = .empty };
+
+    g_tabs[g_tab_count] = t;
+    active_tab_state.g_active_tab = g_tab_count;
+    g_tab_count += 1;
+    return true;
+}
+
+/// Open the singleton Password Store page, or switch to it when already open.
+/// Its state lives in credential/page.zig, not on the tab.
+pub fn openPasswordStoreTab(allocator: std.mem.Allocator) bool {
+    for (0..g_tab_count) |idx| {
+        const existing = g_tabs[idx] orelse continue;
+        if (existing.kind != .password_store) continue;
+        switchTab(idx);
+        return true;
+    }
+    if (g_tab_count >= MAX_TABS) return false;
+
+    const t = allocator.create(TabState) catch return false;
+    t.* = .{ .kind = .password_store, .tree = .empty };
+
+    g_tabs[g_tab_count] = t;
+    active_tab_state.g_active_tab = g_tab_count;
+    g_tab_count += 1;
+    return true;
+}
+
+/// Open the singleton Sync page, or switch to it when already open. Its state
+/// lives in sync/page.zig, not on the tab.
+pub fn openSyncTab(allocator: std.mem.Allocator) bool {
+    for (0..g_tab_count) |idx| {
+        const existing = g_tabs[idx] orelse continue;
+        if (existing.kind != .sync) continue;
+        switchTab(idx);
+        return true;
+    }
+    if (g_tab_count >= MAX_TABS) return false;
+
+    const t = allocator.create(TabState) catch return false;
+    t.* = .{ .kind = .sync, .tree = .empty };
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -1317,6 +1389,38 @@ pub fn splitFocusedReturningSurface(
     );
 }
 
+/// Split the focused surface and run an explicit local command in the new
+/// pane (agent-control `spawn --split`). Unlike `splitFocusedReturningSurface`
+/// the new pane does not inherit the focused pane's SSH connection: the
+/// command is the caller's, and it runs here.
+pub fn splitFocusedWithCommandReturningSurface(
+    allocator: std.mem.Allocator,
+    direction: SplitTree.Split.Direction,
+    cell_w: f32,
+    cell_h: f32,
+    cursor_style: CursorStyle,
+    cursor_blink: bool,
+    cwd: platform_pty_command.Cwd,
+    shell_cmd: platform_pty_command.CommandLine,
+) ?*Surface {
+    const t = activeTab() orelse return null;
+    if (t.kind != .terminal) return null;
+    const focused_surface = t.focusedSurface() orelse return null;
+    return splitFocusedSurfaceWithCommand(
+        allocator,
+        t,
+        focused_surface,
+        direction,
+        cell_w,
+        cell_h,
+        cursor_style,
+        cursor_blink,
+        cwd,
+        shell_cmd,
+        false,
+    );
+}
+
 fn splitFocusedSurfaceWithCommand(
     allocator: std.mem.Allocator,
     t: *TabState,
@@ -1366,6 +1470,7 @@ fn splitFocusedSurfaceWithCommand(
         cursor_style,
         cursor_blink,
         cwd,
+        g_ssh_terminal_capabilities,
     ) catch {
         std.debug.print("Failed to create Surface for split\n", .{});
         return null;
@@ -1614,6 +1719,8 @@ pub fn commitTabRename() void {
                     .skill_center => {},
                     .port_forwarding => {},
                     .settings => {},
+                    .password_store => {},
+                    .sync => {},
                 }
             }
         }
@@ -1817,7 +1924,7 @@ pub fn snapshotTab(arena: std.mem.Allocator, t: *const TabState) !session_persis
         .zoomed_leaf = zoomed_leaf,
         .tree = tree,
         .copilot_session_id = copilot_sid,
-        .copilot_visible = if (copilot_sid != null) t.copilot_visible else false,
+        .copilot_visible = if (copilot_sid != null) t.right_dock.showing(.copilot) else false,
     };
 }
 
@@ -1840,7 +1947,15 @@ fn snapshotNode(
             // (best-effort) on the next launch.
             .preview => |p| .{ .leaf = .{
                 .kind = .preview,
-                .preview = .{ .kind = p.kind, .path = try arena.dupe(u8, p.path()) },
+                .preview = .{
+                    .kind = p.kind,
+                    .path = try arena.dupe(u8, p.path()),
+                    .source = switch (p.currentSourceKind()) {
+                        .local => .local,
+                        .wsl => .wsl,
+                        .remote => |conn| .{ .ssh = try sshSnapFromConn(arena, &conn, null, null) },
+                    },
+                },
             } },
         },
         .split => |sp| blk: {
@@ -1861,28 +1976,71 @@ fn snapshotNode(
     };
 }
 
+/// Request Pi companions to exit through their public deferred shutdown command.
+/// Returns the number of commands successfully queued; non-capable Pi/shell
+/// surfaces are intentionally left alone and will be closed by the normal path.
+pub fn requestPiGracefulShutdown() usize {
+    var requested: usize = 0;
+    for (g_tabs[0..g_tab_count]) |maybe_tab| {
+        const t = maybe_tab orelse continue;
+        var surfaces = t.tree.surfaces();
+        while (surfaces.next()) |entry| {
+            const surface = entry.surface;
+            if (!surface.piSupportsGracefulExit() or !surface.acceptsInput()) continue;
+            if (surface.queueInput("/wispterm-shutdown\r")) requested += 1;
+        }
+    }
+    return requested;
+}
+
+/// True when every Pi surface that advertised graceful exit has terminated.
+pub fn piGracefulShutdownComplete() bool {
+    var capable: usize = 0;
+    for (g_tabs[0..g_tab_count]) |maybe_tab| {
+        const t = maybe_tab orelse continue;
+        var surfaces = t.tree.surfaces();
+        while (surfaces.next()) |entry| {
+            const surface = entry.surface;
+            if (!surface.piSupportsGracefulExit()) continue;
+            capable += 1;
+            if (!surface.isExited()) return false;
+        }
+    }
+    return capable > 0;
+}
+
 fn snapshotSurface(arena: std.mem.Allocator, surface: *const Surface) !session_persist.SurfaceSnap {
     return switch (surface.surfaceKind()) {
         .local_shell => .{ .local_shell = .{
             .cwd = try snapshotOptionalCwd(arena, surface.getCwd() orelse surface.getInitialCwd()),
             .command = null,
+            .pi_session_path = if (surface.piSessionPath()) |p| try arena.dupe(u8, p) else null,
+            .pi_launch_kind = switch (surface.launchKind()) {
+                .wsl => .wsl,
+                else => .local,
+            },
         } },
-        .ssh => blk: {
-            // surfaceKind() returned .ssh, so ssh_connection is non-null.
-            const conn = &surface.ssh_connection.?;
-            const port_str = conn.port();
-            const port_num: u16 = if (port_str.len == 0)
-                22
-            else
-                std.fmt.parseInt(u16, port_str, 10) catch 22;
-            break :blk .{ .ssh = .{
-                .cwd = try snapshotOptionalCwd(arena, surface.getCwd()),
-                .user = try arena.dupe(u8, conn.user()),
-                .host = try arena.dupe(u8, conn.host()),
-                .port = port_num,
-                .proxy_jump = try arena.dupe(u8, conn.proxyJump()),
-            } };
-        },
+        // surfaceKind() returned .ssh, so ssh_connection is non-null.
+        .ssh => .{ .ssh = try sshSnapFromConn(arena, &surface.ssh_connection.?, surface.getCwd(), surface.piSessionPath()) },
+    };
+}
+
+fn sshSnapFromConn(arena: std.mem.Allocator, conn: *const Surface.SshConnection, cwd: ?[]const u8, pi_session_path: ?[]const u8) !session_persist.SurfaceSnap.SshSnap {
+    const port_str = conn.port();
+    const port_num: u16 = if (port_str.len == 0)
+        22
+    else
+        std.fmt.parseInt(u16, port_str, 10) catch 22;
+    return .{
+        .cwd = try snapshotOptionalCwd(arena, cwd),
+        .user = try arena.dupe(u8, conn.user()),
+        .host = try arena.dupe(u8, conn.host()),
+        .port = port_num,
+        .proxy_jump = try arena.dupe(u8, conn.proxyJump()),
+        .network_proxy_type = try arena.dupe(u8, conn.network_proxy.kind.fieldValue()),
+        .network_proxy_host = try arena.dupe(u8, conn.network_proxy.host()),
+        .network_proxy_port = try arena.dupe(u8, conn.network_proxy.port()),
+        .pi_session_path = if (pi_session_path) |p| try arena.dupe(u8, p) else null,
     };
 }
 
@@ -1966,9 +2124,21 @@ fn surfaceFromSnapImpl(
                 break :blk platform_pty_command.cwdFromOwned(cwd_owned.?);
             } else null;
 
-            const command = getShellCmd();
-            const surface = try Surface.init(gpa, cols, rows, command, g_scrollback_limit, cursor_style, cursor_blink, cwd_w);
+            const surface = if (sh.pi_launch_kind == .wsl) blk: {
+                var wsl_buf: [512]u8 = undefined;
+                const wsl_text = platform_pty_command.wslInteractiveCommand(&wsl_buf, sh.cwd) orelse return error.CommandTooLong;
+                const owned = try platform_pty_command.allocCommandLineFromUtf8(gpa, wsl_text);
+                defer platform_pty_command.freeCommandLine(gpa, owned);
+                break :blk try Surface.init(gpa, cols, rows, platform_pty_command.commandLineFromOwned(owned), g_scrollback_limit, cursor_style, cursor_blink, null, g_ssh_terminal_capabilities);
+            } else blk: {
+                break :blk try Surface.init(gpa, cols, rows, getShellCmd(), g_scrollback_limit, cursor_style, cursor_blink, cwd_w, g_ssh_terminal_capabilities);
+            };
             surface.attachRemoteClient(g_remote_client);
+            if (sh.pi_session_path) |pi_path| {
+                if (session_persist.shouldRestorePiSession(pi_path, sh.pi_launch_kind)) {
+                    _ = surface.queuePiSessionResume(pi_path);
+                }
+            }
             return surface;
         },
         .ssh => |s| {
@@ -1979,17 +2149,48 @@ fn surfaceFromSnapImpl(
             const port_slice = std.fmt.bufPrint(&port_buf, "{}", .{s.port}) catch return error.CommandTooLong;
             const command = try platform_pty_command.allocCommandLineFromUtf8(gpa, command_text);
             defer platform_pty_command.freeCommandLine(gpa, command);
-            const surface = try Surface.init(gpa, cols, rows, platform_pty_command.commandLineFromOwned(command), g_scrollback_limit, cursor_style, cursor_blink, null);
+            const surface = try Surface.init(gpa, cols, rows, platform_pty_command.commandLineFromOwned(command), g_scrollback_limit, cursor_style, cursor_blink, null, g_ssh_terminal_capabilities);
             surface.attachRemoteClient(g_remote_client);
             // SSH password is never persisted (security invariant I1). Restore the
             // endpoint without a password, then let the arm hook re-supply it from
             // the saved profile (host/user/port match) and arm autofill — so a
             // restored session logs in without re-typing, like a fresh connect.
-            surface.setSshConnection(s.user, s.host, port_slice, "", s.proxy_jump, false, g_ssh_legacy_algorithms);
+            var restored_conn = Surface.SshConnection.fromParts(.{
+                .user = s.user,
+                .host = s.host,
+                .port = port_slice,
+                .proxy_jump = s.proxy_jump,
+                .network_proxy = Surface.SshConnection.networkProxyFromFields(s.network_proxy_type, s.network_proxy_host, s.network_proxy_port) orelse return error.InvalidNetworkProxy,
+            });
+            restored_conn.legacy_algorithms = g_ssh_legacy_algorithms;
+            surface.setSshConnectionValue(restored_conn);
             if (g_ssh_restore_arm_hook) |hook| hook(surface);
             return surface;
         },
     }
+}
+
+/// Where a restored preview pane reads from. SSH previews get their endpoint
+/// back from the snapshot and the password (never persisted) from the profile.
+fn previewSourceFromSnap(ps: *const session_persist.PreviewSnap) PreviewPane.PreviewSourceKind {
+    return switch (ps.source) {
+        .local => .local,
+        .wsl => .wsl,
+        .ssh => |s| blk: {
+            var port_buf: [8]u8 = undefined;
+            var conn = Surface.SshConnection.fromParts(.{
+                .user = s.user,
+                .host = s.host,
+                .port = std.fmt.bufPrint(&port_buf, "{}", .{s.port}) catch "22",
+                .proxy_jump = s.proxy_jump,
+                .network_proxy = Surface.SshConnection.networkProxyFromFields(s.network_proxy_type, s.network_proxy_host, s.network_proxy_port) orelse return .local,
+            });
+            if (!conn.network_proxy.allowsJump(s.proxy_jump)) return .local;
+            conn.legacy_algorithms = g_ssh_legacy_algorithms;
+            if (g_ssh_restore_password_hook) |hook| _ = hook(&conn);
+            break :blk .{ .remote = conn };
+        },
+    };
 }
 
 fn buildSshRestoreCommand(
@@ -2007,11 +2208,16 @@ fn buildSshRestoreCommand(
         .host = s.host,
         .port = port_slice,
         .legacy_algorithms = g_ssh_legacy_algorithms,
+        .terminal_capabilities = g_ssh_terminal_capabilities,
         .proxy_jump = s.proxy_jump,
+        .network_proxy = Surface.SshConnection.networkProxyFromFields(s.network_proxy_type, s.network_proxy_host, s.network_proxy_port) orelse return error.InvalidNetworkProxy,
     }) orelse return error.CommandTooLong;
     var final_len: usize = base.len;
 
-    if (s.cwd) |cwd_str| {
+    if (s.pi_session_path) |pi_path| {
+        const trail = session_persist.formatPiRemoteSessionCommand(allocator, buf[final_len..], s.cwd, pi_path) catch return error.CommandTooLong;
+        final_len += trail.len;
+    } else if (s.cwd) |cwd_str| {
         const escaped = try session_persist.shellSingleQuoteEscape(allocator, cwd_str);
         defer allocator.free(escaped);
         const trail = std.fmt.bufPrint(buf[final_len..], " \"cd '{s}' 2>/dev/null; exec $SHELL -l\"", .{escaped}) catch return error.CommandTooLong;
@@ -2058,7 +2264,7 @@ pub fn restoreTab(
     g_restore_cursor_style = cursor_style;
     g_restore_cursor_blink = cursor_blink;
 
-    var tree = SplitTree.fromSnapshot(allocator, &snap.tree, &surfaceFromSnap) catch |err| {
+    var tree = SplitTree.fromSnapshot(allocator, &snap.tree, &surfaceFromSnap, &previewSourceFromSnap) catch |err| {
         std.debug.print("restoreTab: fromSnapshot failed: {}\n", .{err});
         return false;
     };
@@ -2085,7 +2291,7 @@ pub fn restoreTab(
     t.tmux_window_id = null;
     t.tmux_owner = null;
     t.tmux_name_len = 0;
-    t.copilot_visible = false;
+    t.right_dock = .{};
 
     // Restore the Copilot sidebar conversation in place, if any. Missing record
     // (deleted / corrupt store) → silent fallback to an empty sidebar.
@@ -2093,7 +2299,7 @@ pub fn restoreTab(
         if (g_copilot_restore_hook) |hook| {
             if (hook(sid)) |session| {
                 t.copilot_session = session;
-                t.copilot_visible = snap.copilot_visible;
+                t.right_dock = right_dock_state.TabDock.fromCopilotVisible(snap.copilot_visible);
             }
         }
     }
@@ -2120,6 +2326,8 @@ fn applyRestoredTabMetadata(t: *TabState, snap: *const session_persist.TabSnap) 
         .skill_center => {},
         .port_forwarding => {},
         .settings => {},
+        .password_store => {},
+        .sync => {},
     }
 }
 
@@ -2357,6 +2565,34 @@ test "tab: restoreTab routes ai_session_id through the restore hook" {
     try std.testing.expectEqual(@as(usize, 0), g_tab_count);
 }
 
+test "tab: restored previews read from their persisted source, SSH password from the profile" {
+    const previous_hook = g_ssh_restore_password_hook;
+    defer g_ssh_restore_password_hook = previous_hook;
+    const Profile = struct {
+        fn fill(conn: *Surface.SshConnection) bool {
+            conn.* = Surface.SshConnection.fromParts(.{ .user = conn.user(), .host = conn.host(), .port = conn.port(), .password = "pw" });
+            return true;
+        }
+    };
+    g_ssh_restore_password_hook = Profile.fill;
+
+    try std.testing.expect(previewSourceFromSnap(&.{ .path = "a.md" }) == .local);
+    try std.testing.expect(previewSourceFromSnap(&.{ .path = "/home/me/a.png", .source = .wsl }) == .wsl);
+
+    const ssh = previewSourceFromSnap(&.{ .path = "/data/b.png", .source = .{ .ssh = .{
+        .user = "me",
+        .host = "10.0.0.2",
+        .port = 2222,
+        .proxy_jump = "jump",
+    } } });
+    const conn = ssh.remote;
+    try std.testing.expectEqualStrings("me", conn.user());
+    try std.testing.expectEqualStrings("10.0.0.2", conn.host());
+    try std.testing.expectEqualStrings("2222", conn.port());
+    try std.testing.expectEqualStrings("pw", conn.password());
+    try std.testing.expect(conn.usesPasswordAuth());
+}
+
 test "tab: restoreTab skips an ai tab when no restore hook is installed" {
     resetTestTabGlobals();
     const previous_hook = g_ai_restore_hook;
@@ -2490,14 +2726,14 @@ test "tab: copilot visibility is scoped to the active terminal tab" {
 
     active_tab_state.g_active_tab = 1;
     try std.testing.expect(!activeCopilotVisible());
-    try std.testing.expect(!second.copilot_visible);
+    try std.testing.expect(!second.right_dock.showing(.copilot));
     try std.testing.expect(!setActiveCopilotVisible(false));
     try std.testing.expect(setActiveCopilotVisible(true));
     try std.testing.expect(activeCopilotVisible());
 
     active_tab_state.g_active_tab = 0;
     try std.testing.expect(activeCopilotVisible());
-    try std.testing.expect(first.copilot_visible);
+    try std.testing.expect(first.right_dock.showing(.copilot));
 }
 
 test "tab: snapshotTab persists focused surface title override" {
@@ -2505,6 +2741,9 @@ test "tab: snapshotTab persists focused surface title override" {
 
     var surface: Surface = undefined;
     surface.ref_count = 1;
+    surface.launch_kind = .local;
+    surface.agent_detection = .{};
+    surface.agent_session_path_len = 0;
     surface.ssh_connection = null;
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
@@ -2568,6 +2807,8 @@ test "tab: snapshotTab does not use local launch cwd as ssh remote cwd" {
 
     var surface: Surface = undefined;
     surface.ref_count = 1;
+    surface.agent_detection = .{};
+    surface.agent_session_path_len = 0;
     surface.cwd_path_len = 0;
     @memcpy(surface.initial_cwd_path[0..6], "/local");
     surface.initial_cwd_path_len = 6;
@@ -2605,6 +2846,8 @@ test "tab: snapshotTab persists ssh cwd only when remote cwd is known" {
 
     var surface: Surface = undefined;
     surface.ref_count = 1;
+    surface.agent_detection = .{};
+    surface.agent_session_path_len = 0;
     @memcpy(surface.cwd_path[0..4], "/srv");
     surface.cwd_path_len = 4;
     @memcpy(surface.initial_cwd_path[0..6], "/local");
@@ -2986,7 +3229,7 @@ test "focusPanelByIndex focuses panels in screen reading order" {
 
     var ts = TabState{
         .kind = .terminal,
-        .tree = try SplitTree.fromSnapshot(std.testing.allocator, &root, Stub.make),
+        .tree = try SplitTree.fromSnapshot(std.testing.allocator, &root, Stub.make, null),
         .focused = .root,
     };
     // Sentinel surfaces can't be unref'd, so free the arena directly (no TabState.deinit).
@@ -3039,7 +3282,7 @@ test "tab: splitIntoPreview adds a preview leaf and grows the tree by 2 nodes" {
         .ai_history_session = null,
         .skill_center_session = null,
         .copilot_session = null,
-        .copilot_visible = false,
+        .right_dock = .{},
     };
     defer {
         t.deinit(gpa);
@@ -3123,7 +3366,7 @@ test "tab: focusPreviewPane selects the just-opened preview leaf" {
         .ai_history_session = null,
         .skill_center_session = null,
         .copilot_session = null,
-        .copilot_visible = false,
+        .right_dock = .{},
     };
     defer {
         t.deinit(gpa);
@@ -3192,7 +3435,7 @@ test "tab: closeFocusedSplit closes a focused preview and refocuses the terminal
         .ai_history_session = null,
         .skill_center_session = null,
         .copilot_session = null,
-        .copilot_visible = false,
+        .right_dock = .{},
     };
     defer {
         t.deinit(gpa);
@@ -3250,7 +3493,7 @@ test "tab: closeFocusedSplit on the last terminal focuses a preview leaf, not a 
         .ai_history_session = null,
         .skill_center_session = null,
         .copilot_session = null,
-        .copilot_visible = false,
+        .right_dock = .{},
     };
     defer {
         t.deinit(gpa);
@@ -3309,7 +3552,7 @@ test "tab: previewForReuse matches preview panes by kind" {
         .ai_history_session = null,
         .skill_center_session = null,
         .copilot_session = null,
-        .copilot_visible = false,
+        .right_dock = .{},
     };
     defer {
         t.deinit(gpa);
@@ -3388,7 +3631,7 @@ test "tab: previewForReuse prefers the focused same-kind preview" {
         .ai_history_session = null,
         .skill_center_session = null,
         .copilot_session = null,
-        .copilot_visible = false,
+        .right_dock = .{},
     };
     defer {
         t.deinit(gpa);
@@ -3451,7 +3694,7 @@ test "tab: splitIntoPreviewStacked stacks below the existing preview column" {
         .ai_history_session = null,
         .skill_center_session = null,
         .copilot_session = null,
-        .copilot_visible = false,
+        .right_dock = .{},
     };
     defer {
         t.deinit(gpa);
@@ -3528,7 +3771,7 @@ test "tab: splitIntoPreviewStacked remaps focus when the split target is focused
         .ai_history_session = null,
         .skill_center_session = null,
         .copilot_session = null,
-        .copilot_visible = false,
+        .right_dock = .{},
     };
     defer {
         t.deinit(gpa);

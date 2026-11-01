@@ -54,6 +54,11 @@ feel first-class rather than just compile:
   matrix is Windows = D3D11/DXGI, macOS = Metal, Linux = OpenGL, with a
   separately published OpenGL Windows package retained as the compatibility
   fallback. See [docs/windows-native-d3d11-roadmap.md](docs/windows-native-d3d11-roadmap.md).
+- Installer-driven updates on Windows. The signed NSIS setup exe now ships
+  beside the portable zips, while the in-place updater
+  (`src/update_inplace.zig`) still swaps files in the portable layout, which
+  an installed copy shares. A later step can download the setup exe and run
+  it with `/S` to relaunch, which also covers folders the swap cannot write to.
 - Finish the custom-shader path on Metal by adding a GLSL-to-MSL translation
   layer and then wiring FBO render-target switching where it has a working
   consumer.

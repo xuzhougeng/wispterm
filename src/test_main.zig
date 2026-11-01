@@ -25,8 +25,11 @@ comptime {
     if (activeAppTestShard(.assistant)) {
         _ = @import("assistant/conversation/session.zig");
         _ = @import("assistant/conversation/session_fork_test.zig");
+        _ = @import("assistant/conversation/session_btw_test.zig");
+        _ = @import("assistant/conversation/session_effort.zig");
+        _ = @import("assistant/conversation/session_question_select.zig");
+        _ = @import("assistant/conversation/session_question_answer.zig");
         _ = @import("assistant/conversation/request.zig");
-        _ = @import("assistant/conversation/acp_turn.zig");
         _ = @import("assistant/conversation/model_switch.zig");
         _ = @import("agent_tools/mod.zig");
         _ = @import("assistant/conversation/skills.zig");
@@ -52,6 +55,8 @@ comptime {
         _ = @import("terminal_agents/sessions/markdown.zig");
         _ = @import("renderer/terminal_agents/sessions.zig");
         _ = @import("terminal_agents/detector.zig");
+        _ = @import("terminal_agents/screen_detect.zig");
+        _ = @import("platform/foreground_process.zig");
         _ = @import("terminal_agents/prompt_answer.zig");
         _ = @import("terminal_agents/live_transcript.zig");
         _ = @import("agent_tools/args.zig");

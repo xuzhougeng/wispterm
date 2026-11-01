@@ -65,7 +65,8 @@ uniform 注入（不经过 ui_pipeline.setProjection），所以幸免于难。
 
 ### 工程化修复
 不能简单地在 `metal/gl_init.zig` 顶部加 `@import("../../ui_pipeline.zig")`，
-因为 `test-metal` 的 module root 是 `gpu/metal/`，Zig 0.15 拒绝 import 走出 root：
+因为 `test-metal` 当时的 module root 是 `gpu/metal/`（现在是 `gpu/`，见
+`gpu/metal_test_root.zig`，但 `ui_pipeline` 仍在 root 之外），Zig 0.15 拒绝 import 走出 root：
 
 ```
 error: import of file outside module path
@@ -155,9 +156,30 @@ release 是安全的——旧 buffer 的实际 dealloc 是 GPU 完成后异步�
 }
 ```
 
-每帧上百个 fillQuad → 上百次 `newBufferWithBytes:`，对小 quad（96 bytes）开销可忽略。
-更优解（未实施）：每帧一个 transient arena MTLBuffer，upload 累加 offset，
-`setVertexBuffer:offset:` 传 offset。Ghostty 用的就是这种方案。
+每帧上百个 fillQuad → 上百次 `newBufferWithBytes:`，当时认为对小 quad（96 bytes）开销可忽略。
+
+### 后续：per-frame transient arena + UI batch（issue #675 后续）
+
+实测并不可忽略：一个 3000 行 tool card 的 AI Chat 页，每个可见字形一次
+`newBufferWithBytes:`（走 IOGPU 内核调用），在去掉文本测量开销之后占了剩余帧时间的 ~70%。
+现在的做法：
+
+- `Buffer.uploadTransient`：只给"本帧画完就不再读"的 immediate-mode UI 数据用
+  （`ui_pipeline` 的 quad 和 batch 实例）。bridge 在一个 per-frame arena MTLBuffer 里
+  bump 分配（256 字节对齐），slot 记录 `offset`，encode 时 `setVertexBuffer:offset:`。
+  `frame_end` commit 之后 seal 掉 arena（只放掉自己的引用），所以已编码的字节永远
+  不会被覆盖——Bug #2 的 deferred-read 问题不需要 fence 就避开了。slot 和 command buffer
+  各自 retain arena，两边都放手后才释放。
+- 和 Ghostty 的区别：Ghostty（`renderer/generic.zig` SwapChain + `metal/buffer.zig`
+  `Buffer.sync`）三缓冲复用每帧的 buffer，用 semaphore 等 GPU 读完。我们每帧新建一个
+  arena（O(1) 次分配），因为 cell 实例缓冲只在 dirty 时才重新上传、要跨帧保留，
+  复用 arena 会把它们的数据覆盖掉；所以 cell 缓冲继续走普通 `upload`（独占 buffer）。
+- UI glyph batch 也在 Metal 上启用了（原先只有 OpenGL）：MSL 版
+  `ui_batch_vertex_source`，`render_state.pre_change_hook` /
+  `Pipeline.pre_use_hook` / `Framebuffer.bind` 的 flush 时机与 OpenGL 后端一一对应。
+  一帧的可见文字变成少数几次 instanced draw。
+- `zig build test-metal` 有像素级回归：同一个 buffer handle 在一帧里两次
+  upload+draw，读回两块不同颜色（把 offset 去掉就会失败）。
 
 ---
 
@@ -193,6 +215,13 @@ AppKit 在 `performKeyEquivalent:` 阶段处理 NSMenu，**早于** `keyDown:` �
 - "type 'echo hello' 测终端" 不会工作 —— IME 把它当成拼音输入
 - 但 NSMenu / 带 Ctrl 修饰键的快捷键不进 IME，所以可以用它们做端到端测试
 
+**听写 / 语音输入法依赖 `-selectedRange`**（issue #671）：macOS 系统听写和豆包等语音输入法
+启动前会先问 NSTextInputClient 的 `-selectedRange`，返回 `{NSNotFound, 0}`（"没有插入点"）
+时直接拒绝启动，什么都写不进来。没有组字时必须返回空光标 `{0, 0}`（Ghostty、kitty 都这样做）。
+这类输入也不经过 `keyDown:`：中间结果通过 `setMarkedText:` 流式到达，最终结果通过
+`insertText:` 提交，都来自 run loop source 而不是 NSEvent，所以 bridge 要自己唤醒主循环，
+preedit 变化也要自己请求重绘。
+
 ### 4. macOS 26 (Sequoia 后续) 上 `System Events` 的 frontmost 查询时不时挂
 
 ```
@@ -224,13 +253,43 @@ WispTerm 的渲染主循环也跑在 main thread (`first_window.run()` per App.z
 所以 menu callback 和渲染读写同一份 threadlocal storage。
 **前提是新窗口创建时不要把 menu 安装挪到 spawned thread**。
 
+### 7. 没有 `NSApplicationMain` 就没有外层 autorelease pool
+
+WispTerm 自己驱动事件循环（`AppWindow.runMainLoop` + `wispterm_macos_app_pump_events`），
+不走 `NSApplicationMain`，所以主线程和每个窗口 worker 线程都**没有**每轮自动 drain 的
+外层 pool。在显式 `@autoreleasepool` 之外被 autorelease 的对象会落进运行时隐式创建、
+永不 pop 的 pool 页，一直留在内存里。1.40.5 每帧调用 `-[NSWindow isZoomed]`
+（内部 `_standardFrameForScreen` → `+[NSArray array]`），1.5 天涨到 4.7 GB footprint。
+
+规则：
+- 主循环每轮都有一个 pool：`window_backend.beginLoopIteration()` / `endLoopIteration()`
+  （对应 Ghostty `renderer/Metal.zig` 在 `drawFrame` 前后 init/deinit `objc.AutoreleasePool`）。
+- 每个非 static 的 `.m` 导出函数，只要发 ObjC 消息，就自己包 `@autoreleasepool`：
+  它们也会从 worker 线程、初始化路径和测试里被调用，这些地方不在主循环 pool 里。
+  `src/source_guards/objc_autorelease_guard.zig` 会扫描所有 `.m` 文件强制检查。
+- 不要每帧调用看起来像 getter 的 AppKit API（`isZoomed`、`standardFrame` 等），
+  它们可能临时分配对象。改为在 delegate 回调里缓存（参考 `state->is_zoomed`）。
+- 验证：`heap <pid> | grep -E "NSMutableArray|autoreleasepool content"`，
+  在空闲和持续输出两种状态下分别采样，计数应保持不变。
+
 ---
+
+### 8. 不要把需要 16 字节对齐的大数组放进 `_Thread_local`
+
+bridge.m 的 slot 表曾经是 `static _Thread_local __attribute__((aligned(16)))` 数组。
+macOS 的 TLV 布局并不可靠地遵守这个对齐：数组落在哪里取决于整个二进制里**所有**
+threadlocal 的布局，新增一个无关的 Zig `threadlocal`（比如 batch flush hook）就让
+`test-metal` 在第一次 `wispterm_metal_buffer_create` 时触发 Debug 对齐检查 panic
+（Release 下则可能是 SIMD store 的 #GP）。现在 slot 表放在每线程 `calloc` 出来的
+`WispTermMetalRegistry` 里（malloc 保证 16 字节对齐），TLS 里只留一个指针，
+线程退出时由 pthread key 的析构函数释放。
 
 ## Zig 0.15.x 的小陷阱
 
 ### `@import` 不能走出 module root
 
-`test-metal` 的 module root 是 `gpu/metal/test.zig`，
+`test-metal` 当时的 module root 是 `gpu/metal/test.zig`（后来 Metal 后端开始共享
+`gpu/types.zig`，root 上移到 `gpu/metal_test_root.zig`），
 所以 `gpu/metal/gl_init.zig` 里 `@import("../../ui_pipeline.zig")` 会被拒：
 
 ```
@@ -290,7 +349,7 @@ toggle 前后的值，立刻确认 state 转变是否成功，下一步该看渲
 1. **像素回归测试**：用 offscreen `MTLTexture` 当 framebuffer 跑一帧，比对参考截图。
    能挡住 Bug #1 这种"逻辑过但视觉错"的退化。
 
-2. **Metal frame transient buffer arena**：当前每个 ui_pipeline.fillQuad 都
+2. ~~**Metal frame transient buffer arena**~~（已实施，见上文"后续"一节）：当时每个 ui_pipeline.fillQuad 都
    `newBufferWithBytes:`。对手游级别的 draw 数量（每帧几十）完全 OK，
    但如果引入 SSH 客户端的大文件预览或图像 grid，会变成瓶颈。
    Ghostty 的方案：单个大 MTLBuffer + 累加 offset + `setVertexBuffer:offset:`。

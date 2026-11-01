@@ -46,6 +46,65 @@ pub const fragment_shader_source: [*c]const u8 =
     \\}
 ;
 
+/// Batched UI glyph/solid-quad instances (mirrors the OpenGL
+/// `ui_batch_vertex_source`): a unit quad strip in buffer(0), one
+/// `ui_batch.Instance` per glyph in buffer(1).
+pub const ui_batch_vertex_source: [*c]const u8 =
+    \\#include <metal_stdlib>
+    \\using namespace metal;
+    \\
+    \\struct Uniforms {
+    \\    float4x4 projection;
+    \\    float4 textColor;
+    \\    float4 overlayColor;
+    \\    float4 cellSizeGridOffset;
+    \\    float4 scalars;
+    \\};
+    \\
+    \\struct BatchQuad {
+    \\    packed_float2 pos;
+    \\};
+    \\
+    \\struct BatchInstance {
+    \\    packed_float4 rect;   // x, y (GL bottom-left), w, h in pixels
+    \\    packed_float4 uv;     // u0, v0 (top), u1, v1 (bottom)
+    \\    packed_float3 color;
+    \\};
+    \\
+    \\struct BatchOut {
+    \\    float4 position [[position]];
+    \\    float2 texCoord;
+    \\    float3 color [[flat]];
+    \\};
+    \\
+    \\vertex BatchOut vertex_main(const device BatchQuad *quad [[buffer(0)]],
+    \\                            const device BatchInstance *instances [[buffer(1)]],
+    \\                            constant Uniforms& uniforms [[buffer(2)]],
+    \\                            uint vertex_id [[vertex_id]],
+    \\                            uint instance_id [[instance_id]]) {
+    \\    float2 q = float2(quad[vertex_id].pos);
+    \\    BatchInstance inst = instances[instance_id];
+    \\    float4 rect = float4(inst.rect);
+    \\    float4 uv = float4(inst.uv);
+    \\    BatchOut out;
+    \\    out.position = uniforms.projection * float4(rect.xy + q * rect.zw, 0.0, 1.0);
+    \\    // Matches ui_pipeline.quadVertices: quad bottom (y=0) samples v1,
+    \\    // quad top (y=1) samples v0 (atlas Y=0 is the glyph top).
+    \\    out.texCoord = float2(mix(uv.x, uv.z, q.x), mix(uv.w, uv.y, q.y));
+    \\    out.color = float3(inst.color);
+    \\    return out;
+    \\}
+;
+
+pub const ui_batch_fragment_source: [*c]const u8 =
+    \\fragment float4 fragment_main(BatchOut in [[stage_in]],
+    \\                              texture2d<float> text [[texture(0)]],
+    \\                              sampler s [[sampler(0)]]) {
+    \\    float alpha = text.sample(s, in.texCoord).r;
+    \\    return float4(in.color, 1.0) * float4(1.0, 1.0, 1.0, alpha);
+    \\}
+;
+
 /// Instanced cell backgrounds.
 pub const bg_vertex_source: [*c]const u8 =
     \\#include <metal_stdlib>

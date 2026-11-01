@@ -14,6 +14,7 @@ extern fn wispterm_metal_buffer_create(target: c.GLenum) c.GLuint;
 extern fn wispterm_metal_buffer_allocate(handle: c.GLuint, device: ?*anyopaque, len: usize, error_buf: [*]u8, error_buf_len: usize) bool;
 extern fn wispterm_metal_buffer_upload_data(handle: c.GLuint, device: ?*anyopaque, bytes: ?*const anyopaque, len: usize, error_buf: [*]u8, error_buf_len: usize) bool;
 extern fn wispterm_metal_buffer_upload(handle: c.GLuint, device: ?*anyopaque, bytes: ?*const anyopaque, len: usize, error_buf: [*]u8, error_buf_len: usize) bool;
+extern fn wispterm_metal_buffer_upload_transient(handle: c.GLuint, device: ?*anyopaque, bytes: ?*const anyopaque, len: usize, error_buf: [*]u8, error_buf_len: usize) bool;
 extern fn wispterm_metal_buffer_length(handle: c.GLuint) usize;
 extern fn wispterm_metal_buffer_destroy(handle: c.GLuint) void;
 
@@ -42,6 +43,12 @@ pub fn uploadData(self: Buffer, bytes: []const u8, usage: types.BufferUsage) voi
 /// Overwrite from offset 0.
 pub fn upload(self: Buffer, bytes: []const u8) void {
     _ = runBool("Metal buffer upload failed", wispterm_metal_buffer_upload(self.handle, Context.deviceHandle(), bytes.ptr, bytes.len, &scratch_error, scratch_error.len));
+}
+/// Overwrite from offset 0 with data only the current frame's draws read
+/// (immediate-mode UI). Sub-allocated from the bridge's per-frame arena
+/// instead of a fresh MTLBuffer per call.
+pub fn uploadTransient(self: Buffer, bytes: []const u8) void {
+    _ = runBool("Metal buffer transient upload failed", wispterm_metal_buffer_upload_transient(self.handle, Context.deviceHandle(), bytes.ptr, bytes.len, &scratch_error, scratch_error.len));
 }
 pub fn byteLength(self: Buffer) usize {
     return wispterm_metal_buffer_length(self.handle);

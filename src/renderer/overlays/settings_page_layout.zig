@@ -175,9 +175,9 @@ pub fn compute(input: Input) Layout {
     const page_w = @max(1.0, input.content_width);
     const page_h = @max(1.0, input.window_height - input.top_offset);
     const min_nav_w: f32 = if (page_w < 640) 148.0 else 190.0;
-    const nav_w = @round(@min(250.0, @max(min_nav_w, page_w * 0.23)));
+    const nav_w = @floor(@min(page_w * 0.4, @min(250.0, @max(min_nav_w, page_w * 0.23))));
     const main_w = @max(1.0, page_w - nav_w);
-    const side_pad: f32 = if (main_w < 560) 20 else 44;
+    const side_pad: f32 = @min(main_w * 0.1, if (main_w < 560) @as(f32, 20) else 44);
     // Keep the settings readable on ultra-wide displays without centering a
     // card inside the page. Anchoring this column to the rail makes the page
     // read as a workbench and leaves deliberate expansion space on the right.
@@ -312,4 +312,22 @@ test "settings category rail grows with large UI text" {
     try std.testing.expect(layout.nav_item_top_px >= layout.nav_label_top_px + cell_height);
     try std.testing.expect(layout.nav_item_h >= cell_height + 14);
     try std.testing.expectEqual(@as(?usize, 0), layout.categoryAt(layout.page_x + 20, layout.nav_item_top_px + 2));
+}
+
+test "settings content remains within the page with narrow rails" {
+    for ([_]f32{ 120, 240, 380, 580, 1000 }) |width| {
+        const l = compute(.{
+            .window_height = 600,
+            .top_offset = 34,
+            .content_x = 220,
+            .content_width = width,
+            .cell_height = 32,
+            .focus_index = 0,
+            .row_count = 5,
+            .category_count = 3,
+        });
+        try std.testing.expect(l.nav_w < width);
+        try std.testing.expect(l.content_x >= l.page_x + l.nav_w);
+        try std.testing.expect(l.content_x + l.content_w <= l.page_x + width);
+    }
 }

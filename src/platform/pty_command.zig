@@ -122,8 +122,8 @@ pub const session_launcher_detail = sessionLauncherDetailForOs(builtin.os.tag);
 
 pub fn sessionLauncherDetailForOs(os_tag: std.Target.Os.Tag) []const u8 {
     return switch (backendForOs(os_tag)) {
-        .windows => "Choose Shell, SSH, WSL, tmux, Copilot, or Sessions",
-        .unsupported => "Choose Shell, SSH, tmux, Copilot, or Sessions",
+        .windows => "Choose Shell, SSH, WSL, tmux, Copilot, Sessions, Port Forwarding, Memory, or Settings",
+        .unsupported => "Choose Shell, SSH, tmux, Copilot, Sessions, Port Forwarding, Memory, or Settings",
     };
 }
 
@@ -132,10 +132,11 @@ pub fn sessionLauncherRowCount() usize {
 }
 
 /// Row count given whether a WSL row is shown. Without WSL the launcher is
-/// Shell(0)/SSH(1)/tmux(2)/Copilot(3)/Sessions(4); with WSL it is inserted at
-/// index 2, pushing tmux to 3 and Copilot/Sessions to 4/5.
+/// Shell(0)/SSH(1)/tmux(2)/Copilot(3)/Sessions(4), then the workbench pages
+/// Port Forwarding, Memory Center, and Settings. With WSL it is inserted at
+/// index 2, pushing every later row down by one.
 pub fn sessionLauncherRowCountForLayout(wsl_present: bool) usize {
-    return if (wsl_present) 6 else 5;
+    return sessionLauncherSettingsRowForLayout(wsl_present) + 1;
 }
 
 pub fn sessionLauncherRowCountForOs(os_tag: std.Target.Os.Tag) usize {
@@ -189,6 +190,44 @@ pub fn sessionLauncherAiHistoryRowForOs(os_tag: std.Target.Os.Tag) usize {
     return sessionLauncherAiHistoryRowForLayout(backendForOs(os_tag) == .windows);
 }
 
+/// Workbench-page rows appended after Sessions: Port Forwarding, then Memory
+/// Center, then Settings.
+pub fn sessionLauncherPortForwardRow() usize {
+    return sessionLauncherPortForwardRowForLayout(sessionLauncherWslRow() != null);
+}
+
+pub fn sessionLauncherPortForwardRowForLayout(wsl_present: bool) usize {
+    return sessionLauncherAiHistoryRowForLayout(wsl_present) + 1;
+}
+
+pub fn sessionLauncherPortForwardRowForOs(os_tag: std.Target.Os.Tag) usize {
+    return sessionLauncherPortForwardRowForLayout(backendForOs(os_tag) == .windows);
+}
+
+pub fn sessionLauncherMemoryCenterRow() usize {
+    return sessionLauncherMemoryCenterRowForLayout(sessionLauncherWslRow() != null);
+}
+
+pub fn sessionLauncherMemoryCenterRowForLayout(wsl_present: bool) usize {
+    return sessionLauncherAiHistoryRowForLayout(wsl_present) + 2;
+}
+
+pub fn sessionLauncherMemoryCenterRowForOs(os_tag: std.Target.Os.Tag) usize {
+    return sessionLauncherMemoryCenterRowForLayout(backendForOs(os_tag) == .windows);
+}
+
+pub fn sessionLauncherSettingsRow() usize {
+    return sessionLauncherSettingsRowForLayout(sessionLauncherWslRow() != null);
+}
+
+pub fn sessionLauncherSettingsRowForLayout(wsl_present: bool) usize {
+    return sessionLauncherAiHistoryRowForLayout(wsl_present) + 3;
+}
+
+pub fn sessionLauncherSettingsRowForOs(os_tag: std.Target.Os.Tag) usize {
+    return sessionLauncherSettingsRowForLayout(backendForOs(os_tag) == .windows);
+}
+
 /// The WSL launcher row index, or null when WSL should not be offered. WSL is
 /// only offered on Windows AND when an installed distribution is detected, so a
 /// machine without WSL never shows the row — and therefore can never create a
@@ -212,6 +251,12 @@ pub fn sessionLauncherWslRowForOs(os_tag: std.Target.Os.Tag) ?usize {
 /// than the executable's mere existence.
 pub fn wslAvailable() bool {
     return impl.wslAvailable();
+}
+
+/// Default WSL distribution name as UTF-8 in `out`, from the registry (no
+/// `wsl.exe` spawn). Null on non-Windows or when no distro is registered.
+pub fn wslDefaultDistroName(out: []u8) ?[]const u8 {
+    return impl.wslDefaultDistroName(out);
 }
 
 /// Whether a resolved shell command should fall back to a guaranteed local
@@ -244,7 +289,7 @@ pub fn wslSessionToolName() []const u8 {
 }
 
 pub fn wslSessionToolDescription() []const u8 {
-    return "Run a POSIX shell command in the selected already-open WSL terminal surface. The surface_id must match the current terminal_select context. Use only when the surface is at a shell prompt and the command returns. Never use heredocs or multiline shell input to create or feed scripts; use write_file for the content, including large or temporary scripts, then run the file separately. For R, Python, Codex, Claude Code, other REPLs, or launching full-screen agent apps, use terminal_repl_exec.";
+    return "Run a POSIX shell command in the selected already-open WSL terminal surface. The surface_id must match the current terminal_select context. Use only when the surface is at a shell prompt and the command returns. Never use heredocs or multiline shell input to create or feed scripts; use write_file for the content, including large or temporary scripts, then run the file separately. For R, Python, Codex, Claude Code, Pi, other REPLs, or launching full-screen agent apps, use terminal_repl_exec.";
 }
 
 pub fn wslSessionToolPropertiesJson() []const u8 {
@@ -721,9 +766,9 @@ test "platform pty command maps native shell titles to friendly display labels" 
 }
 
 test "platform pty command exposes session launcher layout by target OS" {
-    try std.testing.expectEqual(@as(usize, 6), sessionLauncherRowCountForOs(.windows));
-    try std.testing.expectEqual(@as(usize, 5), sessionLauncherRowCountForOs(.linux));
-    try std.testing.expectEqual(@as(usize, 5), sessionLauncherRowCountForOs(.macos));
+    try std.testing.expectEqual(@as(usize, 9), sessionLauncherRowCountForOs(.windows));
+    try std.testing.expectEqual(@as(usize, 8), sessionLauncherRowCountForOs(.linux));
+    try std.testing.expectEqual(@as(usize, 8), sessionLauncherRowCountForOs(.macos));
 
     try std.testing.expectEqual(@as(usize, 3), sessionLauncherTmuxRowForOs(.windows));
     try std.testing.expectEqual(@as(usize, 2), sessionLauncherTmuxRowForOs(.linux));
@@ -732,12 +777,20 @@ test "platform pty command exposes session launcher layout by target OS" {
     try std.testing.expectEqual(@as(usize, 3), sessionLauncherAiAgentRowForOs(.linux));
     try std.testing.expectEqual(@as(usize, 5), sessionLauncherAiHistoryRowForOs(.windows));
     try std.testing.expectEqual(@as(usize, 4), sessionLauncherAiHistoryRowForOs(.linux));
+    try std.testing.expectEqual(@as(usize, 6), sessionLauncherPortForwardRowForOs(.windows));
+    try std.testing.expectEqual(@as(usize, 5), sessionLauncherPortForwardRowForOs(.linux));
+    try std.testing.expectEqual(@as(usize, 7), sessionLauncherMemoryCenterRowForOs(.windows));
+    try std.testing.expectEqual(@as(usize, 6), sessionLauncherMemoryCenterRowForOs(.linux));
+    try std.testing.expectEqual(@as(usize, 8), sessionLauncherSettingsRowForOs(.windows));
+    try std.testing.expectEqual(@as(usize, 7), sessionLauncherSettingsRowForOs(.linux));
     try std.testing.expectEqual(@as(?usize, 2), sessionLauncherWslRowForOs(.windows));
     try std.testing.expectEqual(@as(?usize, null), sessionLauncherWslRowForOs(.linux));
 
     try std.testing.expect(std.mem.indexOf(u8, sessionLauncherDetailForOs(.windows), "WSL") != null);
     try std.testing.expect(std.mem.indexOf(u8, sessionLauncherDetailForOs(.windows), "Sessions") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sessionLauncherDetailForOs(.windows), "Settings") != null);
     try std.testing.expect(std.mem.indexOf(u8, sessionLauncherDetailForOs(.linux), "WSL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, sessionLauncherDetailForOs(.linux), "Memory") != null);
     try std.testing.expect(std.mem.indexOf(u8, sessionLauncherDetailForOs(.macos), "Shell") != null);
 
     try std.testing.expect(wslSessionToolsEnabledForOs(.windows));
@@ -747,21 +800,29 @@ test "platform pty command exposes session launcher layout by target OS" {
     try std.testing.expect(std.mem.indexOf(u8, wslSessionToolDescription(), "Never use heredocs") != null);
     try std.testing.expect(std.mem.indexOf(u8, wslSessionToolDescription(), "write_file") != null);
     try std.testing.expect(std.mem.indexOf(u8, wslSessionToolDescription(), "large or temporary scripts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wslSessionToolDescription(), "Pi") != null);
 }
 
 test "platform pty command derives session launcher layout from WSL presence" {
-    // With a WSL row present: Shell(0) SSH(1) WSL(2) tmux(3) Copilot(4) Sessions(5).
-    try std.testing.expectEqual(@as(usize, 6), sessionLauncherRowCountForLayout(true));
+    // With a WSL row present: Shell(0) SSH(1) WSL(2) tmux(3) Copilot(4) Sessions(5)
+    // Port Forwarding(6) Memory Center(7) Settings(8).
+    try std.testing.expectEqual(@as(usize, 9), sessionLauncherRowCountForLayout(true));
     try std.testing.expectEqual(@as(usize, 3), sessionLauncherTmuxRowForLayout(true));
     try std.testing.expectEqual(@as(usize, 4), sessionLauncherAiAgentRowForLayout(true));
     try std.testing.expectEqual(@as(usize, 5), sessionLauncherAiHistoryRowForLayout(true));
+    try std.testing.expectEqual(@as(usize, 6), sessionLauncherPortForwardRowForLayout(true));
+    try std.testing.expectEqual(@as(usize, 7), sessionLauncherMemoryCenterRowForLayout(true));
+    try std.testing.expectEqual(@as(usize, 8), sessionLauncherSettingsRowForLayout(true));
 
-    // No WSL row: Shell(0) SSH(1) tmux(2) Copilot(3) Sessions(4) — the rows below
-    // it shift up so nothing maps to a hidden/absent WSL slot.
-    try std.testing.expectEqual(@as(usize, 5), sessionLauncherRowCountForLayout(false));
+    // No WSL row: Shell(0) SSH(1) tmux(2) Copilot(3) Sessions(4), then the same
+    // three pages — the rows below SSH shift up so nothing maps to a hidden slot.
+    try std.testing.expectEqual(@as(usize, 8), sessionLauncherRowCountForLayout(false));
     try std.testing.expectEqual(@as(usize, 2), sessionLauncherTmuxRowForLayout(false));
     try std.testing.expectEqual(@as(usize, 3), sessionLauncherAiAgentRowForLayout(false));
     try std.testing.expectEqual(@as(usize, 4), sessionLauncherAiHistoryRowForLayout(false));
+    try std.testing.expectEqual(@as(usize, 5), sessionLauncherPortForwardRowForLayout(false));
+    try std.testing.expectEqual(@as(usize, 6), sessionLauncherMemoryCenterRowForLayout(false));
+    try std.testing.expectEqual(@as(usize, 7), sessionLauncherSettingsRowForLayout(false));
 }
 
 test "platform pty command falls back from an unavailable WSL shell" {
@@ -822,6 +883,16 @@ test "platform pty command builds shell command lines for AI History resume" {
     try std.testing.expect(std.mem.indexOf(u8, ssh_command, "user@example.test") != null);
     try std.testing.expect(std.mem.indexOf(u8, ssh_command, "codex resume abc") != null);
     try std.testing.expect(std.mem.indexOf(u8, ssh_command, "TERM_PROGRAM") == null);
+}
+
+test "platform pty command advertises SSH terminal capabilities only when enabled" {
+    var buf: [1024]u8 = undefined;
+    const disabled = sshInteractiveCommand(&buf, .{ .user = "user", .host = "example.test" }).?;
+    try std.testing.expect(std.mem.indexOf(u8, disabled, "SetEnv=TERM_PROGRAM") == null);
+
+    const enabled = sshInteractiveCommand(&buf, .{ .user = "user", .host = "example.test", .terminal_capabilities = true }).?;
+    try std.testing.expect(std.mem.indexOf(u8, enabled, "SetEnv=TERM_PROGRAM=ghostty") != null);
+    try std.testing.expect(std.mem.indexOf(u8, enabled, "SetEnv=COLORTERM=truecolor") != null);
 }
 
 test "platform pty command selects backend by target OS" {

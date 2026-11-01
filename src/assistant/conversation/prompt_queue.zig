@@ -123,6 +123,21 @@ pub const PromptQueue = struct {
         return true;
     }
 
+    /// Move the entry at `index` to the head (next to drain). No allocation.
+    /// Returns false when `index` is out of range; already-at-head is success.
+    pub fn moveToHead(self: *PromptQueue, index: usize) bool {
+        if (index >= self.entries.items.len) return false;
+        if (index == 0) return true;
+        const items = self.entries.items;
+        const entry = items[index];
+        var i = index;
+        while (i > 0) : (i -= 1) {
+            items[i] = items[i - 1];
+        }
+        items[0] = entry;
+        return true;
+    }
+
     /// Replace an entry's text (e.g. after a round trip through the composer).
     pub fn editText(self: *PromptQueue, index: usize, new_text: []const u8) error{OutOfMemory}!bool {
         if (index >= self.entries.items.len) return false;
@@ -249,6 +264,24 @@ test "moveUp/moveDown reorder and clamp at the edges" {
     try std.testing.expectEqualStrings("c", queue.entries.items[0].text);
     try std.testing.expectEqualStrings("a", queue.entries.items[1].text);
     try std.testing.expectEqualStrings("b", queue.entries.items[2].text);
+}
+
+test "moveToHead promotes the selected entry without reallocating" {
+    const allocator = std.testing.allocator;
+    var queue = PromptQueue.init(allocator);
+    defer queue.deinit();
+
+    _ = try queue.enqueue("a", null, null, 0);
+    _ = try queue.enqueue("b", null, null, 1);
+    _ = try queue.enqueue("c", null, null, 2);
+
+    try std.testing.expect(queue.moveToHead(0)); // already head
+    try std.testing.expectEqualStrings("a", queue.entries.items[0].text);
+    try std.testing.expect(queue.moveToHead(2));
+    try std.testing.expectEqualStrings("c", queue.entries.items[0].text);
+    try std.testing.expectEqualStrings("a", queue.entries.items[1].text);
+    try std.testing.expectEqualStrings("b", queue.entries.items[2].text);
+    try std.testing.expect(!queue.moveToHead(3));
 }
 
 test "editText replaces the entry text" {

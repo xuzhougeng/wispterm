@@ -49,6 +49,7 @@ pub extern fn wispterm_macos_menu_item_title_for_test(menu_index: i32, item_inde
 pub extern fn wispterm_macos_menu_item_modifier_for_test(menu_index: i32, item_index: i32) u32;
 pub extern fn wispterm_macos_menu_item_key_equivalent_for_test(menu_index: i32, item_index: i32) ?[*:0]const u8;
 pub extern fn wispterm_macos_menu_invoke_for_test(menu_index: i32, item_index: i32) void;
+pub extern fn wispterm_macos_menu_system_action_for_key_for_test(characters: [*:0]const u8, modifier_mask: u32) i32;
 
 var g_handler: ?menu.ActionHandler = null;
 

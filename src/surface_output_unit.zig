@@ -9,6 +9,7 @@ fn minimalAgentSurface(surface: *Surface) void {
     surface.osc7_title_len = 0;
     surface.window_title_len = 0;
     surface.agent_detection = .{};
+    surface.agent_detection_shared = std.atomic.Value(u32).init(0);
     surface.agent_osc_active = false;
     surface.wispterm_image_osc_state = .ground;
     surface.wispterm_image_osc_buf = .empty;
@@ -25,6 +26,8 @@ test "feedVtWithWispTermImageFallback: OSC 7748 marker sets agent detection" {
     try std.testing.expectEqual(.waiting_approval, surface.agent_detection.state);
     try std.testing.expectEqual(@as(u8, 100), surface.agent_detection.confidence);
     try std.testing.expect(surface.agent_osc_active);
+    // The cross-thread mirror follows the marker.
+    try std.testing.expectEqual(surface.agent_detection, surface.agentDetectionShared());
 }
 
 test "setTitleOverride: legacy title text does not set agent detection" {
@@ -40,10 +43,13 @@ test "setTitleOverride: legacy title text does not set agent detection" {
 test "markOutputDirty: only the first mark since the UI consumed it requests a wakeup" {
     var surface: Surface = undefined;
     surface.dirty = std.atomic.Value(bool).init(false);
+    surface.agent_screen = .{};
 
     try std.testing.expect(surface.markOutputDirty());
     try std.testing.expect(!surface.markOutputDirty());
     try std.testing.expect(surface.dirty.load(.acquire));
+    // Every output chunk advances the screen-detection epoch.
+    try std.testing.expectEqual(@as(u32, 2), surface.agent_screen.output_epoch.load(.monotonic));
 
     // UI consumed the dirty flag — next output chunk must post a wakeup again.
     _ = surface.dirty.swap(false, .acq_rel);

@@ -249,3 +249,55 @@ test "menu_macos: action item modifiers track keybind.Set.defaults (Ctrl→Cmd d
         );
     }
 }
+
+// ⌘Q used to do nothing while a terminal window had focus: the content view
+// claimed every ⌘ key for the zig keybinds, so AppKit never offered it to the
+// main menu, and the Quit item has no WispTerm action. The content view now
+// asks the menu bridge to match the AppKit-performed (system) items first.
+test "menu_macos: ⌘Q / ⌘H / ⌥⌘H match the system Quit / Hide / Hide Others items" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    installFreshMenu();
+    const quit: i32 = @intFromEnum(menu_macos.SystemAction.quit);
+    const hide: i32 = @intFromEnum(menu_macos.SystemAction.hide);
+    const hide_others: i32 = @intFromEnum(menu_macos.SystemAction.hide_others);
+    const none: i32 = -1;
+
+    try std.testing.expectEqual(quit, menu_macos.wispterm_macos_menu_system_action_for_key_for_test("q", menu_macos.ModCmd));
+    // Caps Lock / Shift report "Q"; the modifier mask still has to match.
+    try std.testing.expectEqual(quit, menu_macos.wispterm_macos_menu_system_action_for_key_for_test("Q", menu_macos.ModCmd));
+    try std.testing.expectEqual(hide, menu_macos.wispterm_macos_menu_system_action_for_key_for_test("h", menu_macos.ModCmd));
+    try std.testing.expectEqual(hide_others, menu_macos.wispterm_macos_menu_system_action_for_key_for_test("h", menu_macos.ModCmd | menu_macos.ModOpt));
+
+    try std.testing.expectEqual(none, menu_macos.wispterm_macos_menu_system_action_for_key_for_test("q", menu_macos.ModCmd | menu_macos.ModShift));
+    try std.testing.expectEqual(none, menu_macos.wispterm_macos_menu_system_action_for_key_for_test("q", menu_macos.ModCtrl));
+    try std.testing.expectEqual(none, menu_macos.wispterm_macos_menu_system_action_for_key_for_test("q", 0));
+}
+
+test "menu_macos: ⌘ shortcuts owned by WispTerm actions stay on the keybind path" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    installFreshMenu();
+    const none: i32 = -1;
+    // Copy / Paste / Close Tab / Settings are menu items too, but carry a
+    // keybind.Action: the system matcher must leave them to the zig keybinds.
+    try std.testing.expectEqual(none, menu_macos.wispterm_macos_menu_system_action_for_key_for_test("c", menu_macos.ModCmd));
+    try std.testing.expectEqual(none, menu_macos.wispterm_macos_menu_system_action_for_key_for_test("v", menu_macos.ModCmd));
+    try std.testing.expectEqual(none, menu_macos.wispterm_macos_menu_system_action_for_key_for_test("w", menu_macos.ModCmd));
+    try std.testing.expectEqual(none, menu_macos.wispterm_macos_menu_system_action_for_key_for_test(",", menu_macos.ModCmd));
+}
+
+// The system items win over the zig keybinds for their chords, so no default
+// binding may sit on one — it would silently stop firing.
+test "menu_macos: no default keybind shares a chord with Quit / Hide / Hide Others" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const set = keybind.Set.defaults();
+    const system_chords = [_]keybind.Trigger{
+        .{ .mods = .{ .win = true }, .key_code = 'Q' },
+        .{ .mods = .{ .win = true }, .key_code = 'H' },
+        .{ .mods = .{ .win = true, .alt = true }, .key_code = 'H' },
+    };
+    for (system_chords) |chord| {
+        for (set.items[0..set.len]) |binding| {
+            try std.testing.expect(!binding.trigger.eql(chord));
+        }
+    }
+}

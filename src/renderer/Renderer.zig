@@ -98,6 +98,8 @@ surface: *Surface,
 bg_cells: std.ArrayListUnmanaged(CellBg),
 fg_cells: std.ArrayListUnmanaged(CellFg),
 color_fg_cells: std.ArrayListUnmanaged(CellFg),
+
+row_cache: std.ArrayListUnmanaged(RowCache),
 bg_cell_count: usize,
 fg_cell_count: usize,
 color_fg_cell_count: usize,
@@ -110,9 +112,18 @@ snap_cols: usize,
 /// Dirty/rebuild tracking
 cells_valid: bool,
 force_rebuild: bool,
+/// When true, rebuildCells only refreshes the conservative dirty-row range.
+rebuild_rows_only: bool,
+rebuild_row_start: usize,
+rebuild_row_end: usize,
 /// Bumped by every rebuildCells; drawCells skips re-uploading the shared GPU
 /// instance buffers when they already hold this renderer's current generation.
 rebuild_generation: u64,
+/// Damage metadata produced by the most recent rebuild.
+last_damage_valid: bool,
+last_damage_full: bool,
+last_damage_row_start: usize,
+last_damage_row_end: usize,
 last_cursor_blink_visible: bool,
 last_viewport_active: bool,
 last_viewport_node: ?*anyopaque,
@@ -181,6 +192,26 @@ kitty_placements: std.ArrayListUnmanaged(KittyPlacement),
 // Lifecycle
 // ============================================================================
 
+/// Per-row compact caches. Clean rows can be flattened without repeating
+/// glyph lookup, grapheme shaping, or geometry work.
+pub const RowCache = struct {
+    bg: std.ArrayListUnmanaged(CellBg),
+    fg: std.ArrayListUnmanaged(CellFg),
+    color_fg: std.ArrayListUnmanaged(CellFg),
+
+    pub fn deinit(self: *RowCache, allocator: std.mem.Allocator) void {
+        self.bg.deinit(allocator);
+        self.fg.deinit(allocator);
+        self.color_fg.deinit(allocator);
+    }
+
+    pub fn clear(self: *RowCache) void {
+        self.bg.clearRetainingCapacity();
+        self.fg.clearRetainingCapacity();
+        self.color_fg.clearRetainingCapacity();
+    }
+};
+
 /// Initialize a new renderer for the given surface
 pub fn init(surface: *Surface) Renderer {
     return Renderer{
@@ -188,6 +219,7 @@ pub fn init(surface: *Surface) Renderer {
         .bg_cells = .empty,
         .fg_cells = .empty,
         .color_fg_cells = .empty,
+        .row_cache = .empty,
         .bg_cell_count = 0,
         .fg_cell_count = 0,
         .color_fg_cell_count = 0,
@@ -196,7 +228,14 @@ pub fn init(surface: *Surface) Renderer {
         .snap_cols = 0,
         .cells_valid = false,
         .force_rebuild = true,
+        .rebuild_rows_only = false,
+        .rebuild_row_start = 0,
+        .rebuild_row_end = 0,
         .rebuild_generation = 0,
+        .last_damage_valid = false,
+        .last_damage_full = true,
+        .last_damage_row_start = 0,
+        .last_damage_row_end = 0,
         .last_cursor_blink_visible = true,
         .last_viewport_active = true,
         .last_viewport_node = null,
@@ -243,6 +282,8 @@ pub fn deinit(self: *Renderer) void {
     self.bg_cells.deinit(self.surface.allocator);
     self.fg_cells.deinit(self.surface.allocator);
     self.color_fg_cells.deinit(self.surface.allocator);
+    for (self.row_cache.items) |*row| row.deinit(self.surface.allocator);
+    self.row_cache.deinit(self.surface.allocator);
     self.snap.deinit(self.surface.allocator);
 
     // FBO resources are cleaned up by AppWindow.cleanupRendererFBO()
@@ -257,7 +298,8 @@ pub fn cpuBufferCapacityBytes(self: *const Renderer) usize {
     return self.bg_cells.items.len * @sizeOf(CellBg) +
         self.fg_cells.items.len * @sizeOf(CellFg) +
         self.color_fg_cells.items.len * @sizeOf(CellFg) +
-        self.snap.items.len * @sizeOf(SnapCell);
+        self.snap.items.len * @sizeOf(SnapCell) +
+        rowCacheCapacityBytes(self.row_cache.items);
 }
 
 pub fn ensureCellCapacity(self: *Renderer, requested: usize) !void {
@@ -280,6 +322,27 @@ pub fn ensureCellCapacity(self: *Renderer, requested: usize) !void {
     self.fg_cells.items.len = target;
     self.color_fg_cells.items.len = target;
     self.snap.items.len = target;
+}
+
+pub fn ensureRowCacheCapacity(self: *Renderer, requested: usize) !void {
+    const target = @min(MAX_CELLS, requested);
+    if (target <= self.row_cache.items.len) return;
+
+    const allocator = self.surface.allocator;
+    const old_len = self.row_cache.items.len;
+    try self.row_cache.ensureTotalCapacity(allocator, target);
+    self.row_cache.items.len = target;
+    for (self.row_cache.items[old_len..target]) |*row| row.* = .{ .bg = .empty, .fg = .empty, .color_fg = .empty };
+}
+
+fn rowCacheCapacityBytes(rows: []const RowCache) usize {
+    var total: usize = 0;
+    for (rows) |row| {
+        total += row.bg.items.len * @sizeOf(CellBg);
+        total += row.fg.items.len * @sizeOf(CellFg);
+        total += row.color_fg.items.len * @sizeOf(CellFg);
+    }
+    return total;
 }
 
 pub fn kittyPendingCpuBytes(self: *const Renderer) usize {
