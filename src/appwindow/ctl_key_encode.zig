@@ -147,7 +147,10 @@ fn enc(opts: Options, name: []const u8) ?[]const u8 {
     return encodeSpec(opts, key_names.parse(name).?, &S.buf);
 }
 
-const legacy: Options = .{ .alt_esc_prefix = true };
+// Test fixtures carry the same `macos_option_as_alt` that
+// `optionsForTerminal` sets: without it Ghostty's encoder (correctly) treats
+// Option on a macOS host as a unicode-composition key, not Alt.
+const legacy: Options = .{ .alt_esc_prefix = true, .macos_option_as_alt = .true };
 
 test "legacy encoding matches what the keyboard sends" {
     try t.expectEqualStrings("\r", enc(legacy, "enter").?);
@@ -185,12 +188,13 @@ test "legacy chords: ctrl C0 bytes, alt ESC prefix, shift+tab, modified cursor k
     try t.expectEqualStrings("\x1b[1;2C", enc(legacy, "shift+right").?);
     try t.expectEqualStrings("\x1b[1;5H", enc(legacy, "ctrl+home").?);
     try t.expectEqualStrings("\x1b[3;3~", enc(legacy, "alt+delete").?);
-    // A bare shift+enter has no legacy form distinct from enter.
-    try t.expectEqualStrings("\r", enc(legacy, "shift+enter").?);
+    // Ghostty gives a modified Enter the xterm CSI 27 form even without the
+    // Kitty protocol, like a real shift+Enter keypress in WispTerm.
+    try t.expectEqualStrings("\x1b[27;2;13~", enc(legacy, "shift+enter").?);
 }
 
 test "application cursor keys (DECCKM) switch arrows to SS3" {
-    const app: Options = .{ .alt_esc_prefix = true, .cursor_key_application = true };
+    const app: Options = .{ .alt_esc_prefix = true, .cursor_key_application = true, .macos_option_as_alt = .true };
     try t.expectEqualStrings("\x1bOA", enc(app, "up").?);
     try t.expectEqualStrings("\x1bOB", enc(app, "down").?);
     try t.expectEqualStrings("\x1b[1;5A", enc(app, "ctrl+up").?);
@@ -198,7 +202,7 @@ test "application cursor keys (DECCKM) switch arrows to SS3" {
 }
 
 test "Kitty keyboard protocol: disambiguated CSI-u like a keypress in Claude Code" {
-    const kitty: Options = .{ .alt_esc_prefix = true, .kitty_flags = .{ .disambiguate = true } };
+    const kitty: Options = .{ .alt_esc_prefix = true, .kitty_flags = .{ .disambiguate = true }, .macos_option_as_alt = .true };
     try t.expectEqualStrings("\x1b[13;2u", enc(kitty, "shift+enter").?);
     try t.expectEqualStrings("\r", enc(kitty, "enter").?);
     try t.expectEqualStrings("\x1b[27u", enc(kitty, "esc").?);
