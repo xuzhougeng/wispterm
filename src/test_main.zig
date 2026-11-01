@@ -53,6 +53,7 @@ comptime {
         _ = @import("renderer/terminal_agents/sessions.zig");
         _ = @import("terminal_agents/detector.zig");
         _ = @import("terminal_agents/prompt_answer.zig");
+        _ = @import("terminal_agents/live_transcript.zig");
         _ = @import("agent_tools/args.zig");
         _ = @import("agent_tools/mod.zig");
         _ = @import("agent_tools/research.zig");

@@ -268,6 +268,23 @@ pub fn parseMarker(payload: []const u8) ?Detection {
     return .{ .app = app, .state = state, .confidence = 100 };
 }
 
+/// Value of an extra `key=value` field in an OSC 7748 payload (e.g. the
+/// `transcript=` session-log path a Claude Code hook can add). Null when absent.
+pub fn markerField(payload: []const u8, key: []const u8) ?[]const u8 {
+    var it = std.mem.splitScalar(u8, payload, ';');
+    while (it.next()) |field| {
+        const f = std.mem.trim(u8, field, " ");
+        if (f.len > key.len + 1 and std.mem.startsWith(u8, f, key) and f[key.len] == '=') return f[key.len + 1 ..];
+    }
+    return null;
+}
+
+test "markerField reads an optional transcript path" {
+    try std.testing.expectEqualStrings("/home/me/.claude/projects/-x/s.jsonl", markerField("wispterm-agent;state=running;app=claude_code;transcript=/home/me/.claude/projects/-x/s.jsonl", "transcript").?);
+    try std.testing.expect(markerField("wispterm-agent;state=running", "transcript") == null);
+    try std.testing.expect(markerField("wispterm-agent;transcript=", "transcript") == null);
+}
+
 /// Aggregate pane states into one tab-level indicator by attention priority.
 /// Empty -> .none.
 pub fn aggregate(states: []const State) State {

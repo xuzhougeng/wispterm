@@ -20,6 +20,7 @@ const Renderer = @import("renderer/Renderer.zig");
 const remote = @import("remote_client.zig");
 const threading = @import("platform/threading.zig");
 const agent_detector = @import("terminal_agents/detector.zig");
+const live_transcript = @import("terminal_agents/live_transcript.zig");
 const window_backend = @import("platform/window_backend.zig");
 const sync_output = @import("sync_output.zig");
 const notification = @import("notification.zig");
@@ -122,7 +123,7 @@ const WISPTERM_IMAGE_OSC_MAX = 16 * 1024;
 const WISPTERM_PRIVATE_OSC_SHARED = "774";
 /// Maximum agent marker payload size (bytes after "7748;"); sequences longer
 /// than this are silently discarded via the overflow states.
-const WISPTERM_AGENT_OSC_MAX = 256;
+const WISPTERM_AGENT_OSC_MAX = 512; // room for an optional transcript=<path> field
 
 /// Coarse launch environment for terminal-side integrations such as path paste.
 pub const LaunchKind = platform_pty_command.LaunchKind;
@@ -408,6 +409,10 @@ initial_cwd_path_len: usize = 0,
 // markers; app identity may also be seeded from the foreground command.
 agent_detection: agent_detector.Detection = .{},
 
+/// Session log of the agent running in this pane, rendered for remote clients
+/// (see terminal_agents/live_transcript.zig). Main thread only.
+agent_transcript: live_transcript.LiveTranscript = .{},
+
 /// Last agent state seen by the main loop's notification poll (edge detection;
 /// UI thread only — see AppWindow.pollAgentMarker).
 agent_notify_prev_state: agent_detector.State = .none,
@@ -680,6 +685,7 @@ pub fn deinit(self: *Surface, allocator: std.mem.Allocator) void {
     // blocks until any in-flight guarded access on the agent request worker
     // finishes, so nothing below can tear state out from under it.
     surface_registry.unregister(self);
+    self.agent_transcript.deinit(allocator);
 
     // 1. Release renderer-owned CPU buffers.
     self.surface_renderer.deinit();
@@ -1738,6 +1744,7 @@ fn handleWispTermAgentOsc(self: *Surface) void {
     if (agent_detector.parseMarker(payload)) |det| {
         self.agent_detection = det;
         self.agent_osc_active = true;
+        if (agent_detector.markerField(payload, "transcript")) |path| self.agent_transcript.setPath(self.allocator, path);
     }
 }
 
