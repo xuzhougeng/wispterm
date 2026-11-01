@@ -405,6 +405,10 @@ test "live transcript refresh re-renders only when the file changes" {
     defer f.close();
     try f.seekFromEnd(0);
     try f.writeAll("{\"sessionId\":\"s\",\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"second\"}]}}\n");
+    // Within RENDER_INTERVAL_MS the change is deliberately not re-rendered yet.
+    const throttled = live.refresh(allocator, .claude_code, null) orelse return error.TestExpectedEqual;
+    try std.testing.expect(throttled.ptr == a.ptr);
+    live.next_render_ms = 0;
     const b = live.refresh(allocator, .claude_code, null) orelse return error.TestExpectedEqual;
     try std.testing.expect(std.mem.indexOf(u8, b, "\"text\":\"second\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, b, "\"total\":2") != null);

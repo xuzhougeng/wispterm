@@ -384,6 +384,9 @@ test "remote sync: build layout json includes agent metadata from terminal snaps
     surface.title_override_len = 0;
     surface.osc7_title_len = 0;
     surface.window_title_len = 0;
+    surface.cwd_path_len = 0;
+    surface.initial_cwd_path_len = 0;
+    surface.agent_transcript = .{};
     surface.agent_detection = .{
         .app = .codex,
         .state = .waiting_approval,
