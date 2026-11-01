@@ -12,6 +12,7 @@ const remote = @import("../remote_client.zig");
 const remote_snapshot = @import("../remote_snapshot.zig");
 const renderer = @import("../renderer.zig");
 const surface_snapshots = @import("surface_snapshots.zig");
+const live_transcript = @import("../terminal_agents/live_transcript.zig");
 const tab = @import("tab.zig");
 const thread_message = @import("thread_message.zig");
 const window_backend = @import("../platform/window_backend.zig");
@@ -104,6 +105,7 @@ fn appendLayoutJson(host: Host, allocator: std.mem.Allocator, out: *std.ArrayLis
             try out.appendSlice(allocator, "\",\"focused\":");
             try out.appendSlice(allocator, if (entry.handle == tab_state.focused) "true" else "false");
             try surface_snapshots.appendAgentDetectionJson(allocator, out, entry.surface);
+            try appendAgentTranscriptJson(allocator, out, entry.surface);
             try out.appendSlice(allocator, ",\"cols\":");
             try out.print(allocator, "{d}", .{entry.surface.size.grid.cols});
             try out.appendSlice(allocator, ",\"rows\":");
@@ -147,6 +149,28 @@ fn appendLayoutJson(host: Host, allocator: std.mem.Allocator, out: *std.ArrayLis
     }
 
     try out.appendSlice(allocator, "]}");
+}
+
+/// Claude Code / Codex panes additionally carry their session-log tail
+/// (`agentTranscript`) and, while waiting on the user, the approval menu parsed
+/// from the screen (`agentPrompt`), so phones can render them as a conversation.
+fn appendAgentTranscriptJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), surface: *Surface) !void {
+    const det = surface.agent_detection;
+    if (det.app != .claude_code and det.app != .codex) return;
+    const cwd = surface.getCwd() orelse surface.getInitialCwd();
+    if (surface.agent_transcript.refresh(allocator, det.app, cwd)) |json| {
+        try out.appendSlice(allocator, ",\"agentTranscript\":");
+        try out.appendSlice(allocator, json);
+    }
+    if (det.state != .waiting_approval and det.state != .needs_input) return;
+    const screen = surface_snapshots.buildRemoteSurfaceSnapshot(allocator, surface, remote_snapshot.agent_max_history_rows) catch return;
+    defer allocator.free(screen);
+    const prompt = live_transcript.allocPromptJson(allocator, screen) catch null;
+    defer if (prompt) |p| allocator.free(p);
+    if (prompt) |p| {
+        try out.appendSlice(allocator, ",\"agentPrompt\":");
+        try out.appendSlice(allocator, p);
+    }
 }
 
 pub fn remoteAiSurfaceId(tab_index: usize) [16]u8 {
@@ -360,6 +384,9 @@ test "remote sync: build layout json includes agent metadata from terminal snaps
     surface.title_override_len = 0;
     surface.osc7_title_len = 0;
     surface.window_title_len = 0;
+    surface.cwd_path_len = 0;
+    surface.initial_cwd_path_len = 0;
+    surface.agent_transcript = .{};
     surface.agent_detection = .{
         .app = .codex,
         .state = .waiting_approval,

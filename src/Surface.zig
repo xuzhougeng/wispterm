@@ -21,6 +21,7 @@ const Renderer = @import("renderer/Renderer.zig");
 const remote = @import("remote_client.zig");
 const threading = @import("platform/threading.zig");
 const agent_detector = @import("terminal_agents/detector.zig");
+const live_transcript = @import("terminal_agents/live_transcript.zig");
 const screen_detect = @import("terminal_agents/screen_detect.zig");
 const session_persist = @import("session_persist.zig");
 const window_backend = @import("platform/window_backend.zig");
@@ -448,6 +449,10 @@ initial_cwd_path_len: usize = 0,
 // identity may also be seeded from the foreground command.
 agent_detection: agent_detector.Detection = .{},
 
+/// Session log of the agent running in this pane, rendered for remote clients
+/// (see terminal_agents/live_transcript.zig). Main thread only.
+agent_transcript: live_transcript.LiveTranscript = .{},
+
 /// Screen-detection bookkeeping (identity source, output epoch, seen state).
 /// Owned by `terminal_agents/screen_detect.zig`; the IO thread only bumps its
 /// output epoch (see `markOutputDirty`).
@@ -737,6 +742,7 @@ pub fn deinit(self: *Surface, allocator: std.mem.Allocator) void {
     // blocks until any in-flight guarded access on the agent request worker
     // finishes, so nothing below can tear state out from under it.
     surface_registry.unregister(self);
+    self.agent_transcript.deinit(allocator);
 
     // 1. Release renderer-owned CPU buffers.
     self.surface_renderer.deinit();
@@ -1853,6 +1859,7 @@ fn handleWispTermAgentOsc(self: *Surface) void {
         self.agent_capabilities = info.capabilities;
         self.agent_session_path_len = @min(info.session_path.len, self.agent_session_path_buf.len);
         self.agent_osc_active = true;
+        if (info.session_path.len > 0) self.agent_transcript.setPath(self.allocator, info.session_path);
         self.publishAgentDetection();
     }
 }

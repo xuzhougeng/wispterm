@@ -169,7 +169,7 @@ fn isAllowAllLabel(label: []const u8) bool {
         containsIgnoreCase(label, "this session");
 }
 
-fn hasInlineYesNo(screen: []const u8) bool {
+pub fn hasInlineYesNo(screen: []const u8) bool {
     return containsIgnoreCase(screen, "[y/n]") or containsIgnoreCase(screen, "(y/n)");
 }
 
@@ -181,7 +181,7 @@ fn startsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
     return text_search.startsWithIgnoreCase(haystack, prefix);
 }
 
-fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+pub fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     return text_search.containsIgnoreCase(haystack, needle);
 }
 
@@ -209,6 +209,25 @@ pub fn parsePromptOptions(screen: []const u8, out: []Option) usize {
         }
     }
     return count;
+}
+
+/// Trim spaces and box-drawing borders (U+2500..U+257F) from both ends, so a
+/// Claude Code permission box (`│ ❯ 1. Yes   │`) parses like a bare menu. A line
+/// that is only borders (`╭────╮`) becomes "".
+pub fn stripBorder(raw: []const u8) []const u8 {
+    var s = std.mem.trim(u8, raw, " \t\r");
+    while (true) {
+        const before = s.len;
+        while (s.len >= 3 and isBoxChar(s[0..3])) s = s[3..];
+        while (s.len >= 3 and isBoxChar(s[s.len - 3 ..])) s = s[0 .. s.len - 3];
+        s = std.mem.trim(u8, s, " \t\r");
+        if (s.len == before) break;
+    }
+    return s;
+}
+
+fn isBoxChar(bytes: []const u8) bool {
+    return bytes.len >= 3 and bytes[0] == 0xE2 and (bytes[1] == 0x94 or bytes[1] == 0x95) and bytes[2] >= 0x80 and bytes[2] <= 0xBF;
 }
 
 /// Pi-style unnumbered selector row: two spaces, optional `→`/`>` highlight
@@ -243,7 +262,8 @@ fn parseArrowOptionLine(line: []const u8) ?Option {
     };
 }
 
-fn parseOptionLine(line: []const u8) ?Option {
+fn parseOptionLine(raw: []const u8) ?Option {
+    const line = stripBorder(raw);
     var i: usize = 0;
     while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
 
@@ -282,6 +302,24 @@ fn parseShortcut(label: []const u8) ?u8 {
     const c = label[label.len - 2];
     if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')) return std.ascii.toLower(c);
     return null;
+}
+
+test "parsePromptOptions reads a boxed Claude Code permission menu" {
+    const screen =
+        \\╭──────────────────────────────╮
+        \\│ Do you want to proceed?      │
+        \\│ ❯ 1. Yes                     │
+        \\│   2. No, and tell Claude (esc) │
+        \\╰──────────────────────────────╯
+    ;
+    var buf: [8]Option = undefined;
+    const n = parsePromptOptions(screen, &buf);
+    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expect(buf[0].highlighted);
+    try std.testing.expectEqualStrings("Yes", buf[0].label);
+    try std.testing.expectEqualStrings("No, and tell Claude (esc)", buf[1].label);
+    try std.testing.expectEqualStrings("", stripBorder("╭──────╮"));
+    try std.testing.expectEqualStrings("Bash command", stripBorder("│ Bash command   │"));
 }
 
 test "parsePromptOptions reads a Claude Code edit-approval menu" {

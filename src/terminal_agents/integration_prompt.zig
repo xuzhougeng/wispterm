@@ -16,6 +16,7 @@ pub const prompt_text =
     \\- Known states: running, waiting_approval, needs_input, halted, failed, done.
     \\- Known app labels: app=codex for Codex, app=claude_code for Claude Code, app=pi for Pi.
     \\- If this is another agent and WispTerm has no app label for it yet, do not invent a label. Ask the user whether they want WispTerm updated for that agent.
+    \\- Optional: append ;session_path=<percent-encoded absolute path of this session's log> when the hook knows it (Claude Code hooks receive it as transcript_path on stdin). WispTerm then streams that log to remote clients as a conversation; without it WispTerm picks the newest log for the pane's cwd.
     \\
     \\POSIX hook command template:
     \\printf '\033]7748;wispterm-agent;state=running;app=codex\007' > /dev/tty 2>/dev/null || true
