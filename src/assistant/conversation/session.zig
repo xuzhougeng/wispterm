@@ -1987,6 +1987,21 @@ pub const Session = struct {
     }
 
     pub fn applyRemoteInput(self: *Session, data: []const u8) void {
+        // Remote GUI clients (web / iOS) answer a pending approval with "y\r"
+        // or "n\r", mirroring the local y/Enter and n/Esc keys. Only consumed
+        // while an approval is actually pending, so a plain "y" prompt still
+        // goes through as text otherwise.
+        if (self.approvalView() != null) {
+            const answer = std.mem.trim(u8, data, " \r\n");
+            if (answer.len == 1 and (answer[0] == 'y' or answer[0] == 'Y')) {
+                _ = self.resolveApproval(true);
+                return;
+            }
+            if (answer.len == 1 and (answer[0] == 'n' or answer[0] == 'N')) {
+                _ = self.resolveApproval(false);
+                return;
+            }
+        }
         var text_start: usize = 0;
         var i: usize = 0;
         while (i < data.len) {
@@ -7905,6 +7920,47 @@ test "ai chat manual input scroll pauses cursor following until cursor moves" {
 
     session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_right }, 5);
     try std.testing.expect(session.input_scroll_follow_cursor);
+}
+
+test "applyRemoteInput resolves a pending approval with y/n" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator,
+        "DeepSeek",
+        DEFAULT_BASE_URL,
+        "key",
+        DEFAULT_MODEL,
+        DEFAULT_SYSTEM_PROMPT,
+        DEFAULT_THINKING,
+        DEFAULT_REASONING_EFFORT,
+        DEFAULT_STREAM,
+        DEFAULT_AGENT,
+    );
+    defer session.deinit();
+
+    // No approval pending: "y" is ordinary composer text.
+    session.applyRemoteInput("y");
+    try std.testing.expectEqualStrings("y", session.input());
+    session.applyRemoteInput("\x7f");
+
+    session.approval_mutex.lock();
+    session.copyApprovalLocked("bash", "rm -rf build", "");
+    session.approval_pending = true;
+    session.approval_resolved = false;
+    session.approval_mutex.unlock();
+    try std.testing.expect(session.approvalView() != null);
+
+    session.applyRemoteInput("n\r");
+    try std.testing.expect(session.approvalView() == null);
+    try std.testing.expect(session.approval_resolved and !session.approval_allowed);
+    try std.testing.expectEqualStrings("", session.input());
+
+    session.approval_mutex.lock();
+    session.approval_pending = true;
+    session.approval_resolved = false;
+    session.approval_mutex.unlock();
+    session.applyRemoteInput("Y\r");
+    try std.testing.expect(session.approval_resolved and session.approval_allowed);
 }
 
 test "ai chat remote snapshot omits local draft input" {
