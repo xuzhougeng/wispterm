@@ -30,6 +30,7 @@ const feishu_types = @import("feishu/types.zig");
 const feishu_binding = @import("feishu/binding.zig");
 const ctl_server = @import("ctl/server.zig");
 const ctl_discovery = @import("ctl/discovery.zig");
+const lan_stream = @import("lan_stream.zig");
 const port_forward_manager_mod = @import("port_forward/manager.zig");
 const platform_dirs = @import("platform/dirs.zig");
 const platform_open_url = @import("platform/open_url.zig");
@@ -115,6 +116,9 @@ feishu_controller: ?*feishu.Controller = null,
 
 // Local agent terminal control API (wisptermctl). Created by startAgentControl().
 agent_control_server: ?*ctl_server.Server = null,
+
+// LAN screen stream for the phone app. Created by startLanStream().
+lan_stream_server: ?*lan_stream.Server = null,
 
 port_forward_manager: port_forward_manager_mod.Manager,
 
@@ -520,6 +524,34 @@ pub fn startAgentControl(self: *App, cfg: *const Config) void {
     self.agent_control_server = server;
     AppWindow.enableAgentControl();
     std.debug.print("agent-control listening on 127.0.0.1:{d}\n", .{server.port});
+}
+
+/// Starts the LAN screen stream (Bonjour `_wispterm._tcp`) when enabled. The
+/// phone authenticates with remote-session-key, so that must be set too.
+pub fn startLanStream(self: *App, cfg: *const Config) void {
+    if (!cfg.@"lan-stream-enabled") return;
+    const key = std.mem.trim(u8, cfg.@"remote-session-key" orelse "", " \t\r\n");
+    if (key.len == 0) {
+        std.debug.print("lan-stream disabled: remote-session-key is not set\n", .{});
+        return;
+    }
+    if (comptime !lan_stream.supported) {
+        std.debug.print("lan-stream disabled: not supported on this platform yet\n", .{});
+        return;
+    }
+    var host_buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
+    const name = cfg.@"remote-device-name" orelse (std.posix.gethostname(&host_buf) catch "WispTerm");
+    const server = lan_stream.Server.create(self.allocator, name, key) catch |err| {
+        std.debug.print("lan-stream disabled: {}\n", .{err});
+        return;
+    };
+    server.start() catch |err| {
+        std.debug.print("lan-stream listener failed to start: {}\n", .{err});
+        server.destroy();
+        return;
+    };
+    self.lan_stream_server = server;
+    std.debug.print("lan-stream \"{s}\" listening on port {d}\n", .{ name, server.port });
 }
 
 /// Get the shell command as a native null-terminated command line.
@@ -1331,6 +1363,11 @@ pub fn deinit(self: *App) void {
         server.destroy(); // stops + joins the accept thread, frees the listener
         self.agent_control_server = null;
         ctl_discovery.remove(self.allocator);
+    }
+
+    if (self.lan_stream_server) |server| {
+        server.destroy();
+        self.lan_stream_server = null;
     }
 
     if (self.weixin_controller) |controller| {

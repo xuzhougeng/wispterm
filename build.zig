@@ -65,6 +65,7 @@ const macos_objective_c_sources = [_][]const u8{
     "src/platform/http_client_macos_bridge.m",
     "src/platform/pdf_render_macos_bridge.m",
     "src/platform/remote_transport_macos_bridge.m",
+    "src/platform/lan_stream_macos_bridge.m",
     "src/platform/vault_key_macos_bridge.m",
 };
 

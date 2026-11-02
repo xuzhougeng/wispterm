@@ -281,6 +281,9 @@ pub fn main() !void {
     // Start the local agent terminal control API (no-op unless agent-control-enabled).
     app.startAgentControl(&cfg);
 
+    // Start the LAN screen stream for the phone app (no-op unless lan-stream-enabled).
+    app.startLanStream(&cfg);
+
     try app.run();
     // Quitting with an update staged installs it: the next launch runs it.
     app.installStagedUpdateOnExit();

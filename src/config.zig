@@ -438,6 +438,11 @@ language: i18n.LanguageSetting = .auto,
 /// instance uses it directly and later local instances append _1, _2, ...
 @"remote-session-key": ?[]const u8 = null,
 
+/// Serve the rendered window as a JPEG frame stream on the local network
+/// (Bonjour `_wispterm._tcp`) for the phone app. Viewers authenticate with
+/// remote-session-key. macOS only for now.
+@"lan-stream-enabled": bool = false,
+
 /// Enables the Feishu (Lark) long-connection channel.
 @"feishu-enabled": bool = false,
 
@@ -1091,6 +1096,14 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         self.@"remote-device-name" = self.dupeString(allocator, value) orelse return;
     } else if (std.mem.eql(u8, key, "remote-session-key")) {
         self.@"remote-session-key" = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "lan-stream-enabled")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"lan-stream-enabled" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"lan-stream-enabled" = false;
+        } else {
+            log.warn("invalid lan-stream-enabled: {s}", .{value});
+        }
     } else if (std.mem.eql(u8, key, "weixin-direct-enabled")) {
         if (std.mem.eql(u8, value, "true")) {
             self.@"weixin-direct-enabled" = true;
@@ -1690,6 +1703,7 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --remote-server-fingerprint <fp> Expected relay fingerprint
         \\  --remote-device-name <name>  Friendly device name for remote access
         \\  --remote-session-key <key>   Fixed remote key base; later instances append _1, _2
+        \\  --lan-stream-enabled <bool>  Stream the window to the phone app over the LAN (Bonjour; needs remote-session-key)
         \\  --weixin-direct-enabled <bool> Enable embedded WeChat ilink direct path
         \\  --weixin-base-url <url>      Override ilink API base URL
         \\  --weixin-reply-timeout-ms <n> Deprecated (no-op); AI-reply window is ~30 min
@@ -2053,6 +2067,8 @@ const default_config_template =
     \\# remote-server-fingerprint =
     \\# remote-device-name =
     \\# remote-session-key =
+    \\# LAN screen stream for the phone app (macOS; authenticates with remote-session-key)
+    \\# lan-stream-enabled = false
     \\
     \\# Scrollback buffer size in bytes (default: 10MB)
     \\# scrollback-limit = 10000000
