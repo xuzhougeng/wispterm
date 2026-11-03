@@ -127,6 +127,7 @@ const weixin_bridge = @import("appwindow/chatops_bridge.zig");
 const agent_requests = @import("appwindow/agent_requests.zig");
 const appwindow_ui_screenshot = @import("appwindow/ui_screenshot.zig");
 const png_writer = @import("appwindow/png_writer.zig");
+const lan_stream = @import("lan_stream.zig");
 const ui_effect = @import("appwindow/ui_effect.zig");
 pub const UiEffect = ui_effect.UiEffect;
 const bench_driver = @import("benchmark/driver.zig");
@@ -7091,6 +7092,22 @@ fn agentRequestCaptureUiScreenshot(
     };
 }
 
+/// Whole-window frame for the LAN stream: same readback as the agent
+/// ui_screenshot, minus the file; lan_stream JPEG-encodes and ships it.
+fn captureLanStreamFrame(allocator: std.mem.Allocator, fb_width: c_int, fb_height: c_int) void {
+    lan_stream.markCapture(std.time.milliTimestamp());
+    if (fb_width <= 0 or fb_height <= 0) return;
+    const w: u32 = @intCast(fb_width);
+    const h: u32 = @intCast(fb_height);
+    const bottom_up = gpu.readback.readRgba(allocator, 0, 0, w, h) catch return;
+    defer allocator.free(bottom_up);
+    const top_down = png_writer.flipRgbaRows(allocator, bottom_up, w, h) catch return;
+    defer allocator.free(top_down);
+    const fitted = appwindow_ui_screenshot.fitRgbaToMaxLongEdge(allocator, top_down, w, h, appwindow_ui_screenshot.max_output_long_edge) catch return;
+    defer fitted.deinit(allocator);
+    lan_stream.publishRgba(fitted.rgba, fitted.width, fitted.height);
+}
+
 fn agentRequestHost() agent_requests.Host {
     return .{
         .nativeHandleForContext = agentRequestNativeHandle,
@@ -8868,8 +8885,11 @@ fn runMainLoop(self: *AppWindow) !void {
         // Hover-revealed toolbar: sample the pointer every iteration (mouse
         // moves wake the loop) and keep painting while it fades.
         const toolbar_animating = titlebar.tickToolbarReveal(gate_now);
+        // A phone watching over the LAN needs a fresh frame every interval; it
+        // rides the ui_screenshot capture path (force render, arm, read back).
+        const lan_frame = lan_stream.wantsFrame(gate_now);
         const signals = render_gate.RenderSignals{
-            .force_rebuild = g_force_rebuild or !g_cells_valid or pendingResizeActive() or windowState().layout_resize_immediate or agent_requests.hasPendingUiScreenshot(),
+            .force_rebuild = g_force_rebuild or !g_cells_valid or pendingResizeActive() or windowState().layout_resize_immediate or agent_requests.hasPendingUiScreenshot() or lan_frame,
             .any_surface_dirty = anyVisibleSurfaceDirty(),
             .cursor_blink_due = blink.due,
             .ai_streaming = aiStreamingNeedsFrame(gate_now),
@@ -8909,7 +8929,7 @@ fn runMainLoop(self: *AppWindow) !void {
         // after endFrame. The Metal backend can't read a presented+released
         // drawable, so arm an in-frame capture before we render+endFrame. No-op
         // on OpenGL (it reads the live back buffer post-endFrame).
-        if (agent_requests.hasPendingUiScreenshot()) gpu.state.armUiScreenshotCapture();
+        if (agent_requests.hasPendingUiScreenshot() or lan_frame) gpu.state.armUiScreenshotCapture();
 
         gpu.draw_call_count = 0;
         overlays.updateFps();
@@ -9234,6 +9254,7 @@ fn runMainLoop(self: *AppWindow) !void {
         gpu.state.endFrame();
         frame_timing.endStage(.draw, draw_stage);
         agent_requests.capturePendingUiScreenshots(agentRequestHost());
+        if (lan_frame) captureLanStreamFrame(allocator, fb_width, fb_height);
         const present_stage = frame_timing.beginStage();
         presentBackendFrame(win, present_damage.finish());
         frame_timing.endStage(.present_block, present_stage);
