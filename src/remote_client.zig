@@ -349,7 +349,6 @@ fn fixedSessionKeyCandidate(allocator: std.mem.Allocator, base: []const u8, inde
     return std.fmt.allocPrint(allocator, "{s}_{d}", .{ base, index });
 }
 
-
 fn buildEndpoint(
     allocator: std.mem.Allocator,
     server_url: []const u8,
