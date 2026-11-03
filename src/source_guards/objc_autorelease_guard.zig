@@ -28,6 +28,7 @@ const Bridge = struct {
 const bridges = [_]Bridge{
     .{ .path = "platform/font_macos_bridge.m", .source = @embedFile("../platform/font_macos_bridge.m") },
     .{ .path = "platform/http_client_macos_bridge.m", .source = @embedFile("../platform/http_client_macos_bridge.m") },
+    .{ .path = "platform/lan_stream_macos_bridge.m", .source = @embedFile("../platform/lan_stream_macos_bridge.m") },
     .{ .path = "platform/menu_macos_bridge.m", .source = @embedFile("../platform/menu_macos_bridge.m") },
     .{ .path = "platform/pdf_render_macos_bridge.m", .source = @embedFile("../platform/pdf_render_macos_bridge.m") },
     .{ .path = "platform/remote_transport_macos_bridge.m", .source = @embedFile("../platform/remote_transport_macos_bridge.m") },
