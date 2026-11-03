@@ -158,9 +158,12 @@ You do not have to edit the config file by hand. Open the command center
 (`Ctrl+Shift+P`, `Cmd+Shift+P` on macOS) and run **Settings** to open an in-app
 settings page that edits the most common options: font family and size, theme, cursor style
 and blink, focus-follows-mouse, restore-tabs-on-startup, the default shell, the
-default AI profile, WeChat direct control, and the interface language. The page
-also has an **Open raw config** button for the advanced keys above, and changes
-are written back to the same config file. Some options (such as language) take
+default AI profile, WeChat direct control, and the interface language. A
+**Remote** category edits the `remote-enabled`, `remote-server-url`,
+`remote-device-name`, and `remote-session-key` keys (plus `lan-stream-enabled`
+on macOS); the session key is masked once saved. The page also has an **Open raw
+config** button for the advanced keys above, and changes are written back to the
+same config file. Some options (such as language and every Remote setting) take
 effect after a restart.
 
 The **Restore default settings** row resets the settings the page manages back
