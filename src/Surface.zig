@@ -18,7 +18,7 @@ const renderer = @import("renderer.zig");
 const termio = @import("termio.zig");
 const Config = @import("config.zig");
 const Renderer = @import("renderer/Renderer.zig");
-const remote = @import("remote_client.zig");
+const RemoteHub = @import("remote_hub.zig");
 const threading = @import("platform/threading.zig");
 const agent_detector = @import("terminal_agents/detector.zig");
 const live_transcript = @import("terminal_agents/live_transcript.zig");
@@ -277,7 +277,7 @@ render_state: renderer.State,
 launch_kind: LaunchKind,
 advertise_terminal_capabilities: bool,
 ssh_connection: ?SshConnection,
-remote_client: ?*remote.Client,
+remote_hub: ?*RemoteHub.Hub,
 remote_id: [16]u8,
 
 /// The command + cwd this surface was launched with, owned copies kept so the
@@ -569,8 +569,8 @@ fn finishInit(
     surface.ssh_autofill_deadline_ms = 0;
     surface.respawn_command = null;
     surface.respawn_cwd = null;
-    surface.remote_client = null;
-    remote.nextSurfaceId(&surface.remote_id);
+    surface.remote_hub = null;
+    RemoteHub.nextSurfaceId(&surface.remote_id);
     surface.vt_stream = surface.initVtStream();
     errdefer surface.vt_stream.deinit();
     surface.dirty = std.atomic.Value(bool).init(true);
@@ -747,8 +747,8 @@ pub fn deinit(self: *Surface, allocator: std.mem.Allocator) void {
     // 1. Release renderer-owned CPU buffers.
     self.surface_renderer.deinit();
 
-    if (self.remote_client) |client| {
-        client.unregisterSurface(self.remote_id);
+    if (self.remote_hub) |hub| {
+        hub.unregisterSurface(self.remote_id);
     }
 
     // 2. Signal both IO threads to stop.
@@ -772,7 +772,7 @@ pub fn deinit(self: *Surface, allocator: std.mem.Allocator) void {
         self.io_reader_thread = null;
     }
     self.markStopped();
-    self.remote_client = null;
+    self.remote_hub = null;
 
     // Clean up writer thread state and mailbox
     if (self.io_thread_state) |state| {
@@ -1293,10 +1293,10 @@ pub fn queuePtyWrite(self: *Surface, data: []const u8) QueueWriteError!void {
     }
 }
 
-pub fn attachRemoteClient(self: *Surface, client: ?*remote.Client) void {
-    self.remote_client = client;
-    if (client) |remote_client| {
-        remote_client.registerSurface(self.remote_id, self, remoteWrite);
+pub fn attachRemoteHub(self: *Surface, hub: ?*RemoteHub.Hub) void {
+    self.remote_hub = hub;
+    if (hub) |h| {
+        h.registerSurface(self.remote_id, self, remoteWrite);
     }
 }
 

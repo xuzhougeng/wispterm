@@ -307,7 +307,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     term_rows = app.initial_rows;
 
     tab.g_scrollback_limit = app.scrollback_limit;
-    tab.g_remote_client = app.remote_client;
+    tab.g_remote_hub = app.remote_hub;
     ai_chat.configureAgent(.{
         .enabled = app.ai_agent_enabled,
         .permission = app.ai_agent_permission,
@@ -447,7 +447,7 @@ pub fn deinit(self: *AppWindow) void {
         }
     }
     tab.g_tab_count = 0;
-    tab.g_remote_client = null;
+    tab.g_remote_hub = null;
     if (is_last_window) deinitGlobalAgentHistoryStore(self.allocator);
     if (is_last_window) {
         if (g_loop_store != null) {
@@ -6614,9 +6614,9 @@ fn openDefaultAiAgentForRemoteSync() remote_sync.AiAgentOpenStatus {
 }
 
 fn remoteSyncHost() remote_sync.Host {
-    const client = if (g_app) |app| app.remote_client else null;
+    const hub = if (g_app) |app| app.remote_hub else null;
     return .{
-        .client = client,
+        .hub = hub,
         .window = g_window,
         .state = &g_appwindow_state,
         .allocator = g_allocator,
@@ -6629,10 +6629,10 @@ fn remoteSyncHost() remote_sync.Host {
 // keeps remote_sync.zig decoupled from App.zig while forwarding to the UI thread.
 fn openRemoteAiAgentForClient(ctx: *anyopaque, request_id: []const u8) void {
     const app: *App = @ptrCast(@alignCast(ctx));
-    const client = app.remote_client orelse return;
+    const hub = app.remote_hub orelse return;
 
     const owned_request_id = std.heap.page_allocator.dupe(u8, request_id) catch {
-        client.sendAiAgentOpenResult(request_id, .failed);
+        hub.sendAiAgentOpenResult(request_id, .failed);
         return;
     };
     defer std.heap.page_allocator.free(owned_request_id);
@@ -6650,18 +6650,14 @@ fn openRemoteAiAgentForClient(ctx: *anyopaque, request_id: []const u8) void {
     }
 
     const target = native_handle orelse {
-        if (app.remote_client) |current_client| {
-            current_client.sendAiAgentOpenResult(owned_request_id, .failed);
-        }
+        hub.sendAiAgentOpenResult(owned_request_id, .failed);
         return;
     };
 
     var request = remote_sync.RemoteAiAgentOpenRequest{ .request_id = owned_request_id };
     const result = thread_message.sendPointer(target, .remote_open_ai_agent, @intFromPtr(&request));
     if (result == 0) {
-        if (app.remote_client) |current_client| {
-            current_client.sendAiAgentOpenResult(owned_request_id, .failed);
-        }
+        hub.sendAiAgentOpenResult(owned_request_id, .failed);
     }
 }
 
@@ -7291,8 +7287,8 @@ fn installAgentToolHost(self: *AppWindow) void {
 }
 
 fn installRemoteControlHandlers(self: *AppWindow) void {
-    if (self.app.remote_client) |client| {
-        client.registerAiAgentOpener(self.app, openRemoteAiAgentForClient);
+    if (self.app.remote_hub) |hub| {
+        hub.registerAiAgentOpener(self.app, openRemoteAiAgentForClient);
     }
 }
 

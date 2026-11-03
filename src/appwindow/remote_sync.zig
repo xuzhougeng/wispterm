@@ -8,7 +8,7 @@ const ai_chat = @import("../assistant/conversation/session.zig");
 const ai_history_session = @import("../terminal_agents/sessions/session.zig");
 const appwindow_state = @import("state.zig");
 const active_tab_state = @import("active_tab.zig");
-const remote = @import("../remote_client.zig");
+const remote = @import("../remote_hub.zig");
 const remote_snapshot = @import("../remote_snapshot.zig");
 const renderer = @import("../renderer.zig");
 const surface_snapshots = @import("surface_snapshots.zig");
@@ -20,7 +20,7 @@ const window_backend = @import("../platform/window_backend.zig");
 pub const AiAgentOpenStatus = remote.AiAgentOpenStatus;
 
 pub const Host = struct {
-    client: ?*remote.Client,
+    hub: ?*remote.Hub,
     window: ?*window_backend.Window,
     state: *appwindow_state.State,
     allocator: ?std.mem.Allocator = null,
@@ -38,14 +38,14 @@ pub const RemoteAiAgentOpenRequest = struct {
 };
 
 pub fn syncLayout(host: Host, allocator: std.mem.Allocator) void {
-    const client = host.client orelse return;
+    const hub = host.hub orelse return;
 
     const now = std.time.milliTimestamp();
     if (!host.state.remote.shouldSendLayout(now, 250)) return;
 
     const layout = buildLayoutJson(host, allocator) catch return;
     defer allocator.free(layout);
-    client.sendLayout(layout);
+    hub.sendLayout(layout);
 }
 
 pub fn buildLayoutJson(host: Host, allocator: std.mem.Allocator) ![]u8 {
@@ -186,11 +186,11 @@ pub fn remoteAiHistorySurfaceId(tab_index: usize) [16]u8 {
 }
 
 fn registerRemoteAiInputSink(host: Host, tab_index: usize) void {
-    const client = host.client orelse return;
+    const hub = host.hub orelse return;
     const window = host.window orelse return;
 
     const sink = host.state.remote.recordAiSink(tab_index, window_backend.nativeHandleBits(window)) orelse return;
-    client.registerSurface(remoteAiSurfaceId(tab_index), sink, writeAiInput);
+    hub.registerSurface(remoteAiSurfaceId(tab_index), sink, writeAiInput);
 }
 
 pub fn writeAiInput(ctx: *anyopaque, data: []const u8) void {
@@ -296,10 +296,10 @@ pub fn handleAiInputRequest(request: *RemoteAiInputRequest, host: Host) void {
 }
 
 pub fn handleAiAgentOpenRequest(request: *RemoteAiAgentOpenRequest, host: Host) void {
-    const client = host.client orelse return;
+    const hub = host.hub orelse return;
 
     const status = host.openDefaultAiAgentForRemote();
-    client.sendAiAgentOpenResult(request.request_id, status);
+    hub.sendAiAgentOpenResult(request.request_id, status);
 
     if (status == .opened) {
         host.state.remote.forceNextLayout();
@@ -315,7 +315,7 @@ fn failOpenDefaultAiAgentForRemote() remote.AiAgentOpenStatus {
 
 fn testHost(state: *appwindow_state.State, allocator: std.mem.Allocator) Host {
     return .{
-        .client = null,
+        .hub = null,
         .window = null,
         .state = state,
         .allocator = allocator,

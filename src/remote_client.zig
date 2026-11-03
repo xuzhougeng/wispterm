@@ -1,9 +1,11 @@
-//! Outbound remote relay client shared by one WispTerm instance.
+//! Outbound WispTerm Remote relay client shared by one WispTerm instance.
 //!
-//! Surfaces do not own network state. They register as sinks on this shared
-//! client, then publish PTY output with their own stable surface id.
+//! One transport on the message hub (`remote_hub.zig`): it ships every hub
+//! message to the relay over a WebSocket and feeds relay commands back into
+//! the hub. Surfaces never talk to it directly.
 
 const std = @import("std");
+const remote_hub = @import("remote_hub.zig");
 const remote_transport = @import("platform/remote_transport.zig");
 const session_lock = @import("platform/session_lock.zig");
 
@@ -14,8 +16,6 @@ const HEARTBEAT_INTERVAL_MS: i64 = 25 * 1000;
 const PING_MESSAGE = "{\"type\":\"ping\"}";
 const PONG_MESSAGE = "{\"type\":\"pong\"}";
 const MAX_FIXED_SESSION_KEY_ATTEMPTS = 256;
-
-var next_surface_counter = std.atomic.Value(u64).init(1);
 
 pub const State = enum(u8) {
     disabled,
@@ -31,19 +31,9 @@ pub const Options = struct {
     session_key: ?[]const u8 = null,
 };
 
-pub const SurfaceWriteFn = *const fn (ctx: *anyopaque, data: []const u8) void;
-pub const AiAgentOpenStatus = enum {
-    opened,
-    no_profile,
-    failed,
-};
-pub const AiAgentOpenFn = *const fn (ctx: *anyopaque, request_id: []const u8) void;
-
-const SurfaceSink = struct {
-    id: [16]u8,
-    ctx: *anyopaque,
-    write_fn: SurfaceWriteFn,
-};
+pub const AiAgentOpenStatus = remote_hub.AiAgentOpenStatus;
+pub const appendJsonString = remote_hub.appendJsonString;
+pub const nextSurfaceId = remote_hub.nextSurfaceId;
 
 const Endpoint = struct {
     secure: bool,
@@ -70,6 +60,7 @@ const SessionKeyReservation = struct {
 
 pub const Client = struct {
     allocator: std.mem.Allocator,
+    hub: *remote_hub.Hub,
     endpoint: Endpoint,
     device_name: ?[]u8,
     session_key: []u8,
@@ -78,15 +69,11 @@ pub const Client = struct {
     mutex: std.Thread.Mutex = .{},
     condition: std.Thread.Condition = .{},
     queue: std.ArrayListUnmanaged([]u8) = .empty,
-    surface_sinks: std.ArrayListUnmanaged(SurfaceSink) = .empty,
-    ai_agent_open_ctx: ?*anyopaque = null,
-    ai_agent_open_fn: ?AiAgentOpenFn = null,
-    last_layout: ?[]u8 = null,
     stop_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     state: std.atomic.Value(State) = std.atomic.Value(State).init(.disconnected),
     thread: ?std.Thread = null,
 
-    pub fn create(allocator: std.mem.Allocator, options: Options) !*Client {
+    pub fn create(allocator: std.mem.Allocator, hub: *remote_hub.Hub, options: Options) !*Client {
         const client = try allocator.create(Client);
         errdefer allocator.destroy(client);
 
@@ -104,17 +91,21 @@ pub const Client = struct {
 
         client.* = .{
             .allocator = allocator,
+            .hub = hub,
             .endpoint = endpoint,
             .device_name = device_name,
             .session_key = key,
             .session_key_reservation = session_key_reservation,
         };
 
+        hub.addTransport(client, transportSend);
+        errdefer hub.removeTransport(client);
         client.thread = try std.Thread.spawn(.{}, threadMain, .{client});
         return client;
     }
 
     pub fn deinit(self: *Client) void {
+        self.hub.removeTransport(self);
         self.stop_requested.store(true, .release);
         self.condition.broadcast();
         if (self.thread) |thread| {
@@ -127,10 +118,8 @@ pub const Client = struct {
             self.allocator.free(message);
         }
         self.queue.deinit(self.allocator);
-        self.surface_sinks.deinit(self.allocator);
         self.mutex.unlock();
 
-        if (self.last_layout) |layout| self.allocator.free(layout);
         self.endpoint.deinit(self.allocator);
         if (self.device_name) |name| self.allocator.free(name);
         self.session_key_reservation.deinit();
@@ -151,87 +140,12 @@ pub const Client = struct {
         return self.state.load(.acquire);
     }
 
-    pub fn sendOutput(self: *Client, surface_id: []const u8, data: []const u8) void {
-        if (data.len == 0 or self.stop_requested.load(.acquire)) return;
-
-        const message = buildOutputMessage(self.allocator, surface_id, data) catch return;
-        self.enqueueOwnedMessage(message);
-    }
-
-    pub fn sendAiAgentOpenResult(self: *Client, request_id: []const u8, status: AiAgentOpenStatus) void {
-        if (request_id.len == 0 or self.stop_requested.load(.acquire)) return;
-
-        const message = buildAiAgentOpenResultMessage(self.allocator, request_id, status) catch return;
-        self.enqueueOwnedMessage(message);
-    }
-
-    pub fn sendLayout(self: *Client, layout_json: []const u8) void {
-        if (layout_json.len == 0 or self.stop_requested.load(.acquire)) return;
-
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        if (self.last_layout) |last| {
-            if (std.mem.eql(u8, last, layout_json)) return;
-        }
-
-        const next_layout = self.allocator.dupe(u8, layout_json) catch return;
-        const queued = self.allocator.dupe(u8, layout_json) catch {
-            self.allocator.free(next_layout);
-            return;
-        };
-
-        if (self.last_layout) |last| self.allocator.free(last);
-        self.last_layout = next_layout;
-        self.enqueueOwnedMessageLocked(queued);
-    }
-
-    pub fn registerSurface(
-        self: *Client,
-        surface_id: [16]u8,
-        ctx: *anyopaque,
-        write_fn: SurfaceWriteFn,
-    ) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        for (self.surface_sinks.items) |*sink| {
-            if (std.mem.eql(u8, sink.id[0..], surface_id[0..])) {
-                sink.ctx = ctx;
-                sink.write_fn = write_fn;
-                return;
-            }
-        }
-
-        self.surface_sinks.append(self.allocator, .{
-            .id = surface_id,
-            .ctx = ctx,
-            .write_fn = write_fn,
-        }) catch {};
-    }
-
-    pub fn registerAiAgentOpener(
-        self: *Client,
-        ctx: *anyopaque,
-        open_fn: AiAgentOpenFn,
-    ) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        self.ai_agent_open_ctx = ctx;
-        self.ai_agent_open_fn = open_fn;
-    }
-
-    pub fn unregisterSurface(self: *Client, surface_id: [16]u8) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        for (self.surface_sinks.items, 0..) |sink, i| {
-            if (std.mem.eql(u8, sink.id[0..], surface_id[0..])) {
-                _ = self.surface_sinks.swapRemove(i);
-                return;
-            }
-        }
+    /// Hub transport callback: copy the message onto the send queue.
+    fn transportSend(ctx: *anyopaque, message: []const u8) void {
+        const self: *Client = @ptrCast(@alignCast(ctx));
+        if (self.stop_requested.load(.acquire)) return;
+        const copy = self.allocator.dupe(u8, message) catch return;
+        self.enqueueOwnedMessage(copy);
     }
 
     fn enqueueOwnedMessage(self: *Client, message: []u8) void {
@@ -253,12 +167,8 @@ pub const Client = struct {
     }
 
     fn replayLastLayout(self: *Client) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        const last = self.last_layout orelse return;
-        const queued = self.allocator.dupe(u8, last) catch return;
-        self.enqueueOwnedMessageLocked(queued);
+        const layout = self.hub.lastLayoutAlloc(self.allocator) orelse return;
+        self.enqueueOwnedMessage(layout);
     }
 
     fn popMessage(self: *Client) ?[]u8 {
@@ -279,39 +189,6 @@ pub const Client = struct {
             self.condition.timedWait(&self.mutex, std.time.ns_per_s) catch {};
         }
         return !self.stop_requested.load(.acquire) and connection_alive.load(.acquire);
-    }
-
-    fn dispatchInput(self: *Client, surface_id: []const u8, data: []const u8) void {
-        if (data.len == 0) return;
-
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        for (self.surface_sinks.items) |sink| {
-            if (std.mem.eql(u8, sink.id[0..], surface_id)) {
-                sink.write_fn(sink.ctx, data);
-                return;
-            }
-        }
-    }
-
-    fn dispatchAiAgentOpen(self: *Client, request_id: []const u8) void {
-        self.mutex.lock();
-        const ctx = self.ai_agent_open_ctx;
-        const open_fn = self.ai_agent_open_fn;
-        self.mutex.unlock();
-
-        if (ctx == null or open_fn == null) {
-            const message = buildAiAgentOpenResultMessage(self.allocator, request_id, .failed) catch return;
-            self.enqueueOwnedMessage(message);
-            return;
-        }
-
-        if (ctx) |callback_ctx| {
-            if (open_fn) |callback| {
-                callback(callback_ctx, request_id);
-            }
-        }
     }
 };
 
@@ -409,13 +286,13 @@ fn receiveThreadMain(client: *Client, websocket: remote_transport.WebSocketHandl
             const message = maybe_message orelse continue;
             defer client.allocator.free(message);
 
-            if (isJsonMessageType(message, "ping")) {
+            if (remote_hub.isJsonMessageType(message, "ping")) {
                 _ = remote_transport.sendUtf8(websocket, PONG_MESSAGE);
                 continue;
             }
-            if (isJsonMessageType(message, "pong")) continue;
+            if (remote_hub.isJsonMessageType(message, "pong")) continue;
 
-            handleIncomingMessage(client, message);
+            client.hub.handleIncomingMessage(message);
         }
     }
 }
@@ -470,16 +347,6 @@ fn reserveFixedSessionKey(allocator: std.mem.Allocator, base: []const u8, reserv
 fn fixedSessionKeyCandidate(allocator: std.mem.Allocator, base: []const u8, index: usize) ![]u8 {
     if (index == 0) return allocator.dupe(u8, base);
     return std.fmt.allocPrint(allocator, "{s}_{d}", .{ base, index });
-}
-
-pub fn nextSurfaceId(out: *[16]u8) void {
-    const value = next_surface_counter.fetchAdd(1, .monotonic);
-    const hex = "0123456789abcdef";
-    for (0..16) |i| {
-        const shift: u6 = @intCast((15 - i) * 4);
-        const nibble: u8 = @intCast((value >> shift) & 0x0f);
-        out[i] = hex[nibble];
-    }
 }
 
 fn buildEndpoint(
@@ -544,59 +411,6 @@ fn appendQueryEscaped(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Alloc
     }
 }
 
-fn buildOutputMessage(allocator: std.mem.Allocator, surface_id: []const u8, data: []const u8) ![]u8 {
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    errdefer out.deinit(allocator);
-
-    try out.appendSlice(allocator, "{\"type\":\"output-bytes\",\"surfaceId\":\"");
-    try appendJsonString(&out, allocator, surface_id);
-    try out.appendSlice(allocator, "\",\"encoding\":\"hex\",\"data\":\"");
-    try appendHex(&out, allocator, data);
-    try out.appendSlice(allocator, "\"}");
-    return out.toOwnedSlice(allocator);
-}
-
-fn buildAiAgentOpenResultMessage(
-    allocator: std.mem.Allocator,
-    request_id: []const u8,
-    status: AiAgentOpenStatus,
-) ![]u8 {
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    errdefer out.deinit(allocator);
-
-    try out.appendSlice(allocator, "{\"type\":\"open-ai-agent-result\",\"requestId\":\"");
-    try appendJsonString(&out, allocator, request_id);
-    try out.appendSlice(allocator, "\",\"status\":\"");
-    try out.appendSlice(allocator, aiAgentOpenStatusJson(status));
-    try out.appendSlice(allocator, "\"}");
-    return out.toOwnedSlice(allocator);
-}
-
-fn aiAgentOpenStatusJson(status: AiAgentOpenStatus) []const u8 {
-    return switch (status) {
-        .opened => "opened",
-        .no_profile => "no-profile",
-        .failed => "failed",
-    };
-}
-
-fn handleIncomingMessage(client: *Client, message: []const u8) void {
-    if (isJsonMessageType(message, "input-bytes")) {
-        const surface_id = extractJsonString(message, "surfaceId") orelse return;
-        const hex_data = extractJsonString(message, "data") orelse return;
-
-        const decoded = decodeHexAlloc(client.allocator, hex_data) catch return;
-        defer client.allocator.free(decoded);
-        client.dispatchInput(surface_id, decoded);
-        return;
-    }
-
-    if (isJsonMessageType(message, "open-ai-agent")) {
-        const request_id = extractJsonString(message, "requestId") orelse return;
-        client.dispatchAiAgentOpen(request_id);
-    }
-}
-
 const IncomingMessageAssembler = struct {
     pending: std.ArrayListUnmanaged(u8) = .empty,
 
@@ -633,105 +447,6 @@ const IncomingMessageAssembler = struct {
     }
 };
 
-fn isJsonMessageType(message: []const u8, comptime kind: []const u8) bool {
-    return std.mem.indexOf(u8, message, "\"type\":\"" ++ kind ++ "\"") != null;
-}
-
-fn extractJsonString(message: []const u8, field: []const u8) ?[]const u8 {
-    var needle_buf: [64]u8 = undefined;
-    if (field.len + 4 > needle_buf.len) return null;
-
-    needle_buf[0] = '"';
-    @memcpy(needle_buf[1..][0..field.len], field);
-    needle_buf[field.len + 1] = '"';
-    needle_buf[field.len + 2] = ':';
-    needle_buf[field.len + 3] = '"';
-    const needle = needle_buf[0 .. field.len + 4];
-
-    const start = std.mem.indexOf(u8, message, needle) orelse return null;
-    var i = start + needle.len;
-    const value_start = i;
-    while (i < message.len) : (i += 1) {
-        if (message[i] == '"') return message[value_start..i];
-        if (message[i] == '\\') return null;
-    }
-    return null;
-}
-
-fn decodeHexAlloc(allocator: std.mem.Allocator, hex: []const u8) ![]u8 {
-    if (hex.len % 2 != 0) return error.InvalidHex;
-    const out = try allocator.alloc(u8, hex.len / 2);
-    errdefer allocator.free(out);
-
-    for (out, 0..) |*byte, i| {
-        const high = try hexValue(hex[i * 2]);
-        const low = try hexValue(hex[i * 2 + 1]);
-        byte.* = (high << 4) | low;
-    }
-    return out;
-}
-
-fn hexValue(ch: u8) !u8 {
-    return switch (ch) {
-        '0'...'9' => ch - '0',
-        'a'...'f' => ch - 'a' + 10,
-        'A'...'F' => ch - 'A' + 10,
-        else => error.InvalidHex,
-    };
-}
-
-fn appendHex(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, data: []const u8) !void {
-    const hex = "0123456789abcdef";
-    for (data) |ch| {
-        try out.append(allocator, hex[ch >> 4]);
-        try out.append(allocator, hex[ch & 0x0f]);
-    }
-}
-
-pub fn appendJsonString(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, data: []const u8) !void {
-    const hex = "0123456789abcdef";
-    var i: usize = 0;
-    while (i < data.len) {
-        const ch = data[i];
-        switch (ch) {
-            '"' => try out.appendSlice(allocator, "\\\""),
-            '\\' => try out.appendSlice(allocator, "\\\\"),
-            '\n' => try out.appendSlice(allocator, "\\n"),
-            '\r' => try out.appendSlice(allocator, "\\r"),
-            '\t' => try out.appendSlice(allocator, "\\t"),
-            else => {
-                if (ch < 0x20) {
-                    try out.appendSlice(allocator, "\\u00");
-                    try out.append(allocator, hex[ch >> 4]);
-                    try out.append(allocator, hex[ch & 0x0f]);
-                } else if (ch < 0x80) {
-                    try out.append(allocator, ch);
-                } else {
-                    const len = std.unicode.utf8ByteSequenceLength(ch) catch {
-                        try out.appendSlice(allocator, "\\ufffd");
-                        i += 1;
-                        continue;
-                    };
-                    if (i + len > data.len) {
-                        try out.appendSlice(allocator, "\\ufffd");
-                        i += 1;
-                        continue;
-                    }
-                    _ = std.unicode.utf8Decode(data[i .. i + len]) catch {
-                        try out.appendSlice(allocator, "\\ufffd");
-                        i += 1;
-                        continue;
-                    };
-                    try out.appendSlice(allocator, data[i .. i + len]);
-                    i += len;
-                    continue;
-                }
-            },
-        }
-        i += 1;
-    }
-}
-
 test "buildEndpoint maps relay URL to WispTerm websocket route" {
     const allocator = std.testing.allocator;
     const key = "0123456789abcdef0123456789abcdef";
@@ -761,46 +476,6 @@ test "fixed session key candidates append numeric suffixes after first instance"
     try std.testing.expectEqualStrings("fixed-password_3", fourth);
 }
 
-test "buildOutputMessage preserves PTY bytes as hex" {
-    const allocator = std.testing.allocator;
-    const message = try buildOutputMessage(allocator, "0000000000000001", "\x1b[31mhi\r\n");
-    defer allocator.free(message);
-
-    try std.testing.expectEqualStrings(
-        "{\"type\":\"output-bytes\",\"surfaceId\":\"0000000000000001\",\"encoding\":\"hex\",\"data\":\"1b5b33316d68690d0a\"}",
-        message,
-    );
-}
-
-test "remote json string replaces invalid utf8 bytes" {
-    const allocator = std.testing.allocator;
-    const bad = [_]u8{ 'o', 'k', ' ', 0xff, ' ', 0xc3 };
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    defer out.deinit(allocator);
-
-    try appendJsonString(&out, allocator, bad[0..]);
-    try std.testing.expectEqualStrings("ok \\ufffd \\ufffd", out.items);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(out.items));
-}
-
-test "remote json string preserves valid multibyte utf8" {
-    const allocator = std.testing.allocator;
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    defer out.deinit(allocator);
-
-    try appendJsonString(&out, allocator, "标题 🚀");
-    try std.testing.expectEqualStrings("标题 🚀", out.items);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(out.items));
-}
-
-test "decode input message bytes" {
-    const allocator = std.testing.allocator;
-    const bytes = try decodeHexAlloc(allocator, "0d1b5b41");
-    defer allocator.free(bytes);
-
-    try std.testing.expectEqualSlices(u8, "\r\x1b[A", bytes);
-}
-
 test "incoming websocket fragments are reassembled before handling JSON" {
     const allocator = std.testing.allocator;
     var assembler: IncomingMessageAssembler = .{};
@@ -818,74 +493,4 @@ test "incoming websocket fragments are reassembled before handling JSON" {
 
     const expected = "{\"type\":\"input-bytes\",\"surfaceId\":\"aichat0000000000\",\"encoding\":\"hex\",\"data\":\"68656c6c6f0d\"}";
     try std.testing.expectEqualStrings(expected, second.?);
-}
-
-const TestAiAgentOpenCtx = struct {
-    called: bool = false,
-    request_id_buf: [128]u8 = undefined,
-    request_id_len: usize = 0,
-
-    fn onOpen(ctx: *anyopaque, request_id: []const u8) void {
-        const self: *TestAiAgentOpenCtx = @ptrCast(@alignCast(ctx));
-        self.called = true;
-        self.request_id_len = @min(request_id.len, self.request_id_buf.len);
-        @memcpy(self.request_id_buf[0..self.request_id_len], request_id[0..self.request_id_len]);
-    }
-};
-
-fn initTestClient(allocator: std.mem.Allocator) !Client {
-    return .{
-        .allocator = allocator,
-        .endpoint = .{
-            .secure = false,
-            .host = try allocator.dupe(u8, "127.0.0.1"),
-            .port = 80,
-            .object_name = try allocator.dupe(u8, "/ws/wispterm?session=test"),
-        },
-        .device_name = null,
-        .session_key = try allocator.dupe(u8, "test"),
-    };
-}
-
-test "open ai agent message dispatches request id" {
-    const allocator = std.testing.allocator;
-    var client = try initTestClient(allocator);
-    defer client.deinit();
-
-    var ctx = TestAiAgentOpenCtx{};
-    client.registerAiAgentOpener(&ctx, TestAiAgentOpenCtx.onOpen);
-
-    handleIncomingMessage(&client, "{\"type\":\"open-ai-agent\",\"requestId\":\"remote-ai-1\"}");
-
-    try std.testing.expect(ctx.called);
-    try std.testing.expectEqualStrings("remote-ai-1", ctx.request_id_buf[0..ctx.request_id_len]);
-}
-
-test "open ai agent without registered opener queues failed result" {
-    const allocator = std.testing.allocator;
-    var client = try initTestClient(allocator);
-    defer client.deinit();
-
-    handleIncomingMessage(&client, "{\"type\":\"open-ai-agent\",\"requestId\":\"remote-ai-1\"}");
-
-    const message = client.popMessage() orelse {
-        return error.ExpectedQueuedOpenAiAgentResult;
-    };
-    defer allocator.free(message);
-
-    try std.testing.expectEqualStrings(
-        "{\"type\":\"open-ai-agent-result\",\"requestId\":\"remote-ai-1\",\"status\":\"failed\"}",
-        message,
-    );
-}
-
-test "open ai agent result message escapes request id" {
-    const allocator = std.testing.allocator;
-    const message = try buildAiAgentOpenResultMessage(allocator, "remote-\"one", .no_profile);
-    defer allocator.free(message);
-
-    try std.testing.expectEqualStrings(
-        "{\"type\":\"open-ai-agent-result\",\"requestId\":\"remote-\\\"one\",\"status\":\"no-profile\"}",
-        message,
-    );
 }

@@ -234,6 +234,11 @@ latest assistant message. Direct terminal input requires `/term <command>` or
 
 ## Relay Messages
 
+These same messages are also served directly over the local network by the
+desktop app's `WISP2` channel (no relay, no WebSocket); the handshake and
+framing are documented in
+[`docs/configuration.md` → LAN direct protocol](../docs/configuration.md#lan-direct-protocol).
+
 The WispTerm client sends PTY bytes as:
 
 ```json

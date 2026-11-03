@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const Surface = @import("../Surface.zig");
-const remote = @import("../remote_client.zig");
+const remote = @import("../remote_hub.zig");
 const remote_snapshot = @import("../remote_snapshot.zig");
 const ctl_control = @import("../ctl/control.zig");
 const ctl_protocol = @import("../ctl/protocol.zig");

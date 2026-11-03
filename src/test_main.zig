@@ -194,6 +194,7 @@ comptime {
         _ = @import("preview/token.zig");
         _ = @import("quick_terminal.zig");
         _ = @import("remote_client.zig");
+        _ = @import("remote_hub.zig");
         _ = @import("remote_snapshot.zig");
         _ = @import("weixin/types.zig");
         _ = @import("weixin/state_store.zig");

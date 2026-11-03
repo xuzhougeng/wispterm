@@ -11,7 +11,7 @@ const SplitTree = @import("../split_tree.zig");
 const PreviewPane = @import("../preview/pane.zig");
 const markdown_preview = @import("../preview/markdown.zig");
 const input_key = @import("../input/key.zig");
-const remote_client = @import("../remote_client.zig");
+const remote_hub = @import("../remote_hub.zig");
 const session_persist = @import("../session_persist.zig");
 const recipe_store = @import("../recipe/store.zig");
 const ai_chat = @import("../assistant/conversation/session.zig");
@@ -270,7 +270,7 @@ pub threadlocal var g_tab_count: usize = 0;
 pub threadlocal var g_shell_cmd_buf: platform_pty_command.CommandLineBuffer = @splat(0);
 pub threadlocal var g_shell_cmd_len: usize = 0;
 pub threadlocal var g_scrollback_limit: u32 = 10_000_000;
-pub threadlocal var g_remote_client: ?*remote_client.Client = null;
+pub threadlocal var g_remote_hub: ?*remote_hub.Hub = null;
 pub threadlocal var g_ai_history_change_hook: ?ai_chat.HistoryChangeHook = null;
 
 // Restore hook: rebuild an AI Chat tab from its persisted agent-history session
@@ -542,7 +542,7 @@ pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: 
         std.debug.print("Failed to create Surface for new tab\n", .{});
         return false;
     };
-    surface.attachRemoteClient(g_remote_client);
+    surface.attachRemoteHub(g_remote_hub);
 
     const tree = SplitTree.init(allocator, surface) catch {
         std.debug.print("Failed to create SplitTree for new tab\n", .{});
@@ -620,7 +620,7 @@ pub fn spawnBenchmarkTab(
         pair.controller.deinit();
         return null;
     };
-    surface.attachRemoteClient(g_remote_client);
+    surface.attachRemoteHub(g_remote_hub);
 
     const tree = SplitTree.init(allocator, surface) catch {
         surface.deinit(allocator);
@@ -1475,7 +1475,7 @@ fn splitFocusedSurfaceWithCommand(
         std.debug.print("Failed to create Surface for split\n", .{});
         return null;
     };
-    new_surface.attachRemoteClient(g_remote_client);
+    new_surface.attachRemoteHub(g_remote_hub);
 
     if (inherit_ssh_connection) {
         if (focused_surface.ssh_connection) |conn| {
@@ -2133,7 +2133,7 @@ fn surfaceFromSnapImpl(
             } else blk: {
                 break :blk try Surface.init(gpa, cols, rows, getShellCmd(), g_scrollback_limit, cursor_style, cursor_blink, cwd_w, g_ssh_terminal_capabilities);
             };
-            surface.attachRemoteClient(g_remote_client);
+            surface.attachRemoteHub(g_remote_hub);
             if (sh.pi_session_path) |pi_path| {
                 if (session_persist.shouldRestorePiSession(pi_path, sh.pi_launch_kind)) {
                     _ = surface.queuePiSessionResume(pi_path);
@@ -2150,7 +2150,7 @@ fn surfaceFromSnapImpl(
             const command = try platform_pty_command.allocCommandLineFromUtf8(gpa, command_text);
             defer platform_pty_command.freeCommandLine(gpa, command);
             const surface = try Surface.init(gpa, cols, rows, platform_pty_command.commandLineFromOwned(command), g_scrollback_limit, cursor_style, cursor_blink, null, g_ssh_terminal_capabilities);
-            surface.attachRemoteClient(g_remote_client);
+            surface.attachRemoteHub(g_remote_hub);
             // SSH password is never persisted (security invariant I1). Restore the
             // endpoint without a password, then let the arm hook re-supply it from
             // the saved profile (host/user/port match) and arm autofill — so a
