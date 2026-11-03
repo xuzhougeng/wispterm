@@ -1,20 +1,33 @@
-//! LAN screen stream for the phone app: advertises `_wispterm._tcp` over
-//! Bonjour and serves the rendered window as JPEG frames over raw TCP.
+//! LAN channel for the phone app: advertises `_wispterm._tcp` over Bonjour
+//! and serves two things on one raw TCP port, picked by the first line the
+//! client sends (`docs/configuration.md` "LAN direct protocol" is the spec):
 //!
-//! Wire protocol: the client sends one line `WISP1 <remote-session-key>\n`;
-//! the server then pushes frames as `[u32 big-endian len][jpeg bytes]` until
-//! either side closes. A wrong key just closes the socket.
+//! * `WISP1 <remote-session-key>\n` — screen stream. The server pushes the
+//!   rendered window as `[u32 big-endian len][jpeg bytes]` frames until either
+//!   side closes.
+//! * `WISP2 <remote-session-key>\n` — message channel. The server first sends
+//!   the current `layout`, then both sides exchange newline-delimited JSON
+//!   messages identical to the public relay ("Relay Messages" in
+//!   `remote/README.md`): `output-bytes`, `layout`, `input-bytes`,
+//!   `open-ai-agent`, `ping`/`pong`, …
+//!
+//! A wrong key, an unknown greeting, or no greeting within a few seconds just
+//! closes the socket. Every accepted connection gets its own thread, so phones
+//! never wait on each other.
 //!
 //! Frames come from the render thread (AppWindow calls `wantsFrame` /
-//! `publishRgba` around its ui_screenshot readback); the accept thread only
-//! ships the latest one, so a slow phone drops frames instead of stalling
-//! rendering.
+//! `publishRgba` around its ui_screenshot readback); a viewer thread only ships
+//! the latest one, so a slow phone drops frames instead of stalling rendering.
+//! Messages come from the hub (`remote_hub.zig`) on PTY/UI threads; each
+//! connection buffers them in a bounded queue and is dropped when it falls
+//! too far behind, so a slow phone never blocks the PTY either.
 //!
 //! ponytail: macOS only (ImageIO JPEG + dns_sd). Windows/Linux need a JPEG
 //! encoder and an mDNS responder before `supported` can flip on there.
 const std = @import("std");
 const builtin = @import("builtin");
 const transport = @import("ctl/transport.zig");
+const remote_hub = @import("remote_hub.zig");
 
 pub const supported = builtin.os.tag == .macos;
 pub const service_type = "_wispterm._tcp";
@@ -24,24 +37,47 @@ const FRAME_INTERVAL_MS: i64 = 250;
 const JPEG_QUALITY: f32 = 0.6;
 const HELLO_TIMEOUT_MS: u32 = 3000;
 const SEND_TIMEOUT_MS: u32 = 5000;
+/// Reader wake-up interval; bounds how long a dying connection lingers.
+const RECV_POLL_MS: u32 = 1000;
 const MAX_HELLO_BYTES = 512;
+/// One JSON line from the phone may not exceed this (relay uses the same cap).
+const MAX_INCOMING_LINE_BYTES = 1024 * 1024;
+/// Per-connection outbound queue; past this the phone is too slow and is dropped.
+const MSG_QUEUE_LIMIT = 1024;
+const MSG_QUEUE_BYTES_LIMIT = 8 * 1024 * 1024;
+/// Server pings after this much outbound silence (same cadence as the relay client).
+const HEARTBEAT_INTERVAL_MS: i64 = 25 * 1000;
+/// A phone that sent nothing at all (not even `pong`) for this long is gone.
+const PEER_TIMEOUT_MS: i64 = 90 * 1000;
+const PING_LINE = "{\"type\":\"ping\"}\n";
+const PONG_MESSAGE = "{\"type\":\"pong\"}";
 
 extern fn wispterm_lan_jpeg_encode(rgba: [*]const u8, width: u32, height: u32, quality: f32, out_len: *usize) ?[*]u8;
 extern fn wispterm_lan_jpeg_free(ptr: ?*anyopaque) void;
-extern fn wispterm_lan_mdns_register(name: [*:0]const u8, port: u16) ?*anyopaque;
+extern fn wispterm_lan_mdns_register(name: [*:0]const u8, port: u16, txt: [*]const u8, txt_len: u16) ?*anyopaque;
 extern fn wispterm_lan_mdns_unregister(ref: ?*anyopaque) void;
 
 var g_server: ?*Server = null;
+
+pub const Options = struct {
+    /// Advertised Bonjour instance name.
+    name: []const u8,
+    /// `remote-session-key` (or the relay client's effective key).
+    key: []const u8,
+    /// Message producer for WISP2; null advertises `caps=stream` only.
+    hub: ?*remote_hub.Hub = null,
+};
 
 pub const Server = struct {
     allocator: std.mem.Allocator,
     key_hash: [32]u8,
     listener: std.net.Server,
     port: u16,
+    hub: ?*remote_hub.Hub,
     mdns: ?*anyopaque = null,
     thread: ?std.Thread = null,
     stop_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    /// Number of authenticated viewers; the render thread captures only when > 0.
+    /// Number of authenticated stream viewers; the render thread captures only when > 0.
     viewers: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     last_capture_ms: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
 
@@ -50,10 +86,13 @@ pub const Server = struct {
     frame: ?[]u8 = null,
     seq: u64 = 0,
 
-    /// Binds 0.0.0.0 on an OS-assigned port and advertises it as `name`.
-    pub fn create(allocator: std.mem.Allocator, name: []const u8, key: []const u8) !*Server {
+    conns_mutex: std.Thread.Mutex = .{},
+    conns: std.ArrayListUnmanaged(*Conn) = .empty,
+
+    /// Binds 0.0.0.0 on an OS-assigned port and advertises it as `options.name`.
+    pub fn create(allocator: std.mem.Allocator, options: Options) !*Server {
         if (comptime !supported) return error.LanStreamUnsupported;
-        if (key.len == 0) return error.LanStreamMissingKey;
+        if (options.key.len == 0) return error.LanStreamMissingKey;
         const address = try std.net.Address.parseIp4("0.0.0.0", 0);
         var listener = try address.listen(.{ .reuse_address = true });
         errdefer listener.deinit();
@@ -61,13 +100,15 @@ pub const Server = struct {
         errdefer allocator.destroy(self);
         self.* = .{
             .allocator = allocator,
-            .key_hash = hashKey(key),
+            .key_hash = hashKey(options.key),
             .listener = listener,
             .port = listener.listen_address.getPort(),
+            .hub = options.hub,
         };
-        const name_z = try allocator.dupeZ(u8, name);
+        const name_z = try allocator.dupeZ(u8, options.name);
         defer allocator.free(name_z);
-        self.mdns = wispterm_lan_mdns_register(name_z.ptr, self.port);
+        const txt = txtRecord(options.hub != null);
+        self.mdns = wispterm_lan_mdns_register(name_z.ptr, self.port, txt.ptr, @intCast(txt.len));
         if (self.mdns == null) std.debug.print("lan-stream: Bonjour registration failed\n", .{});
         return self;
     }
@@ -77,7 +118,8 @@ pub const Server = struct {
         g_server = self;
     }
 
-    /// Stops + joins the accept thread, unregisters Bonjour, frees everything.
+    /// Stops + joins the accept thread and every connection, unregisters
+    /// Bonjour, frees everything.
     pub fn destroy(self: *Server) void {
         g_server = null;
         self.stop_flag.store(true, .release);
@@ -90,55 +132,75 @@ pub const Server = struct {
             self.cond.broadcast();
             thread.join();
         }
+        self.reapConns(true);
         if (comptime supported) wispterm_lan_mdns_unregister(self.mdns);
         self.listener.deinit();
         if (self.frame) |f| self.allocator.free(f);
+        self.conns.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
+    pub fn capabilities(self: *const Server) []const u8 {
+        return if (self.hub != null) "stream,msg" else "stream";
+    }
+
     fn acceptLoop(self: *Server) void {
-        // ponytail: one viewer at a time; a second phone waits in the backlog.
         while (!self.stop_flag.load(.acquire)) {
             const conn = self.listener.accept() catch {
                 if (self.stop_flag.load(.acquire)) return;
                 std.Thread.sleep(10 * std.time.ns_per_ms);
                 continue;
             };
-            defer conn.stream.close();
-            if (self.stop_flag.load(.acquire)) return;
-            self.serve(conn.stream) catch {};
+            if (self.stop_flag.load(.acquire)) {
+                conn.stream.close();
+                return;
+            }
+            self.reapConns(false);
+            self.spawnConn(conn.stream) catch {
+                conn.stream.close();
+            };
         }
     }
 
-    fn serve(self: *Server, stream: std.net.Stream) !void {
-        setTimeout(stream.handle, std.posix.SO.RCVTIMEO, HELLO_TIMEOUT_MS);
-        setTimeout(stream.handle, std.posix.SO.SNDTIMEO, SEND_TIMEOUT_MS);
-        var hello: [MAX_HELLO_BYTES]u8 = undefined;
-        var len: usize = 0;
-        while (std.mem.indexOfScalar(u8, hello[0..len], '\n') == null) {
-            if (len == hello.len or self.stop_flag.load(.acquire)) return;
-            const n = try transport.recv(stream.handle, hello[len..]);
-            if (n == 0) return;
-            len += n;
+    fn spawnConn(self: *Server, stream: std.net.Stream) !void {
+        const conn = try self.allocator.create(Conn);
+        errdefer self.allocator.destroy(conn);
+        conn.* = .{ .server = self, .stream = stream };
+        {
+            self.conns_mutex.lock();
+            defer self.conns_mutex.unlock();
+            try self.conns.append(self.allocator, conn);
         }
-        const line = hello[0..std.mem.indexOfScalar(u8, hello[0..len], '\n').?];
-        if (!keyMatches(self.key_hash, parseHello(line) orelse return)) {
-            std.debug.print("lan-stream: viewer rejected (bad key)\n", .{});
-            return;
-        }
+        conn.thread = std.Thread.spawn(.{}, Conn.run, .{conn}) catch |err| {
+            self.conns_mutex.lock();
+            defer self.conns_mutex.unlock();
+            if (std.mem.lastIndexOfScalar(*Conn, self.conns.items, conn)) |i| _ = self.conns.swapRemove(i);
+            return err;
+        };
+    }
 
-        std.debug.print("lan-stream: viewer connected\n", .{});
-        defer std.debug.print("lan-stream: viewer left\n", .{});
-        _ = self.viewers.fetchAdd(1, .acq_rel);
-        defer _ = self.viewers.fetchSub(1, .acq_rel);
-        var sent_seq: u64 = 0;
-        while (!self.stop_flag.load(.acquire)) {
-            const frame = self.takeNewerFrame(&sent_seq) orelse continue;
-            defer self.allocator.free(frame);
-            var header: [4]u8 = undefined;
-            std.mem.writeInt(u32, &header, @intCast(frame.len), .big);
-            try transport.sendAll(stream.handle, &header);
-            try transport.sendAll(stream.handle, frame);
+    /// Joins and frees finished connections; with `all`, shuts every socket
+    /// down first so the threads finish promptly, then joins all of them.
+    fn reapConns(self: *Server, all: bool) void {
+        var i: usize = 0;
+        while (true) {
+            const conn = blk: {
+                self.conns_mutex.lock();
+                defer self.conns_mutex.unlock();
+                while (i < self.conns.items.len) {
+                    const c = self.conns.items[i];
+                    if (all or c.done.load(.acquire)) {
+                        _ = self.conns.swapRemove(i);
+                        break :blk c;
+                    }
+                    i += 1;
+                }
+                break :blk null;
+            } orelse return;
+            if (all) conn.shutdown();
+            if (conn.thread) |t| t.join();
+            conn.stream.close();
+            self.allocator.destroy(conn);
         }
     }
 
@@ -156,6 +218,267 @@ pub const Server = struct {
         return self.allocator.dupe(u8, frame) catch null;
     }
 };
+
+/// One accepted socket: reads the greeting, then runs either the stream
+/// loop or the message loop on its own thread.
+const Conn = struct {
+    server: *Server,
+    stream: std.net.Stream,
+    thread: ?std.Thread = null,
+    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    // WISP2 state. `closed` stops both the writer and the reader; the queue
+    // holds relay-format JSON lines (without the trailing newline).
+    closed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    mutex: std.Thread.Mutex = .{},
+    cond: std.Thread.Condition = .{},
+    queue: std.ArrayListUnmanaged([]u8) = .empty,
+    queued_bytes: usize = 0,
+    overflow: bool = false,
+    last_recv_ms: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
+    reader: ?std.Thread = null,
+
+    fn run(self: *Conn) void {
+        defer self.done.store(true, .release);
+        self.serve() catch {};
+    }
+
+    fn shutdown(self: *Conn) void {
+        self.closed.store(true, .release);
+        self.cond.broadcast();
+        std.posix.shutdown(self.stream.handle, .both) catch {};
+    }
+
+    fn serve(self: *Conn) !void {
+        const server = self.server;
+        const stream = self.stream;
+        setTimeout(stream.handle, std.posix.SO.RCVTIMEO, HELLO_TIMEOUT_MS);
+        setTimeout(stream.handle, std.posix.SO.SNDTIMEO, SEND_TIMEOUT_MS);
+        var hello: [MAX_HELLO_BYTES]u8 = undefined;
+        var len: usize = 0;
+        while (std.mem.indexOfScalar(u8, hello[0..len], '\n') == null) {
+            if (len == hello.len or server.stop_flag.load(.acquire)) return;
+            const n = try transport.recv(stream.handle, hello[len..]);
+            if (n == 0) return;
+            len += n;
+        }
+        const nl = std.mem.indexOfScalar(u8, hello[0..len], '\n').?;
+        const greeting = parseHello(hello[0..nl]) orelse return;
+        if (!keyMatches(server.key_hash, greeting.key)) {
+            std.debug.print("lan-stream: client rejected (bad key)\n", .{});
+            return;
+        }
+        switch (greeting.version) {
+            1 => try self.serveStream(),
+            2 => try self.serveMessages(hello[nl + 1 .. len]),
+            else => unreachable,
+        }
+    }
+
+    // ---- WISP1: JPEG frames ------------------------------------------------
+
+    fn serveStream(self: *Conn) !void {
+        const server = self.server;
+        std.debug.print("lan-stream: viewer connected\n", .{});
+        defer std.debug.print("lan-stream: viewer left\n", .{});
+        _ = server.viewers.fetchAdd(1, .acq_rel);
+        defer _ = server.viewers.fetchSub(1, .acq_rel);
+        var sent_seq: u64 = 0;
+        while (!server.stop_flag.load(.acquire) and !self.closed.load(.acquire)) {
+            const frame = server.takeNewerFrame(&sent_seq) orelse continue;
+            defer server.allocator.free(frame);
+            var header: [4]u8 = undefined;
+            std.mem.writeInt(u32, &header, @intCast(frame.len), .big);
+            try transport.sendAll(self.stream.handle, &header);
+            try transport.sendAll(self.stream.handle, frame);
+        }
+    }
+
+    // ---- WISP2: relay messages over newline-delimited JSON -----------------
+
+    fn serveMessages(self: *Conn, leftover: []const u8) !void {
+        const server = self.server;
+        const hub = server.hub orelse {
+            std.debug.print("lan-stream: message channel refused (no remote hub)\n", .{});
+            return;
+        };
+        std.debug.print("lan-stream: message client connected\n", .{});
+        defer std.debug.print("lan-stream: message client left\n", .{});
+
+        self.last_recv_ms.store(std.time.milliTimestamp(), .release);
+        setTimeout(self.stream.handle, std.posix.SO.RCVTIMEO, RECV_POLL_MS);
+        // Runs last: only after the hub and the reader can no longer enqueue.
+        defer self.drainQueue();
+
+        // Bytes that arrived in the same read as the greeting belong to the
+        // reader; hand them over before it starts.
+        const carry = try server.allocator.dupe(u8, leftover);
+        self.reader = std.Thread.spawn(.{}, readerMain, .{ self, carry }) catch |err| {
+            server.allocator.free(carry);
+            return err;
+        };
+        defer {
+            self.closed.store(true, .release);
+            std.posix.shutdown(self.stream.handle, .both) catch {};
+            if (self.reader) |t| t.join();
+        }
+
+        hub.addTransport(self, transportSend);
+        defer hub.removeTransport(self);
+        if (hub.lastLayoutAlloc(server.allocator)) |layout| self.enqueueOwned(layout);
+
+        var last_send_ms = std.time.milliTimestamp();
+        while (!server.stop_flag.load(.acquire) and !self.closed.load(.acquire)) {
+            const message = self.popMessage() orelse {
+                const now = std.time.milliTimestamp();
+                if (now - self.last_recv_ms.load(.acquire) > PEER_TIMEOUT_MS) {
+                    std.debug.print("lan-stream: message client timed out\n", .{});
+                    return;
+                }
+                if (now - last_send_ms >= HEARTBEAT_INTERVAL_MS) {
+                    try transport.sendAll(self.stream.handle, PING_LINE);
+                    last_send_ms = now;
+                }
+                continue;
+            };
+            defer server.allocator.free(message);
+            try transport.sendAll(self.stream.handle, message);
+            try transport.sendAll(self.stream.handle, "\n");
+            last_send_ms = std.time.milliTimestamp();
+        }
+    }
+
+    /// Hub callback (PTY/UI threads): enqueue a copy, or flag the connection
+    /// as too slow. Never blocks on the socket.
+    fn transportSend(ctx: *anyopaque, message: []const u8) void {
+        const self: *Conn = @ptrCast(@alignCast(ctx));
+        if (self.closed.load(.acquire)) return;
+        const copy = self.server.allocator.dupe(u8, message) catch return;
+        self.enqueueOwned(copy);
+    }
+
+    fn enqueueOwned(self: *Conn, message: []u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.overflow or
+            self.queue.items.len >= MSG_QUEUE_LIMIT or
+            self.queued_bytes + message.len > MSG_QUEUE_BYTES_LIMIT)
+        {
+            self.server.allocator.free(message);
+            if (!self.overflow) std.debug.print("lan-stream: message client too slow, dropping it\n", .{});
+            self.overflow = true;
+            self.closed.store(true, .release);
+            self.cond.broadcast();
+            return;
+        }
+        self.queue.append(self.server.allocator, message) catch {
+            self.server.allocator.free(message);
+            return;
+        };
+        self.queued_bytes += message.len;
+        self.cond.signal();
+    }
+
+    /// Blocks (≤1s) for the next outbound message; null on timeout so the
+    /// writer can run its heartbeat and re-check stop flags.
+    fn popMessage(self: *Conn) ?[]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.queue.items.len == 0 and !self.closed.load(.acquire)) {
+            self.cond.timedWait(&self.mutex, std.time.ns_per_s) catch {};
+        }
+        if (self.queue.items.len == 0) return null;
+        const message = self.queue.orderedRemove(0);
+        self.queued_bytes -= message.len;
+        return message;
+    }
+
+    fn drainQueue(self: *Conn) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (self.queue.items) |m| self.server.allocator.free(m);
+        self.queue.deinit(self.server.allocator);
+        self.queue = .empty;
+        self.queued_bytes = 0;
+    }
+
+    fn readerMain(self: *Conn, carry: []u8) void {
+        const allocator = self.server.allocator;
+        defer self.closed.store(true, .release);
+        defer self.cond.broadcast();
+        var line: std.ArrayListUnmanaged(u8) = .empty;
+        defer line.deinit(allocator);
+        var too_long = false;
+
+        self.feedLines(&line, carry, &too_long) catch return;
+        allocator.free(carry);
+
+        var buf: [16 * 1024]u8 = undefined;
+        while (!self.closed.load(.acquire) and !self.server.stop_flag.load(.acquire)) {
+            switch (recvPoll(self.stream.handle, &buf)) {
+                .timeout => continue,
+                .closed => return,
+                .data => |n| {
+                    self.last_recv_ms.store(std.time.milliTimestamp(), .release);
+                    self.feedLines(&line, buf[0..n], &too_long) catch return;
+                },
+            }
+        }
+    }
+
+    fn feedLines(self: *Conn, line: *std.ArrayListUnmanaged(u8), chunk: []const u8, too_long: *bool) !void {
+        const allocator = self.server.allocator;
+        var rest = chunk;
+        while (std.mem.indexOfScalar(u8, rest, '\n')) |nl| {
+            if (too_long.*) {
+                // Skip the remainder of an oversized line, then resume normally.
+                too_long.* = false;
+            } else {
+                try line.appendSlice(allocator, rest[0..nl]);
+                self.handleLine(line.items);
+            }
+            line.clearRetainingCapacity();
+            rest = rest[nl + 1 ..];
+        }
+        if (too_long.*) return;
+        if (line.items.len + rest.len > MAX_INCOMING_LINE_BYTES) {
+            std.debug.print("lan-stream: dropping oversized message line\n", .{});
+            line.clearRetainingCapacity();
+            too_long.* = true;
+            return;
+        }
+        try line.appendSlice(allocator, rest);
+    }
+
+    fn handleLine(self: *Conn, raw: []const u8) void {
+        const message = std.mem.trim(u8, raw, " \t\r");
+        if (message.len == 0) return;
+        if (remote_hub.isJsonMessageType(message, "ping")) {
+            const pong = self.server.allocator.dupe(u8, PONG_MESSAGE) catch return;
+            self.enqueueOwned(pong);
+            return;
+        }
+        if (remote_hub.isJsonMessageType(message, "pong")) return;
+        const hub = self.server.hub orelse return;
+        hub.handleIncomingMessage(message);
+    }
+};
+
+const RecvResult = union(enum) { data: usize, timeout, closed };
+
+/// recv() honouring SO_RCVTIMEO: a timeout is reported separately so the
+/// reader can re-check its stop flags instead of treating it as a hang-up.
+fn recvPoll(handle: std.net.Stream.Handle, buf: []u8) RecvResult {
+    if (builtin.os.tag == .windows) {
+        const n = transport.recv(handle, buf) catch return .closed;
+        return if (n == 0) .closed else .{ .data = n };
+    }
+    const n = std.posix.recv(handle, buf, 0) catch |err| switch (err) {
+        error.WouldBlock => return .timeout,
+        else => return .closed,
+    };
+    return if (n == 0) .closed else .{ .data = n };
+}
 
 /// Render thread: true when a viewer is connected and the frame interval elapsed.
 pub fn wantsFrame(now_ms: i64) bool {
@@ -178,7 +501,11 @@ pub fn publishRgba(rgba: []const u8, width: u32, height: u32) void {
     var len: usize = 0;
     const ptr = wispterm_lan_jpeg_encode(rgba.ptr, width, height, JPEG_QUALITY, &len) orelse return;
     defer wispterm_lan_jpeg_free(ptr);
-    const copy = server.allocator.dupe(u8, ptr[0..len]) catch return;
+    publishJpeg(server, ptr[0..len]);
+}
+
+fn publishJpeg(server: *Server, jpeg: []const u8) void {
+    const copy = server.allocator.dupe(u8, jpeg) catch return;
     server.mutex.lock();
     defer server.mutex.unlock();
     if (server.frame) |old| server.allocator.free(old);
@@ -187,11 +514,24 @@ pub fn publishRgba(rgba: []const u8, width: u32, height: u32) void {
     server.cond.broadcast();
 }
 
-fn parseHello(line: []const u8) ?[]const u8 {
+const Greeting = struct { version: u8, key: []const u8 };
+
+/// `WISP1 <key>` (stream) or `WISP2 <key>` (messages); anything else is null.
+fn parseHello(line: []const u8) ?Greeting {
     const trimmed = std.mem.trim(u8, line, " \t\r");
-    if (!std.mem.startsWith(u8, trimmed, "WISP1 ")) return null;
+    const version: u8 = if (std.mem.startsWith(u8, trimmed, "WISP1 "))
+        1
+    else if (std.mem.startsWith(u8, trimmed, "WISP2 "))
+        2
+    else
+        return null;
     const key = std.mem.trim(u8, trimmed["WISP1 ".len..], " \t");
-    return if (key.len == 0) null else key;
+    return if (key.len == 0) null else .{ .version = version, .key = key };
+}
+
+/// DNS TXT record (length-prefixed strings) advertising what this port serves.
+fn txtRecord(with_messages: bool) []const u8 {
+    return if (with_messages) "\x0fcaps=stream,msg" else "\x0bcaps=stream";
 }
 
 fn hashKey(key: []const u8) [32]u8 {
@@ -214,10 +554,16 @@ fn setTimeout(handle: std.net.Stream.Handle, which: u32, ms: u32) void {
     std.posix.setsockopt(handle, std.posix.SOL.SOCKET, which, std.mem.asBytes(&tv)) catch {};
 }
 
-test "parseHello accepts the v1 greeting and rejects junk" {
-    try std.testing.expectEqualStrings("secret", parseHello("WISP1 secret\r").?);
-    try std.testing.expectEqualStrings("a b", parseHello("WISP1 a b").?);
+test "parseHello accepts the v1 and v2 greetings and rejects junk" {
+    const v1 = parseHello("WISP1 secret\r").?;
+    try std.testing.expectEqual(@as(u8, 1), v1.version);
+    try std.testing.expectEqualStrings("secret", v1.key);
+    const v2 = parseHello("WISP2 a b").?;
+    try std.testing.expectEqual(@as(u8, 2), v2.version);
+    try std.testing.expectEqualStrings("a b", v2.key);
     try std.testing.expect(parseHello("WISP1 ") == null);
+    try std.testing.expect(parseHello("WISP2") == null);
+    try std.testing.expect(parseHello("WISP3 secret") == null);
     try std.testing.expect(parseHello("GET / HTTP/1.1") == null);
 }
 
@@ -227,4 +573,51 @@ test "keyMatches compares the exact key only" {
     try std.testing.expect(!keyMatches(h, "secre"));
     try std.testing.expect(!keyMatches(h, "secrets"));
     try std.testing.expect(!keyMatches(h, ""));
+}
+
+test "txtRecord is a well-formed length-prefixed TXT entry" {
+    const with = txtRecord(true);
+    try std.testing.expectEqual(@as(usize, with[0]), with.len - 1);
+    try std.testing.expectEqualStrings("caps=stream,msg", with[1..]);
+    const without = txtRecord(false);
+    try std.testing.expectEqual(@as(usize, without[0]), without.len - 1);
+    try std.testing.expectEqualStrings("caps=stream", without[1..]);
+}
+
+test "feedLines splits newline-delimited messages and queues pong for ping" {
+    const allocator = std.testing.allocator;
+    var server: Server = undefined;
+    server.allocator = allocator;
+    server.hub = null;
+    var conn = Conn{ .server = &server, .stream = undefined };
+    defer conn.drainQueue();
+    var line: std.ArrayListUnmanaged(u8) = .empty;
+    defer line.deinit(allocator);
+    var too_long = false;
+
+    try conn.feedLines(&line, "{\"type\":\"pi", &too_long);
+    try std.testing.expectEqual(@as(usize, 0), conn.queue.items.len);
+    try conn.feedLines(&line, "ng\"}\r\n{\"type\":\"ping\",\"at\":1}\n{\"type\":\"po", &too_long);
+    try std.testing.expectEqual(@as(usize, 2), conn.queue.items.len);
+    try std.testing.expectEqualStrings(PONG_MESSAGE, conn.queue.items[0]);
+    try std.testing.expectEqualStrings("{\"type\":\"po", line.items);
+}
+
+test "enqueueOwned drops the connection once the queue overflows" {
+    const allocator = std.testing.allocator;
+    var server: Server = undefined;
+    server.allocator = allocator;
+    server.hub = null;
+    var conn = Conn{ .server = &server, .stream = undefined };
+    defer conn.drainQueue();
+
+    var i: usize = 0;
+    while (i < MSG_QUEUE_LIMIT) : (i += 1) {
+        conn.enqueueOwned(try allocator.dupe(u8, "x"));
+    }
+    try std.testing.expect(!conn.closed.load(.acquire));
+    conn.enqueueOwned(try allocator.dupe(u8, "overflow"));
+    try std.testing.expect(conn.overflow);
+    try std.testing.expect(conn.closed.load(.acquire));
+    try std.testing.expectEqual(@as(usize, MSG_QUEUE_LIMIT), conn.queue.items.len);
 }

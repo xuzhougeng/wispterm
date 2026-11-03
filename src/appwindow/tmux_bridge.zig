@@ -175,7 +175,7 @@ pub const TmuxBridge = struct {
                 pair.controller.deinit();
                 return null;
             };
-            surface.attachRemoteClient(tab.g_remote_client);
+            surface.attachRemoteHub(tab.g_remote_hub);
             // Attach the session's SSH endpoint so ctrl+click preview and
             // copy-to-agent route over scp, exactly like a normal SSH surface.
             if (self.ssh_conn) |conn| {

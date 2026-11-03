@@ -22,6 +22,7 @@ const platform_notifications = @import("platform/notifications.zig");
 const platform_thread_control = @import("platform/thread_control.zig");
 const window_backend = @import("platform/window_backend.zig");
 const remote = @import("remote_client.zig");
+const RemoteHub = @import("remote_hub.zig");
 const sync_service = @import("sync/service.zig");
 const weixin = @import("weixin/controller.zig");
 const weixin_types = @import("weixin/types.zig");
@@ -106,6 +107,9 @@ remote_server_url: ?[]const u8,
 remote_server_fingerprint: ?[]const u8,
 remote_device_name: ?[]const u8,
 remote_session_key: ?[]const u8,
+/// Message producer shared by every remote transport (relay client, LAN
+/// message channel). Null when neither remote-enabled nor lan-stream-enabled.
+remote_hub: ?*RemoteHub.Hub,
 remote_client: ?*remote.Client,
 
 // WeChat direct (embedded ilink). Independent from the remote relay client.
@@ -244,7 +248,9 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
     errdefer freeOptStr(allocator, remote_device_name);
     const remote_session_key = try dupeOptStr(allocator, cfg.@"remote-session-key");
     errdefer freeOptStr(allocator, remote_session_key);
-    const remote_client_ptr = startRemoteClient(allocator, cfg.@"remote-enabled", remote_server_url, remote_device_name, remote_session_key);
+    const remote_hub_ptr = startRemoteHub(allocator, cfg.@"remote-enabled" or cfg.@"lan-stream-enabled");
+    errdefer if (remote_hub_ptr) |hub| hub.destroy();
+    const remote_client_ptr = startRemoteClient(allocator, remote_hub_ptr, cfg.@"remote-enabled", remote_server_url, remote_device_name, remote_session_key);
     errdefer if (remote_client_ptr) |client| client.destroy();
     const background_image = try dupeOptStr(allocator, cfg.@"background-image");
     errdefer freeOptStr(allocator, background_image);
@@ -314,6 +320,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .remote_server_fingerprint = remote_server_fingerprint,
         .remote_device_name = remote_device_name,
         .remote_session_key = remote_session_key,
+        .remote_hub = remote_hub_ptr,
         .remote_client = remote_client_ptr,
         // Created later by startWeixin(), once App lives at a stable address.
         .weixin_controller = null,
@@ -377,19 +384,29 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
     return app;
 }
 
+fn startRemoteHub(allocator: std.mem.Allocator, enabled: bool) ?*RemoteHub.Hub {
+    if (!enabled) return null;
+    return RemoteHub.Hub.create(allocator) catch |err| {
+        std.debug.print("Remote hub disabled: {}\n", .{err});
+        return null;
+    };
+}
+
 fn startRemoteClient(
     allocator: std.mem.Allocator,
+    hub: ?*RemoteHub.Hub,
     enabled: bool,
     server_url: ?[]const u8,
     device_name: ?[]const u8,
     session_key: ?[]const u8,
 ) ?*remote.Client {
     if (!enabled) return null;
+    const hub_ptr = hub orelse return null;
     const raw_url = server_url orelse return null;
     const url = std.mem.trim(u8, raw_url, " \t\r\n");
     if (url.len == 0) return null;
 
-    return remote.Client.create(allocator, .{
+    return remote.Client.create(allocator, hub_ptr, .{
         .server_url = url,
         .device_name = device_name,
         .session_key = session_key,
@@ -541,7 +558,14 @@ pub fn startLanStream(self: *App, cfg: *const Config) void {
     }
     var host_buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
     const name = cfg.@"remote-device-name" orelse (std.posix.gethostname(&host_buf) catch "WispTerm");
-    const server = lan_stream.Server.create(self.allocator, name, key) catch |err| {
+    // Phones pair with the same key whichever way they come in: when the relay
+    // client reserved a suffixed key (`_1`, …) for this instance, use that.
+    const effective_key = if (self.remote_client) |client| client.sessionKey() else key;
+    const server = lan_stream.Server.create(self.allocator, .{
+        .name = name,
+        .key = effective_key,
+        .hub = self.remote_hub,
+    }) catch |err| {
         std.debug.print("lan-stream disabled: {}\n", .{err});
         return;
     };
@@ -551,7 +575,7 @@ pub fn startLanStream(self: *App, cfg: *const Config) void {
         return;
     };
     self.lan_stream_server = server;
-    std.debug.print("lan-stream \"{s}\" listening on port {d}\n", .{ name, server.port });
+    std.debug.print("lan-stream \"{s}\" listening on port {d} (caps={s})\n", .{ name, server.port, server.capabilities() });
 }
 
 /// Get the shell command as a native null-terminated command line.
@@ -1368,6 +1392,12 @@ pub fn deinit(self: *App) void {
     if (self.lan_stream_server) |server| {
         server.destroy();
         self.lan_stream_server = null;
+    }
+
+    // After every transport is gone: the hub must outlive them.
+    if (self.remote_hub) |hub| {
+        hub.destroy();
+        self.remote_hub = null;
     }
 
     if (self.weixin_controller) |controller| {

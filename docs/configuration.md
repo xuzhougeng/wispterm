@@ -108,7 +108,7 @@ feishu-app-secret = your-app-secret
 | `remote-server-fingerprint` | *(none)*   | Expected relay fingerprint for server identity pinning                                                                                                                                                                  |
 | `remote-device-name`        | *(none)*   | Friendly device name sent with the WispTerm WebSocket pairing                                                                                                                                                            |
 | `remote-session-key`        | *(none)*   | Fixed remote session key base. The first local WispTerm instance uses it directly; later concurrently running instances use `_1`, `_2`, `_3`, and so on.                                                                  |
-| `lan-stream-enabled`        | `false`    | macOS: advertise `_wispterm._tcp` on the local network and stream the window as JPEG frames to the WispTerm phone app, which authenticates with `remote-session-key` (required). |
+| `lan-stream-enabled`        | `false`    | macOS: advertise `_wispterm._tcp` on the local network and serve the WispTerm phone app directly over Wi‑Fi: JPEG frames of the window (`WISP1`) and the relay message stream — terminal and AI Chat — without going through the relay (`WISP2`). The phone authenticates with `remote-session-key` (required). See [LAN direct protocol](#lan-direct-protocol). |
 | `feishu-enabled`            | `false`    | Enable the Feishu/Lark long-connection channel. Configure credentials from the command center by typing `feishu`, or set `feishu-app-id` and `feishu-app-secret`; restart required.                                      |
 | `feishu-app-id`             | *(none)*   | Feishu app ID (`cli_...`). Falls back to the `FEISHU_APP_ID` environment variable when empty.                                                                                                                            |
 | `feishu-app-secret`         | *(none)*   | Feishu app secret. Falls back to the `FEISHU_APP_SECRET` environment variable when empty. Keep this private.                                                                                                             |
@@ -151,6 +151,59 @@ local WispTerm instances: the first process gets `mypass`, the next gets
 `mypass_1`, then `mypass_2`, `mypass_3`, and so on. This only chooses the relay
 session key that the remote browser enters; it is separate from the web admin
 login password configured on the relay server.
+
+## LAN direct protocol
+
+With `lan-stream-enabled = true` WispTerm (macOS) binds one TCP port on an
+OS-assigned number and advertises it over Bonjour as `_wispterm._tcp` with the
+instance name `remote-device-name` (or the hostname). The TXT record carries
+`caps=stream,msg`; a phone shows the screen-stream entry when `stream` is
+present and the terminal / AI Chat entry when `msg` is present. This works with
+`remote-enabled = false`: the relay is not involved at all.
+
+Every connection starts with one greeting line, terminated by `\n`:
+
+| Greeting                  | Channel                                                    |
+|---------------------------|------------------------------------------------------------|
+| `WISP1 <session-key>\n`   | Screen stream: `[u32 big-endian length][JPEG bytes]` frames, at most 4 per second, until either side closes. |
+| `WISP2 <session-key>\n`   | Message channel: newline-delimited JSON, see below.         |
+
+`<session-key>` is the effective `remote-session-key` of that instance (the
+same key the relay would use, including a `_1` / `_2` suffix when several
+instances run). The greeting must arrive within 3 seconds. A wrong key, an
+unknown greeting, or a missing key simply closes the socket without a reply.
+
+### WISP2 message channel
+
+* **Framing.** One JSON object per line, `\n` terminated, UTF-8, in both
+  directions. Lines must be compact JSON (no whitespace between tokens, as
+  produced by `JSON.stringify` / Foundation's `JSONEncoder`); a line longer than
+  1 MiB is discarded. Any bytes that follow the greeting in the same packet are
+  already treated as message lines.
+* **First message.** Immediately after a successful greeting the computer
+  sends the current `layout` message, with the visible screen `snapshot` of
+  every surface, so the phone can paint without replaying history. It is sent
+  again whenever the layout changes (tab/split/title/AI Chat state).
+* **Then.** Exactly the relay messages documented in
+  [`remote/README.md` → Relay Messages](../remote/README.md#relay-messages),
+  byte-for-byte: the computer sends `layout`, `output-bytes`
+  (`encoding: "hex"`) and `open-ai-agent-result`; the phone sends
+  `input-bytes` (`surfaceId` + hex `data`) and `open-ai-agent`. Input to an
+  `ai_chat` surface (prompts, approval and question replies) goes through
+  `input-bytes` with that surface's id, exactly as over the relay.
+* **Heartbeat.** Either side may send `{"type":"ping"}` and must answer the
+  other side's ping with `{"type":"pong"}`. The computer pings after 25 seconds
+  without outbound traffic and closes the connection when it has received
+  nothing at all (not even `pong`) for 90 seconds. A phone should treat a
+  missing `pong` the same way.
+* **Errors and back-pressure.** There are no error messages: the computer
+  closes the socket when the key is wrong, when the message channel is not
+  available (no `msg` capability), or when the phone falls more than 1024
+  messages / 8 MiB behind, so it never blocks the terminal. A phone should
+  reconnect and expect a fresh `layout` first. Unknown message types are
+  ignored on both sides.
+* **Concurrency.** Any number of phones may hold `WISP1` and `WISP2`
+  connections at the same time; each receives every message.
 
 ## Settings page
 

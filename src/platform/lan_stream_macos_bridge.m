@@ -58,13 +58,15 @@ done:
 
 void wispterm_lan_jpeg_free(void *ptr) { free(ptr); }
 
-// Registers `_wispterm._tcp` on the local link. The registration lives as long
-// as the returned ref; we never process results, so no callback is needed.
-void *wispterm_lan_mdns_register(const char *name, uint16_t port) {
+// Registers `_wispterm._tcp` on the local link with a TXT record (`txt` is
+// already in DNS length-prefixed form, e.g. "\x0fcaps=stream,msg"). The
+// registration lives as long as the returned ref; we never process results,
+// so no callback is needed.
+void *wispterm_lan_mdns_register(const char *name, uint16_t port, const uint8_t *txt, uint16_t txt_len) {
     DNSServiceRef ref = NULL;
     DNSServiceErrorType err = DNSServiceRegister(&ref, 0, kDNSServiceInterfaceIndexAny, name,
                                                  "_wispterm._tcp", NULL, NULL, htons(port),
-                                                 0, NULL, NULL, NULL);
+                                                 txt_len, txt, NULL, NULL);
     return err == kDNSServiceErr_NoError ? (void *)ref : NULL;
 }
 
