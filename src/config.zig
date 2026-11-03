@@ -1975,6 +1975,11 @@ pub const settings_reset_keys = [_][]const u8{
     "http-proxy",
     "research-use-proxy",
     "research-proxy",
+    "remote-enabled",
+    "remote-server-url",
+    "remote-device-name",
+    "remote-session-key",
+    "lan-stream-enabled",
 };
 
 /// Revert every settings-page option to its built-in default by removing its

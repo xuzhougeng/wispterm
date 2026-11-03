@@ -5755,22 +5755,33 @@ fn invalidateAiDefaultName() void {
     assistantProfiles().default_loaded = false;
 }
 
-threadlocal var g_subagent_profile_name_buf: [256]u8 = undefined;
-threadlocal var g_subagent_profile_name_len: usize = 0;
-
 /// Cache of the `ai-subagent-profile` config key, pushed by the app layer at
 /// startup and on config reload (no file IO on the resolve path).
+const SubagentProfileName = struct {
+    buf: [256]u8 = undefined,
+    len: usize = 0,
+
+    fn set(self: *SubagentProfileName, name: []const u8) void {
+        const len = @min(name.len, self.buf.len);
+        @memcpy(self.buf[0..len], name[0..len]);
+        self.len = len;
+    }
+
+    fn slice(self: *const SubagentProfileName) []const u8 {
+        return self.buf[0..self.len];
+    }
+};
+threadlocal var g_subagent_profile_name: SubagentProfileName = .{};
+
 pub fn setSubagentProfileName(name: []const u8) void {
-    const len = @min(name.len, g_subagent_profile_name_buf.len);
-    @memcpy(g_subagent_profile_name_buf[0..len], name[0..len]);
-    g_subagent_profile_name_len = len;
+    g_subagent_profile_name.set(name);
 }
 
 /// ai_chat.SubagentProfileResolver: map the configured profile name to owned
 /// credentials. Any miss (unset key, unknown name, invalid profile) returns
 /// null — the subagent then falls back to the main conversation's profile.
 pub fn resolveSubagentProfileOverride(allocator: std.mem.Allocator) ?ai_chat.SubagentProfileOverride {
-    const name = g_subagent_profile_name_buf[0..g_subagent_profile_name_len];
+    const name = g_subagent_profile_name.slice();
     if (name.len == 0) return null;
     loadAiProfiles();
     var found: ?usize = null;
@@ -7146,7 +7157,42 @@ pub fn settingsPageInsertChar(cp: u21) bool {
         const cfg = settingsCfg(allocator);
         state.beginResearchProxyEdit(cfg.@"research-proxy");
     }
-    return state.insertResearchProxyChar(cp) or state.insertProxyChar(cp) or state.insertPickerChar(cp);
+    if (state.remote_editing == null) {
+        if (settings_page.RemoteField.fromRow(state.focus)) |field| {
+            const allocator = AppWindow.g_allocator orelse return false;
+            state.beginRemoteEdit(field, remoteFieldValue(settingsCfg(allocator), field));
+        }
+    }
+    return state.insertRemoteChar(cp) or state.insertResearchProxyChar(cp) or state.insertProxyChar(cp) or state.insertPickerChar(cp);
+}
+
+fn remoteFieldValue(cfg: *const Config, field: settings_page.RemoteField) []const u8 {
+    return switch (field) {
+        .server_url => cfg.@"remote-server-url" orelse "",
+        .device_name => cfg.@"remote-device-name" orelse "",
+        .session_key => cfg.@"remote-session-key" orelse "",
+    };
+}
+
+fn saveRemoteDraft(allocator: std.mem.Allocator) void {
+    const state = settingsState();
+    const field = state.remote_editing orelse return;
+    const draft = std.mem.trim(u8, state.remoteDraft(), " \t\r\n");
+    if (field == .server_url and !settings_page.remoteServerUrlValid(draft)) {
+        state.remote_draft_invalid = true;
+        return;
+    }
+    Config.setConfigValue(allocator, field.configKey(), draft) catch return;
+    state.endRemoteEdit();
+}
+
+fn beginOrSaveRemoteEdit(allocator: std.mem.Allocator, cfg: *const Config, field: settings_page.RemoteField) void {
+    const state = settingsState();
+    if (state.remote_editing == field) {
+        saveRemoteDraft(allocator);
+    } else {
+        state.beginRemoteEdit(field, remoteFieldValue(cfg, field));
+    }
 }
 
 fn saveProxyDraft(allocator: std.mem.Allocator) void {
@@ -7216,6 +7262,12 @@ fn executeSettingsAction(action: SettingsAction) void {
         if (AppWindow.g_allocator) |allocator| saveResearchProxyDraft(allocator);
         if (settingsState().research_proxy_draft_invalid) settingsState().endResearchProxyEdit();
     }
+    if (settingsState().remote_editing) |field| {
+        if (action != .commit_remote_field and action != field.editAction()) {
+            if (AppWindow.g_allocator) |allocator| saveRemoteDraft(allocator);
+            if (settingsState().remote_draft_invalid) settingsState().endRemoteEdit();
+        }
+    }
     switch (action) {
         .select_general => {
             settingsState().closePicker(AppWindow.g_allocator);
@@ -7229,6 +7281,10 @@ fn executeSettingsAction(action: SettingsAction) void {
             settingsState().closePicker(AppWindow.g_allocator);
             settingsState().selectCategory(.ai);
         },
+        .select_remote => {
+            settingsState().closePicker(AppWindow.g_allocator);
+            settingsState().selectCategory(.remote);
+        },
         .select_system => {
             settingsState().closePicker(AppWindow.g_allocator);
             settingsState().selectCategory(.system);
@@ -7236,7 +7292,7 @@ fn executeSettingsAction(action: SettingsAction) void {
         else => {},
     }
     switch (action) {
-        .select_general, .select_appearance, .select_ai, .select_system => return,
+        .select_general, .select_appearance, .select_ai, .select_remote, .select_system => return,
         else => {},
     }
 
@@ -7277,11 +7333,17 @@ fn executeSettingsAction(action: SettingsAction) void {
         .toggle_research_proxy => Config.setConfigValue(allocator, "research-use-proxy", if (cfg.@"research-use-proxy") "false" else "true") catch {},
         .edit_research_proxy => if (settingsState().research_proxy_editing) saveResearchProxyDraft(allocator) else settingsState().beginResearchProxyEdit(cfg.@"research-proxy"),
         .commit_research_proxy => saveResearchProxyDraft(allocator),
+        .toggle_remote_enabled => Config.setConfigValue(allocator, "remote-enabled", if (cfg.@"remote-enabled") "false" else "true") catch {},
+        .edit_remote_server_url => beginOrSaveRemoteEdit(allocator, &cfg, .server_url),
+        .edit_remote_device_name => beginOrSaveRemoteEdit(allocator, &cfg, .device_name),
+        .edit_remote_session_key => beginOrSaveRemoteEdit(allocator, &cfg, .session_key),
+        .commit_remote_field => saveRemoteDraft(allocator),
+        .toggle_lan_stream => Config.setConfigValue(allocator, "lan-stream-enabled", if (cfg.@"lan-stream-enabled") "false" else "true") catch {},
         .toggle_start_menu => shell_integration.setEnabled(allocator, .start_menu, !shell_integration.isEnabled(allocator, .start_menu)) catch {},
         .toggle_startup => shell_integration.setEnabled(allocator, .startup, !shell_integration.isEnabled(allocator, .startup)) catch {},
         .open_raw_config => Config.openConfigInEditor(allocator),
         .restore_defaults => restoreDefaultsConfirmOpen(),
-        .select_general, .select_appearance, .select_ai, .select_system => unreachable,
+        .select_general, .select_appearance, .select_ai, .select_remote, .select_system => unreachable,
     }
     settingsPageReloadCfg();
 
@@ -7291,7 +7353,7 @@ fn executeSettingsAction(action: SettingsAction) void {
     // an editor/confirm dialog or close the page and write nothing to apply.
     switch (action) {
         .open_font_picker, .open_shell_picker, .close_picker, .cycle_theme, .cycle_theme_prev, .toggle_start_menu, .toggle_startup, .open_raw_config, .restore_defaults => {},
-        .select_general, .select_appearance, .select_ai, .select_system => unreachable,
+        .select_general, .select_appearance, .select_ai, .select_remote, .select_system => unreachable,
         else => AppWindow.reloadConfigImmediate(allocator),
     }
 }
@@ -7429,6 +7491,20 @@ fn researchProxyAddressText(state: *const settings_page.State, configured: []con
     return configured;
 }
 
+/// Remote text rows: the live draft with a caret while editing, otherwise the
+/// configured value. The session key is a secret, so it is masked once saved.
+fn remoteFieldText(state: *const settings_page.State, field: settings_page.RemoteField, configured: []const u8, buf: []u8) []const u8 {
+    if (state.remote_editing == field) {
+        const draft = state.remoteDraft();
+        if (draft.len == 0) return "|";
+        return std.fmt.bufPrint(buf, "{s}|", .{draft}) catch draft;
+    }
+    const value = std.mem.trim(u8, configured, " \t\r\n");
+    if (value.len == 0) return i18n.s().settings_value_none;
+    if (field == .session_key) return "••••••••";
+    return value;
+}
+
 /// Config value string for the next language in the cycle (auto → en → zh-CN → auto).
 fn nextLanguageSetting(setting: i18n.LanguageSetting) []const u8 {
     return switch (setting) {
@@ -7497,6 +7573,11 @@ pub fn renderSettingsPage(window_height: f32, top_offset: f32, content_x: f32, c
                 settings_page.SETTINGS_PROXY_ADDRESS_ROW => proxyAddressText(state, cfg.@"http-proxy", buf),
                 settings_page.SETTINGS_RESEARCH_PROXY_ROW => boolText(cfg.@"research-use-proxy"),
                 settings_page.SETTINGS_RESEARCH_PROXY_ADDRESS_ROW => researchProxyAddressText(state, cfg.@"research-proxy", cfg.@"http-proxy", buf),
+                settings_page.SETTINGS_REMOTE_ENABLED_ROW => boolText(cfg.@"remote-enabled"),
+                settings_page.SETTINGS_REMOTE_SERVER_URL_ROW => remoteFieldText(state, .server_url, cfg.@"remote-server-url" orelse "", buf),
+                settings_page.SETTINGS_REMOTE_DEVICE_NAME_ROW => remoteFieldText(state, .device_name, cfg.@"remote-device-name" orelse "", buf),
+                settings_page.SETTINGS_REMOTE_SESSION_KEY_ROW => remoteFieldText(state, .session_key, cfg.@"remote-session-key" orelse "", buf),
+                settings_page.SETTINGS_LAN_STREAM_ROW => boolText(cfg.@"lan-stream-enabled"),
                 settings_page.SETTINGS_RAW_CONFIG_ROW => i18n.s().settings_value_open,
                 settings_page.SETTINGS_RESTORE_DEFAULTS_ROW => "Enter",
                 else => "",

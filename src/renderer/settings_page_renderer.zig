@@ -82,7 +82,7 @@ pub fn render(draw: DrawContext, view: View, layout: settings_page_layout.Layout
 
     const item_count = if (picker_open) state.pickerCount() else view.rows.len;
     renderScrollbar(draw, layout, window_height, item_count);
-    renderFooter(draw, layout, window_height, picker_open, state.proxy_editing, state.proxy_draft_invalid, state.research_proxy_editing, state.research_proxy_draft_invalid, muted, border);
+    renderFooter(draw, layout, window_height, picker_open, state, muted, border);
 }
 
 fn renderRow(draw: DrawContext, category: settings_page.Category, layout: settings_page_layout.Layout, window_height: f32, row: Row, row_index: usize, selected: bool) void {
@@ -203,7 +203,11 @@ fn renderScrollbar(draw: DrawContext, layout: settings_page_layout.Layout, windo
     draw.fillQuadAlpha(sb_x, @round(window_height - (layout.row_top_px + offset) - thumb_h), 3, thumb_h, draw.accent, 0.55);
 }
 
-fn renderFooter(draw: DrawContext, layout: settings_page_layout.Layout, window_height: f32, picker_open: bool, proxy_editing: bool, proxy_invalid: bool, research_proxy_editing: bool, research_proxy_invalid: bool, muted: [3]f32, border: [3]f32) void {
+fn renderFooter(draw: DrawContext, layout: settings_page_layout.Layout, window_height: f32, picker_open: bool, state: *const settings_page.State, muted: [3]f32, border: [3]f32) void {
+    const proxy_editing = state.proxy_editing;
+    const proxy_invalid = state.proxy_draft_invalid;
+    const research_proxy_editing = state.research_proxy_editing;
+    const research_proxy_invalid = state.research_proxy_draft_invalid;
     const footer_h = ui_patterns.workbenchFooterHeight(draw.cell_h);
     const footer_top = ui_patterns.workbenchFooterTop(window_height, layout.page_top_px, footer_h);
     const footer_y = @round(window_height - footer_top - footer_h);
@@ -212,6 +216,8 @@ fn renderFooter(draw: DrawContext, layout: settings_page_layout.Layout, window_h
     const zh = i18n.lang() == .zh_CN;
     const text = if (picker_open)
         (if (zh) "↑/↓ 选择  ·  Enter 应用  ·  Esc 返回" else "↑/↓ choose  ·  Enter apply  ·  Esc back")
+    else if (state.remote_editing) |field|
+        remoteEditHint(field, state.remote_draft_invalid)
     else if (research_proxy_editing and research_proxy_invalid)
         (if (zh) "格式应为 127.0.0.1:6789 或 http://127.0.0.1:6789" else "Use 127.0.0.1:6789 or http://127.0.0.1:6789")
     else if (research_proxy_editing)
@@ -225,14 +231,24 @@ fn renderFooter(draw: DrawContext, layout: settings_page_layout.Layout, window_h
     _ = draw.renderTextLimited(text, layout.page_x + 24, rowTextY(draw, footer_y, footer_h), muted, layout.page_w - 48);
 }
 
+fn remoteEditHint(field: settings_page.RemoteField, invalid: bool) []const u8 {
+    const zh = i18n.lang() == .zh_CN;
+    if (invalid) return if (zh) "格式应为 https://remote.example.com 或 wss://主机:端口" else "Use https://remote.example.com or wss://host:port";
+    return switch (field) {
+        .server_url => if (zh) "输入中继地址  ·  Enter 保存  ·  Esc 取消  ·  清空则停用远程" else "Type relay URL  ·  Enter save  ·  Esc cancel  ·  empty disables remote",
+        .device_name => if (zh) "输入设备名称  ·  Enter 保存  ·  Esc 取消  ·  清空则使用主机名" else "Type device name  ·  Enter save  ·  Esc cancel  ·  empty uses the host name",
+        .session_key => if (zh) "输入会话密钥  ·  Enter 保存  ·  Esc 取消  ·  清空则每次随机生成" else "Type session key  ·  Enter save  ·  Esc cancel  ·  empty generates one per launch",
+    };
+}
+
 const ControlKind = enum { adjuster, toggle, choice, action };
 
 fn controlKind(row: usize) ControlKind {
     if (settings_page.SHELL_INTEGRATION_ROWS > 0 and (row == settings_page.SETTINGS_CONTROL_ROW_START + 9 or row == settings_page.SETTINGS_CONTROL_ROW_START + 10)) return .toggle;
     return switch (row) {
         settings_page.SETTINGS_FONT_SIZE_ROW => .adjuster,
-        settings_page.SETTINGS_FONT_FAMILY_ROW, settings_page.SETTINGS_THEME_ROW, settings_page.SETTINGS_CONTROL_ROW_START + 0, settings_page.SETTINGS_CONTROL_ROW_START + 3, settings_page.SETTINGS_CONTROL_ROW_START + 4, settings_page.SETTINGS_CONTROL_ROW_START + 6, settings_page.SETTINGS_PROXY_ADDRESS_ROW, settings_page.SETTINGS_RESEARCH_PROXY_ADDRESS_ROW => .choice,
-        settings_page.SETTINGS_CONTROL_ROW_START + 1, settings_page.SETTINGS_CONTROL_ROW_START + 2, settings_page.SETTINGS_CONTROL_ROW_START + 5, settings_page.SETTINGS_CONTROL_ROW_START + 7, settings_page.SETTINGS_CONTROL_ROW_START + 8, settings_page.SETTINGS_SYSTEM_PROXY_ROW, settings_page.SETTINGS_RESEARCH_PROXY_ROW => .toggle,
+        settings_page.SETTINGS_FONT_FAMILY_ROW, settings_page.SETTINGS_THEME_ROW, settings_page.SETTINGS_CONTROL_ROW_START + 0, settings_page.SETTINGS_CONTROL_ROW_START + 3, settings_page.SETTINGS_CONTROL_ROW_START + 4, settings_page.SETTINGS_CONTROL_ROW_START + 6, settings_page.SETTINGS_PROXY_ADDRESS_ROW, settings_page.SETTINGS_RESEARCH_PROXY_ADDRESS_ROW, settings_page.SETTINGS_REMOTE_SERVER_URL_ROW, settings_page.SETTINGS_REMOTE_DEVICE_NAME_ROW, settings_page.SETTINGS_REMOTE_SESSION_KEY_ROW => .choice,
+        settings_page.SETTINGS_CONTROL_ROW_START + 1, settings_page.SETTINGS_CONTROL_ROW_START + 2, settings_page.SETTINGS_CONTROL_ROW_START + 5, settings_page.SETTINGS_CONTROL_ROW_START + 7, settings_page.SETTINGS_CONTROL_ROW_START + 8, settings_page.SETTINGS_SYSTEM_PROXY_ROW, settings_page.SETTINGS_RESEARCH_PROXY_ROW, settings_page.SETTINGS_REMOTE_ENABLED_ROW, settings_page.SETTINGS_LAN_STREAM_ROW => .toggle,
         else => .action,
     };
 }
@@ -243,12 +259,14 @@ fn categoryLabel(category: settings_page.Category) []const u8 {
             .general => "General",
             .appearance => "Appearance",
             .ai => "AI & Integrations",
+            .remote => "Remote",
             .system => "System",
         },
         .zh_CN => switch (category) {
             .general => "常规",
             .appearance => "外观",
             .ai => "AI 与集成",
+            .remote => "远程",
             .system => "系统",
         },
     };
@@ -260,12 +278,14 @@ fn categoryDescription(category: settings_page.Category) []const u8 {
             .general => "Startup, language, and configuration",
             .appearance => "Typography, theme, and cursor behavior",
             .ai => "Profiles and assistant integrations",
+            .remote => "Relay access and LAN streaming; changes apply after a restart",
             .system => "Desktop integration and startup behavior",
         },
         .zh_CN => switch (category) {
             .general => "启动、语言与配置管理",
             .appearance => "字体、主题与光标行为",
             .ai => "配置文件与智能助手集成",
+            .remote => "远程中继与局域网串流，修改后重启生效",
             .system => "桌面集成与启动方式",
         },
     };
@@ -291,6 +311,11 @@ fn rowTitle(row: usize) []const u8 {
         settings_page.SETTINGS_PROXY_ADDRESS_ROW => if (i18n.lang() == .zh_CN) "AI 代理地址" else "AI proxy",
         settings_page.SETTINGS_RESEARCH_PROXY_ROW => if (i18n.lang() == .zh_CN) "使用研究工具代理" else "Use Research Tools Proxy",
         settings_page.SETTINGS_RESEARCH_PROXY_ADDRESS_ROW => if (i18n.lang() == .zh_CN) "研究工具代理" else "Research Tools Proxy",
+        settings_page.SETTINGS_REMOTE_ENABLED_ROW => if (i18n.lang() == .zh_CN) "启用远程访问" else "Enable remote access",
+        settings_page.SETTINGS_REMOTE_SERVER_URL_ROW => if (i18n.lang() == .zh_CN) "中继服务器地址" else "Relay server URL",
+        settings_page.SETTINGS_REMOTE_DEVICE_NAME_ROW => if (i18n.lang() == .zh_CN) "设备名称" else "Device name",
+        settings_page.SETTINGS_REMOTE_SESSION_KEY_ROW => if (i18n.lang() == .zh_CN) "会话密钥" else "Session key",
+        settings_page.SETTINGS_LAN_STREAM_ROW => if (i18n.lang() == .zh_CN) "局域网屏幕串流" else "LAN screen stream",
         settings_page.SETTINGS_RAW_CONFIG_ROW => i18n.s().settings_raw_config,
         settings_page.SETTINGS_RESTORE_DEFAULTS_ROW => i18n.s().settings_restore_defaults,
         else => "",
@@ -318,6 +343,11 @@ fn rowDescription(_: settings_page.Category, row: usize) []const u8 {
         settings_page.SETTINGS_PROXY_ADDRESS_ROW => if (zh) "留空使用系统代理，或填写 127.0.0.1:端口" else "Empty uses the system proxy, or set host:port",
         settings_page.SETTINGS_RESEARCH_PROXY_ROW => if (zh) "开启后，websearch、webread 和 PubMed 使用研究工具代理" else "Send Web Search, Web Read, and PubMed through Research Tools Proxy",
         settings_page.SETTINGS_RESEARCH_PROXY_ADDRESS_ROW => if (zh) "留空使用上方 AI 代理地址，或填写独立地址" else "Empty uses the AI proxy address above, or set a custom address",
+        settings_page.SETTINGS_REMOTE_ENABLED_ROW => if (zh) "启动时连接下方中继，允许从浏览器远程控制" else "Connect to the relay below at launch for browser remote control",
+        settings_page.SETTINGS_REMOTE_SERVER_URL_ROW => if (zh) "WispTerm Remote 中继地址，例如 https://remote.example.com" else "WispTerm Remote relay, for example https://remote.example.com",
+        settings_page.SETTINGS_REMOTE_DEVICE_NAME_ROW => if (zh) "在远程页面上显示的名称，留空使用主机名" else "Name shown on the remote page; empty uses the host name",
+        settings_page.SETTINGS_REMOTE_SESSION_KEY_ROW => if (zh) "固定的远程会话密钥，留空则每次启动随机生成" else "Fixed remote session key; empty generates a new one per launch",
+        settings_page.SETTINGS_LAN_STREAM_ROW => if (zh) "通过 Bonjour 向手机 App 串流窗口画面，需设置会话密钥" else "Stream the window to the phone app over Bonjour; needs a session key",
         settings_page.SETTINGS_RAW_CONFIG_ROW => if (zh) "在编辑器中打开完整配置文件" else "Open the complete config file in your editor",
         settings_page.SETTINGS_RESTORE_DEFAULTS_ROW => if (zh) "移除自定义设置并恢复默认值" else "Remove custom settings and restore defaults",
         else => "",

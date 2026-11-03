@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const input_key = @import("../../input/key.zig");
 const Config = @import("../../config.zig");
 const shell_integration = @import("../../platform/shell_integration.zig");
@@ -17,11 +18,21 @@ pub const SETTINGS_SYSTEM_PROXY_ROW: usize = SETTINGS_CONTROL_ROW_START + 13;
 pub const SETTINGS_PROXY_ADDRESS_ROW: usize = SETTINGS_CONTROL_ROW_START + 14;
 pub const SETTINGS_RESEARCH_PROXY_ROW: usize = SETTINGS_CONTROL_ROW_START + 15;
 pub const SETTINGS_RESEARCH_PROXY_ADDRESS_ROW: usize = SETTINGS_CONTROL_ROW_START + 16;
+/// Remote access rows (config keys `remote-*` / `lan-stream-enabled`).
+pub const SETTINGS_REMOTE_ENABLED_ROW: usize = SETTINGS_CONTROL_ROW_START + 17;
+pub const SETTINGS_REMOTE_SERVER_URL_ROW: usize = SETTINGS_CONTROL_ROW_START + 18;
+pub const SETTINGS_REMOTE_DEVICE_NAME_ROW: usize = SETTINGS_CONTROL_ROW_START + 19;
+pub const SETTINGS_REMOTE_SESSION_KEY_ROW: usize = SETTINGS_CONTROL_ROW_START + 20;
+pub const SETTINGS_LAN_STREAM_ROW: usize = SETTINGS_CONTROL_ROW_START + 21;
+/// The LAN screen stream exists only on macOS (see `lan_stream.supported`);
+/// mirrored here so this pure module stays free of platform imports.
+pub const LAN_STREAM_SUPPORTED = builtin.os.tag == .macos;
 
 pub const Category = enum {
     general,
     appearance,
     ai,
+    remote,
     system,
 };
 
@@ -49,13 +60,20 @@ const AI_ROWS = [_]usize{
     SETTINGS_CONTROL_ROW_START + 5, // WeChat direct
     SETTINGS_CONTROL_ROW_START + 8, // distill suggestions
 };
+const REMOTE_ROWS_BASE = [_]usize{
+    SETTINGS_REMOTE_ENABLED_ROW,
+    SETTINGS_REMOTE_SERVER_URL_ROW,
+    SETTINGS_REMOTE_DEVICE_NAME_ROW,
+    SETTINGS_REMOTE_SESSION_KEY_ROW,
+};
+const REMOTE_ROWS = if (LAN_STREAM_SUPPORTED) REMOTE_ROWS_BASE ++ [_]usize{SETTINGS_LAN_STREAM_ROW} else REMOTE_ROWS_BASE;
 const SYSTEM_ROWS = [_]usize{
     SETTINGS_CONTROL_ROW_START + 9, // Start menu
     SETTINGS_CONTROL_ROW_START + 10, // startup
 };
 
 pub fn categoryCount() usize {
-    return if (shell_integration.supported) 4 else 3;
+    return if (shell_integration.supported) 5 else 4;
 }
 
 pub fn categoryAt(index: usize) ?Category {
@@ -63,7 +81,8 @@ pub fn categoryAt(index: usize) ?Category {
         0 => .general,
         1 => .appearance,
         2 => .ai,
-        3 => if (shell_integration.supported) .system else null,
+        3 => .remote,
+        4 => if (shell_integration.supported) .system else null,
         else => null,
     };
 }
@@ -73,6 +92,7 @@ pub fn categoryRows(category: Category) []const usize {
         .general => GENERAL_ROWS[0..],
         .appearance => APPEARANCE_ROWS[0..],
         .ai => AI_ROWS[0..],
+        .remote => REMOTE_ROWS[0..],
         .system => if (shell_integration.supported) SYSTEM_ROWS[0..] else &.{},
     };
 }
@@ -101,6 +121,12 @@ pub const Action = enum {
     toggle_research_proxy,
     edit_research_proxy,
     commit_research_proxy,
+    toggle_remote_enabled,
+    edit_remote_server_url,
+    edit_remote_device_name,
+    edit_remote_session_key,
+    commit_remote_field,
+    toggle_lan_stream,
     toggle_start_menu,
     toggle_startup,
     open_raw_config,
@@ -108,7 +134,48 @@ pub const Action = enum {
     select_general,
     select_appearance,
     select_ai,
+    select_remote,
     select_system,
+};
+
+/// Which remote text field an inline edit targets.
+pub const RemoteField = enum {
+    server_url,
+    device_name,
+    session_key,
+
+    pub fn row(self: RemoteField) usize {
+        return switch (self) {
+            .server_url => SETTINGS_REMOTE_SERVER_URL_ROW,
+            .device_name => SETTINGS_REMOTE_DEVICE_NAME_ROW,
+            .session_key => SETTINGS_REMOTE_SESSION_KEY_ROW,
+        };
+    }
+
+    pub fn fromRow(row_id: usize) ?RemoteField {
+        return switch (row_id) {
+            SETTINGS_REMOTE_SERVER_URL_ROW => .server_url,
+            SETTINGS_REMOTE_DEVICE_NAME_ROW => .device_name,
+            SETTINGS_REMOTE_SESSION_KEY_ROW => .session_key,
+            else => null,
+        };
+    }
+
+    pub fn editAction(self: RemoteField) Action {
+        return switch (self) {
+            .server_url => .edit_remote_server_url,
+            .device_name => .edit_remote_device_name,
+            .session_key => .edit_remote_session_key,
+        };
+    }
+
+    pub fn configKey(self: RemoteField) []const u8 {
+        return switch (self) {
+            .server_url => "remote-server-url",
+            .device_name => "remote-device-name",
+            .session_key => "remote-session-key",
+        };
+    }
 };
 
 pub const State = struct {
@@ -135,11 +202,16 @@ pub const State = struct {
     research_proxy_draft_invalid: bool = false,
     research_proxy_draft_len: usize = 0,
     research_proxy_draft: [255]u8 = undefined,
+    remote_editing: ?RemoteField = null,
+    remote_draft_invalid: bool = false,
+    remote_draft_len: usize = 0,
+    remote_draft: [255]u8 = undefined,
 
     pub fn open(self: *State) void {
         self.closePicker(null);
         self.endProxyEdit();
         self.endResearchProxyEdit();
+        self.endRemoteEdit();
         self.visible = true;
         self.selectCategory(.general);
         self.cfg_dirty = true;
@@ -148,6 +220,7 @@ pub const State = struct {
     pub fn selectCategory(self: *State, category: Category) void {
         self.endProxyEdit();
         self.endResearchProxyEdit();
+        self.endRemoteEdit();
         const rows = categoryRows(category);
         if (rows.len == 0) return;
         self.category = category;
@@ -174,6 +247,7 @@ pub const State = struct {
         self.visible = false;
         self.endProxyEdit();
         self.endResearchProxyEdit();
+        self.endRemoteEdit();
         self.closePicker(null);
         if (self.cfg_loaded) {
             const alloc = allocator orelse return;
@@ -187,6 +261,7 @@ pub const State = struct {
     pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
         self.closePicker(allocator);
         self.endResearchProxyEdit();
+        self.endRemoteEdit();
         if (self.cfg_loaded) self.cfg_cache.deinit(allocator);
         self.cfg_cache = .{};
         self.cfg_loaded = false;
@@ -380,7 +455,63 @@ pub const State = struct {
         self.research_proxy_draft_invalid = false;
     }
 
+    pub fn beginRemoteEdit(self: *State, field: RemoteField, current: []const u8) void {
+        const trimmed = std.mem.trim(u8, current, " \t\r\n");
+        const n = @min(trimmed.len, self.remote_draft.len);
+        @memcpy(self.remote_draft[0..n], trimmed[0..n]);
+        self.remote_draft_len = n;
+        self.remote_editing = field;
+        self.remote_draft_invalid = false;
+    }
+
+    pub fn endRemoteEdit(self: *State) void {
+        self.remote_editing = null;
+        self.remote_draft_len = 0;
+        self.remote_draft_invalid = false;
+    }
+
+    pub fn remoteDraft(self: *const State) []const u8 {
+        return self.remote_draft[0..self.remote_draft_len];
+    }
+
+    /// The device name is free text (UTF-8, spaces allowed); the relay URL and
+    /// session key are single ASCII tokens without whitespace.
+    pub fn insertRemoteChar(self: *State, cp: u21) bool {
+        const field = self.remote_editing orelse return false;
+        if (cp < 32 or cp == 127) return true;
+        if (field != .device_name and (cp > 126 or cp == ' ')) return true;
+        var utf8: [4]u8 = undefined;
+        const n = std.unicode.utf8Encode(cp, &utf8) catch return true;
+        if (self.remote_draft_len + n > self.remote_draft.len) return true;
+        @memcpy(self.remote_draft[self.remote_draft_len..][0..n], utf8[0..n]);
+        self.remote_draft_len += n;
+        self.remote_draft_invalid = false;
+        return true;
+    }
+
+    pub fn remoteBackspace(self: *State) void {
+        if (self.remote_draft_len == 0) return;
+        var end = self.remote_draft_len - 1;
+        while (end > 0 and (self.remote_draft[end] & 0xC0) == 0x80) end -= 1; // drop a whole UTF-8 char
+        self.remote_draft_len = end;
+        self.remote_draft_invalid = false;
+    }
+
     pub fn handleKey(self: *State, ev: input_key.KeyEvent) ?Action {
+        if (self.remote_editing != null) {
+            return switch (ev.key) {
+                .escape => blk: {
+                    self.endRemoteEdit();
+                    break :blk null;
+                },
+                .enter => .commit_remote_field,
+                .backspace, .delete => blk: {
+                    self.remoteBackspace();
+                    break :blk null;
+                },
+                else => null,
+            };
+        }
         if (self.research_proxy_editing) {
             return switch (ev.key) {
                 .escape => blk: {
@@ -464,6 +595,7 @@ pub const State = struct {
                 .general => .select_general,
                 .appearance => .select_appearance,
                 .ai => .select_ai,
+                .remote => .select_remote,
                 .system => .select_system,
             };
         }
@@ -506,6 +638,11 @@ pub const State = struct {
             14 => .edit_proxy,
             15 => .toggle_research_proxy,
             16 => .edit_research_proxy,
+            17 => .toggle_remote_enabled,
+            18 => .edit_remote_server_url,
+            19 => .edit_remote_device_name,
+            20 => .edit_remote_session_key,
+            21 => .toggle_lan_stream,
             9 + SHELL_INTEGRATION_ROWS => .open_raw_config,
             10 + SHELL_INTEGRATION_ROWS => .restore_defaults,
             else => null,
@@ -542,6 +679,11 @@ pub const State = struct {
             SETTINGS_PROXY_ADDRESS_ROW => .edit_proxy,
             SETTINGS_RESEARCH_PROXY_ROW => .toggle_research_proxy,
             SETTINGS_RESEARCH_PROXY_ADDRESS_ROW => .edit_research_proxy,
+            SETTINGS_REMOTE_ENABLED_ROW => .toggle_remote_enabled,
+            SETTINGS_REMOTE_SERVER_URL_ROW => .edit_remote_server_url,
+            SETTINGS_REMOTE_DEVICE_NAME_ROW => .edit_remote_device_name,
+            SETTINGS_REMOTE_SESSION_KEY_ROW => .edit_remote_session_key,
+            SETTINGS_LAN_STREAM_ROW => .toggle_lan_stream,
             SETTINGS_CONTROL_ROW_START + 9 + SHELL_INTEGRATION_ROWS => .open_raw_config,
             SETTINGS_CONTROL_ROW_START + 10 + SHELL_INTEGRATION_ROWS => .restore_defaults,
             else => null,
@@ -601,6 +743,69 @@ test "settings page exposes shell integration rows only on Windows" {
         state.focus += 1;
         try std.testing.expectEqual(Action.toggle_startup, state.focusPrimaryAction().?);
     }
+}
+
+/// A relay URL the remote client can dial: http(s):// or ws(s):// with a host.
+/// Mirrors `remote_client.buildEndpoint` so the Settings page rejects what the
+/// client would reject at startup. Empty is allowed (clears the key).
+pub fn remoteServerUrlValid(value: []const u8) bool {
+    if (value.len == 0) return true;
+    const uri = std.Uri.parse(value) catch return false;
+    const host = uri.host orelse return false;
+    if (host.percent_encoded.len == 0) return false;
+    const scheme = uri.scheme;
+    return std.ascii.eqlIgnoreCase(scheme, "https") or std.ascii.eqlIgnoreCase(scheme, "wss") or
+        std.ascii.eqlIgnoreCase(scheme, "http") or std.ascii.eqlIgnoreCase(scheme, "ws");
+}
+
+test "remote server url validation matches the relay client" {
+    try std.testing.expect(remoteServerUrlValid(""));
+    try std.testing.expect(remoteServerUrlValid("https://remote.example.com"));
+    try std.testing.expect(remoteServerUrlValid("ws://127.0.0.1:8787/relay"));
+    try std.testing.expect(!remoteServerUrlValid("remote.example.com"));
+    try std.testing.expect(!remoteServerUrlValid("ftp://remote.example.com"));
+    try std.testing.expect(!remoteServerUrlValid("https://"));
+}
+
+test "remote category lists the remote-* rows and the LAN stream only on macOS" {
+    const rows = categoryRows(.remote);
+    try std.testing.expectEqual(SETTINGS_REMOTE_ENABLED_ROW, rows[0]);
+    try std.testing.expectEqual(SETTINGS_REMOTE_SESSION_KEY_ROW, rows[3]);
+    try std.testing.expectEqual(@as(usize, if (LAN_STREAM_SUPPORTED) 5 else 4), rows.len);
+    try std.testing.expectEqual(Category.remote, categoryAt(3).?);
+    try std.testing.expectEqual(if (shell_integration.supported) @as(usize, 5) else 4, categoryCount());
+}
+
+test "remote text rows edit inline and commit on Enter" {
+    var state = State{ .visible = true, .category = .remote, .focus = SETTINGS_REMOTE_SERVER_URL_ROW };
+    try std.testing.expectEqual(Action.edit_remote_server_url, state.focusPrimaryAction().?);
+    state.focus = SETTINGS_REMOTE_DEVICE_NAME_ROW;
+    try std.testing.expectEqual(Action.edit_remote_device_name, state.focusPrimaryAction().?);
+    state.focus = SETTINGS_REMOTE_SESSION_KEY_ROW;
+    try std.testing.expectEqual(Action.edit_remote_session_key, state.focusPrimaryAction().?);
+    state.focus = SETTINGS_REMOTE_ENABLED_ROW;
+    try std.testing.expectEqual(Action.toggle_remote_enabled, state.focusPrimaryAction().?);
+
+    state.beginRemoteEdit(.server_url, " https://remote.example.com ");
+    try std.testing.expectEqualStrings("https://remote.example.com", state.remoteDraft());
+    try std.testing.expect(state.insertRemoteChar(' ')); // consumed, not inserted
+    try std.testing.expect(state.insertRemoteChar('/'));
+    try std.testing.expectEqualStrings("https://remote.example.com/", state.remoteDraft());
+    try std.testing.expectEqual(Action.commit_remote_field, state.handleKey(.{ .key = .enter }).?);
+    try std.testing.expectEqual(@as(?Action, null), state.handleKey(.{ .key = .escape }));
+    try std.testing.expect(state.remote_editing == null);
+
+    state.beginRemoteEdit(.device_name, "");
+    try std.testing.expect(state.insertRemoteChar('工'));
+    try std.testing.expect(state.insertRemoteChar(' '));
+    try std.testing.expect(state.insertRemoteChar('A'));
+    try std.testing.expectEqualStrings("工 A", state.remoteDraft());
+    _ = state.handleKey(.{ .key = .backspace });
+    _ = state.handleKey(.{ .key = .backspace });
+    _ = state.handleKey(.{ .key = .backspace });
+    try std.testing.expectEqualStrings("", state.remoteDraft());
+    state.selectCategory(.ai);
+    try std.testing.expect(state.remote_editing == null);
 }
 
 fn proxyAddressChar(c: u8) bool {
