@@ -53,6 +53,14 @@ const macos_app_frameworks = [_][]const u8{
     "Carbon",
     "ImageIO", // PDF preview page rasters are PNG-encoded with ImageIO
     "Security", // password store key lives in the login Keychain
+    "CoreMedia", // SCStream sample buffers for the LAN display stream
+    "CoreVideo", // CVPixelBuffer access for the LAN display stream
+};
+
+/// Frameworks newer than `macos_minimum_version`, linked weak so the app still
+/// launches on older systems; every use is behind `@available`.
+const macos_weak_app_frameworks = [_][]const u8{
+    "ScreenCaptureKit", // 12.3+: lan-stream-source = display
 };
 
 const macos_objective_c_sources = [_][]const u8{
@@ -441,7 +449,7 @@ test "fast tests link libc on hosts whose platform adapters import C headers" {
 
 test "macOS platform advertises required app frameworks" {
     const frameworks = appFrameworksFor(PlatformFeatures.forOs(.macos));
-    try std.testing.expectEqual(@as(usize, 12), frameworks.len);
+    try std.testing.expectEqual(@as(usize, 14), frameworks.len);
     try expectContainsString(frameworks, "WebKit");
     try expectContainsString(frameworks, "Metal");
     try expectContainsString(frameworks, "QuartzCore");
@@ -454,6 +462,9 @@ test "macOS platform advertises required app frameworks" {
     try expectContainsString(frameworks, "UserNotifications");
     try expectContainsString(frameworks, "ImageIO");
     try expectContainsString(frameworks, "Security");
+    try expectContainsString(frameworks, "CoreMedia");
+    try expectContainsString(frameworks, "CoreVideo");
+    try expectContainsString(&macos_weak_app_frameworks, "ScreenCaptureKit");
 
     try std.testing.expectEqual(@as(usize, 0), appFrameworksFor(PlatformFeatures.forOs(.windows)).len);
     try std.testing.expectEqual(@as(usize, 0), appFrameworksFor(PlatformFeatures.forOs(.linux)).len);
@@ -1439,6 +1450,11 @@ fn createAppModuleWithRootAndTestShard(
     }
     for (appFrameworksFor(platform)) |framework| {
         app_mod.linkFramework(framework, .{});
+    }
+    if (platform.supports_app_bundle) {
+        for (macos_weak_app_frameworks) |framework| {
+            app_mod.linkFramework(framework, .{ .weak = true });
+        }
     }
 
     const freetype_dep = b.lazyDependency("freetype", .{

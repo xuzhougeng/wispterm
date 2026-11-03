@@ -16,8 +16,12 @@
 //! never wait on each other.
 //!
 //! Frames come from the render thread (AppWindow calls `wantsFrame` /
-//! `publishRgba` around its ui_screenshot readback); a viewer thread only ships
-//! the latest one, so a slow phone drops frames instead of stalling rendering.
+//! `publishRgba` around its ui_screenshot readback) in `window` mode, or from
+//! ScreenCaptureKit on its own queue in `display` mode (`Options.source`);
+//! either way a viewer thread only ships the latest one, so a slow phone drops
+//! frames instead of stalling rendering. Display capture runs only while a
+//! stream viewer is connected and falls back to the window when the Screen
+//! Recording permission is missing.
 //! Messages come from the hub (`remote_hub.zig`) on PTY/UI threads; each
 //! connection buffers them in a bounded queue and is dropped when it falls
 //! too far behind, so a slow phone never blocks the PTY either.
@@ -32,9 +36,11 @@ const remote_hub = @import("remote_hub.zig");
 pub const supported = builtin.os.tag == .macos;
 pub const service_type = "_wispterm._tcp";
 
-/// ponytail: 4 fps cap; raise once encode cost is measured.
-const FRAME_INTERVAL_MS: i64 = 250;
+const DEFAULT_FPS: u32 = 4;
 const JPEG_QUALITY: f32 = 0.6;
+/// Display capture is scaled so its width lands in this range (never Retina-native).
+const DISPLAY_MIN_WIDTH: u32 = 1280;
+const DISPLAY_MAX_WIDTH: u32 = 1920;
 const HELLO_TIMEOUT_MS: u32 = 3000;
 const SEND_TIMEOUT_MS: u32 = 5000;
 /// Reader wake-up interval; bounds how long a dying connection lingers.
@@ -56,8 +62,22 @@ extern fn wispterm_lan_jpeg_encode(rgba: [*]const u8, width: u32, height: u32, q
 extern fn wispterm_lan_jpeg_free(ptr: ?*anyopaque) void;
 extern fn wispterm_lan_mdns_register(name: [*:0]const u8, port: u16, txt: [*]const u8, txt_len: u16) ?*anyopaque;
 extern fn wispterm_lan_mdns_unregister(ref: ?*anyopaque) void;
+extern fn wispterm_lan_display_access(request: bool) bool;
+extern fn wispterm_lan_display_start(
+    display_index: u32,
+    fps: u32,
+    min_width: u32,
+    max_width: u32,
+    quality: f32,
+    ctx: *anyopaque,
+    frame_fn: *const fn (ctx: *anyopaque, jpeg: [*]const u8, len: usize) callconv(.c) void,
+    error_fn: *const fn (ctx: *anyopaque, message: [*:0]const u8) callconv(.c) void,
+) ?*anyopaque;
+extern fn wispterm_lan_display_stop(handle: ?*anyopaque) void;
 
 var g_server: ?*Server = null;
+
+pub const Source = enum { window, display };
 
 pub const Options = struct {
     /// Advertised Bonjour instance name.
@@ -66,6 +86,12 @@ pub const Options = struct {
     key: []const u8,
     /// Message producer for WISP2; null advertises `caps=stream` only.
     hub: ?*remote_hub.Hub = null,
+    /// What WISP1 shows (`lan-stream-source`).
+    source: Source = .window,
+    /// Display index for `.display` (`lan-stream-display`).
+    display_index: u32 = 0,
+    /// Frame-rate cap (`lan-stream-fps`), clamped to 1-30.
+    fps: u32 = DEFAULT_FPS,
 };
 
 pub const Server = struct {
@@ -74,6 +100,9 @@ pub const Server = struct {
     listener: std.net.Server,
     port: u16,
     hub: ?*remote_hub.Hub,
+    source: Source,
+    display_index: u32,
+    frame_interval_ms: i64,
     mdns: ?*anyopaque = null,
     thread: ?std.Thread = null,
     stop_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -88,6 +117,13 @@ pub const Server = struct {
 
     conns_mutex: std.Thread.Mutex = .{},
     conns: std.ArrayListUnmanaged(*Conn) = .empty,
+
+    /// ScreenCaptureKit session (`.display` only); exists while viewers > 0.
+    display_mutex: std.Thread.Mutex = .{},
+    display_handle: ?*anyopaque = null,
+    /// Set once display capture failed (permission, API error): the stream
+    /// then serves the window instead until restart.
+    display_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     /// Binds 0.0.0.0 on an OS-assigned port and advertises it as `options.name`.
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Server {
@@ -104,6 +140,9 @@ pub const Server = struct {
             .listener = listener,
             .port = listener.listen_address.getPort(),
             .hub = options.hub,
+            .source = options.source,
+            .display_index = options.display_index,
+            .frame_interval_ms = frameIntervalMs(options.fps),
         };
         const name_z = try allocator.dupeZ(u8, options.name);
         defer allocator.free(name_z);
@@ -133,6 +172,7 @@ pub const Server = struct {
             thread.join();
         }
         self.reapConns(true);
+        self.stopDisplayCapture();
         if (comptime supported) wispterm_lan_mdns_unregister(self.mdns);
         self.listener.deinit();
         if (self.frame) |f| self.allocator.free(f);
@@ -142,6 +182,79 @@ pub const Server = struct {
 
     pub fn capabilities(self: *const Server) []const u8 {
         return if (self.hub != null) "stream,msg" else "stream";
+    }
+
+    /// True while frames should come from the window readback: `.window`
+    /// mode, or `.display` mode after capture failed.
+    fn usesWindowFrames(self: *const Server) bool {
+        return self.source == .window or self.display_failed.load(.acquire);
+    }
+
+    /// Viewer threads: start ScreenCaptureKit when the first stream viewer
+    /// arrives, stop it when the last one leaves, tear it down after failure.
+    fn syncDisplayCapture(self: *Server) void {
+        if (comptime !supported) return;
+        if (self.source != .display) return;
+        self.display_mutex.lock();
+        defer self.display_mutex.unlock();
+        const want = self.viewers.load(.acquire) > 0 and !self.display_failed.load(.acquire);
+        if (want and self.display_handle == null) {
+            self.display_handle = wispterm_lan_display_start(
+                self.display_index,
+                @intCast(@divTrunc(1000, self.frame_interval_ms)),
+                DISPLAY_MIN_WIDTH,
+                DISPLAY_MAX_WIDTH,
+                JPEG_QUALITY,
+                self,
+                displayFrame,
+                displayError,
+            );
+            if (self.display_handle == null) {
+                self.display_failed.store(true, .release);
+                if (!wispterm_lan_display_access(false)) {
+                    std.debug.print(
+                        "lan-stream: display capture needs the Screen Recording permission " ++
+                            "(System Settings > Privacy & Security > Screen & System Audio Recording > WispTerm); " ++
+                            "streaming the window instead until WispTerm restarts\n",
+                        .{},
+                    );
+                } else {
+                    std.debug.print("lan-stream: display capture unavailable (needs macOS 12.3+); streaming the window instead\n", .{});
+                }
+            } else {
+                std.debug.print("lan-stream: capturing display {d}\n", .{self.display_index});
+            }
+        } else if (!want and self.display_handle != null) {
+            wispterm_lan_display_stop(self.display_handle);
+            self.display_handle = null;
+            std.debug.print("lan-stream: display capture stopped\n", .{});
+        }
+    }
+
+    fn stopDisplayCapture(self: *Server) void {
+        if (comptime !supported) return;
+        self.display_mutex.lock();
+        defer self.display_mutex.unlock();
+        if (self.display_handle) |handle| {
+            wispterm_lan_display_stop(handle);
+            self.display_handle = null;
+        }
+    }
+
+    /// ScreenCaptureKit queue: one JPEG-encoded frame of the display.
+    fn displayFrame(ctx: *anyopaque, jpeg: [*]const u8, len: usize) callconv(.c) void {
+        const self: *Server = @ptrCast(@alignCast(ctx));
+        if (len == 0) return;
+        publishJpeg(self, jpeg[0..len]);
+    }
+
+    /// ScreenCaptureKit queue: capture died; fall back to window frames. The
+    /// handle is released by the next `syncDisplayCapture` (never here: the
+    /// bridge holds its lock while calling us).
+    fn displayError(ctx: *anyopaque, message: [*:0]const u8) callconv(.c) void {
+        const self: *Server = @ptrCast(@alignCast(ctx));
+        self.display_failed.store(true, .release);
+        std.debug.print("lan-stream: display capture failed ({s}); streaming the window instead until WispTerm restarts\n", .{std.mem.span(message)});
     }
 
     fn acceptLoop(self: *Server) void {
@@ -282,9 +395,14 @@ const Conn = struct {
         std.debug.print("lan-stream: viewer connected\n", .{});
         defer std.debug.print("lan-stream: viewer left\n", .{});
         _ = server.viewers.fetchAdd(1, .acq_rel);
-        defer _ = server.viewers.fetchSub(1, .acq_rel);
+        defer {
+            _ = server.viewers.fetchSub(1, .acq_rel);
+            server.syncDisplayCapture();
+        }
         var sent_seq: u64 = 0;
         while (!server.stop_flag.load(.acquire) and !self.closed.load(.acquire)) {
+            // Cheap when nothing changed; also reaps a failed capture session.
+            server.syncDisplayCapture();
             const frame = server.takeNewerFrame(&sent_seq) orelse continue;
             defer server.allocator.free(frame);
             var header: [4]u8 = undefined;
@@ -480,11 +598,13 @@ fn recvPoll(handle: std.net.Stream.Handle, buf: []u8) RecvResult {
     return if (n == 0) .closed else .{ .data = n };
 }
 
-/// Render thread: true when a viewer is connected and the frame interval elapsed.
+/// Render thread: true when a viewer is connected, frames come from the
+/// window, and the frame interval elapsed.
 pub fn wantsFrame(now_ms: i64) bool {
     const server = g_server orelse return false;
     if (server.viewers.load(.acquire) == 0) return false;
-    return now_ms - server.last_capture_ms.load(.acquire) >= FRAME_INTERVAL_MS;
+    if (!server.usesWindowFrames()) return false;
+    return now_ms - server.last_capture_ms.load(.acquire) >= server.frame_interval_ms;
 }
 
 /// Render thread: call once per attempted capture, before the readback, so a
@@ -512,6 +632,12 @@ fn publishJpeg(server: *Server, jpeg: []const u8) void {
     server.frame = copy;
     server.seq += 1;
     server.cond.broadcast();
+}
+
+/// `lan-stream-fps` → milliseconds between frames, clamped to 1-30 fps.
+fn frameIntervalMs(fps: u32) i64 {
+    const clamped = @max(1, @min(fps, 30));
+    return @divTrunc(1000, @as(i64, clamped));
 }
 
 const Greeting = struct { version: u8, key: []const u8 };
@@ -565,6 +691,25 @@ test "parseHello accepts the v1 and v2 greetings and rejects junk" {
     try std.testing.expect(parseHello("WISP2") == null);
     try std.testing.expect(parseHello("WISP3 secret") == null);
     try std.testing.expect(parseHello("GET / HTTP/1.1") == null);
+}
+
+test "frameIntervalMs clamps lan-stream-fps to 1-30" {
+    try std.testing.expectEqual(@as(i64, 250), frameIntervalMs(4));
+    try std.testing.expectEqual(@as(i64, 1000), frameIntervalMs(0));
+    try std.testing.expectEqual(@as(i64, 33), frameIntervalMs(90));
+    try std.testing.expectEqual(@as(i64, 100), frameIntervalMs(10));
+}
+
+test "display source falls back to window frames only after a failure" {
+    var server: Server = undefined;
+    server.source = .display;
+    server.display_failed = std.atomic.Value(bool).init(false);
+    try std.testing.expect(!server.usesWindowFrames());
+    server.display_failed.store(true, .release);
+    try std.testing.expect(server.usesWindowFrames());
+    server.source = .window;
+    server.display_failed.store(false, .release);
+    try std.testing.expect(server.usesWindowFrames());
 }
 
 test "keyMatches compares the exact key only" {

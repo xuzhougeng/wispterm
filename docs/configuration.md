@@ -109,6 +109,9 @@ feishu-app-secret = your-app-secret
 | `remote-device-name`        | *(none)*   | Friendly device name sent with the WispTerm WebSocket pairing                                                                                                                                                            |
 | `remote-session-key`        | *(none)*   | Fixed remote session key base. The first local WispTerm instance uses it directly; later concurrently running instances use `_1`, `_2`, `_3`, and so on.                                                                  |
 | `lan-stream-enabled`        | `false`    | macOS: advertise `_wispterm._tcp` on the local network and serve the WispTerm phone app directly over Wi‑Fi: JPEG frames of the window (`WISP1`) and the relay message stream — terminal and AI Chat — without going through the relay (`WISP2`). The phone authenticates with `remote-session-key` (required). See [LAN direct protocol](#lan-direct-protocol). |
+| `lan-stream-source`         | `window`   | What the LAN screen stream (`WISP1`) shows: `window` reads this WispTerm window back from the renderer; `display` captures a whole macOS display with ScreenCaptureKit (macOS 12.3+), scaled to a 1280–1920 px width. `display` needs the Screen Recording permission: the first start shows the system prompt, and until it is granted (or on failure) the stream falls back to `window` and says so in the log. |
+| `lan-stream-display`        | `0`        | Display index for `lan-stream-source = display` (0 = main display, in ScreenCaptureKit order). |
+| `lan-stream-fps`            | `4`        | Frame-rate cap for the LAN screen stream, 1–30. |
 | `feishu-enabled`            | `false`    | Enable the Feishu/Lark long-connection channel. Configure credentials from the command center by typing `feishu`, or set `feishu-app-id` and `feishu-app-secret`; restart required.                                      |
 | `feishu-app-id`             | *(none)*   | Feishu app ID (`cli_...`). Falls back to the `FEISHU_APP_ID` environment variable when empty.                                                                                                                            |
 | `feishu-app-secret`         | *(none)*   | Feishu app secret. Falls back to the `FEISHU_APP_SECRET` environment variable when empty. Keep this private.                                                                                                             |
@@ -165,7 +168,7 @@ Every connection starts with one greeting line, terminated by `\n`:
 
 | Greeting                  | Channel                                                    |
 |---------------------------|------------------------------------------------------------|
-| `WISP1 <session-key>\n`   | Screen stream: `[u32 big-endian length][JPEG bytes]` frames, at most 4 per second, until either side closes. |
+| `WISP1 <session-key>\n`   | Screen stream: `[u32 big-endian length][JPEG bytes]` frames of the window or the whole display (`lan-stream-source`), at most `lan-stream-fps` per second, until either side closes. |
 | `WISP2 <session-key>\n`   | Message channel: newline-delimited JSON, see below.         |
 
 `<session-key>` is the effective `remote-session-key` of that instance (the

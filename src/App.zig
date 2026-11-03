@@ -565,6 +565,12 @@ pub fn startLanStream(self: *App, cfg: *const Config) void {
         .name = name,
         .key = effective_key,
         .hub = self.remote_hub,
+        .source = switch (cfg.@"lan-stream-source") {
+            .window => .window,
+            .display => .display,
+        },
+        .display_index = cfg.@"lan-stream-display",
+        .fps = cfg.@"lan-stream-fps",
     }) catch |err| {
         std.debug.print("lan-stream disabled: {}\n", .{err});
         return;
@@ -575,7 +581,7 @@ pub fn startLanStream(self: *App, cfg: *const Config) void {
         return;
     };
     self.lan_stream_server = server;
-    std.debug.print("lan-stream \"{s}\" listening on port {d} (caps={s})\n", .{ name, server.port, server.capabilities() });
+    std.debug.print("lan-stream \"{s}\" listening on port {d} (caps={s}, source={s}, fps={d})\n", .{ name, server.port, server.capabilities(), @tagName(server.source), cfg.@"lan-stream-fps" });
 }
 
 /// Get the shell command as a native null-terminated command line.
