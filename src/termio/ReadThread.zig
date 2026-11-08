@@ -49,8 +49,8 @@ pub fn threadMain(surface: *Surface) void {
         }
 
         const data = buf[0..bytes_read];
-        if (surface.remote_client) |client| {
-            client.sendOutput(surface.remote_id[0..], data);
+        if (surface.remote_hub) |hub| {
+            hub.sendOutput(surface.remote_id[0..], data);
         }
 
         if (surface.resize_in_progress.load(.acquire)) {
@@ -110,8 +110,8 @@ fn drainResizeOutput(
         }
 
         const data = scratch[0..bytes_read];
-        if (surface.remote_client) |client| {
-            client.sendOutput(surface.remote_id[0..], data);
+        if (surface.remote_hub) |hub| {
+            hub.sendOutput(surface.remote_id[0..], data);
         }
         pending.appendSlice(surface.allocator, data) catch {
             pending.clearRetainingCapacity();
@@ -160,8 +160,8 @@ fn drainAvailableOutput(
         }
 
         const data = scratch[0..bytes_read];
-        if (surface.remote_client) |client| {
-            client.sendOutput(surface.remote_id[0..], data);
+        if (surface.remote_hub) |hub| {
+            hub.sendOutput(surface.remote_id[0..], data);
         }
         pending.appendSlice(surface.allocator, data) catch {
             processOutput(surface, pending.items);

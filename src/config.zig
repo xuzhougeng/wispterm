@@ -163,6 +163,17 @@ pub const AutoUpdate = enum {
 
 /// Where the File Explorer lives. Shaped like Ghostty's
 /// `quick-terminal-position` / `gtk-tabs-location` enums.
+pub const LanStreamSource = enum {
+    /// The WispTerm window, read back from the GPU renderer.
+    window,
+    /// A whole display, captured with ScreenCaptureKit.
+    display,
+
+    pub fn parse(s: []const u8) ?LanStreamSource {
+        return std.meta.stringToEnum(LanStreamSource, s);
+    }
+};
+
 pub const FileExplorerPosition = enum {
     /// A tab in the right dock, beside Copilot.
     right,
@@ -442,6 +453,17 @@ language: i18n.LanguageSetting = .auto,
 /// (Bonjour `_wispterm._tcp`) for the phone app. Viewers authenticate with
 /// remote-session-key. macOS only for now.
 @"lan-stream-enabled": bool = false,
+
+/// What the LAN screen stream shows: `window` (this WispTerm window, read back
+/// from the renderer) or `display` (a whole macOS display via ScreenCaptureKit;
+/// needs Screen Recording permission, falls back to `window` without it).
+@"lan-stream-source": LanStreamSource = .window,
+
+/// Which display `lan-stream-source = display` captures (0 = main display).
+@"lan-stream-display": u32 = 0,
+
+/// Upper bound on LAN stream frames per second (1-30).
+@"lan-stream-fps": u32 = 4,
 
 /// Enables the Feishu (Lark) long-connection channel.
 @"feishu-enabled": bool = false,
@@ -1104,6 +1126,27 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         } else {
             log.warn("invalid lan-stream-enabled: {s}", .{value});
         }
+    } else if (std.mem.eql(u8, key, "lan-stream-source")) {
+        if (LanStreamSource.parse(value)) |source| {
+            self.@"lan-stream-source" = source;
+        } else {
+            log.warn("invalid lan-stream-source: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "lan-stream-display")) {
+        self.@"lan-stream-display" = std.fmt.parseInt(u32, value, 10) catch {
+            log.warn("invalid lan-stream-display: {s}", .{value});
+            return;
+        };
+    } else if (std.mem.eql(u8, key, "lan-stream-fps")) {
+        const fps = std.fmt.parseInt(u32, value, 10) catch {
+            log.warn("invalid lan-stream-fps: {s}", .{value});
+            return;
+        };
+        if (fps < 1 or fps > 30) {
+            log.warn("invalid lan-stream-fps (expected 1-30): {s}", .{value});
+            return;
+        }
+        self.@"lan-stream-fps" = fps;
     } else if (std.mem.eql(u8, key, "weixin-direct-enabled")) {
         if (std.mem.eql(u8, value, "true")) {
             self.@"weixin-direct-enabled" = true;
@@ -1704,6 +1747,9 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --remote-device-name <name>  Friendly device name for remote access
         \\  --remote-session-key <key>   Fixed remote key base; later instances append _1, _2
         \\  --lan-stream-enabled <bool>  Stream the window to the phone app over the LAN (Bonjour; needs remote-session-key)
+        \\  --lan-stream-source <mode>   LAN stream source: window (default) or display (ScreenCaptureKit)
+        \\  --lan-stream-display <n>     Display index for lan-stream-source = display (0 = main)
+        \\  --lan-stream-fps <n>         LAN stream frame-rate cap, 1-30 (default 4)
         \\  --weixin-direct-enabled <bool> Enable embedded WeChat ilink direct path
         \\  --weixin-base-url <url>      Override ilink API base URL
         \\  --weixin-reply-timeout-ms <n> Deprecated (no-op); AI-reply window is ~30 min
@@ -2074,6 +2120,9 @@ const default_config_template =
     \\# remote-session-key =
     \\# LAN screen stream for the phone app (macOS; authenticates with remote-session-key)
     \\# lan-stream-enabled = false
+    \\# lan-stream-source = window   # or: display (whole screen via ScreenCaptureKit)
+    \\# lan-stream-display = 0
+    \\# lan-stream-fps = 4
     \\
     \\# Scrollback buffer size in bytes (default: 10MB)
     \\# scrollback-limit = 10000000
