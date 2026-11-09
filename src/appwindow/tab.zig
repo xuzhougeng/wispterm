@@ -66,6 +66,10 @@ pub threadlocal var g_ssh_terminal_capabilities: bool = false;
 // Tab model — each tab owns a SplitTree of Surfaces
 // ============================================================================
 
+/// Heap-created tabs must be initialized with one struct literal
+/// (`t.* = .{ ... }`): `allocator.create` returns undefined memory and
+/// field-by-field assignment skips these defaults, leaving any forgotten field
+/// garbage. Enforced by `source_guards/tab_state_init_guard.zig`.
 pub const TabState = struct {
     kind: Kind = .terminal,
     tree: SplitTree,
@@ -557,23 +561,7 @@ pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: 
         tree_mut.deinit();
         return false;
     };
-    t.kind = .terminal;
-    t.tree = tree;
-    t.focused = .root;
-    t.ai_chat_session = null;
-    t.ai_history_session = null;
-    t.memory_center_session = null;
-    t.conversation_center_session = null;
-    t.skill_center_session = null;
-    t.port_forwarding_session = null;
-    t.copilot_session = null;
-    // allocator.create returns undefined memory and struct-default values are
-    // NOT applied to field-by-field init, so these must be set explicitly or
-    // getTitle reads a garbage tmux_name_len (Phase 3c-2 fields).
-    t.tmux_window_id = null;
-    t.tmux_owner = null;
-    t.tmux_name_len = 0;
-    t.right_dock = .{};
+    t.* = .{ .kind = .terminal, .tree = tree };
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -635,20 +623,7 @@ pub fn spawnBenchmarkTab(
         pair.controller.deinit();
         return null;
     };
-    t.kind = .terminal;
-    t.tree = tree;
-    t.focused = .root;
-    t.ai_chat_session = null;
-    t.ai_history_session = null;
-    t.memory_center_session = null;
-    t.conversation_center_session = null;
-    t.skill_center_session = null;
-    t.port_forwarding_session = null;
-    t.copilot_session = null;
-    t.tmux_window_id = null;
-    t.tmux_owner = null;
-    t.tmux_name_len = 0;
-    t.right_dock = .{};
+    t.* = .{ .kind = .terminal, .tree = tree };
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -708,23 +683,7 @@ pub fn spawnAiChatSession(allocator: std.mem.Allocator, session: *ai_chat.Sessio
 
     const t = allocator.create(TabState) catch return false;
     installAiChatHistoryHook(session);
-    t.kind = .ai_chat;
-    t.tree = .empty;
-    t.focused = .root;
-    t.ai_chat_session = session;
-    t.ai_history_session = null;
-    t.memory_center_session = null;
-    t.conversation_center_session = null;
-    t.skill_center_session = null;
-    t.port_forwarding_session = null;
-    t.copilot_session = null;
-    // allocator.create returns undefined memory and struct-default values are
-    // NOT applied to field-by-field init, so these must be set explicitly or
-    // getTitle reads a garbage tmux_name_len (Phase 3c-2 fields).
-    t.tmux_window_id = null;
-    t.tmux_owner = null;
-    t.tmux_name_len = 0;
-    t.right_dock = .{};
+    t.* = .{ .kind = .ai_chat, .tree = .empty, .ai_chat_session = session };
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -763,23 +722,7 @@ pub fn spawnAiHistoryTab(allocator: std.mem.Allocator, source: ai_history_source
         allocator.destroy(session_ptr);
         return false;
     };
-    t.kind = .ai_history;
-    t.tree = .empty;
-    t.focused = .root;
-    t.ai_chat_session = null;
-    t.copilot_session = null;
-    // allocator.create returns undefined memory and struct-default values are
-    // NOT applied to field-by-field init, so these must be set explicitly or
-    // getTitle reads a garbage tmux_name_len (Phase 3c-2 fields).
-    t.tmux_window_id = null;
-    t.tmux_owner = null;
-    t.tmux_name_len = 0;
-    t.right_dock = .{};
-    t.ai_history_session = session_ptr;
-    t.memory_center_session = null;
-    t.conversation_center_session = null;
-    t.skill_center_session = null;
-    t.port_forwarding_session = null;
+    t.* = .{ .kind = .ai_history, .tree = .empty, .ai_history_session = session_ptr };
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -797,20 +740,7 @@ pub fn spawnMemoryCenterTab(allocator: std.mem.Allocator) bool {
         allocator.destroy(session_ptr);
         return false;
     };
-    t.kind = .memory_center;
-    t.tree = .empty;
-    t.focused = .root;
-    t.ai_chat_session = null;
-    t.ai_history_session = null;
-    t.memory_center_session = session_ptr;
-    t.conversation_center_session = null;
-    t.skill_center_session = null;
-    t.port_forwarding_session = null;
-    t.copilot_session = null;
-    t.right_dock = .{};
-    t.tmux_window_id = null;
-    t.tmux_owner = null;
-    t.tmux_name_len = 0;
+    t.* = .{ .kind = .memory_center, .tree = .empty, .memory_center_session = session_ptr };
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -837,20 +767,11 @@ pub fn spawnConversationCenterTab(allocator: std.mem.Allocator) bool {
         allocator.destroy(session_ptr);
         return false;
     };
-    t.kind = .conversation_center;
-    t.tree = .empty;
-    t.focused = .root;
-    t.ai_chat_session = null;
-    t.ai_history_session = null;
-    t.memory_center_session = null;
-    t.conversation_center_session = session_ptr;
-    t.skill_center_session = null;
-    t.port_forwarding_session = null;
-    t.copilot_session = null;
-    t.right_dock = .{};
-    t.tmux_window_id = null;
-    t.tmux_owner = null;
-    t.tmux_name_len = 0;
+    t.* = .{
+        .kind = .conversation_center,
+        .tree = .empty,
+        .conversation_center_session = session_ptr,
+    };
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -869,17 +790,7 @@ pub fn spawnSkillCenterTab(allocator: std.mem.Allocator) bool {
         session_ptr.destroy();
         return false;
     };
-    t.kind = .skill_center;
-    t.tree = .empty;
-    t.focused = .root;
-    t.ai_chat_session = null;
-    t.ai_history_session = null;
-    t.memory_center_session = null;
-    t.conversation_center_session = null;
-    t.skill_center_session = session_ptr;
-    t.port_forwarding_session = null;
-    t.copilot_session = null;
-    t.right_dock = .{};
+    t.* = .{ .kind = .skill_center, .tree = .empty, .skill_center_session = session_ptr };
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -901,17 +812,7 @@ pub fn spawnPortForwardingTab(allocator: std.mem.Allocator) bool {
         allocator.destroy(session_ptr);
         return false;
     };
-    t.kind = .port_forwarding;
-    t.tree = .empty;
-    t.focused = .root;
-    t.ai_chat_session = null;
-    t.ai_history_session = null;
-    t.memory_center_session = null;
-    t.conversation_center_session = null;
-    t.skill_center_session = null;
-    t.port_forwarding_session = session_ptr;
-    t.copilot_session = null;
-    t.right_dock = .{};
+    t.* = .{ .kind = .port_forwarding, .tree = .empty, .port_forwarding_session = session_ptr };
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -2273,25 +2174,10 @@ pub fn restoreTab(
         tree.deinit();
         return false;
     };
-    t.kind = .terminal;
-    t.tree = tree;
+    t.* = .{ .kind = .terminal, .tree = tree };
 
     // Resolve focused_leaf from pre-order index back to a Handle.
     t.focused = handleOfNthLeaf(&t.tree, snap.focused_leaf) orelse .root;
-    t.ai_chat_session = null;
-    t.ai_history_session = null;
-    t.memory_center_session = null;
-    t.conversation_center_session = null;
-    t.skill_center_session = null;
-    t.port_forwarding_session = null;
-    t.copilot_session = null;
-    // allocator.create returns undefined memory and struct-default values are
-    // NOT applied to field-by-field init, so these must be set explicitly or
-    // getTitle reads a garbage tmux_name_len (Phase 3c-2 fields).
-    t.tmux_window_id = null;
-    t.tmux_owner = null;
-    t.tmux_name_len = 0;
-    t.right_dock = .{};
 
     // Restore the Copilot sidebar conversation in place, if any. Missing record
     // (deleted / corrupt store) → silent fallback to an empty sidebar.

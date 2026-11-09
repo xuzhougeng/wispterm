@@ -49,6 +49,7 @@ Structural debt is frozen mechanically by source-scanning ratchet tests (the sam
 | `import_hub_guard` | `pub const X = @import(...)` re-exports in `AppWindow.zig` | **16** | import the real module directly, not via `AppWindow.X` |
 | `side_effect_guard` | direct `g_force_rebuild` / `g_cells_valid` writes in the watched integration/session files | AppWindow **26**, input **23**, overlays **0**, assistant/conversation/session **0** | return a `UiEffect`, land it through `AppWindow.applyUiEffect` |
 | `objc_autorelease_guard` | exported `.m` bridge functions that send Objective-C messages outside `@autoreleasepool` (macOS has no outer pool: no `NSApplicationMain`) | **0** (allowlist: one deliberate test probe) | wrap the Objective-C part in `@autoreleasepool { }` |
+| `tab_state_init_guard` | `create(TabState)` sites initialized field by field (`allocator.create` returns undefined memory and piecewise init skips declaration defaults) | **0** | initialize with one struct literal: `t.* = .{ ... }` |
 
 The 10,000-line guard is a **runaway tripwire, not a health metric**: `check-sizes` prevents uncontrolled growth, it does not certify architectural health. A file under it can still be tangled; treat any file over **5,000 lines** as a signal to review responsibility, dependency direction, state ownership, and test boundaries. The boundary ratchets — not the line count — are the primary enforcement mechanism.
 

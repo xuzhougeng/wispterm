@@ -310,6 +310,7 @@ test {
     _ = @import("source_guards/overlay_boundary_guard.zig");
     _ = @import("source_guards/input_feature_boundary_guard.zig");
     _ = @import("source_guards/objc_autorelease_guard.zig");
+    _ = @import("source_guards/tab_state_init_guard.zig");
     _ = @import("renderer/overlays/transfer_toast_model.zig");
     _ = @import("renderer/overlays/update_prompt_model.zig");
     _ = @import("update_stage.zig");
