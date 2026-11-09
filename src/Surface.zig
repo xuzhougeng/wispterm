@@ -505,6 +505,7 @@ pub fn init(
 ) !*Surface {
     const surface = try allocator.create(Surface);
     errdefer allocator.destroy(surface);
+    applyFieldDefaults(surface);
 
     // Initialize terminal
     surface.terminal = ghostty_vt.Terminal.init(allocator, .{
@@ -543,6 +544,22 @@ pub fn init(
     const ready = try finishInit(surface, allocator, cols, rows, platform_pty_command.launchKindForCommand(shell_cmd), cwd, advertise_terminal_capabilities);
     ready.setRespawnTarget(allocator, shell_cmd, cwd);
     return ready;
+}
+
+/// Give every field that declares a default its default value.
+///
+/// `allocator.create` returns undefined memory (0xAA-filled in Debug) and the
+/// constructors assign fields one at a time rather than through a struct
+/// literal, so a declaration default is NOT applied on its own. A field added
+/// with `= .{}` but forgotten in `finishInit` would otherwise stay garbage:
+/// `agent_transcript` did, and closing the tab freed a 0xAAAA… pointer.
+/// Ghostty avoids this class of bug by building the surface with one
+/// `self.* = .{ ... }` literal; this is the equivalent for our piecewise init.
+/// Must run before any other field is written.
+fn applyFieldDefaults(surface: *Surface) void {
+    inline for (@typeInfo(Surface).@"struct".fields) |field| {
+        if (field.defaultValue()) |value| @field(surface, field.name) = value;
+    }
 }
 
 /// Shared constructor tail for `init` (real PTY + child) and `initVirtual`
@@ -705,6 +722,7 @@ pub fn initVirtual(
 ) !*Surface {
     const surface = try allocator.create(Surface);
     errdefer allocator.destroy(surface);
+    applyFieldDefaults(surface);
 
     surface.terminal = ghostty_vt.Terminal.init(allocator, .{
         .cols = cols,
@@ -1946,6 +1964,25 @@ fn updateTitle(self: *Surface, title: []const u8, osc_num: u8) void {
         @memcpy(self.window_title[0..friendly_len], friendly[0..friendly_len]);
         self.window_title_len = friendly_len;
     }
+}
+
+test "applyFieldDefaults initializes defaulted fields the constructors never assign" {
+    // Mimic what `allocator.create` hands back in a Debug build.
+    var surface: Surface = undefined;
+    @memset(std.mem.asBytes(&surface), 0xAA);
+    applyFieldDefaults(&surface);
+
+    // These four were left as 0xAA garbage by `finishInit`.
+    try std.testing.expect(surface.agent_transcript.path == null);
+    try std.testing.expect(surface.agent_transcript.json == null);
+    try std.testing.expectEqual(agent_detector.State.none, surface.agent_notify_prev_state);
+    try std.testing.expectEqual(@as(i64, 0), surface.agent_done_staged_ms);
+    try std.testing.expect(!surface.resize_overlay_active);
+    try std.testing.expectEqual(@as(u32, 1), surface.ref_count);
+
+    // The crash: closing a tab ran this on an undefined transcript and freed
+    // 0xAAAAAAAAAAAAAAAA. On a defaulted one it must be a no-op.
+    surface.agent_transcript.deinit(std.testing.allocator);
 }
 
 test "Surface exposes init and initVirtual (forces analysis of the shared finishInit refactor)" {
