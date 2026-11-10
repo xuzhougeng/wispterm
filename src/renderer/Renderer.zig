@@ -27,8 +27,12 @@ const Renderer = @This();
 // Constants
 // ============================================================================
 
-/// Max cells = 300 cols x 100 rows = 30000 (generous)
-pub const MAX_CELLS: usize = 30000;
+/// Cells the shared GPU instance buffers are created with (300 cols x 100
+/// rows). This is a starting size, not a limit: the CPU cell lists are sized
+/// to the grid and the instance buffers grow on upload (see
+/// `cell_pipeline.uploadInstances`), as Ghostty's renderer does. As a hard cap
+/// it left every row past the 30,000th cell blank on large displays.
+pub const INITIAL_CELLS: usize = 30000;
 
 pub const MAX_KITTY_PLACEMENTS: usize = 512;
 
@@ -303,7 +307,7 @@ pub fn cpuBufferCapacityBytes(self: *const Renderer) usize {
 }
 
 pub fn ensureCellCapacity(self: *Renderer, requested: usize) !void {
-    const target = @min(MAX_CELLS, requested);
+    const target = requested;
     if (target <= self.bg_cells.items.len and
         target <= self.fg_cells.items.len and
         target <= self.color_fg_cells.items.len and
@@ -325,7 +329,7 @@ pub fn ensureCellCapacity(self: *Renderer, requested: usize) !void {
 }
 
 pub fn ensureRowCacheCapacity(self: *Renderer, requested: usize) !void {
-    const target = @min(MAX_CELLS, requested);
+    const target = requested;
     if (target <= self.row_cache.items.len) return;
 
     const allocator = self.surface.allocator;
