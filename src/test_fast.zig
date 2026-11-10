@@ -405,6 +405,7 @@ test {
     _ = @import("file_explorer.zig");
     _ = @import("i18n.zig");
     _ = @import("markdown_text.zig");
+    _ = @import("assistant/conversation/api_key_resolver.zig");
     _ = @import("assistant/conversation/composer_layout.zig");
     _ = @import("assistant/conversation/input_text.zig");
     _ = @import("assistant/conversation/prompt_queue.zig");

@@ -49,6 +49,25 @@ pub const SessionRecord = struct {
     /// records written before this field existed.
     cwd: []const u8 = "",
     messages: []MessageRecord,
+
+    /// Serializes every field as the default would, except `api_key`, which
+    /// is always written empty. The key stays on the in-memory record (a fork
+    /// or a checkpoint is built from one) but never reaches the history file;
+    /// a restored session gets it back from the saved AI profiles
+    /// (assistant/conversation/api_key_resolver.zig). Files written before
+    /// this existed are scrubbed the next time they are saved.
+    pub fn jsonStringify(self: SessionRecord, jw: anytype) !void {
+        try jw.beginObject();
+        inline for (std.meta.fields(SessionRecord)) |field| {
+            try jw.objectField(field.name);
+            if (comptime std.mem.eql(u8, field.name, "api_key")) {
+                try jw.write("");
+            } else {
+                try jw.write(@field(self, field.name));
+            }
+        }
+        try jw.endObject();
+    }
 };
 
 pub const Row = struct {
@@ -722,6 +741,47 @@ test "agent_history: sorts sessions by updated_at descending" {
 
     try std.testing.expectEqualStrings("new", rows[0].session_id);
     try std.testing.expectEqualStrings("old", rows[1].session_id);
+}
+
+test "agent_history: the API key is never written to the history file" {
+    const allocator = std.testing.allocator;
+    var store = Store.init(allocator);
+    defer store.deinit();
+    try store.upsertRecord(.{
+        .session_id = "s1",
+        .title = "Chat 1",
+        .base_url = "https://api.example.com",
+        .api_key = "sk-very-secret-value",
+        .model = "m1",
+        .system_prompt = "system",
+        .thinking_enabled = true,
+        .reasoning_effort = "high",
+        .stream = false,
+        .agent_enabled = true,
+        .created_at = 10,
+        .updated_at = 20,
+        .messages = &.{},
+    });
+    // The in-memory record still carries the key (forks and checkpoints are
+    // built from it) ...
+    try std.testing.expectEqualStrings("sk-very-secret-value", store.records.items[0].api_key);
+
+    // ... but neither serialization writes it.
+    const store_json = try store.toJsonString(allocator);
+    defer allocator.free(store_json);
+    try std.testing.expect(std.mem.indexOf(u8, store_json, "sk-very-secret-value") == null);
+    try std.testing.expect(std.mem.indexOf(u8, store_json, "\"api_key\":\"\"") != null);
+
+    const record_json = try recordToJson(allocator, store.records.items[0]);
+    defer allocator.free(record_json);
+    try std.testing.expect(std.mem.indexOf(u8, record_json, "sk-very-secret-value") == null);
+
+    // The file still loads, with an empty key and everything else intact.
+    var reloaded = try Store.fromJsonString(allocator, store_json);
+    defer reloaded.deinit();
+    try std.testing.expectEqualStrings("", reloaded.records.items[0].api_key);
+    try std.testing.expectEqualStrings("https://api.example.com", reloaded.records.items[0].base_url);
+    try std.testing.expectEqualStrings("m1", reloaded.records.items[0].model);
 }
 
 test "agent_history: json round trip preserves messages" {

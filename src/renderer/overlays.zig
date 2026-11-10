@@ -6,6 +6,7 @@
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const ai_chat = @import("../assistant/conversation/session.zig");
+const api_key_resolver = @import("../assistant/conversation/api_key_resolver.zig");
 const ai_chat_protocol = @import("../assistant/conversation/protocol.zig");
 const assistant_profile_store = @import("../assistant/profile/store.zig");
 const titlebar = AppWindow.titlebar;
@@ -5776,6 +5777,22 @@ pub fn setSubagentProfileName(name: []const u8) void {
 /// ai_chat.SubagentProfileResolver: map the configured profile name to owned
 /// credentials. Any miss (unset key, unknown name, invalid profile) returns
 /// null — the subagent then falls back to the main conversation's profile.
+/// API key for a conversation restored from history, taken from the saved AI
+/// profiles (registered as `api_key_resolver`'s resolver by AppWindow).
+pub fn resolveApiKeyForEndpoint(base_url: []const u8, model: []const u8, out: []u8) ?[]const u8 {
+    loadAiProfiles();
+    var candidates: [assistant_profiles.AI_PROFILE_MAX]api_key_resolver.Candidate = undefined;
+    const count = @min(assistantProfiles().profile_count, candidates.len);
+    for (0..count) |i| {
+        const profile = &assistantProfiles().profiles[i];
+        candidates[i] = .{ .base_url = aiProfileField(profile, .base_url), .model = aiProfileField(profile, .model), .api_key = aiProfileField(profile, .api_key) };
+    }
+    const key = api_key_resolver.pickKey(candidates[0..count], base_url, model) orelse return null;
+    if (key.len > out.len) return null;
+    @memcpy(out[0..key.len], key);
+    return out[0..key.len];
+}
+
 pub fn resolveSubagentProfileOverride(allocator: std.mem.Allocator) ?ai_chat.SubagentProfileOverride {
     const name = g_subagent_profile_name.slice();
     if (name.len == 0) return null;

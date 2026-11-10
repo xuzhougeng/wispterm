@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const api_key_resolver = @import("api_key_resolver.zig");
 const ai_chat_input_text = @import("input_text.zig");
 const notification = @import("../../notification.zig");
 const input_key = @import("../../input/key.zig");
@@ -1406,6 +1407,10 @@ pub const Session = struct {
         session.mutex.lock();
         defer session.mutex.unlock();
         if (record.session_id.len > 0) session.copySessionId(record.session_id);
+        if (session.api_key_len == 0) { // history never stores the key; see api_key_resolver.zig
+            var key_buf: [512]u8 = undefined;
+            if (api_key_resolver.resolve(session.baseUrl(), session.model(), &key_buf)) |key| session.copyApiKey(key);
+        }
         session.max_tokens = record.max_tokens;
         session.vision_enabled = record.vision_enabled;
         session.setPresentation(if (record.copilot) .copilot_sidebar else .chat_tab);

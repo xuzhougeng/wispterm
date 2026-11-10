@@ -325,6 +325,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     ai_chat.setDefaultWorkingDir(app.ai_agent_working_dir);
     overlays.setSubagentProfileName(app.ai_subagent_profile);
     ai_chat.setSubagentProfileResolver(overlays.resolveSubagentProfileOverride);
+    @import("assistant/conversation/api_key_resolver.zig").set(overlays.resolveApiKeyForEndpoint);
     @import("research/web_search.zig").setJinaApiKey(app.jina_api_key);
     @import("pty.zig").setConsoleHostPreference(app.console_host_preference);
     // Copy shell command from App
