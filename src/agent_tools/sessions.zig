@@ -4,6 +4,8 @@ const types = @import("../assistant/conversation/types.zig");
 const terminal_lease = @import("../agent/terminal_lease.zig");
 const platform_pty_command = @import("../platform/pty_command.zig");
 const terminal_tools = @import("terminal.zig");
+const tool_access = @import("access.zig");
+const tool_exec = @import("exec.zig");
 const tool_output = @import("output.zig");
 
 const ToolContext = types.ToolContext;
@@ -111,7 +113,12 @@ pub fn tabNew(ctx: *ToolContext, kind: []const u8, command: ?[]const u8) ![]u8 {
 
     const trimmed_kind = std.mem.trim(u8, kind, " \t\r\n");
     const command_for_approval = command orelse trimmed_kind;
-    if (ctx.settings.permission == .confirm) {
+    // A command runs in the new tab exactly as a local exec would, so it gets
+    // the same gate: in auto mode a dangerous or deny-listed command must be
+    // approved here too, not only when it goes through the exec tool.
+    const needs_approval = ctx.settings.permission == .confirm or
+        (if (command) |cmd| tool_access.approvalRequired(ctx.settings.permission, tool_exec.accessGate(ctx, cmd, null)) else false);
+    if (needs_approval) {
         if (!ctx.requestApproval("tab_new", command_for_approval, "Open a new local terminal tab")) {
             return tool_output.deniedResult(ctx.allocator, command_for_approval, "operator rejected new tab creation");
         }

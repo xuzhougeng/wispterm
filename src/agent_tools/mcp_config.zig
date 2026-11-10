@@ -133,6 +133,28 @@ fn approve(ctx: *ToolContext, action: []const u8, name: []const u8) bool {
     return ctx.requestApproval("mcp_config", summary, "Change MCP server configuration");
 }
 
+/// Approval for `add`. The card shows the full command line: approving a
+/// card that only named the server let the model register (and then, via
+/// mcp_activate, run) an arbitrary command the operator never saw.
+fn approveAdd(ctx: *ToolContext, name: []const u8, command: []const u8, argv: []const []const u8) bool {
+    switch (ctx.settings.permission) {
+        .full => return true,
+        .confirm, .auto => {},
+    }
+    var summary: std.ArrayListUnmanaged(u8) = .empty;
+    defer summary.deinit(ctx.allocator);
+    summary.print(ctx.allocator, "mcp_config add {s}: {s}", .{ name, command }) catch return false;
+    for (argv) |arg| {
+        const quote = arg.len == 0 or std.mem.indexOfAny(u8, arg, " \t\"'") != null;
+        if (quote) {
+            summary.print(ctx.allocator, " \"{s}\"", .{arg}) catch return false;
+        } else {
+            summary.print(ctx.allocator, " {s}", .{arg}) catch return false;
+        }
+    }
+    return ctx.requestApproval("mcp_config", summary.items, "Add an MCP server - this command line is run to start it");
+}
+
 fn errText(allocator: std.mem.Allocator, err: anyerror) ![]u8 {
     return std.fmt.allocPrint(allocator, "MCP config error: {s}", .{@errorName(err)});
 }
@@ -156,7 +178,7 @@ pub fn run(ctx: *ToolContext, arguments_json: []const u8) ![]u8 {
         const enabled = tool_args.boolean(value, "enabled") orelse true;
         const argv = try parseArgsOwned(ctx.allocator, value);
         defer tool_args.freeStringArray(ctx.allocator, argv);
-        if (!approve(ctx, "add", name)) return tool_output.deniedResult(ctx.allocator, name, "operator denied MCP config change");
+        if (!approveAdd(ctx, name, command, argv)) return tool_output.deniedResult(ctx.allocator, name, "operator denied MCP config change");
         const msg = addServer(ctx.allocator, name, command, argv, enabled) catch |err| return errText(ctx.allocator, err);
         mcp_registry.reloadCache(ctx.allocator);
         return msg;

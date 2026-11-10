@@ -28,7 +28,7 @@ const AgentSettings = types.AgentSettings;
 /// Combine the destructive-command check with the private file-access guard.
 /// `force` => guarded auto mode must prompt; `skip` => ask mode may run without
 /// a prompt.
-fn accessGate(ctx: *const ToolContext, command: []const u8, cwd: ?[]const u8) tool_access.Gate {
+pub fn accessGate(ctx: *const ToolContext, command: []const u8, cwd: ?[]const u8) tool_access.Gate {
     const dangerous = isDangerousCommand(command);
     const result = if (ctx.settings.access_rules) |rules|
         ai_agent_access.evaluate(ctx.allocator, rules, command, cwd)

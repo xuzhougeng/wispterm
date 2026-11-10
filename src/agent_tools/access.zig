@@ -55,6 +55,32 @@ pub fn remoteFileGate(is_write: bool) Gate {
     };
 }
 
+/// Gate for one operation that reads one place and writes another (a copy):
+/// it needs approval if either side does, and may run unprompted only if
+/// both sides may.
+pub fn mergeGates(a: Gate, b: Gate) Gate {
+    return .{
+        .dangerous = a.dangerous or b.dangerous,
+        .blacklisted = a.blacklisted or b.blacklisted,
+        .force = a.force or b.force,
+        .skip = a.skip and b.skip,
+        .matched = if (a.blacklisted) a.matched else b.matched,
+    };
+}
+
+test "mergeGates prompts when either side would" {
+    const free = Gate{ .dangerous = false, .blacklisted = false, .force = false, .skip = true, .matched = "" };
+    const denied = Gate{ .dangerous = false, .blacklisted = true, .force = true, .skip = false, .matched = "~/.ssh" };
+    const risky_write = remoteFileGate(true);
+
+    try std.testing.expect(!approvalRequired(.auto, mergeGates(free, free)));
+    try std.testing.expect(!approvalRequired(.confirm, mergeGates(free, free)));
+    try std.testing.expect(approvalRequired(.auto, mergeGates(denied, free)));
+    try std.testing.expect(approvalRequired(.auto, mergeGates(free, risky_write)));
+    try std.testing.expectEqualStrings("~/.ssh", mergeGates(free, denied).matched);
+    try std.testing.expect(!approvalRequired(.full, mergeGates(denied, risky_write)));
+}
+
 /// Allocate a human-readable approval reason naming the protected path. Returns
 /// null on OOM (callers fall back to a static reason).
 pub fn allocBlacklistReason(allocator: std.mem.Allocator, matched: []const u8) ?[]u8 {

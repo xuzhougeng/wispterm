@@ -54,6 +54,12 @@ pub const AccessRules = struct {
 };
 
 pub fn parseRules(allocator: std.mem.Allocator, contents: []const u8, home: []const u8) !AccessRules {
+    return parseRulesWithDeny(allocator, contents, home, &.{});
+}
+
+/// `parseRules` plus extra always-denied directories that are only known at
+/// run time (the real WispTerm config directory; see `loadRules`).
+pub fn parseRulesWithDeny(allocator: std.mem.Allocator, contents: []const u8, home: []const u8, extra_deny_roots: []const []const u8) !AccessRules {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const a = arena.allocator();
@@ -72,6 +78,11 @@ pub fn parseRules(allocator: std.mem.Allocator, contents: []const u8, home: []co
 
     for (BUILTIN_DENY) |entry| {
         try addDenyEntry(a, &deny, &names, entry, home_copy);
+    }
+    for (extra_deny_roots) |root| {
+        if (root.len == 0) continue;
+        const norm = try normalizeEntry(a, root, home_copy);
+        if (norm.len != 0) try deny.append(a, norm);
     }
 
     var lines = std.mem.tokenizeAny(u8, contents, "\r\n");
@@ -117,7 +128,7 @@ fn parseKeyword(line: []const u8, kw: []const u8) ?[]const u8 {
 fn addDenyEntry(a: std.mem.Allocator, deny: *List, names: *List, entry: []const u8, home: []const u8) !void {
     const e = std.mem.trim(u8, entry, " \t");
     if (e.len == 0) return;
-    if (std.mem.indexOfScalar(u8, e, '/') == null and e[0] != '~') {
+    if (!isPathEntry(e)) {
         try names.append(a, try a.dupe(u8, e));
     } else {
         const norm = try normalizeEntry(a, e, home);
@@ -125,9 +136,51 @@ fn addDenyEntry(a: std.mem.Allocator, deny: *List, names: *List, entry: []const 
     }
 }
 
+/// A rule entry names a path (rather than a basename glob) when it has a
+/// separator of either kind, starts with a home form, or is drive-rooted.
+fn isPathEntry(e: []const u8) bool {
+    if (std.mem.indexOfAny(u8, e, "/\\") != null) return true;
+    if (startsWithHomePrefix(e)) return true;
+    return isAbsoluteConfinePath(e);
+}
+
+fn startsWithHomePrefix(t: []const u8) bool {
+    for (home_prefixes) |prefix| {
+        if (t.len >= prefix.len and std.ascii.eqlIgnoreCase(t[0..prefix.len], prefix)) return true;
+    }
+    return false;
+}
+
+/// Canonical form every rule root and every resolved token is compared in:
+/// home expanded, `\` turned into `/`, `.`/`..` collapsed. On Windows the home
+/// directory is `C:\Users\x`, so without the separator step a deny root was
+/// `C:\Users\x/.ssh` and could never match a real Windows path.
 fn normalizeEntry(a: std.mem.Allocator, raw: []const u8, home: []const u8) ![]const u8 {
     const expanded = try expandHome(a, raw, home);
-    return lexicalNormalize(a, expanded);
+    return lexicalNormalize(a, try toForwardSlashes(a, expanded));
+}
+
+fn toForwardSlashes(a: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, raw, '\\') == null) return raw;
+    const out = try a.dupe(u8, raw);
+    for (out) |*c| {
+        if (c.* == '\\') c.* = '/';
+    }
+    return out;
+}
+
+/// Deny rules ignore case where the file system does: `~/.SSH/id_rsa` is the
+/// same file as `~/.ssh/id_rsa` on Windows and on a default macOS volume.
+fn denyFoldsCase() bool {
+    return builtin.os.tag == .windows or builtin.os.tag == .macos;
+}
+
+/// Last path component, splitting on either separator (`std.fs.path.basename`
+/// only knows `\` on a Windows host).
+fn baseName(path: []const u8) []const u8 {
+    const trimmed = std.mem.trimRight(u8, path, "/\\");
+    const idx = std.mem.lastIndexOfAny(u8, trimmed, "/\\") orelse return trimmed;
+    return trimmed[idx + 1 ..];
 }
 
 pub fn loadRules(allocator: std.mem.Allocator, file_path: []const u8, home: []const u8) !AccessRules {
@@ -139,10 +192,25 @@ pub fn loadRules(allocator: std.mem.Allocator, file_path: []const u8, home: []co
         if (err != error.FileNotFound) {
             std.log.warn("agent-access: cannot read {s} ({s}); using built-in deny defaults only", .{ file_path, @errorName(err) });
         }
-        return parseRules(allocator, "", home);
+        return parseRulesWithDeny(allocator, "", home, configDirDeny(file_path));
     };
     defer allocator.free(contents);
-    return parseRules(allocator, contents, home);
+    return parseRulesWithDeny(allocator, contents, home, configDirDeny(file_path));
+}
+
+/// The rules file lives in the WispTerm config directory, next to ssh_hosts
+/// and the AI profiles. BUILTIN_DENY can only name `~/.config/wispterm`, which
+/// is the right place on Linux alone; on Windows (%APPDATA%\wispterm) and
+/// macOS (~/Library/Application Support/wispterm) the real directory was not
+/// protected. Deny whatever directory the rules file is actually in.
+fn configDirDeny(file_path: []const u8) []const []const u8 {
+    const S = struct {
+        threadlocal var slot: [1][]const u8 = .{""};
+    };
+    const idx = std.mem.lastIndexOfAny(u8, file_path, "/\\") orelse return &.{};
+    if (idx == 0) return &.{};
+    S.slot[0] = file_path[0..idx];
+    return S.slot[0..1];
 }
 
 pub fn evaluate(allocator: std.mem.Allocator, rules: *const AccessRules, command: []const u8, cwd: ?[]const u8) EvalResult {
@@ -157,14 +225,15 @@ pub fn evaluate(allocator: std.mem.Allocator, rules: *const AccessRules, command
     while (tokens.next()) |tok| {
         const cand = pathCandidate(tok);
         if (cand.len == 0) continue;
-        const base = std.fs.path.basename(cand);
+        const fold = denyFoldsCase();
+        const base = baseName(cand);
         for (rules.deny_names) |pat| {
-            if (globMatch(pat, base)) return .{ .decision = .blacklisted, .matched = tok };
+            if (globMatchFold(pat, base, fold)) return .{ .decision = .blacklisted, .matched = tok };
         }
         if (looksLikePath(cand)) {
             const resolved = (resolveToken(a, cand, rules.home, cwd) catch null) orelse continue;
             for (rules.deny_roots) |root| {
-                if (matchesRoot(resolved, root)) return .{ .decision = .blacklisted, .matched = tok };
+                if (matchesRootFold(resolved, root, fold)) return .{ .decision = .blacklisted, .matched = tok };
             }
         }
     }
@@ -217,13 +286,14 @@ pub fn isPathDenied(allocator: std.mem.Allocator, rules: *const AccessRules, pat
     const a = arena.allocator();
     const t = stripQuotes(path);
     if (t.len == 0) return false;
-    const base = std.fs.path.basename(t);
+    const fold = denyFoldsCase();
+    const base = baseName(t);
     for (rules.deny_names) |pat| {
-        if (globMatch(pat, base)) return true;
+        if (globMatchFold(pat, base, fold)) return true;
     }
     const resolved = (resolveToken(a, t, rules.home, cwd) catch null) orelse return false;
     for (rules.deny_roots) |root| {
-        if (matchesRoot(resolved, root)) return true;
+        if (matchesRootFold(resolved, root, fold)) return true;
     }
     return false;
 }
@@ -373,13 +443,19 @@ fn isReadVerb(verb: []const u8) bool {
     return false;
 }
 
+/// Home-directory spellings the shells on each platform accept. The match
+/// is case-insensitive for the environment-variable forms (PowerShell and
+/// cmd ignore case) and must be followed by a separator or the end.
+const home_prefixes = [_][]const u8{ "~", "$HOME", "${HOME}", "%USERPROFILE%", "$env:USERPROFILE", "${env:USERPROFILE}", "$env:HOME" };
+
 fn expandHome(a: std.mem.Allocator, raw: []const u8, home: []const u8) ![]const u8 {
-    if (std.mem.eql(u8, raw, "~")) return a.dupe(u8, home);
-    if (std.mem.startsWith(u8, raw, "~/")) return std.fmt.allocPrint(a, "{s}{s}", .{ home, raw[1..] });
-    if (std.mem.eql(u8, raw, "$HOME")) return a.dupe(u8, home);
-    if (std.mem.startsWith(u8, raw, "$HOME/")) return std.fmt.allocPrint(a, "{s}{s}", .{ home, raw[5..] });
-    if (std.mem.eql(u8, raw, "${HOME}")) return a.dupe(u8, home);
-    if (std.mem.startsWith(u8, raw, "${HOME}/")) return std.fmt.allocPrint(a, "{s}{s}", .{ home, raw[7..] });
+    for (home_prefixes) |prefix| {
+        if (raw.len < prefix.len) continue;
+        if (!std.ascii.eqlIgnoreCase(raw[0..prefix.len], prefix)) continue;
+        if (raw.len == prefix.len) return a.dupe(u8, home);
+        const next = raw[prefix.len];
+        if (next == '/' or next == '\\') return std.fmt.allocPrint(a, "{s}{s}", .{ home, raw[prefix.len..] });
+    }
     return a.dupe(u8, raw);
 }
 
@@ -426,10 +502,10 @@ fn stripQuotes(token: []const u8) []const u8 {
 fn resolveToken(a: std.mem.Allocator, token: []const u8, home: []const u8, cwd: ?[]const u8) !?[]const u8 {
     const t = stripQuotes(token);
     if (t.len == 0 or t[0] == '-') return null;
-    const expanded = try expandHome(a, t, home);
-    if (expanded.len > 0 and expanded[0] == '/') return try lexicalNormalize(a, expanded);
+    const expanded = try toForwardSlashes(a, try expandHome(a, t, home));
+    if (isAbsoluteConfinePath(expanded)) return try lexicalNormalize(a, expanded);
     if (cwd) |c| {
-        const joined = try std.fmt.allocPrint(a, "{s}/{s}", .{ c, expanded });
+        const joined = try std.fmt.allocPrint(a, "{s}/{s}", .{ try toForwardSlashes(a, c), expanded });
         return try lexicalNormalize(a, joined);
     }
     return try lexicalNormalize(a, expanded);
@@ -458,13 +534,31 @@ fn matchesRoot(path: []const u8, root: []const u8) bool {
     return false;
 }
 
+/// `matchesRoot` with optional ASCII case folding (see `denyFoldsCase`).
+fn matchesRootFold(path: []const u8, root: []const u8, fold: bool) bool {
+    if (!fold) return matchesRoot(path, root);
+    if (root.len == 0 or path.len < root.len) return false;
+    if (!std.ascii.eqlIgnoreCase(path[0..root.len], root)) return false;
+    return path.len == root.len or path[root.len] == '/';
+}
+
 fn looksLikePath(token: []const u8) bool {
     const t = stripQuotes(token);
     if (t.len == 0 or t[0] == '-') return false;
-    if (std.mem.indexOfScalar(u8, t, '/') != null) return true;
+    if (std.mem.indexOfAny(u8, t, "/\\") != null) return true;
     if (t[0] == '~' or t[0] == '.' or t[0] == '/') return true;
-    if (std.mem.startsWith(u8, t, "$HOME") or std.mem.startsWith(u8, t, "${HOME}")) return true;
-    return false;
+    if (startsWithHomePrefix(t)) return true;
+    // Drive-rooted without a separator, e.g. `C:secret.txt`.
+    return isAbsoluteConfinePath(t);
+}
+
+/// `globMatch` with optional ASCII case folding.
+fn globMatchFold(pat: []const u8, str: []const u8, fold: bool) bool {
+    if (!fold) return globMatch(pat, str);
+    var pat_buf: [256]u8 = undefined;
+    var str_buf: [512]u8 = undefined;
+    if (pat.len > pat_buf.len or str.len > str_buf.len) return globMatch(pat, str);
+    return globMatch(std.ascii.lowerString(&pat_buf, pat), std.ascii.lowerString(&str_buf, str));
 }
 
 fn globMatch(pat: []const u8, str: []const u8) bool {
@@ -816,4 +910,56 @@ test "pathConfined: escaping or outside paths are not confined" {
     try std.testing.expect(!pathConfined(a, "../secret.txt", wd, "/home/u/proj", "/home/u"));
     try std.testing.expect(!pathConfined(a, "/etc/passwd", wd, "/home/u/proj", "/home/u"));
     try std.testing.expect(!pathConfined(a, "a.txt", "", "/home/u/proj", "/home/u"));
+}
+
+test "deny rules match Windows-style paths" {
+    var rules = try parseRules(std.testing.allocator, "", "C:\\Users\\x");
+    defer rules.deinit();
+    const a = std.testing.allocator;
+
+    // Backslash-separated absolute path under the home directory.
+    try std.testing.expectEqual(Decision.blacklisted, evaluate(a, &rules, "type C:\\Users\\x\\.ssh\\id_rsa", null).decision);
+    try std.testing.expect(isPathDenied(a, &rules, "C:\\Users\\x\\.ssh\\id_rsa", null));
+    // Mixed separators and a forward-slash spelling of the same place.
+    try std.testing.expect(isPathDenied(a, &rules, "C:/Users/x/.aws/credentials", null));
+    // Home spellings used by cmd and PowerShell.
+    try std.testing.expect(isPathDenied(a, &rules, "%USERPROFILE%\\.ssh\\config", null));
+    try std.testing.expect(isPathDenied(a, &rules, "$env:USERPROFILE\\.kube\\config", null));
+    try std.testing.expect(isPathDenied(a, &rules, "~\\.gnupg\\secring.gpg", null));
+    // A relative path is resolved against a Windows cwd, not glued onto it raw.
+    try std.testing.expect(isPathDenied(a, &rules, "..\\.ssh\\id_rsa", "C:\\Users\\x\\proj"));
+    // Basename globs see the last component whichever separator is used.
+    try std.testing.expect(isPathDenied(a, &rules, "D:\\keys\\server.pem", null));
+
+    // Unrelated Windows paths stay neutral.
+    try std.testing.expect(!isPathDenied(a, &rules, "C:\\Users\\x\\proj\\readme.md", null));
+    try std.testing.expect(!isPathDenied(a, &rules, "C:\\Users\\xavier\\.ssh\\id_rsa", null));
+}
+
+test "deny rules ignore case where the file system does" {
+    if (!denyFoldsCase()) return error.SkipZigTest;
+    var rules = try parseRules(std.testing.allocator, "", "/Users/u");
+    defer rules.deinit();
+    const a = std.testing.allocator;
+    try std.testing.expect(isPathDenied(a, &rules, "~/.SSH/id_rsa", null));
+    try std.testing.expect(isPathDenied(a, &rules, "/users/U/.Aws/credentials", null));
+    try std.testing.expect(isPathDenied(a, &rules, "/tmp/Server.PEM", null));
+    try std.testing.expectEqual(Decision.blacklisted, evaluate(a, &rules, "cat ~/.Ssh/id_ed25519", null).decision);
+    try std.testing.expect(!isPathDenied(a, &rules, "/Users/u/.sshx/id_rsa", null));
+}
+
+test "loadRules denies the directory the rules file lives in" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir = try tmp.dir.realpath(".", &buf);
+    const rules_path = try std.fs.path.join(std.testing.allocator, &.{ dir, "agent-access.local" });
+    defer std.testing.allocator.free(rules_path);
+    const hosts_path = try std.fs.path.join(std.testing.allocator, &.{ dir, "ssh_hosts" });
+    defer std.testing.allocator.free(hosts_path);
+
+    var rules = try loadRules(std.testing.allocator, rules_path, "/home/u");
+    defer rules.deinit();
+    try std.testing.expect(isPathDenied(std.testing.allocator, &rules, hosts_path, null));
+    try std.testing.expect(!isPathDenied(std.testing.allocator, &rules, "/home/u/proj/main.zig", null));
 }
