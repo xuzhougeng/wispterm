@@ -522,12 +522,12 @@ fn findTabIndexByTitle(title_text: []const u8) ?usize {
 
 fn resolveAgentCloseTabIndex(request: *const AgentTabCloseRequest) ?usize {
     if (request.tab_index) |idx| return idx;
-    if (request.surface_id) |surface_id| {
-        if (findTabIndexBySurfaceId(surface_id)) |idx| return idx;
-    }
-    if (request.title) |title_text| {
-        if (findTabIndexByTitle(title_text)) |idx| return idx;
-    }
+    // A selector that no longer matches must fail rather than fall back to
+    // the active tab: the tool side approved and lease-checked one specific
+    // tab, and that tab can close while the approval prompt is open. Same
+    // precedence as agent_tools/sessions.zig resolveCloseTab.
+    if (request.surface_id) |surface_id| return findTabIndexBySurfaceId(surface_id);
+    if (request.title) |title_text| return findTabIndexByTitle(title_text);
     return active_tab_state.g_active_tab;
 }
 

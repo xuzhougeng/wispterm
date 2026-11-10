@@ -30,19 +30,12 @@ pub const FlushScheduler = struct {
         self.next_flush_ms = 0;
     }
 
-    /// A transient error BEFORE the snapshot (snapshot/path build failed): stay
-    /// dirty, re-arm the debounce. Precondition: caller is already dirty (this is
-    /// only reached after `shouldFlush` returned true); it does not set `dirty`.
+    /// A flush attempt failed before `beginFlush` (the write or the snapshot
+    /// errored): stay dirty and re-arm the debounce so the retry waits instead
+    /// of firing on every main-loop iteration. Precondition: caller is already
+    /// dirty (only reached after `shouldFlush` returned true).
     pub fn deferFlush(self: *FlushScheduler, now_ms: i64) void {
         self.next_flush_ms = now_ms + DEBOUNCE_MS;
-    }
-
-    /// The flush write failed: re-mark dirty (if cleared) and re-arm.
-    pub fn failFlush(self: *FlushScheduler, now_ms: i64) void {
-        if (!self.dirty) {
-            self.dirty = true;
-            self.next_flush_ms = now_ms + DEBOUNCE_MS;
-        }
     }
 
     pub fn reset(self: *FlushScheduler) void {
@@ -74,26 +67,23 @@ test "markDirty does not re-arm while already dirty" {
     try std.testing.expectEqual(@as(i64, 1000 + DEBOUNCE_MS), s.next_flush_ms);
 }
 
-test "beginFlush clears; failFlush and deferFlush re-arm" {
+test "beginFlush clears the dirty state" {
     var s: FlushScheduler = .{};
     s.markDirty(1000);
     s.beginFlush();
     try std.testing.expect(!s.dirty);
     try std.testing.expect(!s.shouldFlush(true, 5000));
-    s.failFlush(2000);
-    try std.testing.expect(s.dirty);
-    try std.testing.expectEqual(@as(i64, 2000 + DEBOUNCE_MS), s.next_flush_ms);
-    s.deferFlush(3000);
-    try std.testing.expect(s.dirty);
-    try std.testing.expectEqual(@as(i64, 3000 + DEBOUNCE_MS), s.next_flush_ms);
 }
 
-test "failFlush keeps a newer markDirty deadline (concurrent dirty)" {
+test "deferFlush after a failed write waits out a fresh debounce" {
     var s: FlushScheduler = .{};
-    s.markDirty(1000); // armed for 1000+DEBOUNCE
-    s.failFlush(2000); // already dirty -> must NOT stomp the earlier deadline
+    s.markDirty(1000);
+    try std.testing.expect(s.shouldFlush(false, 2000));
+    s.deferFlush(2000); // the write at t=2000 failed
     try std.testing.expect(s.dirty);
-    try std.testing.expectEqual(@as(i64, 1000 + DEBOUNCE_MS), s.next_flush_ms);
+    try std.testing.expect(!s.shouldFlush(false, 2001));
+    try std.testing.expect(s.shouldFlush(false, 2000 + DEBOUNCE_MS));
+    try std.testing.expect(s.shouldFlush(true, 2001)); // shutdown still forces it
 }
 
 test "reset clears everything" {

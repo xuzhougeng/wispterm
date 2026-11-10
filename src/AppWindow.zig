@@ -300,6 +300,11 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     tab.g_ssh_legacy_algorithms = app.ssh_legacy_algorithms;
     tab.g_ssh_terminal_capabilities = app.ssh_advertise_terminal_capabilities;
     g_weixin_notify_forward = app.weixin_notify_forward;
+    // These three were applied only by a config hot reload, so a `false` in
+    // the config file was ignored until the file was edited again.
+    g_desktop_notifications = app.desktop_notifications;
+    g_confirm_close_running_program = app.confirm_close_running_program;
+    screen_detect.setEnabled(app.agent_screen_detection);
     overlays.g_split_divider_color = app.split_divider_color;
 
     // Apply window size from config
@@ -3682,14 +3687,20 @@ pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
             return true;
         },
         .category => |cat| {
+            // Same lock as the .row branch: the scan worker reallocates rows
+            // and the transcript under session.mutex.
+            session.mutex.lock();
             session.setCategory(cat);
             session.ensureSelectionVisible(visible_rows);
+            session.mutex.unlock();
             markUiDirty();
             return true;
         },
         .date => |k| {
+            session.mutex.lock();
             session.setDateFilter(k);
             session.ensureSelectionVisible(visible_rows);
+            session.mutex.unlock();
             markUiDirty();
             return true;
         },
@@ -4329,10 +4340,6 @@ fn openCopilotApiConfig(session: ?*ai_chat.Session) void {
     overlays.showStatusToast("Missing API key. Configure API settings.");
 }
 
-fn ensureActiveCopilotSessionConfigured() ?*ai_chat.Session {
-    return copilot_sidebar.ensureActiveSessionConfigured(copilotSidebarHost());
-}
-
 /// Input layer getter: the active terminal tab's copilot session, only when the
 /// copilot panel is visible. Used by input routing (next task).
 pub fn activeCopilotSessionForInput() ?*ai_chat.Session {
@@ -4901,7 +4908,10 @@ fn flushAgentHistoryStoreIfDirty(force: bool) void {
     const store = g_agent_history orelse return;
     store.flush() catch |err| {
         log.warn("failed to flush agent history store: {}", .{err});
-        g_flush_scheduler.failFlush(std.time.milliTimestamp());
+        // Still dirty here (beginFlush runs only after a successful write), so
+        // push the deadline out; otherwise every main-loop iteration retries
+        // the synchronous write under g_agent_history_mutex.
+        g_flush_scheduler.deferFlush(std.time.milliTimestamp());
         return;
     };
     g_flush_scheduler.beginFlush();
@@ -5719,20 +5729,6 @@ pub threadlocal var g_confirm_close_running_program: bool = true;
 pub threadlocal var g_weixin_notify_forward: bool = false;
 threadlocal var g_notif_auth_requested: bool = false;
 
-/// Update cursor blink state based on time (call once per frame)
-fn updateCursorBlink() void {
-    if (!g_cursor_blink) {
-        g_cursor_blink_visible = true;
-        return;
-    }
-
-    const now = std.time.milliTimestamp();
-    if (now - g_last_blink_time >= CURSOR_BLINK_INTERVAL_MS) {
-        g_cursor_blink_visible = !g_cursor_blink_visible;
-        g_last_blink_time = now;
-    }
-}
-
 /// Update cursor blink for a specific renderer (per-surface blink state)
 fn updateCursorBlinkForRenderer(rend: *Renderer) void {
     if (!g_cursor_blink) {
@@ -6259,6 +6255,8 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     g_confirm_close_running_program = cfg.@"confirm-close-running-program";
     g_weixin_notify_forward = cfg.@"weixin-notify-forward";
     tab.g_ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";
+    // Applies to terminals opened from now on; existing ones keep their size.
+    tab.g_scrollback_limit = cfg.@"scrollback-limit";
     overlays.g_split_divider_color = cfg.@"split-divider-color";
 
     // --- Background image ---

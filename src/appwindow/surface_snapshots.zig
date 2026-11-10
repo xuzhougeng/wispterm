@@ -220,8 +220,6 @@ fn exitCodeFromInfo(surface: *Surface, info: Surface.ExitInfo) ?u32 {
     };
 }
 
-/// Kill a surface's child process for the ACP `terminal/kill` capability.
-/// Same worker-thread hazard as agentSurfaceSnapshot.
 /// Tool worker thread: the surface's published agent detection, or null when
 /// the surface is gone. Pins the surface like the snapshot path does.
 pub fn agentSurfaceAgentState(ctx: *anyopaque, surface_id: []const u8, surface_ptr: *anyopaque) ?agent_detector.Detection {
@@ -232,6 +230,8 @@ pub fn agentSurfaceAgentState(ctx: *anyopaque, surface_id: []const u8, surface_p
     return surface.agentDetectionShared();
 }
 
+/// Kill a surface's child process for the ACP `terminal/kill` capability.
+/// Same worker-thread hazard as agentSurfaceSnapshot.
 pub fn agentKillSurfaceChild(ctx: *anyopaque, surface_id: []const u8, surface_ptr: *anyopaque) anyerror!void {
     _ = ctx;
     if (!surface_registry.acquire(surface_ptr, surface_id)) return error.SurfaceClosed;

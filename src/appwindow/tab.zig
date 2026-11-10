@@ -1453,7 +1453,18 @@ pub fn closeFocusedSplit(allocator: std.mem.Allocator) CloseResult {
         }
     }
 
+    // `remove` re-packs the node array, so a handle taken from the old tree
+    // names a different node afterwards (possibly a split, which would leave
+    // keystrokes with no pane to go to). Remember the pane itself and look it
+    // up in the new tree.
     const next_focus = t.tree.goto(allocator, t.focused, .next_wrapped) catch null;
+    const next_pane: ?SplitTree.Pane = if (next_focus) |nf| blk: {
+        if (nf == t.focused or nf.idx() >= t.tree.nodes.len) break :blk null;
+        break :blk switch (t.tree.nodes[nf.idx()]) {
+            .leaf => |pane| pane,
+            .split => null,
+        };
+    } else null;
 
     const new_tree = t.tree.remove(allocator, t.focused) catch {
         std.debug.print("Failed to remove split from tree\n", .{});
@@ -1475,16 +1486,10 @@ pub fn closeFocusedSplit(allocator: std.mem.Allocator) CloseResult {
 
     // Find valid focus in new tree
     var it = t.tree.surfaces();
-    if (it.next()) |entry| {
-        if (next_focus) |nf| {
-            if (nf != t.focused and @intFromEnum(nf) < t.tree.nodes.len) {
-                t.focused = nf;
-            } else {
-                t.focused = entry.handle;
-            }
-        } else {
-            t.focused = entry.handle;
-        }
+    if (paneHandleIn(&t.tree, next_pane)) |handle| {
+        t.focused = handle;
+    } else if (it.next()) |entry| {
+        t.focused = entry.handle;
     } else {
         // No terminal remains (preview-only tab): focus the first leaf pane so
         // keyboard routing still targets a real pane, never the root split node.
@@ -1494,6 +1499,27 @@ pub fn closeFocusedSplit(allocator: std.mem.Allocator) CloseResult {
 
     std.debug.print("Split closed, new focused handle: {}, tree nodes: {}\n", .{ @intFromEnum(t.focused), t.tree.nodes.len });
     return .closed_split;
+}
+
+/// Handle of `wanted` in `tree`, matched by pane identity, or null when the
+/// pane is not (or no longer) in the tree.
+fn paneHandleIn(tree: *const SplitTree, wanted: ?SplitTree.Pane) ?SplitTree.Node.Handle {
+    const target = wanted orelse return null;
+    var it = tree.panes();
+    while (it.next()) |entry| {
+        const same = switch (target) {
+            .terminal => |surface| switch (entry.pane) {
+                .terminal => |other| other == surface,
+                .preview => false,
+            },
+            .preview => |preview| switch (entry.pane) {
+                .preview => |other| other == preview,
+                .terminal => false,
+            },
+        };
+        if (same) return entry.handle;
+    }
+    return null;
 }
 
 /// Navigate to a split in the given direction. Returns true if focus changed.
@@ -2243,6 +2269,28 @@ fn findLeafHandle(
     };
 }
 
+/// Index of the active tab within the persisted tab list. Tabs that are not
+/// persisted (tmux windows, Settings and other workbench pages) are skipped,
+/// so the live tab index cannot be used directly: with [Settings, A*, B] the
+/// snapshot holds [A, B] and A is index 0, not 1. `written_before_active` is
+/// the number of tabs persisted ahead of the active one, which is the active
+/// tab's own slot when it was persisted and its nearest persisted neighbor
+/// (clamped to the last one) when it was not.
+fn snapshotActiveIndex(written_before_active: usize, written: usize) u32 {
+    if (written == 0) return 0;
+    return @intCast(@min(written_before_active, written - 1));
+}
+
+test "snapshotActiveIndex follows the active tab past skipped tabs" {
+    // [Settings(skipped), A*, B, C] -> persisted [A, B, C], A active.
+    try std.testing.expectEqual(@as(u32, 0), snapshotActiveIndex(0, 3));
+    // [A, B, C*] with nothing skipped.
+    try std.testing.expectEqual(@as(u32, 2), snapshotActiveIndex(2, 3));
+    // [A, B, Settings*(skipped)] -> falls back to the last persisted tab.
+    try std.testing.expectEqual(@as(u32, 1), snapshotActiveIndex(2, 2));
+    try std.testing.expectEqual(@as(u32, 0), snapshotActiveIndex(0, 0));
+}
+
 /// Walk all live tabs and build a complete Session POD. Caller owns the
 /// returned ArenaAllocator; deinit it after the Session is no longer needed.
 pub fn collectSessionSnapshot(arena: *std.heap.ArenaAllocator) !session_persist.Session {
@@ -2256,7 +2304,9 @@ pub fn collectSessionSnapshot(arena: *std.heap.ArenaAllocator) !session_persist.
     const tabs = try alloc.alloc(session_persist.TabSnap, g_tab_count);
     var i: usize = 0;
     var written: usize = 0;
+    var written_before_active: usize = 0;
     while (i < g_tab_count) : (i += 1) {
+        if (i == active_tab_state.g_active_tab) written_before_active = written;
         if (g_tabs[i]) |t| {
             if (t.tmux_window_id != null) continue;
             tabs[written] = snapshotTab(alloc, t) catch continue;
@@ -2267,7 +2317,7 @@ pub fn collectSessionSnapshot(arena: *std.heap.ArenaAllocator) !session_persist.
 
     return .{
         .version = session_persist.SCHEMA_VERSION,
-        .active_tab = if (written > 0) @intCast(@min(active_tab_state.g_active_tab, written - 1)) else 0,
+        .active_tab = snapshotActiveIndex(written_before_active, written),
         .tabs = tabs[0..written],
         .tmux_profiles = tmux_profiles,
     };

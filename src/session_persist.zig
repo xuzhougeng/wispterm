@@ -1,5 +1,6 @@
 // src/session_persist.zig
 const std = @import("std");
+const builtin = @import("builtin");
 const platform_atomic_file = @import("platform/atomic_file.zig");
 
 const log = std.log.scoped(.session_persist);
@@ -28,9 +29,25 @@ pub fn shouldRestorePiSession(path: []const u8, launch_kind: PiLaunchKind) bool 
         .wsl, .ssh => return path.len > 0,
         .local => {},
     }
-    if (path.len == 0 or path[0] == '/') return false;
+    if (path.len == 0) return false;
+    // On Windows a local tab whose saved path starts with '/' recorded a WSL
+    // or SSH guest path; it is not a host path. On POSIX every absolute path
+    // starts with '/', so the existence check below is the only stale test.
+    if (builtin.os.tag == .windows and path[0] == '/') return false;
+    if (!std.fs.path.isAbsolute(path)) return false;
     std.fs.accessAbsolute(path, .{}) catch return false;
     return true;
+}
+
+test "shouldRestorePiSession restores an existing local POSIX session file" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "session.jsonl", .data = "{}\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try tmp.dir.realpath("session.jsonl", &buf);
+    try std.testing.expect(shouldRestorePiSession(path, .local));
+    try std.testing.expect(!shouldRestorePiSession("relative/session.jsonl", .local));
 }
 
 test "shouldRestorePiSession rejects stale host paths and allows remote paths" {
