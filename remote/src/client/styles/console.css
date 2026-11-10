@@ -163,13 +163,6 @@
   padding: 0;
 }
 
-.sidebar-section-note {
-  margin-top: 3px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
 .sidebar .panel {
   width: 100%;
   min-width: 0;

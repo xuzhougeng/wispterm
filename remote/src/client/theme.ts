@@ -39,10 +39,6 @@ function applyAttribute(next: ThemeMode): void {
   }
 }
 
-export function getThemeMode(): ThemeMode {
-  return mode;
-}
-
 export function getTerminalPalette(target: ThemeMode = mode): TerminalPalette {
   return PALETTES[target];
 }

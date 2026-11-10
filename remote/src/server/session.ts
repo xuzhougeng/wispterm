@@ -264,9 +264,13 @@ export class RemoteSession {
     this.browsers.add(socket);
     trackHeartbeat(socket);
     safeSend(socket, { type: "notice", message: "Browser paired; input enabled" });
-    this.sendPeerStatus(socket);
-    if (this.isWispTermConnected()) safeSend(socket, { type: "notice", message: "WispTerm connected" });
+    // The cached layout goes first and the peer status last: the client marks
+    // the host connected when it sees a layout, so replaying a stale one
+    // after the status made an offline host look online (and its input
+    // "enabled") until the next real status change.
     if (this.lastLayout) safeSend(socket, this.lastLayout);
+    if (this.isWispTermConnected()) safeSend(socket, { type: "notice", message: "WispTerm connected" });
+    this.sendPeerStatus(socket);
 
     socket.on("error", (err) => {
       console.warn(`[remote] browser websocket error: ${socketErrorMessage(err)}`);

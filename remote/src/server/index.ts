@@ -3,7 +3,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import { readFile, stat } from "node:fs/promises";
-import { extname, join, normalize, resolve } from "node:path";
+import { extname, join, normalize, resolve, sep } from "node:path";
 
 import { WeixinBindingStore } from "./bridge/weixin/binding.js";
 import { WeixinClient } from "./bridge/weixin/client.js";
@@ -241,9 +241,21 @@ function decodeBase64Url(value: string): string {
   return Buffer.from(value, "base64url").toString("utf8");
 }
 
+// Login and settings bodies are a few hundred bytes. The login route is
+// unauthenticated, so an unbounded read let one request exhaust memory.
+const MAX_JSON_BODY_BYTES = 64 * 1024;
+
 async function readJson<T>(req: IncomingMessage): Promise<T | null> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
+  let total = 0;
+  for await (const chunk of req) {
+    total += (chunk as Buffer).length;
+    if (total > MAX_JSON_BODY_BYTES) {
+      req.destroy();
+      return null;
+    }
+    chunks.push(chunk as Buffer);
+  }
   if (chunks.length === 0) return null;
   try {
     return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
@@ -331,7 +343,9 @@ function resolveSafe(root: string, pathname: string): string | null {
     return null;
   }
   const target = normalize(join(root, decoded));
-  const rootWithSep = root.endsWith("/") ? root : `${root}/`;
+  // Platform separator: with a hard-coded "/" every asset failed this check
+  // on Windows and the server answered /assets/*.js with index.html.
+  const rootWithSep = root.endsWith(sep) ? root : `${root}${sep}`;
   if (target !== root && !target.startsWith(rootWithSep)) return null;
   return target;
 }

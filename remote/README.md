@@ -246,9 +246,9 @@ The WispTerm client sends PTY bytes as:
 ```
 
 WispTerm also sends layout snapshots so the browser can render tabs and split
-panels separately. Each surface may include the current visible screen snapshot
-so a newly opened browser can show the latest terminal content without replaying
-scrollback history:
+panels separately. Each surface may include a snapshot of its screen plus recent
+scrollback (up to 10,000 history rows), so a newly opened browser can show the
+latest terminal content and scroll back through it:
 
 ```json
 { "type": "layout", "activeTab": 0, "tabs": [{ "surfaces": [{ "cols": 120, "rows": 32, "cursorX": 0, "cursorY": 31, "snapshot": "..." }] }] }

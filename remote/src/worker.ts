@@ -98,9 +98,11 @@ export class RemoteSession extends DurableObject<Env> {
   private attachBrowser(socket: WebSocket): void {
     this.browsers.add(socket);
     socket.send(JSON.stringify({ type: "notice", message: "Browser paired; input enabled" }));
-    this.sendPeerStatus(socket);
-    if (this.wispterm) socket.send(JSON.stringify({ type: "notice", message: "WispTerm connected" }));
+    // Cached layout first, peer status last (see server/session.ts): a stale
+    // layout must not leave an offline host looking connected.
     if (this.lastLayout) socket.send(JSON.stringify(this.lastLayout));
+    if (this.wispterm) socket.send(JSON.stringify({ type: "notice", message: "WispTerm connected" }));
+    this.sendPeerStatus(socket);
 
     socket.addEventListener("message", (event) => {
       if (typeof event.data !== "string") return;
