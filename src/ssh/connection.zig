@@ -47,6 +47,9 @@ pub const SshAuthMethod = enum {
     }
 };
 
+/// Longest ProxyJump spec a connection stores.
+pub const proxy_jump_max = 256;
+
 pub const SshConnection = struct {
     network_proxy: network_proxy.Config = .{},
     user_buf: [128]u8 = undefined,
@@ -57,7 +60,7 @@ pub const SshConnection = struct {
     port_len: usize = 0,
     password_buf: [128]u8 = undefined,
     password_len: usize = 0,
-    proxy_jump_buf: [256]u8 = undefined,
+    proxy_jump_buf: [proxy_jump_max]u8 = undefined,
     proxy_jump_len: usize = 0,
     identity_file_buf: [IDENTITY_FILE_MAX]u8 = undefined,
     identity_file_len: usize = 0,

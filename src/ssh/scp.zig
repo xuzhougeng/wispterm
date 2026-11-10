@@ -55,12 +55,16 @@ pub const TransferControl = struct {
     }
 };
 
+/// Storage for the `ProxyJump=<spec>` option value. argv entries are slices,
+/// so the function that owns the argv owns this buffer too.
+pub const JumpOptionBuf = [ssh_connection.proxy_jump_max + "ProxyJump=".len]u8;
+
 /// Build the scp argv up to (but excluding) the src/dst path arguments.
 /// Returns the count of arguments written into `argv_buf`. Pure/testable.
 fn buildScpFlagArgs(
     argv_buf: *[40][]const u8,
     conn: *const SshConnection,
-    control_path: ?[]const u8,
+    jump_opt_buf: *JumpOptionBuf,
     legacy_protocol: bool,
     recursive: bool,
 ) usize {
@@ -77,7 +81,7 @@ fn buildScpFlagArgs(
         argv_buf[argc] = "-O";
         argc += 1;
     }
-    return appendSshOptions(argv_buf, argc, conn, .scp, control_path);
+    return appendSshOptions(argv_buf, argc, conn, .scp, jump_opt_buf);
 }
 
 /// Run `scp src dst` with proper SSH auth options from the connection.
@@ -112,18 +116,16 @@ fn transferImpl(allocator: std.mem.Allocator, conn: *const SshConnection, src: [
         }
     }
 
-    // Windows OpenSSH's ControlMaster support relies on Unix-domain socket
-    // semantics that fail here with "getsockname failed: Not a socket".
-    // Keep helper SSH/SCP calls independent; the real interactive SSH session
-    // remains untouched.
-    const control_path: ?[]const u8 = null;
+    // Helper SSH/SCP calls never share a connection with the interactive
+    // session: Windows OpenSSH's ControlMaster support relies on Unix-domain
+    // socket semantics that fail with "getsockname failed: Not a socket".
 
     const env_ptr: ?*std.process.EnvMap = if (env_map) |*map| map else null;
-    const default_result = runScpTransfer(allocator, conn, src, dst, control_path, env_ptr, false, recursive, control);
+    const default_result = runScpTransfer(allocator, conn, src, dst, env_ptr, false, recursive, control);
     if (default_result == .ok or default_result == .spawn_error or default_result == .cancelled) return default_result;
 
     std.debug.print("SCP default mode failed; retrying legacy scp protocol (-O)\n", .{});
-    const legacy_result = runScpTransfer(allocator, conn, src, dst, control_path, env_ptr, true, recursive, control);
+    const legacy_result = runScpTransfer(allocator, conn, src, dst, env_ptr, true, recursive, control);
     if (legacy_result == .ok or legacy_result == .spawn_error or legacy_result == .cancelled) return legacy_result;
 
     // The ssh `cat` stream fallback only handles single files; directories have
@@ -131,7 +133,7 @@ fn transferImpl(allocator: std.mem.Allocator, conn: *const SshConnection, src: [
     if (recursive) return legacy_result;
 
     std.debug.print("SCP legacy mode failed; retrying over ssh stream\n", .{});
-    return runSshStreamTransfer(allocator, conn, src, dst, control_path, env_ptr, control);
+    return runSshStreamTransfer(allocator, conn, src, dst, env_ptr, control);
 }
 
 /// Build a remote scp path: "user@host:path". Returns "" when the spec does
@@ -178,7 +180,6 @@ fn runScpTransfer(
     conn: *const SshConnection,
     src: []const u8,
     dst: []const u8,
-    control_path: ?[]const u8,
     env_map: ?*std.process.EnvMap,
     legacy_protocol: bool,
     recursive: bool,
@@ -187,7 +188,8 @@ fn runScpTransfer(
     if (control.cancelRequested()) return .cancelled;
 
     var argv_buf: [40][]const u8 = undefined;
-    var argc = buildScpFlagArgs(&argv_buf, conn, control_path, legacy_protocol, recursive);
+    var jump_opt_buf: JumpOptionBuf = undefined;
+    var argc = buildScpFlagArgs(&argv_buf, conn, &jump_opt_buf, legacy_protocol, recursive);
 
     argv_buf[argc] = src;
     argc += 1;
@@ -227,14 +229,14 @@ fn runScpTransfer(
 fn appendSshExecPrefix(
     argv_buf: *[40][]const u8,
     conn: *const SshConnection,
-    control_path: ?[]const u8,
+    jump_opt_buf: *JumpOptionBuf,
     dest_buf: *[280]u8,
 ) usize {
     var argc: usize = 0;
     argv_buf[argc] = platform_pty_command.sshExecutableName();
     argc += 1;
 
-    argc = appendSshOptions(argv_buf, argc, conn, .ssh, control_path);
+    argc = appendSshOptions(argv_buf, argc, conn, .ssh, jump_opt_buf);
     argv_buf[argc] = "-T";
     argc += 1;
 
@@ -438,14 +440,13 @@ pub fn sshExecCappedOpts(allocator: std.mem.Allocator, conn: *const SshConnectio
         }
     }
 
-    const control_path: ?[]const u8 = null;
-
     var argv_buf: [40][]const u8 = undefined;
+    var jump_opt_buf: JumpOptionBuf = undefined;
     var argc: usize = 0;
     argv_buf[argc] = platform_pty_command.sshExecutableName();
     argc += 1;
 
-    argc = appendSshOptions(&argv_buf, argc, conn, .ssh, control_path);
+    argc = appendSshOptions(&argv_buf, argc, conn, .ssh, &jump_opt_buf);
 
     // user@host
     var dest_buf: [280]u8 = undefined;
@@ -555,15 +556,14 @@ fn runSshStreamTransfer(
     conn: *const SshConnection,
     src: []const u8,
     dst: []const u8,
-    control_path: ?[]const u8,
     env_map: ?*std.process.EnvMap,
     control: *TransferControl,
 ) TransferResult {
     if (remotePathFromSpec(conn, dst)) |remote_path| {
-        return sshStreamUpload(allocator, conn, src, remote_path, control_path, env_map, control);
+        return sshStreamUpload(allocator, conn, src, remote_path, env_map, control);
     }
     if (remotePathFromSpec(conn, src)) |remote_path| {
-        return sshStreamDownload(allocator, conn, remote_path, dst, control_path, env_map, control);
+        return sshStreamDownload(allocator, conn, remote_path, dst, env_map, control);
     }
     return .failed;
 }
@@ -897,14 +897,13 @@ fn sshExecStdinCapture(allocator: std.mem.Allocator, conn: *const SshConnection,
         }
     }
 
-    const control_path: ?[]const u8 = null;
-
     var argv_buf: [40][]const u8 = undefined;
+    var jump_opt_buf: JumpOptionBuf = undefined;
     var argc: usize = 0;
     argv_buf[argc] = platform_pty_command.sshExecutableName();
     argc += 1;
 
-    argc = appendSshOptions(&argv_buf, argc, conn, .ssh, control_path);
+    argc = appendSshOptions(&argv_buf, argc, conn, .ssh, &jump_opt_buf);
 
     // user@host
     var dest_buf: [280]u8 = undefined;
@@ -991,7 +990,6 @@ fn sshStreamUpload(
     conn: *const SshConnection,
     local_path: []const u8,
     remote_path: []const u8,
-    control_path: ?[]const u8,
     env_map: ?*std.process.EnvMap,
     control: *TransferControl,
 ) TransferResult {
@@ -1004,8 +1002,9 @@ fn sshStreamUpload(
     const command = buildUploadCommand(&command_buf, remote_path, local_path) orelse return .failed;
 
     var argv_buf: [40][]const u8 = undefined;
+    var jump_opt_buf: JumpOptionBuf = undefined;
     var dest_buf: [280]u8 = undefined;
-    var argc = appendSshExecPrefix(&argv_buf, conn, control_path, &dest_buf);
+    var argc = appendSshExecPrefix(&argv_buf, conn, &jump_opt_buf, &dest_buf);
     argv_buf[argc] = command;
     argc += 1;
 
@@ -1074,7 +1073,6 @@ fn sshStreamDownload(
     conn: *const SshConnection,
     remote_path: []const u8,
     local_path: []const u8,
-    control_path: ?[]const u8,
     env_map: ?*std.process.EnvMap,
     control: *TransferControl,
 ) TransferResult {
@@ -1087,8 +1085,9 @@ fn sshStreamDownload(
     const command = buildDownloadCommand(&command_buf, remote_path) orelse return .failed;
 
     var argv_buf: [40][]const u8 = undefined;
+    var jump_opt_buf: JumpOptionBuf = undefined;
     var dest_buf: [280]u8 = undefined;
-    var argc = appendSshExecPrefix(&argv_buf, conn, control_path, &dest_buf);
+    var argc = appendSshExecPrefix(&argv_buf, conn, &jump_opt_buf, &dest_buf);
     argv_buf[argc] = command;
     argc += 1;
 
@@ -1145,7 +1144,7 @@ fn appendSshOptions(
     start_argc: usize,
     conn: *const SshConnection,
     port_mode: PortMode,
-    control_path: ?[]const u8,
+    jump_opt_buf: *JumpOptionBuf,
 ) usize {
     var argc = start_argc;
     argv_buf[argc] = "-o";
@@ -1201,6 +1200,17 @@ fn appendSshOptions(
         argv_buf[argc] = conn.network_proxy.option();
         argc += 1;
     }
+    // Take the same route as the interactive session. Without this, file
+    // listing, transfers and remote read/write went straight to the target
+    // and failed (or timed out) for any host reached through a jump host.
+    if (conn.proxyJump().len > 0) {
+        if (std.fmt.bufPrint(jump_opt_buf, "ProxyJump={s}", .{conn.proxyJump()})) |opt| {
+            argv_buf[argc] = "-o";
+            argc += 1;
+            argv_buf[argc] = opt;
+            argc += 1;
+        } else |_| {}
+    }
     if (conn.port().len > 0) {
         argv_buf[argc] = switch (port_mode) {
             .ssh => "-p",
@@ -1208,20 +1218,6 @@ fn appendSshOptions(
         };
         argc += 1;
         argv_buf[argc] = conn.port();
-        argc += 1;
-    }
-    if (control_path) |path| {
-        argv_buf[argc] = "-o";
-        argc += 1;
-        argv_buf[argc] = "ControlMaster=auto";
-        argc += 1;
-        argv_buf[argc] = "-o";
-        argc += 1;
-        argv_buf[argc] = "ControlPersist=10m";
-        argc += 1;
-        argv_buf[argc] = "-o";
-        argc += 1;
-        argv_buf[argc] = path;
         argc += 1;
     }
     // Detect a dead post-connect session (ConnectTimeout only covers connect).
@@ -1306,23 +1302,24 @@ test "buildScpFlagArgs includes -r only for recursive transfers" {
     conn.port_len = 0;
 
     var argv_buf: [40][]const u8 = undefined;
+    var jump_opt_buf: JumpOptionBuf = undefined;
 
     // argv_buf is reused, so each build's slice must be asserted before the
     // next call overwrites it.
-    const argc_file = buildScpFlagArgs(&argv_buf, &conn, null, false, false);
+    const argc_file = buildScpFlagArgs(&argv_buf, &conn, &jump_opt_buf, false, false);
     try std.testing.expect(!containsArg(argv_buf[0..argc_file], "-r"));
     try std.testing.expect(containsArg(argv_buf[0..argc_file], "-q"));
 
-    const argc_dir = buildScpFlagArgs(&argv_buf, &conn, null, false, true);
+    const argc_dir = buildScpFlagArgs(&argv_buf, &conn, &jump_opt_buf, false, true);
     try std.testing.expect(containsArg(argv_buf[0..argc_dir], "-r"));
     try std.testing.expect(containsArg(argv_buf[0..argc_dir], "-q"));
 
     // -O appears for legacy, and combines with -r for recursive+legacy
-    const argc_legacy = buildScpFlagArgs(&argv_buf, &conn, null, true, false);
+    const argc_legacy = buildScpFlagArgs(&argv_buf, &conn, &jump_opt_buf, true, false);
     try std.testing.expect(containsArg(argv_buf[0..argc_legacy], "-O"));
     try std.testing.expect(!containsArg(argv_buf[0..argc_legacy], "-r"));
 
-    const argc_both = buildScpFlagArgs(&argv_buf, &conn, null, true, true);
+    const argc_both = buildScpFlagArgs(&argv_buf, &conn, &jump_opt_buf, true, true);
     try std.testing.expect(containsArg(argv_buf[0..argc_both], "-r"));
     try std.testing.expect(containsArg(argv_buf[0..argc_both], "-O"));
 }
@@ -1355,7 +1352,8 @@ test "appendSshOptions key-based auth" {
     conn.port_len = 0;
 
     var argv_buf: [40][]const u8 = undefined;
-    const argc = appendSshOptions(&argv_buf, 0, &conn, .ssh, null);
+    var jump_opt_buf: JumpOptionBuf = undefined;
+    const argc = appendSshOptions(&argv_buf, 0, &conn, .ssh, &jump_opt_buf);
     // Strict + ConnectTimeout + BatchMode (6) + ServerAliveInterval/CountMax (4) = 10
     try std.testing.expectEqual(@as(usize, 10), argc);
     try std.testing.expectEqualStrings("BatchMode=yes", argv_buf[5]);
@@ -1369,7 +1367,8 @@ test "appendSshOptions password auth" {
     conn.port_len = 0;
 
     var argv_buf: [40][]const u8 = undefined;
-    const argc = appendSshOptions(&argv_buf, 0, &conn, .ssh, null);
+    var jump_opt_buf: JumpOptionBuf = undefined;
+    const argc = appendSshOptions(&argv_buf, 0, &conn, .ssh, &jump_opt_buf);
     // Strict + ConnectTimeout + Preferred + NumPasswords (8) + ServerAlive (4) = 12
     try std.testing.expectEqual(@as(usize, 12), argc);
     try std.testing.expectEqualStrings("NumberOfPasswordPrompts=1", argv_buf[7]);
@@ -1382,7 +1381,8 @@ test "appendSshOptions with ssh port" {
     conn.port_len = 4;
 
     var argv_buf: [40][]const u8 = undefined;
-    const argc = appendSshOptions(&argv_buf, 0, &conn, .ssh, null);
+    var jump_opt_buf: JumpOptionBuf = undefined;
+    const argc = appendSshOptions(&argv_buf, 0, &conn, .ssh, &jump_opt_buf);
     // 6 (base key-auth) + 2 (-p 2222) + 4 (ServerAlive) = 12
     try std.testing.expectEqual(@as(usize, 12), argc);
     try std.testing.expectEqualStrings("-p", argv_buf[6]);
@@ -1396,25 +1396,31 @@ test "appendSshOptions with scp port" {
     conn.port_len = 4;
 
     var argv_buf: [40][]const u8 = undefined;
-    const argc = appendSshOptions(&argv_buf, 0, &conn, .scp, null);
+    var jump_opt_buf: JumpOptionBuf = undefined;
+    const argc = appendSshOptions(&argv_buf, 0, &conn, .scp, &jump_opt_buf);
     // 6 (base key-auth) + 2 (-P 2222) + 4 (ServerAlive) = 12
     try std.testing.expectEqual(@as(usize, 12), argc);
     try std.testing.expectEqualStrings("-P", argv_buf[6]);
     try std.testing.expectEqualStrings("2222", argv_buf[7]);
 }
 
-test "appendSshOptions with control path" {
-    var conn: SshConnection = .{};
-    conn.password_auth = false;
-    conn.port_len = 0;
-
+test "appendSshOptions routes helpers through the session's jump host" {
+    const conn = SshConnection.fromParts(.{ .user = "alice", .host = "inner.test", .proxy_jump = "jump@bastion.test:2222" });
     var argv_buf: [40][]const u8 = undefined;
-    const argc = appendSshOptions(&argv_buf, 0, &conn, .ssh, "ControlPath=C:/Temp/wispterm-ssh-%C");
-    // 6 (base key-auth) + 6 (control path) + 4 (ServerAlive) = 16
-    try std.testing.expectEqual(@as(usize, 16), argc);
-    try std.testing.expectEqualStrings("ControlMaster=auto", argv_buf[7]);
-    try std.testing.expectEqualStrings("ControlPersist=10m", argv_buf[9]);
-    try std.testing.expectEqualStrings("ControlPath=C:/Temp/wispterm-ssh-%C", argv_buf[11]);
+    var jump_opt_buf: JumpOptionBuf = undefined;
+    const argc = appendSshOptions(&argv_buf, 0, &conn, .scp, &jump_opt_buf);
+    var found = false;
+    for (argv_buf[0..argc], 0..) |arg, i| {
+        if (!std.mem.eql(u8, arg, "ProxyJump=jump@bastion.test:2222")) continue;
+        found = true;
+        try std.testing.expectEqualStrings("-o", argv_buf[i - 1]);
+    }
+    try std.testing.expect(found);
+
+    // No jump host configured: the option is absent.
+    const direct = SshConnection.fromParts(.{ .user = "alice", .host = "inner.test" });
+    const direct_argc = appendSshOptions(&argv_buf, 0, &direct, .scp, &jump_opt_buf);
+    for (argv_buf[0..direct_argc]) |arg| try std.testing.expect(!std.mem.startsWith(u8, arg, "ProxyJump="));
 }
 
 test "appendSshOptions includes legacy algorithms when enabled" {
@@ -1423,7 +1429,8 @@ test "appendSshOptions includes legacy algorithms when enabled" {
     conn.legacy_algorithms = true;
 
     var argv_buf: [40][]const u8 = undefined;
-    const argc = appendSshOptions(&argv_buf, 0, &conn, .ssh, null);
+    var jump_opt_buf: JumpOptionBuf = undefined;
+    const argc = appendSshOptions(&argv_buf, 0, &conn, .ssh, &jump_opt_buf);
     // 6 (base key-auth) + 8 (legacy algorithms) + 4 (ServerAlive) = 18
     try std.testing.expectEqual(@as(usize, 18), argc);
     try std.testing.expectEqualStrings("HostkeyAlgorithms=+ssh-rsa,ssh-dss", argv_buf[7]);
@@ -1609,10 +1616,11 @@ test "buildScpFlagArgs emits the exact argv token sequence" {
     conn.port_len = 0;
 
     var argv_buf: [40][]const u8 = undefined;
+    var jump_opt_buf: JumpOptionBuf = undefined;
 
-    // Plain key-auth, non-recursive, non-legacy, no control path:
+    // Plain key-auth, non-recursive, non-legacy, no jump host:
     // scp -q <appendSshOptions base = 10 tokens> = 12 tokens total.
-    const argc = buildScpFlagArgs(&argv_buf, &conn, null, false, false);
+    const argc = buildScpFlagArgs(&argv_buf, &conn, &jump_opt_buf, false, false);
     try std.testing.expectEqual(@as(usize, 12), argc);
     try std.testing.expectEqualStrings(platform_pty_command.scpExecutableName(), argv_buf[0]);
     try std.testing.expectEqualStrings("-q", argv_buf[1]);
@@ -1628,7 +1636,7 @@ test "buildScpFlagArgs emits the exact argv token sequence" {
     try std.testing.expectEqualStrings("ServerAliveCountMax=2", argv_buf[11]);
 
     // Recursive + legacy inserts -r then -O right after -q, before the -o block.
-    const argc_rl = buildScpFlagArgs(&argv_buf, &conn, null, true, true);
+    const argc_rl = buildScpFlagArgs(&argv_buf, &conn, &jump_opt_buf, true, true);
     try std.testing.expectEqual(@as(usize, 14), argc_rl);
     try std.testing.expectEqualStrings(platform_pty_command.scpExecutableName(), argv_buf[0]);
     try std.testing.expectEqualStrings("-q", argv_buf[1]);
@@ -1669,7 +1677,8 @@ test "SCP and SSH helper argv carry the session network proxy without connection
     const route = @import("network_proxy.zig").Config.forHelper(.http, "127.0.0.1", "7897", "helper").?;
     const conn = SshConnection.fromParts(.{ .user = "alice", .host = "host.test", .network_proxy = route });
     var args: [40][]const u8 = undefined;
-    const n = appendSshOptions(&args, 0, &conn, .scp, null);
+    var jump_opt_buf: JumpOptionBuf = undefined;
+    const n = appendSshOptions(&args, 0, &conn, .scp, &jump_opt_buf);
     var found = false;
     for (args[0..n]) |arg| {
         if (std.mem.eql(u8, arg, conn.network_proxy.option())) found = true;
