@@ -915,12 +915,6 @@ pub const Window = struct {
     tab_count: usize = 1,
     /// Current sidebar width (synced from renderer/input, used for double-click routing)
     sidebar_width: i32 = 220,
-    /// Plus button x range (synced from renderer, used for double-click suppression)
-    plus_btn_x_start: i32 = 0,
-    plus_btn_x_end: i32 = 0,
-    /// Per-tab close button x ranges (synced from renderer, used for double-click suppression)
-    close_btn_x_start: [16]i32 = .{0} ** 16,
-    close_btn_x_end: [16]i32 = .{0} ** 16,
     /// Current mouse position in client coordinates (for hover tracking).
     /// -1 while the pointer is outside the client area.
     mouse_x: i32 = -1,

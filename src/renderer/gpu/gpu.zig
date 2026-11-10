@@ -25,8 +25,6 @@ pub const SwapDiagnostics = types.SwapDiagnostics;
 pub const active: Backend = Backend.resolve(builtin.os.tag, build_options.gpu_backend);
 
 /// Backend-neutral per-frame renderer diagnostics/state.
-/// Transition note: `gpu.gl_init` still mirrors old names for compatibility,
-/// but renderer feature code should use these WispTerm-owned fields.
 pub threadlocal var draw_call_count: u32 = 0;
 pub threadlocal var background_opacity: f32 = 1.0;
 
@@ -43,14 +41,7 @@ const impl = switch (active) {
 // of AppWindow in A2); the app reaches it through the decls below.
 pub const Context = impl.Context; // context lifecycle (owns the GL table)
 pub const c = impl.c; // GL constants/types (transition: removed from app code by A6)
-pub const gl_init = impl.gl_init; // GL helpers + buffers (GLSL in shaders.zig)
 pub const shaders = impl.shaders; // backend GLSL sources (for cell pipelines)
-
-/// Pointer to the active backend's GL function table. Transition handle used by
-/// renderer files until they route through the primitives (A3); removed in A6.
-pub inline fn glTable() *impl.GlTable {
-    return &Context.gl;
-}
 
 /// Active GPU adapter identity for the benchmark report. `buf` backs the D3D11
 /// description string (UTF-16→UTF-8); OpenGL returns a GL-owned pointer and

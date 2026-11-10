@@ -6389,7 +6389,6 @@ const MemoryDebugTotals = struct {
     renderer_cpu_capacity_bytes: usize = 0,
     kitty_pending_cpu_bytes: usize = 0,
     kitty_texture_pixel_bytes: usize = 0,
-    fbo_pixel_bytes: usize = 0,
 };
 
 const SurfaceMemoryDebug = struct {
@@ -6408,9 +6407,6 @@ const SurfaceMemoryDebug = struct {
     kitty_pending_uploads: usize = 0,
     kitty_pending_cpu_bytes: usize = 0,
     kitty_texture_pixel_bytes: usize = 0,
-    fbo_width: u32 = 0,
-    fbo_height: u32 = 0,
-    fbo_pixel_bytes: usize = 0,
 };
 
 fn collectSurfaceMemoryDebug(surface: *Surface) SurfaceMemoryDebug {
@@ -6449,9 +6445,6 @@ fn collectSurfaceMemoryDebug(surface: *Surface) SurfaceMemoryDebug {
     stats.kitty_pending_uploads = rend.kitty_pending_uploads.items.len;
     stats.kitty_pending_cpu_bytes = rend.kittyPendingCpuBytes();
     stats.kitty_texture_pixel_bytes = rend.kittyTexturePixelBytes();
-    stats.fbo_width = rend.fbo_width;
-    stats.fbo_height = rend.fbo_height;
-    stats.fbo_pixel_bytes = rend.fboPixelBytes();
 
     return stats;
 }
@@ -6486,11 +6479,10 @@ fn maybePrintMemoryDebug(now: i64) void {
             totals.renderer_cpu_capacity_bytes += stats.renderer_cpu_capacity_bytes;
             totals.kitty_pending_cpu_bytes += stats.kitty_pending_cpu_bytes;
             totals.kitty_texture_pixel_bytes += stats.kitty_texture_pixel_bytes;
-            totals.fbo_pixel_bytes += stats.fbo_pixel_bytes;
 
             if (totals.surfaces <= 8) {
                 std.debug.print(
-                    "[memory] surface#{d}{s} grid={}x{} screens={} pages={d:.1}/{d:.1}MiB min={d:.1}MiB renderer_cap={d:.1}MiB cells(bg/fg/color)={}/{}/{} kitty(tex/pending)={}/{} kitty_bytes(cpu/gpu)={d:.1}/{d:.1}MiB fbo={}x{} {d:.1}MiB\n",
+                    "[memory] surface#{d}{s} grid={}x{} screens={} pages={d:.1}/{d:.1}MiB min={d:.1}MiB renderer_cap={d:.1}MiB cells(bg/fg/color)={}/{}/{} kitty(tex/pending)={}/{} kitty_bytes(cpu/gpu)={d:.1}/{d:.1}MiB\n",
                     .{
                         totals.surfaces,
                         if (visible) " visible" else "",
@@ -6508,9 +6500,6 @@ fn maybePrintMemoryDebug(now: i64) void {
                         stats.kitty_pending_uploads,
                         memory_debug.mib(stats.kitty_pending_cpu_bytes),
                         memory_debug.mib(stats.kitty_texture_pixel_bytes),
-                        stats.fbo_width,
-                        stats.fbo_height,
-                        memory_debug.mib(stats.fbo_pixel_bytes),
                     },
                 );
             }
@@ -6561,7 +6550,7 @@ fn maybePrintMemoryDebug(now: i64) void {
     if (memory_debug.queryProcess()) |process| {
         const untracked_private = process.private_usage -| tracked_cpu_bytes;
         std.debug.print(
-            "[memory] process private={d:.1}MiB ws={d:.1}MiB commit={d:.1}MiB peak_ws={d:.1}MiB tabs={} ai_tabs={} surfaces={} visible_surfaces={} terminal_pages={d:.1}/{d:.1}MiB committed={d:.1}MiB min={d:.1}MiB renderer_cap={d:.1}MiB font_atlas(cpu/gpu)={d:.1}/{d:.1}MiB kitty_bytes(cpu/gpu)={d:.1}/{d:.1}MiB fbo={d:.1}MiB tracked_cpu={d:.1}MiB untracked_private~={d:.1}MiB faults={}\n",
+            "[memory] process private={d:.1}MiB ws={d:.1}MiB commit={d:.1}MiB peak_ws={d:.1}MiB tabs={} ai_tabs={} surfaces={} visible_surfaces={} terminal_pages={d:.1}/{d:.1}MiB committed={d:.1}MiB min={d:.1}MiB renderer_cap={d:.1}MiB font_atlas(cpu/gpu)={d:.1}/{d:.1}MiB kitty_bytes(cpu/gpu)={d:.1}/{d:.1}MiB tracked_cpu={d:.1}MiB untracked_private~={d:.1}MiB faults={}\n",
             .{
                 memory_debug.mib(process.private_usage),
                 memory_debug.mib(process.working_set),
@@ -6580,7 +6569,6 @@ fn maybePrintMemoryDebug(now: i64) void {
                 memory_debug.mib(font_gpu_bytes),
                 memory_debug.mib(totals.kitty_pending_cpu_bytes),
                 memory_debug.mib(totals.kitty_texture_pixel_bytes),
-                memory_debug.mib(totals.fbo_pixel_bytes),
                 memory_debug.mib(tracked_cpu_bytes),
                 memory_debug.mib(untracked_private),
                 process.page_fault_count,

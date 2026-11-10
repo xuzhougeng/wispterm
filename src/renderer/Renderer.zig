@@ -1,15 +1,15 @@
-/// Per-surface renderer — owns cell buffers, render state, and FBO handles.
-/// Following Ghostty's architecture where each Surface has its own Renderer.
+/// Per-surface renderer — owns the cell lists and render state for one
+/// surface. Following Ghostty's architecture where each Surface has its own
+/// Renderer.
 ///
-/// Ghostty reference: `src/renderer/generic.zig`, `src/renderer/opengl/Target.zig`
+/// Ghostty reference: `src/renderer/generic.zig`
 /// - Each Renderer instance has its own `cells: cellpkg.Contents`
-/// - Each Renderer has its own uniforms, state, and GPU buffers
-/// - Each Renderer renders to its own FBO (framebuffer object)
+/// - Each Renderer has its own uniforms and state
 ///
-/// The FBO approach:
-/// 1. Each surface renders to its own texture via FBO
-/// 2. Main render loop composites all surface textures to screen
-/// 3. No scissor needed - each surface has isolated render target
+/// Unlike Ghostty, surfaces do not render to their own framebuffer: every
+/// pane draws straight into the window's back buffer inside a viewport and
+/// scissor rectangle, and the GPU instance buffers are shared
+/// (`cell_pipeline.zig`).
 ///
 /// Note: the GL context is owned by the GPU backend (`renderer/gpu/`); GL
 /// operations route through the gpu primitives (gpu.state, gpu.Texture, etc.).
@@ -173,20 +173,6 @@ mutex: std.Thread.Mutex,
 /// Signal that this surface needs redraw
 needs_redraw: std.atomic.Value(bool),
 
-// ============================================================================
-// Off-screen render target for per-surface compositing.
-// ============================================================================
-
-/// Backend framebuffer that renders to a color texture instead of the window.
-fbo: gpu.Framebuffer,
-
-/// Current FBO dimensions (resized when surface size changes)
-fbo_width: u32,
-fbo_height: u32,
-
-/// Whether FBO has been initialized
-fbo_initialized: bool,
-
 /// Kitty graphics renderer state.
 kitty_textures: std.ArrayListUnmanaged(KittyTexture),
 kitty_pending_uploads: std.ArrayListUnmanaged(KittyPendingUpload),
@@ -269,10 +255,6 @@ pub fn init(surface: *Surface) Renderer {
         .is_focused = true,
         .mutex = .{},
         .needs_redraw = std.atomic.Value(bool).init(true),
-        .fbo = .{},
-        .fbo_width = 0,
-        .fbo_height = 0,
-        .fbo_initialized = false,
         .kitty_textures = .empty,
         .kitty_pending_uploads = .empty,
         .kitty_placements = .empty,
@@ -280,7 +262,6 @@ pub fn init(surface: *Surface) Renderer {
 }
 
 /// Clean up renderer resources.
-/// Note: FBO cleanup must be done by AppWindow which has GL context.
 pub fn deinit(self: *Renderer) void {
     self.deinitKittyResources();
     self.bg_cells.deinit(self.surface.allocator);
@@ -289,13 +270,6 @@ pub fn deinit(self: *Renderer) void {
     for (self.row_cache.items) |*row| row.deinit(self.surface.allocator);
     self.row_cache.deinit(self.surface.allocator);
     self.snap.deinit(self.surface.allocator);
-
-    // FBO resources are cleaned up by AppWindow.cleanupRendererFBO()
-    // We just reset our state
-    self.fbo = .{};
-    self.fbo_width = 0;
-    self.fbo_height = 0;
-    self.fbo_initialized = false;
 }
 
 pub fn cpuBufferCapacityBytes(self: *const Renderer) usize {
@@ -367,11 +341,6 @@ pub fn kittyTexturePixelBytes(self: *const Renderer) usize {
     return total;
 }
 
-pub fn fboPixelBytes(self: *const Renderer) usize {
-    if (!self.fbo_initialized) return 0;
-    return @as(usize, self.fbo_width) * @as(usize, self.fbo_height) * 4;
-}
-
 fn deinitKittyResources(self: *Renderer) void {
     for (self.kitty_textures.items) |*tex| {
         tex.texture.destroy();
@@ -384,53 +353,6 @@ fn deinitKittyResources(self: *Renderer) void {
     }
     self.kitty_pending_uploads.deinit(self.surface.allocator);
     self.kitty_placements.deinit(self.surface.allocator);
-}
-
-// ============================================================================
-// Render-target state (GPU operations done by the renderer backend)
-// ============================================================================
-
-/// Check if FBO needs to be created or resized
-pub fn needsFBOUpdate(self: *const Renderer, width: u32, height: u32) bool {
-    if (width == 0 or height == 0) return false;
-    if (!self.fbo_initialized) return true;
-    return self.fbo_width != width or self.fbo_height != height;
-}
-
-/// Set render target after backend creation.
-pub fn setFramebuffer(self: *Renderer, framebuffer: gpu.Framebuffer, width: u32, height: u32) void {
-    self.fbo = framebuffer;
-    self.fbo_width = width;
-    self.fbo_height = height;
-    self.fbo_initialized = true;
-}
-
-/// Clear render-target state after backend cleanup.
-pub fn clearFramebuffer(self: *Renderer) void {
-    self.fbo = .{};
-    self.fbo_width = 0;
-    self.fbo_height = 0;
-    self.fbo_initialized = false;
-}
-
-/// Get the backend framebuffer wrapper.
-pub fn getFramebuffer(self: *const Renderer) gpu.Framebuffer {
-    return self.fbo;
-}
-
-/// Get the texture wrapper used for compositing.
-pub fn getTexture(self: *const Renderer) gpu.Texture {
-    return self.fbo.colorTexture();
-}
-
-/// Get FBO dimensions
-pub fn getFBOSize(self: *const Renderer) struct { width: u32, height: u32 } {
-    return .{ .width = self.fbo_width, .height = self.fbo_height };
-}
-
-/// Check if FBO is ready for use
-pub fn isFBOReady(self: *const Renderer) bool {
-    return self.fbo_initialized and self.fbo.isValid();
 }
 
 // ============================================================================
