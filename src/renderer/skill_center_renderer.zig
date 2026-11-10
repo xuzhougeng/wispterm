@@ -498,13 +498,6 @@ fn renderList(
 
 // --- Text preview overlay (scrollable SKILL.md) ---
 
-/// Fixed-width columns that fit in `width` px at glyph `advance` (≥1).
-fn wrapCols(width: f32, advance: f32) usize {
-    if (advance <= 0 or width <= 0) return 80;
-    const c: usize = @intFromFloat(@floor(width / advance));
-    return @max(1, c);
-}
-
 /// Iterate `content` as wrapped display lines: a '\n' ends a line, long logical
 /// lines wrap every `cols` codepoints, and a trailing '\n' adds no empty line.
 /// A trailing '\r' (CRLF) is trimmed per line.

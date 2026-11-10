@@ -51,6 +51,39 @@ pub fn lineRows(display_len: usize, wrap_cols: usize) usize {
     return (display_len + wrap_cols - 1) / wrap_cols;
 }
 
+/// The slice of `text` shown on wrapped row `row`, matching `lineRows`' byte
+/// arithmetic but with both ends moved back to a UTF-8 sequence start. Raw
+/// `text[row * cols ..][0..cols]` slices cut characters such as "—" or "⌘" in
+/// half, and a row holding half a character draws as '?' throughout.
+pub fn wrapRowSlice(text: []const u8, row: usize, wrap_cols: usize) []const u8 {
+    if (wrap_cols == 0) return if (row == 0) text else "";
+    const start = utf8FloorIndex(text, row *| wrap_cols);
+    const end = utf8FloorIndex(text, (row + 1) *| wrap_cols);
+    return text[start..end];
+}
+
+fn utf8FloorIndex(text: []const u8, index: usize) usize {
+    var i = @min(index, text.len);
+    while (i < text.len and i > 0 and (text[i] & 0xc0) == 0x80) i -= 1;
+    return i;
+}
+
+test "wrapRowSlice never cuts a UTF-8 sequence and covers the whole text" {
+    const text = "ab\u{2014}cd\u{2318}ef"; // a b — c d ⌘ e f (12 bytes)
+    var joined: [32]u8 = undefined;
+    var len: usize = 0;
+    const cols: usize = 3;
+    var row: usize = 0;
+    while (row < lineRows(text.len, cols)) : (row += 1) {
+        const slice = wrapRowSlice(text, row, cols);
+        try std.testing.expect(std.unicode.utf8ValidateSlice(slice));
+        @memcpy(joined[len..][0..slice.len], slice);
+        len += slice.len;
+    }
+    try std.testing.expectEqualStrings(text, joined[0..len]);
+    try std.testing.expectEqualStrings("", wrapRowSlice(text, 99, cols));
+}
+
 /// Total wrapped display rows for the whole notes blob at `wrap_cols` columns.
 pub fn totalRows(notes: []const u8, wrap_cols: usize) usize {
     var total: usize = 0;
