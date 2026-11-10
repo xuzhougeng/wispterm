@@ -84,6 +84,10 @@ fn osWinsize(s: winsize) OsWinsize {
     };
 }
 
+fn setCloexec(fd: std.posix.fd_t) void {
+    _ = std.posix.fcntl(fd, std.posix.F.SETFD, std.posix.FD_CLOEXEC) catch {};
+}
+
 pub const Pty = struct {
     master: fd_t,
     slave_path: [SLAVE_PATH_MAX]u8,
@@ -101,6 +105,10 @@ pub const Pty = struct {
         const master = posix_openpt(o_int);
         if (master < 0) return error.OpenPtFailed;
         errdefer _ = c.close(master);
+        // Keep this tab's master out of every later child (other tabs' shells
+        // and helper processes). An inherited copy holds the PTY open after
+        // the tab closes, so its shell never sees a hangup.
+        setCloexec(master);
 
         if (grantpt(master) != 0) return error.GrantPtFailed;
         if (unlockpt(master) != 0) return error.UnlockPtFailed;
@@ -113,7 +121,7 @@ pub const Pty = struct {
         self.master = master;
 
         // Self-pipe used to interrupt the blocking poll in readOutput.
-        self.cancel_pipe = try std.posix.pipe();
+        self.cancel_pipe = try std.posix.pipe2(.{ .CLOEXEC = true });
         errdefer {
             std.posix.close(self.cancel_pipe[0]);
             std.posix.close(self.cancel_pipe[1]);
@@ -180,7 +188,9 @@ pub const Pty = struct {
         self.is_virtual = true;
         self.slave_path = std.mem.zeroes([SLAVE_PATH_MAX]u8);
         self.size = size;
-        self.cancel_pipe = try std.posix.pipe();
+        setCloexec(sv[0]);
+        setCloexec(sv[1]);
+        self.cancel_pipe = try std.posix.pipe2(.{ .CLOEXEC = true });
         return .{ .pty = self, .controller = .{ .fd = sv[1] } };
     }
 

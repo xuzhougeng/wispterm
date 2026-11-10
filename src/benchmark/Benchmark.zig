@@ -82,11 +82,12 @@ fn assert(condition: bool) void {
 }
 
 test "Benchmark: once mode runs setup+step once, excludes setup from duration" {
-    // Ghostty's equivalent test skips on Windows/FreeBSD because a single
-    // trivial step can complete within one timer tick (duration == 0). We keep
-    // the structural assertions (which are timer-independent) and skip only the
-    // positivity check on those hosts; the duration-mode test below covers
-    // timing on every host.
+    // A single trivial step can complete within one timer tick, so the
+    // measured duration may legitimately be 0. Ghostty's equivalent test
+    // skips on Windows/FreeBSD for that reason, and the same happens on Apple
+    // Silicon (41 ns ticks), where a `duration > 0` check failed intermittently.
+    // Only the timer-independent structure is asserted here; the
+    // duration-mode test below covers timing on every host.
     const Simple = struct {
         setup_i: usize = 0,
         step_i: usize = 0,
@@ -110,9 +111,6 @@ test "Benchmark: once mode runs setup+step once, excludes setup from duration" {
     try std.testing.expectEqual(@as(usize, 1), s.setup_i);
     try std.testing.expectEqual(@as(usize, 1), s.step_i);
     try std.testing.expectEqual(@as(u32, 1), result.iterations);
-    if (@import("builtin").os.tag != .windows and @import("builtin").os.tag != .freebsd) {
-        try std.testing.expect(result.duration > 0);
-    }
 }
 
 test "Benchmark: duration mode accumulates iterations until window elapses" {
