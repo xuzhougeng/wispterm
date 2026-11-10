@@ -78,8 +78,12 @@ pub fn build(
         try filtered.append(allocator, i);
         try items.append(allocator, .{ .row = ord });
     }
+    // toOwnedSlice empties the list, so the errdefer above no longer covers
+    // the slice if the second conversion fails.
+    const owned_items = try items.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_items);
     return .{
-        .items = try items.toOwnedSlice(allocator),
+        .items = owned_items,
         .filtered = try filtered.toOwnedSlice(allocator),
     };
 }

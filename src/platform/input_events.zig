@@ -53,7 +53,50 @@ pub const CharEvent = struct {
     shift: bool = false,
     alt: bool = false,
     super: bool = false,
+
+    /// True when the character is text to insert rather than part of a
+    /// Ctrl/Alt chord. Ctrl and Alt held together is how Windows reports
+    /// AltGr, which international layouts need for `@`, `{`, `[`, `\` and
+    /// friends, so that counts as text too. Super is the caller's to judge.
+    pub fn isTextInput(self: CharEvent) bool {
+        return self.ctrl == self.alt;
+    }
 };
+
+/// Reassembles UTF-16 code units that arrive one at a time (Win32 WM_CHAR
+/// delivers an astral character such as an emoji as two messages) into
+/// codepoints. A high surrogate is held until its low half arrives; an
+/// unpaired half is dropped instead of being reported as a bogus codepoint.
+pub const Utf16Assembler = struct {
+    pending_high: u16 = 0,
+
+    pub fn feed(self: *Utf16Assembler, unit: u16) ?u21 {
+        if (unit >= 0xD800 and unit <= 0xDBFF) {
+            self.pending_high = unit;
+            return null;
+        }
+        const high = self.pending_high;
+        self.pending_high = 0;
+        if (unit >= 0xDC00 and unit <= 0xDFFF) {
+            if (high == 0) return null;
+            return @intCast(0x10000 + ((@as(u32, high) - 0xD800) << 10) + (@as(u32, unit) - 0xDC00));
+        }
+        return unit;
+    }
+};
+
+test "Utf16Assembler pairs surrogates and drops unpaired halves" {
+    var a: Utf16Assembler = .{};
+    try std.testing.expectEqual(@as(?u21, 'a'), a.feed('a'));
+    // U+1F600 = D83D DE00
+    try std.testing.expectEqual(@as(?u21, null), a.feed(0xD83D));
+    try std.testing.expectEqual(@as(?u21, 0x1F600), a.feed(0xDE00));
+    // Lone low surrogate, then a high surrogate followed by a BMP unit.
+    try std.testing.expectEqual(@as(?u21, null), a.feed(0xDE00));
+    try std.testing.expectEqual(@as(?u21, null), a.feed(0xD83D));
+    try std.testing.expectEqual(@as(?u21, 'b'), a.feed('b'));
+    try std.testing.expectEqual(@as(?u21, 0x4F60), a.feed(0x4F60));
+}
 
 pub const MouseButton = enum { left, right, middle };
 pub const MouseButtonAction = enum { press, release, double_click };
@@ -110,4 +153,11 @@ test "platform input events expose key code constants used by input logic" {
     try std.testing.expectEqual(@as(KeyCode, 0x70), key_f1);
     try std.testing.expectEqual(@as(KeyCode, 0x71), key_f2);
     try std.testing.expectEqual(@as(KeyCode, 0x7B), key_f12);
+}
+
+test "char events treat AltGr (Ctrl+Alt) as text and lone Ctrl or Alt as a chord" {
+    try std.testing.expect((CharEvent{ .codepoint = 'a' }).isTextInput());
+    try std.testing.expect((CharEvent{ .codepoint = '@', .ctrl = true, .alt = true }).isTextInput());
+    try std.testing.expect(!(CharEvent{ .codepoint = 'a', .ctrl = true }).isTextInput());
+    try std.testing.expect(!(CharEvent{ .codepoint = 'a', .alt = true }).isTextInput());
 }

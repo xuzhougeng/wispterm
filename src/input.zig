@@ -2018,6 +2018,56 @@ test "input: right-clicking a sidebar tab starts tab rename" {
     try std.testing.expectEqual(@as(usize, 0), tab.g_tab_rename_idx);
 }
 
+test "input: the new-session keybind repaints so the launcher appears at once" {
+    try skipUnlessInputRendererShard();
+    const previous_keybinds = AppWindow.g_keybinds;
+    defer AppWindow.g_keybinds = previous_keybinds;
+    defer overlays.sessionLauncherClose();
+    AppWindow.g_keybinds = keybind.Set.defaults();
+
+    const mac = builtin.os.tag == .macos;
+    const effect = dispatchKey(.{ .key_code = 'T', .ctrl = !mac, .shift = true, .alt = false, .super = mac });
+
+    try std.testing.expect(overlays.sessionLauncherVisible());
+    try std.testing.expect(effect.needs_rebuild);
+    try std.testing.expect(effect.cells_invalid);
+}
+
+test "input: typing into an active tab rename requests a repaint" {
+    try skipUnlessInputRendererShard();
+    const previous_active = tab.g_tab_rename_active;
+    const previous_len = tab.g_tab_rename_len;
+    const previous_cursor = tab.g_tab_rename_cursor;
+    const previous_select_all = tab.g_tab_rename_select_all;
+    defer {
+        tab.g_tab_rename_active = previous_active;
+        tab.g_tab_rename_len = previous_len;
+        tab.g_tab_rename_cursor = previous_cursor;
+        tab.g_tab_rename_select_all = previous_select_all;
+    }
+    tab.g_tab_rename_active = true;
+    tab.g_tab_rename_len = 0;
+    tab.g_tab_rename_cursor = 0;
+    tab.g_tab_rename_select_all = false;
+
+    const effect = dispatchChar(.{ .codepoint = 'x' });
+
+    try std.testing.expectEqual(@as(usize, 1), tab.g_tab_rename_len);
+    try std.testing.expect(effect.needs_rebuild);
+    try std.testing.expect(effect.cells_invalid);
+}
+
+test "input: an AltGr character is inserted into the session launcher field" {
+    try skipUnlessInputRendererShard();
+    defer overlays.sessionLauncherClose();
+    overlays.sessionLauncherOpen();
+
+    // Windows reports AltGr as Ctrl+Alt; `@` on a German layout arrives this way.
+    const effect = dispatchChar(.{ .codepoint = '@', .ctrl = true, .alt = true });
+
+    try std.testing.expect(effect.needs_rebuild);
+}
+
 test "macOS UI smoke: Cmd+Shift+B toggles the tab sidebar" {
     try skipUnlessInputRendererShard();
     if (builtin.os.tag != .macos) return error.SkipZigTest;
@@ -2169,7 +2219,7 @@ pub threadlocal var g_browser_resize_hover: bool = false; // Mouse is over the e
 pub threadlocal var g_browser_resize_dragging: bool = false; // Currently dragging the browser edge
 
 /// Whether the AI copilot sidebar currently owns keyboard/mouse focus. Set by
-/// AppWindow.toggleAiCopilot; full key/mouse routing lands in a later task.
+/// AppWindow.toggleAiCopilot; key and char dispatch route to it while set.
 threadlocal var g_ai_copilot_focused: bool = false;
 
 pub fn focusAiCopilot() void {
@@ -2191,7 +2241,6 @@ threadlocal var g_sidebar_tab_drag_start_y: f64 = 0;
 threadlocal var g_sidebar_tab_drag_active: bool = false;
 
 // Internal input state.
-threadlocal var plus_btn_pressed: bool = false;
 threadlocal var fullscreen_restore_state: window_backend.FullscreenRestoreState = .{};
 const CLOSE_SHORTCUT_CONFIRM_MS: i64 = 5000;
 
@@ -2330,7 +2379,6 @@ pub fn cancelTransientMouseState(win: anytype) void {
     g_browser_resize_dragging = false;
     right_dock.g_interaction = .{};
     g_selecting = false;
-    plus_btn_pressed = false;
     tab.g_tab_close_pressed = null;
     releasePreviewImageDrag();
     resetPanelSwapState();
@@ -2938,21 +2986,21 @@ fn handleChar(ev: platform_input.CharEvent) void {
 fn dispatchChar(ev: platform_input.CharEvent) ui_effect.UiEffect {
     overlays.startupShortcutsDismiss();
     if (overlays.btwConversationVisible()) {
-        if (!ev.ctrl and !ev.alt) {
+        if (ev.isTextInput()) {
             AppWindow.resetCursorBlink();
             return overlays.btwConversationHandleChar(ev.codepoint);
         }
         return .consumed_only;
     }
     if (overlays.sessionLauncherVisible()) {
-        if (!ev.ctrl and !ev.alt) {
+        if (ev.isTextInput()) {
             overlays.sessionLauncherInsertChar(ev.codepoint);
             return input_effects.repaint();
         }
         return .none;
     }
     if (overlays.mcpServersVisible()) {
-        if (!ev.ctrl and !ev.alt) {
+        if (ev.isTextInput()) {
             overlays.mcpServersInsertChar(ev.codepoint);
             return input_effects.repaint();
         }
@@ -2963,13 +3011,13 @@ fn dispatchChar(ev: platform_input.CharEvent) ui_effect.UiEffect {
         if (effect.needs_rebuild) overlays.commandPaletteInsertChar(ev.codepoint);
         return effect;
     }
-    if (overlays.settingsPageVisible() and !ev.ctrl and !ev.alt and overlays.settingsPageInsertChar(ev.codepoint)) {
+    if (overlays.settingsPageVisible() and ev.isTextInput() and overlays.settingsPageInsertChar(ev.codepoint)) {
         return input_effects.repaint();
     }
     if (weixinQrPanelConsumesChar()) return .none;
     if (overlays.feishuRegPanelVisible()) return .none;
     if (browser_panel.urlBarFocused()) {
-        if (!ev.ctrl and !ev.alt) {
+        if (ev.isTextInput()) {
             browser_panel.insertUrlBarChar(ev.codepoint);
             markBrowserUrlBarDirty();
         }
@@ -2977,15 +3025,16 @@ fn dispatchChar(ev: platform_input.CharEvent) ui_effect.UiEffect {
     }
     // File explorer inline editing
     if (file_explorer.isFocused() and file_explorer.isVisibleForActiveTab() and file_explorer.hasActiveOp() and file_explorer.opMode() != .confirm_delete) {
-        if (!ev.ctrl and !ev.alt) file_explorer.inputChar(ev.codepoint);
-        return .none;
+        if (!ev.isTextInput()) return .none;
+        file_explorer.inputChar(ev.codepoint);
+        return input_effects.repaint();
     }
     // When tab rename is active, route chars to the rename buffer
     if (tab.g_tab_rename_active) {
         AppWindow.g_cursor_blink_visible = true;
         AppWindow.g_last_blink_time = std.time.milliTimestamp();
         tab.handleRenameChar(ev.codepoint);
-        return .none;
+        return input_effects.repaint();
     }
     if (command_char_suppressors.ai_history) |codepoint| {
         const suppress = !ev.ctrl and !ev.alt and !ev.super and ev.codepoint == codepoint;
@@ -2993,7 +3042,7 @@ fn dispatchChar(ev: platform_input.CharEvent) ui_effect.UiEffect {
         if (suppress) return .none;
     }
     if (assistant_conversation.current(aiCopilotFocused())) |target| {
-        if (!ev.ctrl and !ev.alt) {
+        if (ev.isTextInput()) {
             AppWindow.resetCursorBlink();
             target.session.handleChar(ev.codepoint);
             return input_effects.repaint();
@@ -3005,13 +3054,13 @@ fn dispatchChar(ev: platform_input.CharEvent) ui_effect.UiEffect {
         // owns focus, so 'r'/Space type into the query there yet stay free to act as
         // Scan/Preview shortcuts when another panel is focused. A Space on an empty
         // query is declined (see typeIntoSearch) so it previews the transcript too.
-        if (!ev.ctrl and !ev.alt and !ev.super) {
+        if (ev.isTextInput() and !ev.super) {
             _ = AppWindow.aiHistoryInsertCodepoint(ev.codepoint);
         }
         return .none;
     }
     if (AppWindow.activeConversationCenter() != null) {
-        if (!ev.ctrl and !ev.alt and !ev.super) {
+        if (ev.isTextInput() and !ev.super) {
             _ = AppWindow.conversationCenterInsertCodepoint(ev.codepoint);
         }
         return .none;
@@ -3022,18 +3071,17 @@ fn dispatchChar(ev: platform_input.CharEvent) ui_effect.UiEffect {
             command_char_suppressors.skill_center = null;
             if (suppress) return .none;
         }
-        if (!ev.ctrl and !ev.alt and !ev.super) {
+        if (ev.isTextInput() and !ev.super) {
             if (AppWindow.skillCenterUrlInsertChar(ev.codepoint)) markSkillCenterInputDirty(); // no-op unless url_input active
         }
         return .none;
     }
     if (AppWindow.activePasswordStore()) |password_page| {
-        // ctrl == alt admits plain text and AltGr (Ctrl+Alt) characters.
-        if (!ev.super and ev.ctrl == ev.alt and password_page.insertChar(ev.codepoint)) return input_effects.repaint();
+        if (!ev.super and ev.isTextInput() and password_page.insertChar(ev.codepoint)) return input_effects.repaint();
         return .none;
     }
     if (AppWindow.activeSyncPage()) |sync_page| {
-        if (!ev.super and ev.ctrl == ev.alt and sync_page.insertChar(ev.codepoint)) return input_effects.repaint();
+        if (!ev.super and ev.isTextInput() and sync_page.insertChar(ev.codepoint)) return input_effects.repaint();
         return .none;
     }
     if (AppWindow.activePortForwarding() != null) {
@@ -3042,7 +3090,7 @@ fn dispatchChar(ev: platform_input.CharEvent) ui_effect.UiEffect {
             command_char_suppressors.port_forwarding = null;
             if (suppress) return .none;
         }
-        if (!ev.ctrl and !ev.alt and !ev.super) {
+        if (ev.isTextInput() and !ev.super) {
             _ = AppWindow.portForwardingInsertChar(ev.codepoint);
         }
         return .none;
@@ -3209,12 +3257,6 @@ fn actionIs(action: ?keybind.Action, expected: keybind.Action) bool {
 
 fn commitTabRenameIfActive() void {
     if (tab.g_tab_rename_active) tab.commitTabRename();
-}
-
-fn currentClientWidthOr(default: f64) ?f64 {
-    const win = AppWindow.g_window orelse return null;
-    const rect = window_backend.clientRect(win) orelse return default;
-    return @floatFromInt(rect.right);
 }
 
 fn requestNewWindowFromActiveCwd() void {
@@ -3467,7 +3509,10 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
         return overlays.mcpServersHandleKey(key_event);
     }
     if (action) |app_action| {
-        if (handleConfiguredKeybindAction(app_action, .early)) return .none;
+        // A command that ran changed what is on screen (opened an overlay,
+        // moved focus, toggled a panel). Several of them only commit state, so
+        // request the frame here instead of waiting for an incidental wake.
+        if (handleConfiguredKeybindAction(app_action, .early)) return input_effects.repaint();
     }
     if (overlays.commandPaletteVisible()) {
         const history_visible = overlays.commandPaletteAgentHistoryVisible();
@@ -3559,7 +3604,7 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
         AppWindow.g_cursor_blink_visible = true;
         AppWindow.g_last_blink_time = std.time.milliTimestamp();
         tab.handleRenameKey(key_event);
-        return .none;
+        return input_effects.repaint();
     }
     if (browser_panel.urlBarFocused()) {
         handleBrowserUrlBarKey(ev);
@@ -3578,7 +3623,7 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
         if (actionIs(action, .paste)) return if (pasteClipboardIntoPasswordStore()) input_effects.repaint() else .none;
         if (actionIs(action, .copy)) return AppWindow.passwordStoreCopySelected();
         if (action) |app_action| {
-            if (handleConfiguredKeybindAction(app_action, .late)) return .none;
+            if (handleConfiguredKeybindAction(app_action, .late)) return input_effects.repaint();
         }
         return AppWindow.passwordStoreHandleKey(key_event);
     }
@@ -3586,7 +3631,7 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
     if (AppWindow.activeSyncPage() != null) {
         if (actionIs(action, .paste)) return if (pasteClipboardIntoSyncPage()) input_effects.repaint() else .none;
         if (action) |app_action| {
-            if (handleConfiguredKeybindAction(app_action, .late)) return .none;
+            if (handleConfiguredKeybindAction(app_action, .late)) return input_effects.repaint();
         }
         return AppWindow.syncPageHandleKey(key_event);
     }
@@ -3607,7 +3652,7 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
         }
     }
     if (action) |app_action| {
-        if (handleConfiguredKeybindAction(app_action, .late)) return .none;
+        if (handleConfiguredKeybindAction(app_action, .late)) return input_effects.repaint();
     }
 
     if (assistant_conversation.current(aiCopilotFocused())) |target| {
@@ -4966,11 +5011,13 @@ fn handleTopbarPress(xpos: f64) void {
 
     if (hitTestHelpButton(xpos, titlebarHeight() / 2)) {
         overlays.startupShortcutsToggle();
+        requestInputRepaint();
         return;
     }
 
     if (hitTestConfigButton(xpos, titlebarHeight() / 2)) {
         overlays.settingsPageOpen();
+        requestInputRepaint();
     }
 }
 
@@ -4979,6 +5026,7 @@ fn handleSidebarPress(xpos: f64, ypos: f64) void {
 
     if (hitTestSidebarPlusButton(xpos, ypos)) {
         overlays.sessionLauncherOpen();
+        requestInputRepaint();
         return;
     }
 
@@ -5306,11 +5354,6 @@ fn extractTokenRangeAtCell(allocator: std.mem.Allocator, surface: *Surface, cell
     };
 }
 
-fn extractTokenAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?[]u8 {
-    const token = extractTokenRangeAtCell(allocator, surface, cell_pos) orelse return null;
-    return token.text;
-}
-
 const looksLikeUrl = terminal_link_action.looksLikeUrl;
 
 fn extractUrlRangeAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?TokenAtCell {
@@ -5320,11 +5363,6 @@ fn extractUrlRangeAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_p
         return null;
     }
     return token;
-}
-
-fn extractUrlAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?[]u8 {
-    const token = extractUrlRangeAtCell(allocator, surface, cell_pos) orelse return null;
-    return token.text;
 }
 
 fn markUrlUnderlineDirty(surface: ?*Surface) void {
@@ -5410,6 +5448,9 @@ fn extractInteractiveUnderlineRangeAtCell(
     cell_pos: CellPos,
     action: TerminalPathClickAction,
 ) ?TokenAtCell {
+    // No modifier held means nothing can be underlined; skip the render-mutex
+    // lock and token allocation that would otherwise run on every mouse move.
+    if (action == .pass_through) return null;
     const token = extractTokenRangeAtCell(allocator, surface, cell_pos) orelse return null;
     if (interactiveUnderlineTokenKind(action, token.text) == .none) {
         token.deinit(allocator);
@@ -6128,7 +6169,8 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
         // the press-path selection. Route terminal-content double-clicks
         // through the same click_tracker path: the opening press already
         // registered count=1, so this registers 2/3/4 → word/line/paragraph.
-        // Windows/Linux never emit double_click, so their behavior is unchanged.
+        // Win32 reports a content double-click as a second press (it emits
+        // double_click only for the titlebar and sidebar), so it is unaffected.
         if (split_layout.surfaceAtPoint(ev.x, ev.y) != null) {
             handleTerminalSelectionPress(ev, xpos, ypos);
         }
@@ -6823,14 +6865,6 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 return;
             }
 
-            if (plus_btn_pressed) {
-                plus_btn_pressed = false;
-                // Only fire if still in the + button area
-                if (hitTestSidebarPlusButton(xpos, ypos)) {
-                    overlays.sessionLauncherOpen();
-                }
-                return;
-            }
             if (AppWindow.g_copy_on_select and g_runtime_state.selection_changed_for_copy and activeTerminalSelectionExists()) {
                 copySelectionToClipboard();
             }
@@ -6838,111 +6872,6 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             g_selecting = false;
         }
     }
-}
-
-fn handleTabBarPress(xpos: f64) void {
-    // Commit any active rename when clicking in the tab bar
-    if (tab.g_tab_rename_active) {
-        tab.commitTabRename();
-    }
-    const window_width = currentClientWidthOr(800.0) orelse return;
-
-    const caption_area_w: f64 = 46 * 3;
-    const gap_w: f64 = 42;
-    const plus_btn_w: f64 = 46;
-    const show_plus = tab.g_tab_count > 1;
-    const num_tabs = tab.g_tab_count;
-
-    const plus_total: f64 = if (show_plus) plus_btn_w else 0;
-    const right_reserved: f64 = caption_area_w + gap_w + plus_total;
-    const tab_area_w: f64 = window_width - right_reserved;
-    const tab_w: f64 = if (num_tabs > 0) tab_area_w / @as(f64, @floatFromInt(num_tabs)) else tab_area_w;
-
-    // Check which tab was clicked — also check close button
-    var cursor: f64 = 0;
-    for (0..num_tabs) |tab_idx| {
-        if (xpos >= cursor and xpos < cursor + tab_w) {
-            // Check if the close button was clicked (centered on shortcut position)
-            if (num_tabs > 1 and tab.g_tab_close_opacity[tab_idx] > 0.1) {
-                const sc_w: f64 = @floatCast(titlebar.titlebarGlyphAdvance(titlebar.tab_shortcut_modifier_cp) + titlebar.titlebarGlyphAdvance(if (tab_idx == 9) @as(u32, '0') else @as(u32, @intCast('1' + tab_idx))));
-                const sc_center = cursor + tab_w - 12 - sc_w / 2;
-                const close_btn_x = sc_center - tab.TAB_CLOSE_BTN_W / 2;
-                if (xpos >= close_btn_x and xpos < close_btn_x + tab.TAB_CLOSE_BTN_W) {
-                    tab.g_tab_close_pressed = tab_idx;
-                    return;
-                }
-            }
-            AppWindow.switchTab(tab_idx);
-            return;
-        }
-        cursor += tab_w;
-    }
-
-    // Check if + button was pressed
-    if (show_plus and xpos >= cursor and xpos < cursor + plus_btn_w) {
-        plus_btn_pressed = true;
-    }
-}
-
-fn hitTestTab(xpos: f64) ?usize {
-    const window_width = currentClientWidthOr(800.0) orelse return null;
-
-    const caption_area_w: f64 = 46 * 3;
-    const gap_w: f64 = 42;
-    const plus_btn_w: f64 = 46;
-    const show_plus = tab.g_tab_count > 1;
-    const num_tabs = tab.g_tab_count;
-
-    const plus_total: f64 = if (show_plus) plus_btn_w else 0;
-    const right_reserved: f64 = caption_area_w + gap_w + plus_total;
-    const tab_area_w: f64 = window_width - right_reserved;
-    const tab_w: f64 = if (num_tabs > 0) tab_area_w / @as(f64, @floatFromInt(num_tabs)) else tab_area_w;
-
-    var cursor: f64 = 0;
-    for (0..num_tabs) |tab_idx| {
-        if (xpos >= cursor and xpos < cursor + tab_w) {
-            return tab_idx;
-        }
-        cursor += tab_w;
-    }
-    return null;
-}
-
-fn hitTestTabCloseButton(xpos: f64, tab_idx: usize) bool {
-    const window_width = currentClientWidthOr(800.0) orelse 800.0;
-
-    const caption_area_w: f64 = 46 * 3;
-    const gap_w: f64 = 42;
-    const plus_btn_w: f64 = 46;
-    const show_plus = tab.g_tab_count > 1;
-    const num_tabs = tab.g_tab_count;
-
-    const plus_total: f64 = if (show_plus) plus_btn_w else 0;
-    const right_reserved: f64 = caption_area_w + gap_w + plus_total;
-    const tab_area_w: f64 = window_width - right_reserved;
-    const tab_w: f64 = if (num_tabs > 0) tab_area_w / @as(f64, @floatFromInt(num_tabs)) else tab_area_w;
-
-    const tab_x = tab_w * @as(f64, @floatFromInt(tab_idx));
-    const sc_w: f64 = @floatCast(titlebar.titlebarGlyphAdvance(titlebar.tab_shortcut_modifier_cp) + titlebar.titlebarGlyphAdvance(if (tab_idx == 9) @as(u32, '0') else @as(u32, @intCast('1' + tab_idx))));
-    const sc_center = tab_x + tab_w - 12 - sc_w / 2;
-    const close_btn_x = sc_center - tab.TAB_CLOSE_BTN_W / 2;
-    return xpos >= close_btn_x and xpos < close_btn_x + tab.TAB_CLOSE_BTN_W;
-}
-
-fn hitTestPlusButton(xpos: f64) bool {
-    const window_width = currentClientWidthOr(800.0) orelse return false;
-
-    const caption_area_w: f64 = 46 * 3;
-    const gap_w: f64 = 42;
-    const plus_btn_w: f64 = 46;
-    if (tab.g_tab_count <= 1) return false;
-
-    const right_reserved: f64 = caption_area_w + gap_w + plus_btn_w;
-    const tab_area_w: f64 = window_width - right_reserved;
-    const tab_w: f64 = tab_area_w / @as(f64, @floatFromInt(tab.g_tab_count));
-    const plus_x = tab_w * @as(f64, @floatFromInt(tab.g_tab_count));
-
-    return xpos >= plus_x and xpos < plus_x + plus_btn_w;
 }
 
 fn applyAiInputScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
@@ -7163,10 +7092,11 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
             const fb = window_backend.framebufferSize(win);
             const left_panels_w = AppWindow.leftPanelsWidth();
             const right_panels_w = AppWindow.rightPanelsWidthForWindow(fb.width);
-            const content_x: f32 = left_panels_w + @as(f32, @floatFromInt(split_layout.DEFAULT_PADDING));
-            const content_y: f32 = @floatCast(titlebarHeight());
-            const content_w: f32 = @as(f32, @floatFromInt(fb.width)) - left_panels_w - right_panels_w - @as(f32, @floatFromInt(2 * split_layout.DEFAULT_PADDING));
-            const content_h: f32 = @as(f32, @floatFromInt(fb.height)) - content_y - @as(f32, @floatFromInt(split_layout.DEFAULT_PADDING));
+            const content = split_layout.splitContentRect(fb.width, fb.height, @floatCast(titlebarHeight()), left_panels_w, right_panels_w);
+            const content_x = content.x;
+            const content_y = content.y;
+            const content_w = content.w;
+            const content_h = content.h;
 
             const slot = spatial.slots[handle.idx()];
             const layout = g_divider_drag_layout orelse return;
@@ -7354,19 +7284,6 @@ fn appendBytes(out: *[512]u8, len: *usize, bytes: []const u8) bool {
     return true;
 }
 
-fn appendByte(out: *[512]u8, len: *usize, byte: u8) bool {
-    if (len.* >= out.len) return false;
-    out[len.*] = byte;
-    len.* += 1;
-    return true;
-}
-
-fn appendFmt(out: *[512]u8, len: *usize, comptime fmt: []const u8, args: anytype) bool {
-    const written = std.fmt.bufPrint(out[len.*..], fmt, args) catch return false;
-    len.* += written.len;
-    return true;
-}
-
 fn mouseWheelUnits(delta: i16) usize {
     const notches = @abs(@as(i32, delta));
     return @max(@as(usize, 1), @as(usize, @intCast((notches * 3 + 119) / 120)));
@@ -7375,31 +7292,26 @@ fn mouseWheelUnits(delta: i16) usize {
 fn appendMouseWheelReport(surface: *Surface, ev: platform_input.MouseWheelEvent, out: *[512]u8, len: *usize) bool {
     if (surface.terminal.flags.mouse_event == .none or surface.terminal.flags.mouse_event == .x10) return false;
 
-    var button_code: u8 = if (ev.delta > 0) 64 else 65; // xterm wheel up/down buttons 4/5
-    if (ev.shift) button_code += 4;
-    if (ev.alt) button_code += 8;
-    if (ev.ctrl) button_code += 16;
-
     const cell = mouseToSurfaceCell(surface, @floatFromInt(ev.xpos), @floatFromInt(ev.ypos));
-    const x = cell.col + 1;
-    const y = cell.row + 1;
-
-    switch (surface.terminal.flags.mouse_format) {
-        .sgr => return appendFmt(out, len, "\x1b[<{d};{d};{d}M", .{ button_code, x, y }),
-        .urxvt => return appendFmt(out, len, "\x1b[{d};{d};{d}M", .{ 32 + @as(u16, button_code), x, y }),
-        .sgr_pixels => {
-            const pixel = mouseToSurfacePixel(surface, ev.xpos, ev.ypos);
-            return appendFmt(out, len, "\x1b[<{d};{d};{d}M", .{ button_code, @max(0, pixel.x), @max(0, pixel.y) });
-        },
-        .x10, .utf8 => {
-            if (cell.col > 222 or cell.row > 222) return false;
-            if (!appendBytes(out, len, "\x1b[M")) return false;
-            if (!appendByte(out, len, 32 + button_code)) return false;
-            if (!appendByte(out, len, 32 + @as(u8, @intCast(cell.col)) + 1)) return false;
-            if (!appendByte(out, len, 32 + @as(u8, @intCast(cell.row)) + 1)) return false;
-            return true;
-        },
+    const format = mouseReportFormat(surface.terminal.flags.mouse_format);
+    var pixel_x: i32 = 0;
+    var pixel_y: i32 = 0;
+    if (format == .sgr_pixels) {
+        const pixel = mouseToSurfacePixel(surface, ev.xpos, ev.ypos);
+        pixel_x = pixel.x;
+        pixel_y = pixel.y;
     }
+    return mouse_report.encodeWheel(
+        format,
+        ev.delta > 0,
+        .{ .shift = ev.shift, .alt = ev.alt, .ctrl = ev.ctrl },
+        cell.col,
+        cell.row,
+        pixel_x,
+        pixel_y,
+        out,
+        len,
+    );
 }
 
 fn appendAlternateScrollKeys(surface: *Surface, ev: platform_input.MouseWheelEvent, out: *[512]u8, len: *usize) bool {

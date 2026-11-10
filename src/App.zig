@@ -95,6 +95,9 @@ url_open_mode: Config.UrlOpenMode,
 ssh_legacy_algorithms: bool,
 ssh_advertise_terminal_capabilities: bool,
 weixin_notify_forward: bool,
+desktop_notifications: bool,
+confirm_close_running_program: bool,
+agent_screen_detection: bool,
 
 // Background image
 background_image: ?[]const u8,
@@ -312,6 +315,9 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms",
         .ssh_advertise_terminal_capabilities = cfg.@"ssh-advertise-terminal-capabilities",
         .weixin_notify_forward = cfg.@"weixin-notify-forward",
+        .desktop_notifications = cfg.@"desktop-notifications",
+        .confirm_close_running_program = cfg.@"confirm-close-running-program",
+        .agent_screen_detection = cfg.@"agent-screen-detection",
         .background_image = background_image,
         .background_opacity = cfg.@"background-opacity",
         .background_image_mode = cfg.@"background-image-mode",
@@ -666,6 +672,9 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";
     self.ssh_advertise_terminal_capabilities = cfg.@"ssh-advertise-terminal-capabilities";
     self.weixin_notify_forward = cfg.@"weixin-notify-forward";
+    self.desktop_notifications = cfg.@"desktop-notifications";
+    self.confirm_close_running_program = cfg.@"confirm-close-running-program";
+    self.agent_screen_detection = cfg.@"agent-screen-detection";
     self.replaceOptStr(&self.background_image, cfg.@"background-image");
     self.background_opacity = cfg.@"background-opacity";
     self.background_image_mode = cfg.@"background-image-mode";

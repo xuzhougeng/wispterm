@@ -79,7 +79,8 @@ pub fn saveProfilesKeepingNew(allocator: std.mem.Allocator, profiles: []const pr
         }
         profile_codec.appendNewDiskLines(allocator, &out, disk, names[0..name_count], seen) catch return false;
     }
-    platform_atomic_file.writeFileReplaceSafe(path, out.items) catch return false;
+    // Holds API keys (only hex-encoded), so owner-only like oauth.json.
+    platform_atomic_file.writeFileReplaceSafeWithOptions(path, out.items, .{ .mode = 0o600 }) catch return false;
     return true;
 }
 

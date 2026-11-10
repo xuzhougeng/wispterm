@@ -8,7 +8,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const ssh_connection = @import("connection.zig");
 const SshConnection = ssh_connection.SshConnection;
-const platform_dirs = @import("../platform/dirs.zig");
 const platform_process = @import("../platform/process.zig");
 const platform_pty_command = @import("../platform/pty_command.zig");
 const remote_filetool = @import("../agent/remote_filetool.zig");
@@ -1232,23 +1231,6 @@ fn appendSshOptions(
     argv_buf[argc] = "ServerAliveCountMax=2";
     argc += 1;
     return argc;
-}
-
-fn sshControlPathOption(allocator: std.mem.Allocator) ?[]u8 {
-    const temp_raw = platform_dirs.tempDir(allocator) catch return null;
-    defer allocator.free(temp_raw);
-
-    const trimmed = std.mem.trimRight(u8, temp_raw, "\\/");
-    if (trimmed.len == 0) return null;
-
-    var normalized: std.ArrayListUnmanaged(u8) = .empty;
-    defer normalized.deinit(allocator);
-    normalized.appendSlice(allocator, "ControlPath=") catch return null;
-    for (trimmed) |ch| {
-        normalized.append(allocator, if (ch == '\\') '/' else ch) catch return null;
-    }
-    normalized.appendSlice(allocator, "/wispterm-ssh-%C") catch return null;
-    return normalized.toOwnedSlice(allocator) catch null;
 }
 
 // ============================================================================

@@ -13,9 +13,6 @@ const layout_math = @import("startup_shortcuts_layout.zig");
 const mixColor = primitives.mixColor;
 const renderRoundedQuadAlpha = primitives.renderRoundedQuadAlpha;
 
-pub const STARTUP_SHORTCUTS_DURATION_MS: i64 = 12000;
-pub const STARTUP_SHORTCUTS_FADE_MS: i64 = 800;
-
 const StartupShortcutKind = enum {
     literal,
     action,
@@ -78,11 +75,9 @@ const STARTUP_SHORTCUT_ENTRIES = [_]StartupShortcut{
 };
 
 pub threadlocal var g_startup_shortcuts_visible: bool = false;
-threadlocal var g_startup_shortcuts_started_at: i64 = 0;
 
 pub fn startupShortcutsShow() void {
     g_startup_shortcuts_visible = true;
-    g_startup_shortcuts_started_at = std.time.milliTimestamp();
 }
 
 pub fn startupShortcutsDismiss() void {
@@ -91,9 +86,6 @@ pub fn startupShortcutsDismiss() void {
 
 pub fn startupShortcutsToggle() void {
     g_startup_shortcuts_visible = !g_startup_shortcuts_visible;
-    if (g_startup_shortcuts_visible) {
-        g_startup_shortcuts_started_at = std.time.milliTimestamp();
-    }
 }
 
 fn startupShortcutsOpacity() f32 {

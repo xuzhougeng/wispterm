@@ -20,7 +20,6 @@ const cell_renderer = AppWindow.cell_renderer;
 const font_backend = @import("../platform/font_backend.zig");
 const window_backend = @import("../platform/window_backend.zig");
 const agent_detector = @import("../terminal_agents/detector.zig");
-const keybind = @import("../keybind.zig");
 const update_pill_state = @import("../update_pill_state.zig");
 const i18n = @import("../i18n.zig");
 const primitives = @import("overlays/primitives.zig");
@@ -1392,59 +1391,4 @@ pub fn renderCaptionButton(button: titlebar_layout.CaptionButtonVisual) void {
         .minimize => .minimize,
     };
     renderChromeIcon(kind, rect.x, rect.y, rect.w, rect.h, icon_color);
-}
-
-/// Render placeholder content for tabs that don't have a terminal yet.
-pub fn renderPlaceholderTab(window_width: f32, window_height: f32, top_pad: f32) void {
-    const msg = "Tabs not yet implemented";
-    var shortcut_buf: [64]u8 = undefined;
-    const shortcut = keybind.formatActionShortcut(&AppWindow.g_keybinds, .new_session, &shortcut_buf) orelse "the new session shortcut";
-    var hint_buf: [128]u8 = undefined;
-    const hint = std.fmt.bufPrint(&hint_buf, "Press {s} to open", .{shortcut}) catch "Press the new session shortcut to open";
-    const text_color = [3]f32{ 0.4, 0.4, 0.4 };
-
-    // Center the message vertically and horizontally
-    const content_h = window_height - top_pad;
-    const center_y = content_h / 2;
-
-    // Measure and draw main message
-    var msg_width: f32 = 0;
-    for (msg) |ch| {
-        if (font.getGlyphInfo(@intCast(ch))) |g| {
-            msg_width += @as(f32, @floatFromInt(g.advance >> 6));
-        } else {
-            msg_width += font.cell_width;
-        }
-    }
-    var x = (window_width - msg_width) / 2;
-    var y = center_y + font.cell_height / 2;
-    for (msg) |ch| {
-        cell_renderer.renderChar(@intCast(ch), x, y, text_color);
-        if (font.getGlyphInfo(@intCast(ch))) |g| {
-            x += @as(f32, @floatFromInt(g.advance >> 6));
-        } else {
-            x += font.cell_width;
-        }
-    }
-
-    // Measure and draw hint below
-    var hint_width: f32 = 0;
-    for (hint) |ch| {
-        if (font.getGlyphInfo(@intCast(ch))) |g| {
-            hint_width += @as(f32, @floatFromInt(g.advance >> 6));
-        } else {
-            hint_width += font.cell_width;
-        }
-    }
-    x = (window_width - hint_width) / 2;
-    y = center_y - font.cell_height;
-    const hint_color = [3]f32{ 0.3, 0.3, 0.3 };
-    for (hint) |ch| {
-        cell_renderer.renderChar(@intCast(ch), x, y, hint_color);
-        if (font.getGlyphInfo(@intCast(ch))) |g| {
-            x += @as(f32, @floatFromInt(g.advance >> 6));
-        } else {
-            x += font.cell_width;
-        }
-    }
 }

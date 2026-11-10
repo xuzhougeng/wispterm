@@ -27,9 +27,6 @@ const ToolHost = types.ToolHost;
 const ToolSurface = types.ToolSurface;
 
 pub const TOOL_NAME = "password_input";
-/// Earlier name of this tool, which handed the plaintext to the model. A Skill
-/// Center opt-out saved under it still disables `password_input`.
-pub const LEGACY_TOOL_NAME = "password_get";
 
 pub fn run(ctx: *ToolContext, root: std.json.Value) ![]u8 {
     var vault = try store.load(ctx.allocator);

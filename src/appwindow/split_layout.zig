@@ -158,6 +158,32 @@ pub fn previewCloseButtonAtPoint(x: i32, y: i32) ?SplitTree.Node.Handle {
     return null;
 }
 
+pub const ContentRect = struct { x: f32, y: f32, w: f32, h: f32 };
+
+/// The rectangle the active tab's split tree is laid out in, in framebuffer
+/// pixels: the window minus the titlebar, the side panels, and
+/// `DEFAULT_PADDING` on all four sides. This is the rectangle the render
+/// loop passes to `computeSplitLayout`; divider hit-testing and dragging must
+/// use the same one or the grab band drifts off the drawn divider.
+pub fn splitContentRect(fb_width: anytype, fb_height: anytype, titlebar_h: f32, left_panels_w: f32, right_panels_w: f32) ContentRect {
+    const pad: f32 = @floatFromInt(DEFAULT_PADDING);
+    return .{
+        .x = left_panels_w + pad,
+        .y = titlebar_h + pad,
+        .w = @as(f32, @floatFromInt(fb_width)) - left_panels_w - right_panels_w - 2 * pad,
+        .h = @as(f32, @floatFromInt(fb_height)) - titlebar_h - 2 * pad,
+    };
+}
+
+test "splitContentRect matches the rectangle the render loop lays splits out in" {
+    // Render loop: content_y = padding + titlebar, content_h = fb_h - content_y - padding.
+    const rect = splitContentRect(@as(u32, 1000), @as(u32, 700), 40, 200, 300);
+    try std.testing.expectEqual(@as(f32, 210), rect.x);
+    try std.testing.expectEqual(@as(f32, 50), rect.y);
+    try std.testing.expectEqual(@as(f32, 480), rect.w);
+    try std.testing.expectEqual(@as(f32, 640), rect.h);
+}
+
 /// Check if a point is over a split divider.
 /// Returns the split node handle and layout if found, null otherwise.
 pub fn hitTestDivider(x: i32, y: i32) ?DividerHit {
@@ -173,10 +199,11 @@ pub fn hitTestDivider(x: i32, y: i32) ?DividerHit {
     const fb = win.getFramebufferSize();
     const left_panels_w = AppWindow.leftPanelsWidth();
     const right_panels_w = AppWindow.rightPanelsWidthForWindow(fb.width);
-    const content_x: f32 = left_panels_w + @as(f32, @floatFromInt(DEFAULT_PADDING));
-    const content_y = AppWindow.currentTitlebarHeight();
-    const content_w: f32 = @as(f32, @floatFromInt(fb.width)) - left_panels_w - right_panels_w - @as(f32, @floatFromInt(2 * DEFAULT_PADDING));
-    const content_h: f32 = @as(f32, @floatFromInt(fb.height)) - content_y - @as(f32, @floatFromInt(DEFAULT_PADDING));
+    const content = splitContentRect(fb.width, fb.height, AppWindow.currentTitlebarHeight(), left_panels_w, right_panels_w);
+    const content_x = content.x;
+    const content_y = content.y;
+    const content_w = content.w;
+    const content_h = content.h;
 
     const xf: f32 = @floatFromInt(x);
     const yf: f32 = @floatFromInt(y);

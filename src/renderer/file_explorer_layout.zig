@@ -49,8 +49,11 @@ pub const Layout = struct {
     }
 
     pub fn operationRow(self: Layout, index: usize, scroll: f32) ?Row {
-        const row_top_px = self.list_top_px + @as(f32, @floatFromInt(index)) * self.row_height - scroll;
-        if (row_top_px < 0 or row_top_px >= self.visible_height) return null;
+        // Visibility is judged in list-relative space, like `row` above;
+        // `visible_height` is the list's height, not a window coordinate.
+        const row_y_from_top = @as(f32, @floatFromInt(index)) * self.row_height - scroll;
+        if (row_y_from_top + self.row_height < 0 or row_y_from_top >= self.visible_height) return null;
+        const row_top_px = self.list_top_px + row_y_from_top;
         return .{
             .top_px = row_top_px,
             .y = self.window_height - row_top_px - self.row_height,
@@ -188,4 +191,11 @@ test "operation row preserves append-row visibility math" {
     try std.testing.expectEqual(@as(f32, 80), row.top_px);
     try std.testing.expectEqual(@as(f32, 290), row.y);
     try std.testing.expect(layout.operationRow(20, 0) == null);
+
+    // The append row after 9 entries sits inside the list (270 px down a
+    // 320 px list) even though its window y (350) exceeds the list height.
+    try std.testing.expect(layout.visible_height > 9 * 30);
+    try std.testing.expectEqual(@as(f32, 350), layout.operationRow(9, 0).?.top_px);
+    // Scrolled fully above the list: hidden rather than drawn over the header.
+    try std.testing.expect(layout.operationRow(0, 60) == null);
 }

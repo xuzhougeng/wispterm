@@ -177,6 +177,7 @@ keybind = global:ctrl+backquote=toggle_quake
 | 向下分屏 | **Ctrl+Shift+-** | **Cmd+Shift+-** |
 | 切换文件浏览器侧边栏 | **Ctrl+Shift+Alt+E** | **Cmd+Shift+Opt+E** |
 | 切换 AI Copilot 侧边栏（当前终端） | **Ctrl+Shift+A** | **Cmd+Shift+A** |
+| 选择已保存的 Copilot 对话并在侧边栏中重新打开 | **Ctrl+Shift+R** | **Cmd+Shift+R** |
 | 预览文件（终端内 Ctrl/Cmd 单击，或文件浏览器中双击） | Ctrl 单击 | Cmd 单击 |
 | 在图库中查看上一张 / 下一张图片或 PDF（预览面板聚焦时） | Left / Right | Left / Right |
 | PDF 预览上一页 / 下一页（PDF 预览面板聚焦时） | PageUp / PageDown | PageUp / PageDown |
@@ -198,11 +199,19 @@ keybind = global:ctrl+backquote=toggle_quake
 | 移动选中的副驾历史行 | 命令中心副驾历史中 Up / Down | 命令中心副驾历史中 Up / Down |
 | 重开选中的副驾历史行 | 命令中心副驾历史中 Enter | 命令中心副驾历史中 Enter |
 | 删除选中的副驾历史行 | 命令中心副驾历史中 Delete | 命令中心副驾历史中 Delete |
+| 从副驾历史打开对话中心 | 点击 **Open Center** / **对话中心**，或 **Ctrl+Enter** | 点击 **Open Center** / **对话中心**，或 **Cmd+Enter** |
+| 在对话中心恢复对话 | **Enter** | **Enter** |
+| 按来源/日期筛选对话中心 | 点击左栏，或 Left/Right 后 Up/Down | 点击左栏，或 Left/Right 后 Up/Down |
 | 编辑 AI 历史筛选条件 | 在 AI 历史中输入 / Backspace | 在 AI 历史中输入 / Backspace |
 | 移动选中的 AI 历史会话 | AI 历史中 Up / Down | AI 历史中 Up / Down |
 | 恢复选中的 AI 历史会话 | AI 历史中 Enter | AI 历史中 Enter |
 | 预览选中的 AI 历史记录 | AI 历史中 Space | AI 历史中 Space |
+| 下载选中的 AI 历史原始文件 | AI 历史中 **D** | AI 历史中 **D** |
+| 把选中的 AI 历史记录导出为 Markdown | AI 历史中 **M** | AI 历史中 **M** |
+| 把选中的 AI 历史记录附加到 Copilot | AI 历史中 **A** | AI 历史中 **A** |
 | 刷新本地 AI 历史扫描 | 本地 AI 历史中 **R** | 本地 AI 历史中 **R** |
+| 立即运行记忆摘要（Memory Digest） | 记忆中心中 **D** | 记忆中心中 **D** |
+| 开关某个记忆来源 | 记忆中心 → 来源设置中 **Space** | 记忆中心 → 来源设置中 **Space** |
 | 编辑 AI 聊天输入光标 | Left/Right/Home/End/Delete/Backspace | Left/Right/Home/End/Delete/Backspace |
 | 停止进行中的 AI 聊天或智能体请求 | 工作时在 AI 聊天中按 **Esc** | 工作时在 AI 聊天中按 **Esc** |
 | 把排队的 follow-up 立即送进对话 | 在 Queued Prompts 上按 **Enter** | 在 Queued Prompts 上按 **Enter** |
@@ -215,10 +224,11 @@ keybind = global:ctrl+backquote=toggle_quake
 | 聚焦上一个面板（循环） | **Ctrl+Shift+[** | **Cmd+Shift+[** |
 | 聚焦下一个面板（循环） | **Ctrl+Shift+]** | **Cmd+Shift+]** |
 | 均分分屏尺寸 | **Ctrl+Shift+Z** | **Cmd+Shift+Z** |
+| 切换分屏布局（左右 ↔ 上下） | **Ctrl+Shift+L** | **Cmd+Shift+L** |
 | 下一个标签页 | **Ctrl+Tab** | **Ctrl+Tab** |
 | 上一个标签页 | **Ctrl+Shift+Tab** | **Ctrl+Shift+Tab** |
 | 切换到标签页 1–9 | **Alt+1**–**9** | **Opt+1**–**9** |
-| 打开配置文件 | **Ctrl+,** | **Cmd+,** |
+| 打开可视化设置 | **Ctrl+,** | **Cmd+,** |
 
 ## AI 聊天 Markdown 导出
 

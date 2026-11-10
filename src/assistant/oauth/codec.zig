@@ -66,8 +66,11 @@ pub fn needsRefresh(expires_ms: i64, now_ms: i64) bool {
     return now_ms + refresh_skew_ms >= expires_ms;
 }
 
+/// The token's real expiry. `needsRefresh` applies the safety margin; taking
+/// it off here as well refreshed 10 minutes early, which for tokens that live
+/// 10 minutes or less meant a refresh on every request.
 pub fn expiresAt(now_ms: i64, expires_in_seconds: u32) i64 {
-    return now_ms + @as(i64, expires_in_seconds) * 1000 - refresh_skew_ms;
+    return now_ms + @as(i64, expires_in_seconds) * 1000;
 }
 
 pub fn classifyPoll(status: u16, oauth_error: ?[]const u8, pending_http: bool) Poll {

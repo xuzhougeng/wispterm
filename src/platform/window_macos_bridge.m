@@ -1118,7 +1118,19 @@ static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_
     wispterm_macos_push_mouse_button_event(self.state, [self mouseButtonEvent:event button:2 action:1]);
 }
 
-- (void)pushMouseMove:(NSEvent *)event {
+- (void)pushMouseMove:(NSEvent *)event dragging:(BOOL)dragging {
+    // With acceptsMouseMovedEvents the key window receives mouseMoved for
+    // pointer motion anywhere on screen. A plain move outside the view must
+    // not undo the mouseExited "outside" state or publish an off-window
+    // position, or hover state sticks after the pointer leaves. Drags keep
+    // reporting so a selection can extend past the edge.
+    if (!dragging) {
+        const NSPoint local = [self convertPoint:event.locationInWindow fromView:nil];
+        if (!NSPointInRect(local, self.bounds)) {
+            wispterm_macos_set_pointer_outside(self.state, true);
+            return;
+        }
+    }
     NSPoint point = wispterm_macos_event_point(self.state, event);
     WispTermMacMouseMoveEvent out = {
         .x = wispterm_macos_round_double(point.x),
@@ -1133,10 +1145,10 @@ static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_
     wispterm_macos_push_mouse_move_event(self.state, out);
 }
 
-- (void)mouseMoved:(NSEvent *)event { [self pushMouseMove:event]; }
-- (void)mouseDragged:(NSEvent *)event { [self pushMouseMove:event]; }
-- (void)rightMouseDragged:(NSEvent *)event { [self pushMouseMove:event]; }
-- (void)otherMouseDragged:(NSEvent *)event { [self pushMouseMove:event]; }
+- (void)mouseMoved:(NSEvent *)event { [self pushMouseMove:event dragging:NO]; }
+- (void)mouseDragged:(NSEvent *)event { [self pushMouseMove:event dragging:YES]; }
+- (void)rightMouseDragged:(NSEvent *)event { [self pushMouseMove:event dragging:YES]; }
+- (void)otherMouseDragged:(NSEvent *)event { [self pushMouseMove:event dragging:YES]; }
 
 - (void)scrollWheel:(NSEvent *)event {
     NSPoint point = wispterm_macos_event_point(self.state, event);

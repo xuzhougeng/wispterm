@@ -388,15 +388,7 @@ pub const TmuxBridge = struct {
         if (findTabIndexByWindowId(self, window_id)) |idx| return tab.g_tabs[idx];
         if (tab.g_tab_count >= tab.MAX_TABS) return null;
         const t = self.alloc.create(TabState) catch return null;
-        t.kind = .terminal;
-        t.tree = .empty;
-        t.focused = .root;
-        t.ai_chat_session = null;
-        t.ai_history_session = null;
-        t.copilot_session = null;
-        t.tmux_window_id = window_id;
-        t.tmux_owner = self;
-        t.tmux_name_len = 0;
+        t.* = .{ .kind = .terminal, .tree = .empty, .tmux_window_id = window_id, .tmux_owner = self };
         tab.g_tabs[tab.g_tab_count] = t;
         active_tab_state.g_active_tab = tab.g_tab_count;
         tab.g_tab_count += 1;

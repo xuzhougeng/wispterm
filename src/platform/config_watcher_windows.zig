@@ -9,6 +9,12 @@ pub const DirectoryWatcher = struct {
     overlapped: windows.OVERLAPPED,
     buf: [4096]u8 align(@alignOf(windows.FILE_NOTIFY_INFORMATION)),
     active: bool,
+    /// Whether the overlapped read has been issued. It is issued on the first
+    /// `hasChanged`, never in `initPath`: the kernel keeps `&self.buf` and
+    /// `&self.overlapped` until the read completes, and `initPath` returns the
+    /// struct by value, so arming there pointed the kernel at a dead stack
+    /// frame. Once armed, the watcher must not be moved.
+    armed: bool = false,
 
     pub fn initPath(dir_path: []const u8) ?DirectoryWatcher {
         var dir_path_buf: [windows.PATH_MAX_WIDE]u16 = undefined;
@@ -44,7 +50,7 @@ pub const DirectoryWatcher = struct {
             return null;
         };
 
-        var self = DirectoryWatcher{
+        return .{
             .dir_handle = dir_handle,
             .event = event,
             .overlapped = .{
@@ -56,9 +62,6 @@ pub const DirectoryWatcher = struct {
             .buf = undefined,
             .active = false,
         };
-
-        self.startWatch();
-        return self;
     }
 
     fn startWatch(self: *DirectoryWatcher) void {
@@ -93,6 +96,12 @@ pub const DirectoryWatcher = struct {
     }
 
     pub fn hasChanged(self: *DirectoryWatcher) bool {
+        if (!self.armed) {
+            // First poll: `self` is at its final address now.
+            self.armed = true;
+            self.startWatch();
+            return false;
+        }
         if (!self.active) return false;
 
         const result = kernel32.WaitForSingleObject(self.event, 0);
@@ -103,7 +112,12 @@ pub const DirectoryWatcher = struct {
     }
 
     pub fn deinit(self: *DirectoryWatcher) void {
-        _ = kernel32.CancelIo(self.dir_handle);
+        if (self.armed and self.active) {
+            // The cancelled read still completes into `buf`/`overlapped`
+            // (with OPERATION_ABORTED); let it finish before they go away.
+            _ = kernel32.CancelIo(self.dir_handle);
+            _ = kernel32.WaitForSingleObject(self.event, 1000);
+        }
         windows.CloseHandle(self.event);
         windows.CloseHandle(self.dir_handle);
     }

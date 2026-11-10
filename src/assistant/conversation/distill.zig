@@ -171,13 +171,14 @@ pub fn parseCandidateJson(allocator: std.mem.Allocator, json_text: []const u8, t
     const source_summary = try allocator.dupe(u8, source_trimmed);
     errdefer allocator.free(source_summary);
 
-    var candidate = Candidate{
+    // The four field errdefers above already own these buffers on the error
+    // path; an extra `errdefer candidate.deinit` freed each of them twice.
+    const candidate = Candidate{
         .name = name,
         .description = description,
         .body = body,
         .source_summary = source_summary,
     };
-    errdefer candidate.deinit(allocator);
     const rendered = try renderSkillMarkdown(allocator, candidate);
     defer allocator.free(rendered);
     if (rendered.len > skill_registry.MAX_SKILL_MD_BYTES) return error.SkillTooLarge;

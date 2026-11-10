@@ -50,7 +50,7 @@ pub fn effectForAction(action: Action) ui_effect.UiEffect {
 }
 
 pub fn charEffect(ev: platform_input.CharEvent) ui_effect.UiEffect {
-    if (ev.ctrl or ev.alt) return .consumed_only;
+    if (!ev.isTextInput()) return .consumed_only;
     return .repaint;
 }
 
@@ -98,4 +98,6 @@ test "command palette char input repaints only for plain text" {
     try std.testing.expect(charEffect(.{ .codepoint = 'a', .ctrl = false, .alt = false }).needs_rebuild);
     try std.testing.expect(!charEffect(.{ .codepoint = 'a', .ctrl = true, .alt = false }).needs_rebuild);
     try std.testing.expect(!charEffect(.{ .codepoint = 'a', .ctrl = false, .alt = true }).needs_rebuild);
+    // AltGr arrives as Ctrl+Alt on Windows and is text, not a chord.
+    try std.testing.expect(charEffect(.{ .codepoint = '@', .ctrl = true, .alt = true }).needs_rebuild);
 }

@@ -109,8 +109,6 @@ pub const resizeOverlayShow = resize.resizeOverlayShow;
 pub const renderResizeOverlay = resize.renderResizeOverlay;
 pub const renderResizeOverlayWithOffset = resize.renderResizeOverlayWithOffset;
 pub const renderResizeOverlayForSurface = resize.renderResizeOverlayForSurface;
-pub const STARTUP_SHORTCUTS_DURATION_MS = startup_shortcuts.STARTUP_SHORTCUTS_DURATION_MS;
-pub const STARTUP_SHORTCUTS_FADE_MS = startup_shortcuts.STARTUP_SHORTCUTS_FADE_MS;
 pub const startupShortcutsShow = startup_shortcuts.startupShortcutsShow;
 pub const startupShortcutsDismiss = startup_shortcuts.startupShortcutsDismiss;
 pub const startupShortcutsToggle = startup_shortcuts.startupShortcutsToggle;
@@ -1411,6 +1409,7 @@ test "command palette includes tmux profile actions for SSH profile search" {
 fn commandEntryKeybindAction(action: CommandAction) ?keybind.Action {
     return switch (action) {
         .new_tab => .new_session,
+        .toggle_ai_copilot => .toggle_ai_copilot,
         .send_to_copilot => .send_to_copilot,
         .split_right => .split_right,
         .split_down => .split_down,
@@ -1719,10 +1718,6 @@ fn historySelectedItemIndex(view: command_palette_history_view.View, selected_or
         }
     }
     return 0;
-}
-
-fn commandPaletteClampSelection() void {
-    commandPaletteState().clampSelection(commandPaletteVisibleCount());
 }
 
 fn overlayTextHeight() f32 {
@@ -9455,9 +9450,7 @@ fn renderWhatsNewWrappedLine(
         if (rows_state.row_index < rows_state.scroll) continue;
         if (rows_state.drawn >= layout.visible_rows) return false;
 
-        const start = r * wrap_cols;
-        const end = @min(text.len, start + wrap_cols);
-        const slice = if (start < text.len) text[start..end] else "";
+        const slice = whats_new_model.wrapRowSlice(text, r, wrap_cols);
         const top = layout.content.y + @as(f32, @floatFromInt(rows_state.drawn)) * line_h;
         const row_y = window_height - top - line_h;
         const text_y = rowTextY(row_y, line_h);
@@ -9623,9 +9616,7 @@ pub fn renderWhatsNew(window_width: f32, window_height: f32) void {
             const rows = whats_new_model.lineRows(summary.len, summary_cols);
             var row: usize = 0;
             while (row < rows) : (row += 1) {
-                const start = row * summary_cols;
-                const end = @min(summary.len, start + summary_cols);
-                renderTitlebarTextLimited(summary[start..end], layout.content.x, textYFromTop(window_height, subtitle_top + @as(f32, @floatFromInt(row)) * line_h), body, summary_w);
+                renderTitlebarTextLimited(whats_new_model.wrapRowSlice(summary, row, summary_cols), layout.content.x, textYFromTop(window_height, subtitle_top + @as(f32, @floatFromInt(row)) * line_h), body, summary_w);
             }
         }
     }
@@ -9673,10 +9664,9 @@ pub fn renderUpdatePrompt(window_width: f32, window_height: f32) void {
     const pad_v: f32 = 6;
     const line_h = font.g_titlebar_cell_height + pad_v * 2;
 
-    var text_width: f32 = 0;
-    for (text) |ch| {
-        text_width += titlebar.titlebarGlyphAdvance(@intCast(ch));
-    }
+    // Measured and drawn per codepoint: the macOS install prompt carries a
+    // non-ASCII suffix, which a per-byte loop turned into mojibake.
+    const text_width = measureTitlebarText(text);
 
     const bg_w = text_width + pad_h * 2;
     const bg_x = @max(12, (window_width - bg_w) / 2);
@@ -9690,12 +9680,7 @@ pub fn renderUpdatePrompt(window_width: f32, window_height: f32) void {
         g_update_prompt_rect = .{ .x = bg_x, .y = bg_y, .w = bg_w, .h = line_h };
     }
 
-    var x = bg_x + pad_h;
-    const y = bg_y + pad_v;
-    for (text) |ch| {
-        titlebar.renderTitlebarChar(@intCast(ch), x, y, text_color);
-        x += titlebar.titlebarGlyphAdvance(@intCast(ch));
-    }
+    renderTitlebarText(text, bg_x + pad_h, bg_y + pad_v, text_color);
 }
 
 pub fn updatePromptHitTest(xpos: f64, ypos: f64, window_height: f32) bool {

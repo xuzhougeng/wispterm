@@ -4,6 +4,7 @@ const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const markdown_preview = @import("../preview/markdown.zig");
 const pdf_preview = @import("../preview/pdf.zig");
+const markdown_text = @import("../markdown_text.zig");
 const text_wrap = @import("../text_wrap.zig");
 const ui_perf = @import("../ui_perf.zig");
 const PreviewPane = @import("../preview/pane.zig");
@@ -811,7 +812,9 @@ fn renderMarkdownLine(
     border: [3]f32,
 ) f32 {
     const trimmed = std.mem.trimLeft(u8, raw_line, " \t");
-    if (isFence(trimmed)) {
+    // Plain-text previews (.txt, .log) have no markdown: a line of backticks
+    // or tildes is content, not a code fence.
+    if (pane.kind != .text and isFence(trimmed)) {
         in_code.* = !in_code.*;
         const line_y_top = y_from_top + row_h * 0.15;
         if (line_y_top + row_h >= body_top and line_y_top <= body_top + body_h) {
@@ -936,7 +939,9 @@ fn renderWrappedText(
     color: [3]f32,
 ) f32 {
     if (text.len == 0) return row_h;
-    const chars_per_line = @max(@as(usize, 8), @as(usize, @intFromFloat(max_w / @max(font.g_titlebar_cell_width, 1))));
+    // max_w goes negative when the pane is narrower than its own insets;
+    // converting a negative float to usize is illegal behavior.
+    const chars_per_line = @max(@as(usize, 8), @as(usize, @intFromFloat(@max(0, max_w) / @max(font.g_titlebar_cell_width, 1))));
     var offset: usize = 0;
     var consumed: f32 = 0;
     while (offset < text.len) {
@@ -1051,8 +1056,14 @@ fn cleanInline(buf: *[1024]u8, text: []const u8) []const u8 {
     while (i < text.len and pos < buf.len) {
         const ch = text[i];
         if (ch == '<') {
-            while (i < text.len and text[i] != '>') : (i += 1) {}
-            if (i < text.len) i += 1;
+            if (markdown_text.inlineHtmlTagEnd(text, i)) |end| {
+                i = end;
+                continue;
+            }
+            // A bare less-than ("if x < 10") is text, not markup.
+            buf[pos] = ch;
+            pos += 1;
+            i += 1;
             continue;
         }
         if (ch == '[') {

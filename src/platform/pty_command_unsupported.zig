@@ -160,11 +160,26 @@ pub const Command = struct {
     }
 
     pub fn deinit(self: *Command) void {
-        // Best-effort non-blocking reap so we don't leak a zombie.
-        if (self.pid > 0 and builtin.os.tag != .windows) {
-            _ = process_shared.reapChild(self.pid, process_shared.WNOHANG);
-            self.pid = -1;
+        if (self.pid <= 0 or builtin.os.tag == .windows) return;
+        const pid = self.pid;
+        self.pid = -1;
+        switch (process_shared.reapChild(pid, process_shared.WNOHANG)) {
+            .still_running => {
+                // The owner is going away with its child still alive (a tab
+                // closed on a running shell). Nothing handles SIGCHLD, so a
+                // pid dropped here became a zombie once the child exited: one
+                // per closed tab. Hang the child up and reap it off-thread so
+                // teardown never blocks on a slow shell.
+                std.posix.kill(pid, std.posix.SIG.HUP) catch {};
+                const reaper = std.Thread.spawn(.{ .stack_size = 64 * 1024 }, reapBlocking, .{pid}) catch return;
+                reaper.detach();
+            },
+            else => {},
         }
+    }
+
+    fn reapBlocking(pid: std.c.pid_t) void {
+        _ = process_shared.reapChild(pid, 0);
     }
 
     /// Best-effort SIGHUP (not SIGKILL): lets shells/REPLs exit gracefully,

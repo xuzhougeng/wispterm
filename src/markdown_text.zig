@@ -266,8 +266,14 @@ pub fn cleanInline(buf: []u8, text: []const u8) []const u8 {
             continue;
         }
         if (ch == '<') {
-            while (i < text.len and text[i] != '>') : (i += 1) {}
-            if (i < text.len) i += 1;
+            if (inlineHtmlTagEnd(text, i)) |end| {
+                i = end;
+                continue;
+            }
+            // A bare less-than ("if x < 10", "a <= b") is text, not markup.
+            buf[pos] = ch;
+            pos += 1;
+            i += 1;
             continue;
         }
         if (ch == '[') {
@@ -299,6 +305,18 @@ pub fn cleanInline(buf: []u8, text: []const u8) []const u8 {
         i += 1;
     }
     return std.mem.trim(u8, buf[0..pos], " \t");
+}
+
+/// End index (one past `>`) of an inline HTML tag, comment or autolink that
+/// starts at `text[start] == '<'`, or null when the `<` is ordinary text. A
+/// tag must open with a letter, `/` or `!` and close with `>` on the same
+/// line; anything else — a comparison, an arrow, an unclosed `<` — is kept.
+pub fn inlineHtmlTagEnd(text: []const u8, start: usize) ?usize {
+    if (start + 1 >= text.len) return null;
+    const next = text[start + 1];
+    if (!std.ascii.isAlphabetic(next) and next != '/' and next != '!') return null;
+    const close = std.mem.indexOfScalarPos(u8, text, start + 1, '>') orelse return null;
+    return close + 1;
 }
 
 fn isIntrawordUnderscore(text: []const u8, index: usize) bool {
@@ -585,4 +603,14 @@ test "fenced code preserves indentation blank lines and rule-looking source" {
     const out = try allocDisplayText(testing.allocator, "```\n    x = a * b\n\n---\n```\n");
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("\n    x = a * b\n\n---\n\n", out);
+}
+
+test "cleanInline keeps a bare less-than and still strips inline HTML" {
+    var buf: [128]u8 = undefined;
+    try testing.expectEqualStrings("if x < 10 then y", cleanInline(&buf, "if x < 10 then y"));
+    try testing.expectEqualStrings("a <= b and c -> d", cleanInline(&buf, "a <= b and c -> d"));
+    try testing.expectEqualStrings("x < y > z", cleanInline(&buf, "x < y > z"));
+    try testing.expectEqualStrings("line break here", cleanInline(&buf, "line <br>break</br> here"));
+    try testing.expectEqualStrings("see  now", cleanInline(&buf, "see <!-- note --> now"));
+    try testing.expectEqualStrings("tail <", cleanInline(&buf, "tail <"));
 }

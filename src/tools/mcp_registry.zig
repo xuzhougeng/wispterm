@@ -427,13 +427,18 @@ pub fn discover(allocator: std.mem.Allocator, servers: []const ServerConfig) !Sn
                 continue;
             }
 
-            const props = try mcpPropertiesFromSchema(allocator, def.input_schema_json);
-            errdefer allocator.free(props);
-            const spec_name = try allocator.dupe(u8, def.name);
-            errdefer allocator.free(spec_name);
-            const spec_desc = try allocator.dupe(u8, def.description);
-            errdefer allocator.free(spec_desc);
-            try specs.append(allocator, .{ .name = spec_name, .description = spec_desc, .properties_json = props });
+            // Scoped: once the append succeeds `specs` owns these strings, so
+            // the errdefers must not stay armed for the rest of the iteration
+            // (a later failure freed them here and again via freeSpecItems).
+            {
+                const props = try mcpPropertiesFromSchema(allocator, def.input_schema_json);
+                errdefer allocator.free(props);
+                const spec_name = try allocator.dupe(u8, def.name);
+                errdefer allocator.free(spec_name);
+                const spec_desc = try allocator.dupe(u8, def.description);
+                errdefer allocator.free(spec_desc);
+                try specs.append(allocator, .{ .name = spec_name, .description = spec_desc, .properties_json = props });
+            }
 
             const t_name = try allocator.dupe(u8, def.name);
             errdefer allocator.free(t_name);
@@ -712,13 +717,16 @@ fn loadSnapshotsFromCatalog(allocator: std.mem.Allocator) !CatalogSnapshots {
         if (valid) {
             for (entry.?.tools) |t| {
                 if (ai_chat_protocol.builtinToolNameReserved(t.name)) continue;
-                const spec_name = try allocator.dupe(u8, t.name);
-                errdefer allocator.free(spec_name);
-                const spec_desc = try allocator.dupe(u8, t.description);
-                errdefer allocator.free(spec_desc);
-                const props = try allocator.dupe(u8, t.properties_json);
-                errdefer allocator.free(props);
-                try specs.append(allocator, .{ .name = spec_name, .description = spec_desc, .properties_json = props });
+                // Scoped for the same reason as in `discover`.
+                {
+                    const spec_name = try allocator.dupe(u8, t.name);
+                    errdefer allocator.free(spec_name);
+                    const spec_desc = try allocator.dupe(u8, t.description);
+                    errdefer allocator.free(spec_desc);
+                    const props = try allocator.dupe(u8, t.properties_json);
+                    errdefer allocator.free(props);
+                    try specs.append(allocator, .{ .name = spec_name, .description = spec_desc, .properties_json = props });
+                }
 
                 const t_name = try allocator.dupe(u8, t.name);
                 errdefer allocator.free(t_name);

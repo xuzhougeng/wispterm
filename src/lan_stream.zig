@@ -528,8 +528,11 @@ const Conn = struct {
         defer line.deinit(allocator);
         var too_long = false;
 
-        self.feedLines(&line, carry, &too_long) catch return;
-        allocator.free(carry);
+        {
+            // Owned by this thread; free it on the error path too.
+            defer allocator.free(carry);
+            self.feedLines(&line, carry, &too_long) catch return;
+        }
 
         var buf: [16 * 1024]u8 = undefined;
         while (!self.closed.load(.acquire) and !self.server.stop_flag.load(.acquire)) {

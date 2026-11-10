@@ -40,9 +40,10 @@ keybind = global:ctrl+backquote=toggle_quake
 | `Ctrl+Shift+-` | `split_down` | Split the focused panel downward |
 | `Ctrl+Shift+B` | `toggle_sidebar` | Toggle the sidebar |
 | `Ctrl+Shift+A` | `toggle_ai_copilot` | Toggle the Copilot sidebar on a terminal |
+| `Ctrl+Shift+R` | `copilot_conversation_picker` | Pick a saved Copilot conversation to reopen in the sidebar |
 | `Ctrl+Shift+Alt+E` | `toggle_file_explorer` | Toggle the File Explorer |
 | `Ctrl+Shift+W` | `close_panel_or_tab` | Close the focused panel/tab |
-| `Alt+Enter` | `toggle_maximize` | Maximize/restore the focused panel |
+| `Alt+Enter` | `toggle_maximize` | Maximize/restore the window |
 | `Ctrl++` (press without Shift) | `font_size_increase` | Increase font size |
 | `Ctrl+-` | `font_size_decrease` | Decrease font size |
 | `Ctrl+Shift+C` | `copy` | Copy the selection |
@@ -55,7 +56,7 @@ keybind = global:ctrl+backquote=toggle_quake
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | `next_tab` / `previous_tab` | Switch tabs |
 | `Alt+1` … `Alt+9` | `switch_tab_1` … `switch_tab_9` | Jump to tab N |
 | `Ctrl+1` … `Ctrl+9` | `focus_panel_1` … `focus_panel_9` | Focus split panel N |
-| `Ctrl+,` | `open_config` | Open the config file in your editor |
+| `Ctrl+,` | `open_settings` | Open the visual Settings page |
 
 ## Mouse & gestures
 
@@ -80,11 +81,12 @@ Every app-level action you can bind:
 
 `toggle_quake`, `toggle_command_palette`, `new_window`, `new_session`,
 `split_right`, `split_down`, `toggle_file_explorer`, `toggle_sidebar`, `toggle_ai_copilot`,
+`copilot_conversation_picker`, `send_to_copilot`,
 `close_panel_or_tab`, `toggle_maximize`, `font_size_increase`,
 `font_size_decrease`, `copy`, `paste`, `paste_image`, `focus_left`,
 `focus_right`, `focus_up`, `focus_down`, `focus_previous`, `focus_next`,
 `equalize_splits`, `transpose_split`, `next_tab`, `previous_tab`, `switch_tab_1` … `switch_tab_9`,
-`focus_panel_1` … `focus_panel_9`, `open_config`.
+`focus_panel_1` … `focus_panel_9`, `open_settings`, `open_config`.
 
 ## Remapping examples
 

@@ -388,18 +388,35 @@ pub fn formatPreview(allocator: std.mem.Allocator, record: agent_history.Session
         };
         try buf.appendSlice(allocator, label);
         try buf.appendSlice(allocator, "\n");
-        const take = @min(msg.content.len, MAX_PREVIEW_MESSAGE);
+        const take = utf8PrefixLen(msg.content, MAX_PREVIEW_MESSAGE);
         try buf.appendSlice(allocator, msg.content[0..take]);
         if (take < msg.content.len) try buf.appendSlice(allocator, "…");
         try buf.appendSlice(allocator, "\n\n");
         if (buf.items.len >= MAX_PREVIEW_BYTES) break;
     }
     if (buf.items.len > MAX_PREVIEW_BYTES) {
-        var n = MAX_PREVIEW_BYTES;
-        while (n > 0 and !std.unicode.utf8ValidateSlice(buf.items[0..n])) n -= 1;
-        buf.shrinkRetainingCapacity(n);
+        buf.shrinkRetainingCapacity(utf8PrefixLen(buf.items, MAX_PREVIEW_BYTES));
     }
     return buf.toOwnedSlice(allocator);
+}
+
+/// Longest prefix of `text` within `limit` bytes that does not end inside a
+/// UTF-8 sequence. Cutting at a raw byte offset split CJK characters, and the
+/// old repair loop re-validated the whole prefix once per byte it backed off.
+fn utf8PrefixLen(text: []const u8, limit: usize) usize {
+    if (text.len <= limit) return text.len;
+    var end = limit;
+    while (end > 0 and (text[end] & 0xC0) == 0x80) end -= 1;
+    return end;
+}
+
+test "utf8PrefixLen backs off to a character boundary" {
+    const text = "ab\u{4f60}\u{597d}"; // a b 你 好 = 2 + 3 + 3 bytes
+    try std.testing.expectEqual(@as(usize, 8), utf8PrefixLen(text, 64));
+    try std.testing.expectEqual(@as(usize, 5), utf8PrefixLen(text, 6));
+    try std.testing.expectEqual(@as(usize, 5), utf8PrefixLen(text, 7));
+    try std.testing.expectEqual(@as(usize, 2), utf8PrefixLen(text, 3));
+    try std.testing.expect(std.unicode.utf8ValidateSlice(text[0..utf8PrefixLen(text, 4)]));
 }
 
 pub fn handleKeyEffect(consumed: bool) UiEffect {

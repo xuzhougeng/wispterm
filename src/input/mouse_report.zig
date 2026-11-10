@@ -161,6 +161,32 @@ pub fn encode(
     };
 }
 
+/// Encode one wheel notch (xterm buttons 4/5, codes 64/65). Callers decide
+/// whether the terminal's mouse mode reports wheel events at all.
+pub fn encodeWheel(
+    format: Format,
+    up: bool,
+    mods: Mods,
+    col: usize,
+    row: usize,
+    pixel_x: i32,
+    pixel_y: i32,
+    out: []u8,
+    len: *usize,
+) bool {
+    var code: u8 = if (up) 64 else 65;
+    if (mods.shift) code += 4;
+    if (mods.alt) code += 8;
+    if (mods.ctrl) code += 16;
+    return switch (format) {
+        .sgr => appendFmt(out, len, "\x1b[<{d};{d};{d}M", .{ code, col + 1, row + 1 }),
+        .urxvt => appendFmt(out, len, "\x1b[{d};{d};{d}M", .{ 32 + @as(u16, code), col + 1, row + 1 }),
+        .sgr_pixels => appendFmt(out, len, "\x1b[<{d};{d};{d}M", .{ code, @max(0, pixel_x), @max(0, pixel_y) }),
+        .x10 => encodeLegacy(code, col, row, out, len, false),
+        .utf8 => encodeLegacy(code, col, row, out, len, true),
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -263,4 +289,31 @@ test "no output when mode is none or event not reportable" {
     try expectNoEncode(.none, .sgr, .press, .left, .{});
     try expectNoEncode(.normal, .sgr, .motion, .left, .{}); // normal never reports motion
     try expectNoEncode(.x10, .sgr, .release, .left, .{}); // x10 never reports release
+}
+
+test "wheel reports use UTF-8 coordinates in 1005 mode past column 95" {
+    var buf: [64]u8 = undefined;
+    var len: usize = 0;
+    // Column 200 -> codepoint 233, which must be the two-byte UTF-8 form, not
+    // a raw 0xE9 byte (invalid UTF-8) and not a dropped event.
+    try testing.expect(encodeWheel(.utf8, true, .{}, 200, 2, 0, 0, &buf, &len));
+    try testing.expectEqualSlices(u8, "\x1b[M\x60\xc3\xa9\x23", buf[0..len]);
+
+    len = 0;
+    try testing.expect(encodeWheel(.utf8, false, .{}, 300, 0, 0, 0, &buf, &len));
+    try testing.expect(std.unicode.utf8ValidateSlice(buf[3..len]));
+}
+
+test "wheel reports keep the SGR and X10 encodings" {
+    var buf: [64]u8 = undefined;
+    var len: usize = 0;
+    try testing.expect(encodeWheel(.sgr, false, .{ .shift = true }, 4, 9, 0, 0, &buf, &len));
+    try testing.expectEqualSlices(u8, "\x1b[<69;5;10M", buf[0..len]);
+
+    len = 0;
+    try testing.expect(encodeWheel(.x10, true, .{}, 0, 0, 0, 0, &buf, &len));
+    try testing.expectEqualSlices(u8, "\x1b[M\x60\x21\x21", buf[0..len]);
+
+    len = 0;
+    try testing.expect(!encodeWheel(.x10, true, .{}, 223, 0, 0, 0, &buf, &len));
 }

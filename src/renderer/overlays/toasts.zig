@@ -10,7 +10,9 @@ pub const UPDATE_STATUS_DURATION_MS: i64 = 2500;
 
 pub const TextToast = struct {
     until_ms: i64 = 0,
-    buf: [64]u8 = undefined,
+    // Sized for the longest localized status messages; 64 bytes cut real
+    // English strings and held only ~20 CJK characters.
+    buf: [160]u8 = undefined,
     len: usize = 0,
 
     pub fn show(self: *TextToast, message: []const u8, now_ms: i64, duration_ms: i64) void {
@@ -108,8 +110,17 @@ pub const State = struct {
     close_shortcut_confirm_until_ms: i64 = 0,
 };
 
+/// Longest prefix of `src` that fits in `limit` bytes without cutting a UTF-8
+/// sequence. A split character fails validation downstream and the whole
+/// toast is then drawn as mojibake or '?'.
+fn utf8PrefixLen(src: []const u8, limit: usize) usize {
+    var len = @min(limit, src.len);
+    while (len < src.len and len > 0 and (src[len] & 0xc0) == 0x80) len -= 1;
+    return len;
+}
+
 fn copyTruncated(dst: []u8, src: []const u8) usize {
-    const len = @min(dst.len, src.len);
+    const len = utf8PrefixLen(src, dst.len);
     if (len > 0) @memcpy(dst[0..len], src[0..len]);
     return len;
 }
@@ -129,7 +140,7 @@ fn formatTransferToastTruncated(
 
 fn appendTruncated(dst: []u8, len: *usize, src: []const u8) void {
     const remaining = dst.len - len.*;
-    const n = @min(remaining, src.len);
+    const n = utf8PrefixLen(src, remaining);
     if (n == 0) return;
     @memcpy(dst[len.*..][0..n], src[0..n]);
     len.* += n;
@@ -221,10 +232,23 @@ test "update prompt state clears URL when new prompt omits one" {
 
 test "text toast truncates stored text to fixed buffer" {
     var toast: TextToast = .{};
-    const long_message = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789--extra";
+    const long_message = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789--" ** 3;
 
     toast.show(long_message, 5000, COPY_TOAST_DURATION_MS);
 
-    try std.testing.expectEqual(@as(usize, 64), toast.text().?.len);
-    try std.testing.expectEqualStrings(long_message[0..64], toast.text().?);
+    try std.testing.expectEqual(toast.buf.len, toast.text().?.len);
+    try std.testing.expectEqualStrings(long_message[0..toast.buf.len], toast.text().?);
+}
+
+test "toasts truncate on a UTF-8 boundary" {
+    var toast: TextToast = .{};
+    // 54 three-byte characters = 162 bytes; the buffer holds 160.
+    toast.show("\u{5df2}" ** 54, 0, 1000);
+    const shown = toast.text().?;
+    try std.testing.expectEqual(@as(usize, 159), shown.len);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(shown));
+
+    var transfer: TransferToast = .{};
+    transfer.show(.download, .in_progress, "\u{6587}" ** 80, 0, 1000);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(transfer.text().?));
 }

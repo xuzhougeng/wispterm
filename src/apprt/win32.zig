@@ -950,6 +950,8 @@ pub const Window = struct {
     // Input event queues (written by WndProc, read by main loop)
     key_events: RingBuffer(KeyEvent, 64) = .{},
     char_events: RingBuffer(CharEvent, 64) = .{},
+    /// Pairs the two WM_CHAR messages of an astral character (emoji panel).
+    char_utf16: platform_input.Utf16Assembler = .{},
     mouse_button_events: RingBuffer(MouseButtonEvent, 32) = .{},
     mouse_move_events: RingBuffer(MouseMoveEvent, 64) = .{},
     mouse_wheel_events: RingBuffer(MouseWheelEvent, 16) = .{},
@@ -2320,17 +2322,20 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
         },
         WM_SYSDEADCHAR => return 0,
         WM_CHAR => {
-            // wParam is UTF-16 code unit from TranslateMessage
+            // wParam is one UTF-16 code unit from TranslateMessage; characters
+            // outside the BMP arrive as a surrogate pair over two messages.
             const char_code: u16 = @intCast(wParam & 0xFFFF);
-            // Skip control characters — those come through WM_KEYDOWN
-            if (char_code >= 32) {
-                const mods = getModifiers();
-                w.char_events.push(.{
-                    .codepoint = @intCast(char_code),
-                    .ctrl = mods.ctrl,
-                    .shift = mods.shift,
-                    .alt = mods.alt,
-                });
+            if (w.char_utf16.feed(char_code)) |codepoint| {
+                // Skip control characters — those come through WM_KEYDOWN
+                if (codepoint >= 32) {
+                    const mods = getModifiers();
+                    w.char_events.push(.{
+                        .codepoint = codepoint,
+                        .ctrl = mods.ctrl,
+                        .shift = mods.shift,
+                        .alt = mods.alt,
+                    });
+                }
             }
             return 0;
         },
