@@ -263,6 +263,12 @@ pub fn updateTerminalCells(rend: *Renderer, terminal: *ghostty_vt.Terminal) bool
         var clear_it = screen.pages.rowIterator(.right_down, .{ .viewport = .{} }, null);
         while (clear_it.next()) |row_pin| {
             row_pin.rowAndCell().row.dirty = false;
+            // The page-level flag is read above alongside the row flag. It is
+            // set by scroll-region scrolls (vim, less, a tmux status line) and
+            // must be cleared too, as Ghostty's render state does; left set,
+            // every later frame re-snapshotted the whole page and reported
+            // full damage.
+            row_pin.node.data.dirty = false;
         }
     }
 

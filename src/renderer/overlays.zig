@@ -4495,7 +4495,8 @@ fn connectSshProfileReturningSurfaceWithCommand(idx: usize, remote_command: []co
 }
 
 fn isSshTokenSafe(value: []const u8) bool {
-    if (value.len == 0) return false;
+    // A leading '-' would be parsed by ssh/scp as an option, not a user/host.
+    if (value.len == 0 or value[0] == '-') return false;
     for (value) |ch| {
         if (std.ascii.isAlphanumeric(ch) or ch == '.' or ch == '-' or ch == '_' or ch == '@') continue;
         return false;

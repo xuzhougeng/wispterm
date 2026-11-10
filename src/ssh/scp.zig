@@ -134,10 +134,14 @@ fn transferImpl(allocator: std.mem.Allocator, conn: *const SshConnection, src: [
     return runSshStreamTransfer(allocator, conn, src, dst, control_path, env_ptr, control);
 }
 
-/// Build a remote scp path: "user@host:path"
+/// Build a remote scp path: "user@host:path". Returns "" when the spec does
+/// not fit in `buf` (a remote path longer than ~500 bytes minus user@host);
+/// the transfer then fails cleanly instead of writing past the buffer or
+/// targeting a truncated path.
 pub fn remoteSpec(buf: *[512]u8, conn: *const SshConnection, remote_path: []const u8) []const u8 {
     const user = conn.user();
     const host = conn.host();
+    if (user.len + 1 + host.len + 1 + remote_path.len > buf.len) return "";
     var pos: usize = 0;
     @memcpy(buf[pos..][0..user.len], user);
     pos += user.len;
@@ -1236,6 +1240,15 @@ fn appendSshOptions(
 // ============================================================================
 // Tests
 // ============================================================================
+
+test "remoteSpec returns an empty spec instead of overflowing its buffer" {
+    var conn: SshConnection = SshConnection.fromParts(.{ .user = "alice", .host = "host.test" });
+    var buf: [512]u8 = undefined;
+    const long_path = "/" ++ "d" ** 600;
+    try std.testing.expectEqualStrings("", remoteSpec(&buf, &conn, long_path));
+    // alice@host.test: is 16 bytes, so a 496-byte path is the largest that fits.
+    try std.testing.expectEqual(@as(usize, 512), remoteSpec(&buf, &conn, "/" ++ "d" ** 495).len);
+}
 
 test "remoteSpec builds user@host:path" {
     var conn: SshConnection = .{};

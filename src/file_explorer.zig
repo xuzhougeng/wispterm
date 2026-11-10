@@ -633,7 +633,10 @@ fn sshConnectionsEqual(a: *const ssh_connection.SshConnection, b: *const ssh_con
         std.mem.eql(u8, a.identityFile(), b.identityFile()) and
         a.auth_method == b.auth_method and
         a.password_auth == b.password_auth and
-        a.legacy_algorithms == b.legacy_algorithms;
+        a.legacy_algorithms == b.legacy_algorithms and
+        // Same host through a different jump host or proxy is another route.
+        std.mem.eql(u8, a.proxyJump(), b.proxyJump()) and
+        a.network_proxy.eql(&b.network_proxy);
 }
 
 fn applyTerminalTargetState(target: TerminalPanelTarget) void {
@@ -1520,7 +1523,20 @@ pub threadlocal var g_op_mode: OpMode = .none;
 pub threadlocal var g_input_buf: [256]u8 = undefined;
 pub threadlocal var g_input_len: u8 = 0;
 
+/// Rename, create and delete are implemented with `std.fs`, which only
+/// reaches this machine's file system. In SSH and WSL modes the entry paths
+/// are guest/remote paths, so running these there acted on whatever lives at
+/// the same path locally: deleting `/tmp/build` on an SSH host removed the
+/// local `/tmp/build`. Until they are implemented over the remote backends
+/// they are local-only.
+fn localFileOpsAvailable() bool {
+    if (g_mode == .local) return true;
+    setTransferStatus(.failed, "Rename, new and delete work on local folders only");
+    return false;
+}
+
 pub fn startRename() void {
+    if (!localFileOpsAvailable()) return;
     const sel = g_selected orelse return;
     if (sel >= g_entry_count) return;
     g_op_mode = .rename;
@@ -1530,16 +1546,19 @@ pub fn startRename() void {
 }
 
 pub fn startNewFile() void {
+    if (!localFileOpsAvailable()) return;
     g_op_mode = .new_file;
     g_input_len = 0;
 }
 
 pub fn startNewDir() void {
+    if (!localFileOpsAvailable()) return;
     g_op_mode = .new_dir;
     g_input_len = 0;
 }
 
 pub fn startDelete() void {
+    if (!localFileOpsAvailable()) return;
     if (g_selected == null) return;
     g_op_mode = .confirm_delete;
 }
@@ -1562,6 +1581,7 @@ pub fn commitOp() void {
 }
 
 fn commitRename() void {
+    if (g_mode != .local) return;
     const sel = g_selected orelse return;
     if (sel >= g_entry_count) return;
     if (g_input_len == 0) return;
@@ -1585,6 +1605,7 @@ fn commitRename() void {
 }
 
 fn commitNewFile() void {
+    if (g_mode != .local) return;
     if (g_input_len == 0) return;
     const new_name = g_input_buf[0..g_input_len];
     const parent = getSelectedParentPath();
@@ -1600,6 +1621,7 @@ fn commitNewFile() void {
 }
 
 fn commitNewDir() void {
+    if (g_mode != .local) return;
     if (g_input_len == 0) return;
     const new_name = g_input_buf[0..g_input_len];
     const parent = getSelectedParentPath();
@@ -1614,6 +1636,7 @@ fn commitNewDir() void {
 }
 
 fn commitDelete() void {
+    if (g_mode != .local) return;
     const sel = g_selected orelse return;
     if (sel >= g_entry_count) return;
 
@@ -1926,6 +1949,34 @@ fn downloadRemotePathToPathWithTransfer(remote_path: []const u8, local_path: []c
 // ============================================================================
 // Tests
 // ============================================================================
+
+test "file operations are refused outside local mode" {
+    const prev_mode = g_mode;
+    const prev_op = g_op_mode;
+    const prev_selected = g_selected;
+    defer {
+        g_mode = prev_mode;
+        g_op_mode = prev_op;
+        g_selected = prev_selected;
+    }
+    g_op_mode = .none;
+    g_selected = 0;
+
+    g_mode = .remote;
+    startDelete();
+    try std.testing.expectEqual(OpMode.none, g_op_mode);
+    startNewFile();
+    try std.testing.expectEqual(OpMode.none, g_op_mode);
+    try std.testing.expectEqual(TransferStatus.failed, g_transfer_status);
+
+    g_mode = .wsl;
+    startNewDir();
+    try std.testing.expectEqual(OpMode.none, g_op_mode);
+
+    g_mode = .local;
+    startDelete();
+    try std.testing.expectEqual(OpMode.confirm_delete, g_op_mode);
+}
 
 test "setTransferStatus stores message" {
     setTransferStatus(.success, "test_file.txt");

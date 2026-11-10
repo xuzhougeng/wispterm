@@ -1776,6 +1776,10 @@ pub fn clearGlyphCache(allocator: std.mem.Allocator) void {
         g_color_atlas_texture = gpu.Texture.invalid();
         g_color_atlas_modified = 0;
     }
+
+    // The bell glyph is cached as coordinates into the color atlas that was
+    // just destroyed; drop it so it is rasterized again on next use.
+    g_bell_cache = null;
 }
 
 pub const AtlasGpuTextureRelease = struct {

@@ -34,7 +34,7 @@ const NODE_SERVER_SOURCE =
     "const http=require('http'),fs=require('fs'),path=require('path');" ++
     "const root=process.cwd();" ++
     "const types={'.html':'text/html; charset=utf-8','.htm':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'application/javascript; charset=utf-8','.mjs':'application/javascript; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif','.svg':'image/svg+xml'};" ++
-    "http.createServer((req,res)=>{const u=new URL(req.url,'http://127.0.0.1');let p=path.normalize(path.join(root,decodeURIComponent(u.pathname)));if(!p.startsWith(root)){res.writeHead(403);res.end('forbidden');return;}fs.readFile(p,(e,d)=>{if(e){res.writeHead(404);res.end('not found');return;}res.writeHead(200,{'content-type':types[path.extname(p).toLowerCase()]||'application/octet-stream'});res.end(d);});}).listen(Number(process.argv[1]),'127.0.0.1');";
+    "http.createServer((req,res)=>{const u=new URL(req.url,'http://127.0.0.1');let dp;try{dp=decodeURIComponent(u.pathname);}catch(_){res.writeHead(400);res.end('bad request');return;}let p=path.normalize(path.join(root,dp));if(p!==root&&!p.startsWith(root+path.sep)){res.writeHead(403);res.end('forbidden');return;}fs.readFile(p,(e,d)=>{if(e){res.writeHead(404);res.end('not found');return;}res.writeHead(200,{'content-type':types[path.extname(p).toLowerCase()]||'application/octet-stream'});res.end(d);});}).listen(Number(process.argv[1]),'127.0.0.1');";
 
 const LOCAL_CANDIDATES = [_]model.ServerKind{
     .python3,
@@ -61,7 +61,9 @@ const Server = struct {
     ssh_port_buf: [16]u8 = undefined,
     ssh_port_len: usize = 0,
     network_proxy: @import("../ssh/network_proxy.zig").Config = .{},
-    proxy_jump_buf: [128]u8 = undefined,
+    // Same size as SshConnection.proxy_jump_buf: a truncated copy never
+    // matched the live spec, so the server was respawned on every open.
+    proxy_jump_buf: [256]u8 = undefined,
     proxy_jump_len: usize = 0,
 
     fn init(child: std.process.Child, launch_kind: Surface.LaunchKind, kind: model.ServerKind, port: u16, root_path: []const u8, surface: *const Surface) ?Server {
