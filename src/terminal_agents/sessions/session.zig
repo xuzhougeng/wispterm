@@ -1482,8 +1482,11 @@ fn emitOpencodeSessionList(allocator: std.mem.Allocator, emitter: *RowEmitter, w
     defer for (metas[emitted..]) |meta| freeMetadata(allocator, meta);
     for (metas) |meta| {
         if (emitter.aborted) break;
-        try emitter.emit(meta);
+        // `emit` takes ownership even when it fails (it frees the row), so the
+        // row must already be counted as handed over or the defer above frees
+        // it a second time.
         emitted += 1;
+        try emitter.emit(meta);
     }
 }
 

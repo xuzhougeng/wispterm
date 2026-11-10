@@ -38,8 +38,20 @@ pub const Reply = struct {
 /// Returns the command token (including leading '/') and the trimmed argument.
 fn splitCommand(text: []const u8) struct { cmd: []const u8, arg: []const u8 } {
     if (text.len == 0 or text[0] != '/') return .{ .cmd = "", .arg = text };
-    const sp = std.mem.indexOfScalar(u8, text, ' ') orelse text.len;
+    // Any whitespace ends the command: "/ai\nline two" and "/term\tls" are
+    // commands with arguments, not unknown commands.
+    const sp = std.mem.indexOfAny(u8, text, " \t\r\n") orelse text.len;
     return .{ .cmd = text[0..sp], .arg = std.mem.trim(u8, text[sp..], " \t\r\n") };
+}
+
+test "splitCommand ends the command at any whitespace" {
+    const nl = splitCommand("/ai\nline two");
+    try std.testing.expectEqualStrings("/ai", nl.cmd);
+    try std.testing.expectEqualStrings("line two", nl.arg);
+    const tab = splitCommand("/term\tls -la");
+    try std.testing.expectEqualStrings("/term", tab.cmd);
+    try std.testing.expectEqualStrings("ls -la", tab.arg);
+    try std.testing.expectEqualStrings("/help", splitCommand("/help").cmd);
 }
 
 fn eqIgnoreCase(a: []const u8, b: []const u8) bool {

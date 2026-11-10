@@ -485,9 +485,6 @@ fn compileGateList(a: std.mem.Allocator, value: ?toml.Value, depth: usize, compl
         if (kind == .negative) {
             // A `not` child must contain some matcher; herdr checks this
             // before descending.
-            var probe = Gate{};
-            probe.contains = if (fields.contains) |c| try stringList(a, c) else &.{};
-            probe.regex = &.{};
             if (!(fields.contains != null or fields.regex != null or fields.line_regex != null or fields.all != null or fields.any != null or fields.not != null)) return error.EmptyGate;
         }
         out[i] = try compileGate(a, fields, depth + 1, complexity, kind);

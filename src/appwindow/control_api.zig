@@ -168,14 +168,25 @@ fn enqueueSpawn(cwd: []const u8, command: []const u8, opts: ctl_control.SpawnOpt
     g_spawn_mutex.lock();
     defer g_spawn_mutex.unlock();
     if (g_spawn_queue.items.len >= MAX_SPAWN_QUEUE) return null;
+    // Explicit frees: this function returns an optional, not an error union,
+    // so `errdefer` would never run on these `return null` paths.
     const cwd_owned = a.dupe(u8, cwd) catch return null;
-    errdefer a.free(cwd_owned);
-    const cmd_owned = a.dupe(u8, command) catch return null;
-    errdefer a.free(cmd_owned);
-    const kind_owned = a.dupe(u8, opts.kind) catch return null;
-    errdefer a.free(kind_owned);
+    const cmd_owned = a.dupe(u8, command) catch {
+        a.free(cwd_owned);
+        return null;
+    };
+    const kind_owned = a.dupe(u8, opts.kind) catch {
+        a.free(cmd_owned);
+        a.free(cwd_owned);
+        return null;
+    };
     const ticket = g_spawn_next_ticket;
-    g_spawn_queue.append(a, .{ .ticket = ticket, .cwd = cwd_owned, .command = cmd_owned, .kind = kind_owned, .split = opts.split }) catch return null;
+    g_spawn_queue.append(a, .{ .ticket = ticket, .cwd = cwd_owned, .command = cmd_owned, .kind = kind_owned, .split = opts.split }) catch {
+        a.free(kind_owned);
+        a.free(cmd_owned);
+        a.free(cwd_owned);
+        return null;
+    };
     g_spawn_next_ticket +%= 1;
     if (g_spawn_next_ticket == 0) g_spawn_next_ticket = 1;
     return ticket;

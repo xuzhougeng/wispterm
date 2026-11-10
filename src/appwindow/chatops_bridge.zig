@@ -190,9 +190,9 @@ pub fn handleControlRequest(req: *ChatopsRequest, host: Host) void {
             if (chatopsTabIndexFromSurfaceId(req.surface_id)) |idx| {
                 if (idx >= tab.g_tab_count) return;
                 const tab_state = tab.g_tabs[idx] orelse return;
-                // copilot_session is unreachable here in practice: aichat{N} surface
-                // IDs are only issued for .ai_chat tabs. The fallthrough keeps this
-                // correct if the surface registry is ever extended to Copilot panes.
+                // aichat{N} IDs are issued for .ai_chat tabs and, through a
+                // `/switch` pin, for terminal tabs that carry a Copilot session,
+                // so both kinds of conversation session are reachable here.
                 const session = tabConversationSession(tab_state) orelse return;
                 if (req.reply_context) |ctx| {
                     req.busy = !session.applyChatInput(req.bytes, ctx);

@@ -1,7 +1,7 @@
 //! Boundary between the ctl server thread and the live WispTerm surfaces.
 //! The real vtable is supplied by AppWindow (cross-platform: get_text/send_text
 //! pin the surface through surface_registry; list_panes reads a UI-published
-//! JSON buffer). Tests supply a fake. Mirrors weixin/control.zig.
+//! JSON buffer). Tests supply a fake. Mirrors chatops/control.zig.
 const std = @import("std");
 const protocol = @import("protocol.zig");
 pub const key_names = @import("key_names.zig");
