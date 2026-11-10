@@ -310,10 +310,8 @@ jobs:
           path: wispterm-windows-setup-${{ github.ref_name }}.exe
           if-no-files-found: error
 
-      - name: Publish GitHub release
+      - name: Verify release assets
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "${{ github.ref_name }}"
           $portableAsset = "wispterm-windows-portable-$tag.zip"
@@ -338,40 +336,34 @@ jobs:
             throw "Installer release asset not found: $setupAsset"
           }
 
-          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag $setupAsset $portableAsset $portableCompatAsset $portableOpenGLAsset $debugAsset --repo $env:GITHUB_REPOSITORY --clobber
-          } else {
-            $assetNotes = @(
-              "Windows assets included in this release:",
-              "",
-              "- Installer: signed per-user setup exe. Installs the default Direct3D 11 build to %LOCALAPPDATA%\Programs\WispTerm with a Start menu shortcut and an optional Explorer context menu; the same files as the portable zip, so in-place updates keep working",
-              "- Portable: default native Direct3D 11 zip archive containing wispterm.exe",
-              "- Portable compat: native Direct3D 11 zip archive for older Windows 10 machines - bundles WebView2Loader.dll for the embedded browser plus a modern ConPTY (conpty.dll + OpenConsole.exe) so TUI apps like Codex and Claude Code get mouse scrolling and scrollbars",
-              "- Portable OpenGL fallback: compatibility zip archive for systems where the native D3D11 renderer cannot start or render correctly",
-              "- Diagnostic (debug): console build with on-disk logging + crash reports for troubleshooting (ReleaseSafe). See docs/windows-debug-build.md.",
-              "",
-              "Portable builds can add or remove WispTerm from Windows Search and enable or disable startup from Settings."
-            ) -join "`n"
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          # Quoted heredoc: the text is literal (%LOCALAPPDATA% and backslashes included).
+          cat > "${RUNNER_TEMP}/asset-notes.md" <<'ASSET_NOTES'
+          Windows assets included in this release:
 
-            $releaseNotesPath = Join-Path "release-notes" "$tag.md"
-            if (Test-Path $releaseNotesPath) {
-              $curatedNotes = (Get-Content $releaseNotesPath -Raw).Trim()
-              if (![string]::IsNullOrWhiteSpace($curatedNotes)) {
-                $notes = @($curatedNotes, "", $assetNotes) -join "`n"
-              } else {
-                $notes = $assetNotes
-              }
-            } else {
-              $notes = $assetNotes
-            }
+          - Installer: signed per-user setup exe. Installs the default Direct3D 11 build to %LOCALAPPDATA%\Programs\WispTerm with a Start menu shortcut and an optional Explorer context menu; the same files as the portable zip, so in-place updates keep working
+          - Portable: default native Direct3D 11 zip archive containing wispterm.exe
+          - Portable compat: native Direct3D 11 zip archive for older Windows 10 machines - bundles WebView2Loader.dll for the embedded browser plus a modern ConPTY (conpty.dll + OpenConsole.exe) so TUI apps like Codex and Claude Code get mouse scrolling and scrollbars
+          - Portable OpenGL fallback: compatibility zip archive for systems where the native D3D11 renderer cannot start or render correctly
+          - Diagnostic (debug): console build with on-disk logging + crash reports for troubleshooting (ReleaseSafe). See docs/windows-debug-build.md.
 
-            gh release create $tag $setupAsset $portableAsset $portableCompatAsset $portableOpenGLAsset $debugAsset `
-              --repo $env:GITHUB_REPOSITORY `
-              --verify-tag `
-              --generate-notes `
-              --notes $notes
-          }
+          Portable builds can add or remove WispTerm from Windows Search and enable or disable startup from Settings.
+          ASSET_NOTES
+          bash .github/scripts/publish-release.sh "${tag}" \
+            'Windows assets included in this release:' \
+            "${RUNNER_TEMP}/asset-notes.md" \
+            "wispterm-windows-setup-${tag}.exe" \
+            "wispterm-windows-portable-${tag}.zip" \
+            "wispterm-windows-portable-compat-${tag}.zip" \
+            "wispterm-windows-portable-opengl-${tag}.zip" \
+            "wispterm-windows-debug-${tag}.zip"
 
       - name: Remove imported Windows signing identity
         if: always()
