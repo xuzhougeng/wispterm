@@ -1,5 +1,8 @@
 # WispTerm agent file-access rules (private, machine-local).
-# Copy to ~/.config/wispterm/agent-access.local and edit.
+# Copy to agent-access.local in the WispTerm config directory and edit:
+#   Windows  %APPDATA%\wispterm\agent-access.local
+#   macOS    ~/Library/Application Support/wispterm/agent-access.local
+#   Linux    ~/.config/wispterm/agent-access.local
 #
 #   allow <path>   folders the agent may read freely (read-only commands skip the prompt)
 #   deny  <path>   paths/files the agent must never read without your per-command approval

@@ -786,7 +786,7 @@ reveals it in Explorer. Unzip the archive and double-click
 `%LOCALAPPDATA%\Programs\WispTerm` and create that shortcut). You can still
 unzip over the existing folder by hand.
 
-WispTerm does not build or publish a Windows installer. Use the default portable
+Besides the NSIS setup exe described above, WispTerm publishes portable zips. Use the default portable
 zip release asset; the `portable-compat` zip when using the embedded browser panel
 or on older Windows 10 machines (its bundled ConPTY restores TUI mouse support);
 or the `portable-opengl` zip when the default native D3D11 renderer shows a

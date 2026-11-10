@@ -16,9 +16,6 @@ The core/host contract is documented in [docs/architecture.md](docs/architecture
 
 ## macOS Stabilization
 
-- Add locking or atomics to the AppKit-to-render-thread event buffers in
-  `window_macos_bridge.m`; the producer and consumer are now on different
-  threads.
 - Add a draggable region for the app-drawn titlebar outside the traffic-light
   controls.
 - Fix macOS window-position persistence by translating AppKit coordinates into

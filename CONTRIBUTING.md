@@ -28,7 +28,8 @@ opening an issue.
    ```powershell
    zig build                         # Debug build for development
    zig build -Doptimize=ReleaseFast  # ReleaseFast build for distribution
-   zig build test                    # Run the test suite
+   zig build test                    # Fast inner-loop tests
+   zig build test-full               # Complete suite; run before opening a PR
    ```
 
 3. Keep changes focused — one logical change per pull request.

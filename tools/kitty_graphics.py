@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 
 ESC = "\x1b"
@@ -22,10 +23,10 @@ def _chunk_bytes(data: bytes, chunk_size: int = 4096):
 def emit_png(
     png_bytes: bytes,
     *,
-    cols: int | None = None,
-    rows: int | None = None,
+    cols: Optional[int] = None,
+    rows: Optional[int] = None,
     move_cursor: bool = True,
-    image_id: int | None = None,
+    image_id: Optional[int] = None,
     wispterm_fallback: bool = True,
     stream=None,
 ):

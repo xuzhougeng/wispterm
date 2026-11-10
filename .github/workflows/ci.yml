@@ -32,11 +32,19 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: filter
         with:
-          # `code` = anything that isn't pure docs/remote. Single negation glob
-          # so the `some` quantifier means "some changed file is real code".
+          # `code` = anything that isn't pure docs/remote. The negation glob
+          # matches every file outside the doc trees; with the `some`
+          # quantifier a change counts as code when any pattern matches it.
+          # The positive patterns re-include files inside those trees that
+          # build.zig embeds into the app and the fast tests (the six in-app
+          # docs, the release notes, the skill-eval fixtures): a "docs-only"
+          # PR that renames or empties one of them must still run the Zig jobs.
           filters: |
             code:
               - '!{docs/**,wiki/**,release-notes/**,plans/**,remote/**,tests/macos_e2e/**,**/*.md,*.md}'
+              - 'docs/{faq,configuration,ai-agent,file-explorer,media,tabs-panels}.md'
+              - 'release-notes/**'
+              - 'tests/eval/**'
             remote:
               - 'remote/**'
 

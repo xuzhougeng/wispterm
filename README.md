@@ -109,13 +109,13 @@ For architecture, packaging, and release details, see [Development, architecture
 
 ## Usage
 
-On Windows run `wispterm.exe`; on macOS run `WispTerm.app/Contents/MacOS/wispterm` (or launch `WispTerm.app` directly — passing CLI flags requires the binary path).
+On Windows run `wispterm.exe`; on macOS run `WispTerm.app/Contents/MacOS/WispTerm` (or launch `WispTerm.app` directly — passing CLI flags requires the binary path).
 
 ```bash
 wispterm [options]
 
 Options:
-  --font, -f <name>            Set font (default: embedded fallback)
+  --font, -f <name>            Set font (default: JetBrains Mono)
   --font-style <style>         Font weight (default: regular)
                                 Options: thin, extra-light, light, regular,
                                          medium, semi-bold, bold, extra-bold, black
@@ -128,7 +128,7 @@ Options:
   --background-image-mode <m>  fill | fit | center | tile (default: fill)
   --window-height <rows>       Initial window height in cells (default: 0=auto, min: 4)
   --window-width <cols>        Initial window width in cells (default: 0=auto, min: 10)
-  --quake-mode <bool>          Enable Quake-style drop-down mode (default: true)
+  --quake-mode <bool>          Enable Quake-style drop-down mode (default: false)
   --keybind <binding>          Configure a shortcut, e.g. global:ctrl+backquote=toggle_quake
   --config <path>              Use this file as the main config
   --config-path <path>         Alias for --config

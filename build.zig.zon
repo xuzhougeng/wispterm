@@ -24,7 +24,6 @@
             .hash = "z2d-0.10.0-j5P_Hu-6FgBsZNgwphIqh17jDnj8_yPtD8yzjO6PpHRQ",
         },
         .freetype = .{ .path = "pkg/freetype" },
-        .opengl = .{ .path = "pkg/opengl" },
         .sdl = .{ .path = "pkg/sdl" },
         .fontconfig = .{ .path = "pkg/fontconfig" },
         .zlib = .{ .path = "pkg/zlib" },
