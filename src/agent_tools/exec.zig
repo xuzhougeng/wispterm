@@ -780,7 +780,9 @@ pub fn waitForReplPromptReturn(
 
         const quiesced = now - started >= min_wait_ms and now - last_change_ms >= quiet_ms;
         if (quiesced and promptReturned(last_text, captured_prompt)) {
-            return tool_output.truncateOwned(ctx.allocator, ctx.settings, try ctx.allocator.dupe(u8, last_text));
+            // The snapshot includes scrollback; the REPL result and prompt are at
+            // the tail, so keep the tail like every other snapshot-bearing result.
+            return tool_output.truncateTailOwned(ctx.allocator, ctx.settings, try ctx.allocator.dupe(u8, last_text));
         }
     }
 
@@ -791,7 +793,7 @@ pub fn waitForReplPromptReturn(
     );
     defer ctx.allocator.free(note);
     const combined = try std.fmt.allocPrint(ctx.allocator, "{s}{s}", .{ last_text, note });
-    return tool_output.truncateOwned(ctx.allocator, ctx.settings, combined);
+    return tool_output.truncateTailOwned(ctx.allocator, ctx.settings, combined);
 }
 
 /// The trailing prompt of a terminal snapshot: the last non-empty line, trimmed

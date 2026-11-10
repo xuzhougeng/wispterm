@@ -27,7 +27,16 @@ pub fn parseIntervalMs(tok: []const u8) ParseError!i64 {
         'd' => std.time.ms_per_day,
         else => return error.BadInterval,
     };
-    return n * mult;
+    // Checked: the token comes straight from user input (and from the model's
+    // continue_later delay), so "999999999999999d" must be rejected, not
+    // overflow i64 and abort the process.
+    return std.math.mul(i64, n, mult) catch error.BadInterval;
+}
+
+test "parseIntervalMs rejects an interval that overflows i64" {
+    try std.testing.expectError(error.BadInterval, parseIntervalMs("999999999999999d"));
+    try std.testing.expectError(error.BadInterval, parseIntervalMs("9223372036854775807s"));
+    try std.testing.expectEqual(@as(i64, 2 * std.time.ms_per_day), try parseIntervalMs("2d"));
 }
 
 /// Positive decimal integer -> u32 (0 rejected).

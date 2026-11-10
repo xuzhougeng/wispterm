@@ -28,6 +28,9 @@ const KeySpec = struct {
     kind: KeyKind,
     default_value: []const u8,
     values: []const []const u8 = &.{},
+    /// The value is a credential. Tool results reach the model, the tool-call
+    /// card, and saved history, so these report only whether they are set.
+    secret: bool = false,
 };
 
 const bool_values = [_][]const u8{ "true", "false" };
@@ -74,7 +77,7 @@ const key_specs = [_]KeySpec{
     .{ .name = "ai-agent-command-timeout-ms", .kind = .uint, .default_value = "60000" },
     .{ .name = "ai-agent-output-limit", .kind = .uint, .default_value = "16384" },
     .{ .name = "ai-agent-working-dir", .kind = .string, .default_value = "" },
-    .{ .name = "jina-api-key", .kind = .string, .default_value = "" },
+    .{ .name = "jina-api-key", .kind = .string, .default_value = "", .secret = true },
     .{ .name = "windows-conpty", .kind = .one_of, .default_value = "auto", .values = windows_conpty_values[0..] },
     .{ .name = "shell", .kind = .string, .default_value = "platform default" },
     .{ .name = "working-directory", .kind = .string, .default_value = "" },
@@ -85,11 +88,11 @@ const key_specs = [_]KeySpec{
     .{ .name = "remote-server-url", .kind = .string, .default_value = "" },
     .{ .name = "remote-server-fingerprint", .kind = .string, .default_value = "" },
     .{ .name = "remote-device-name", .kind = .string, .default_value = "" },
-    .{ .name = "remote-session-key", .kind = .string, .default_value = "" },
+    .{ .name = "remote-session-key", .kind = .string, .default_value = "", .secret = true },
     .{ .name = "feishu-enabled", .kind = .boolean, .default_value = "false", .values = bool_values[0..] },
     .{ .name = "feishu-international", .kind = .boolean, .default_value = "false", .values = bool_values[0..] },
     .{ .name = "feishu-app-id", .kind = .string, .default_value = "" },
-    .{ .name = "feishu-app-secret", .kind = .string, .default_value = "" },
+    .{ .name = "feishu-app-secret", .kind = .string, .default_value = "", .secret = true },
     .{ .name = "feishu-allowed-user", .kind = .string, .default_value = "" },
     .{ .name = "weixin-direct-enabled", .kind = .boolean, .default_value = "false", .values = bool_values[0..] },
     .{ .name = "weixin-base-url", .kind = .string, .default_value = "" },
@@ -262,12 +265,15 @@ fn activeLineValue(line: []const u8, key: []const u8) ?[]const u8 {
     return std.mem.trim(u8, trimmed[eq + 1 ..], " \t");
 }
 
+/// The value in effect for `key`: config loading is last-wins, so a key that
+/// appears more than once is decided by its last line.
 fn activeValueInContent(content: []const u8, key: []const u8) ?[]const u8 {
+    var active: ?[]const u8 = null;
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
-        if (activeLineValue(line, key)) |value| return value;
+        if (activeLineValue(line, key)) |value| active = value;
     }
-    return null;
+    return active;
 }
 
 fn kindName(kind: KeyKind) []const u8 {
@@ -310,7 +316,11 @@ pub fn listText(allocator: std.mem.Allocator, query: ?[]const u8) ![]u8 {
         shown += 1;
         try out.print(allocator, "- {s} [{s}, default {s}]", .{ spec.name, kindName(spec.kind), spec.default_value });
         if (activeValueInContent(content, spec.name)) |value| {
-            try out.print(allocator, " active={s}", .{value});
+            if (spec.secret) {
+                try out.appendSlice(allocator, if (value.len > 0) " active=(set, hidden)" else " active=(empty)");
+            } else {
+                try out.print(allocator, " active={s}", .{value});
+            }
         }
         if (spec.values.len > 0) {
             try out.appendSlice(allocator, " values=");
@@ -372,7 +382,8 @@ pub fn run(ctx: *ToolContext, arguments_json: []const u8) ![]u8 {
         Config.setConfigValue(ctx.allocator, key, normalized) catch |err| return errText(ctx.allocator, err);
         const path = try configPathText(ctx.allocator);
         defer ctx.allocator.free(path);
-        return std.fmt.allocPrint(ctx.allocator, "Set {s} = {s} in {s}. Existing config hot-reload will apply it.", .{ key, normalized, path });
+        const shown: []const u8 = if (findSpec(key)) |spec| (if (spec.secret) "(hidden)" else normalized) else normalized;
+        return std.fmt.allocPrint(ctx.allocator, "Set {s} = {s} in {s}. Existing config hot-reload will apply it.", .{ key, shown, path });
     }
 
     if (std.mem.eql(u8, action, "remove")) {
@@ -471,4 +482,17 @@ test "wispterm_config run set and remove write the main config file" {
         defer cfg.deinit(a);
         try std.testing.expectEqual(@as(u32, 13), cfg.@"font-size");
     }
+}
+
+test "wispterm_config reports the last value of a repeated key" {
+    const content = "font-size = 12\n# font-size = 99\nfont-size = 16\n";
+    try std.testing.expectEqualStrings("16", activeValueInContent(content, "font-size").?);
+    try std.testing.expect(activeValueInContent(content, "theme") == null);
+}
+
+test "wispterm_config marks credential keys as secret" {
+    try std.testing.expect(findSpec("jina-api-key").?.secret);
+    try std.testing.expect(findSpec("remote-session-key").?.secret);
+    try std.testing.expect(findSpec("feishu-app-secret").?.secret);
+    try std.testing.expect(!findSpec("font-size").?.secret);
 }

@@ -5467,7 +5467,8 @@ pub fn maybeAutoTitle(session: *Session) void {
         const turn = ai_chat_title.extractFirstTurn(turns);
         const gate = ai_chat_title.TitleGate{
             .attempted = session.auto_title_attempted,
-            .has_api_key = session.api_key_len > 0,
+            // Subscription protocols (OAuth) have no profile key by design.
+            .has_api_key = !session.missingApiKey(),
             .is_custom = session.title_is_custom,
         };
         if (!ai_chat_title.shouldAutoTitle(gate, turn)) break :locked;
@@ -6022,9 +6023,13 @@ pub fn applyApiStreamLineToSession(
         }
     }
 
-    if (obj.get("error")) |_| {
-        try appendAssistantStreamDelta(session, message_idx, "API returned an error", "");
-        return true;
+    // Some providers send `"error": null` on every chunk; only a real value
+    // that parseApiErrorResult could not describe ends the stream here.
+    if (obj.get("error")) |error_value| {
+        if (error_value != .null) {
+            try appendAssistantStreamDelta(session, message_idx, "API returned an error", "");
+            return true;
+        }
     }
 
     const choices_value = obj.get("choices") orelse return false;

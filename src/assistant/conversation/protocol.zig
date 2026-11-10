@@ -1517,12 +1517,27 @@ pub fn parseApiUsage(root: std.json.Value) ?ApiUsage {
         break :blk jsonU64Value(usage_value.object.get("prompt_cache_hit_tokens"));
     };
     if (input_tokens > 0 or output_tokens > 0) {
+        // Anthropic-style usage: cache reads and writes are reported beside
+        // `input_tokens` (not inside it) and there is no `total_tokens`.
+        const cache_read = jsonU64Value(usage_value.object.get("cache_read_input_tokens"));
+        const cache_creation = jsonU64Value(usage_value.object.get("cache_creation_input_tokens"));
+        if (cache_read > 0 or cache_creation > 0) {
+            const prompt = input_tokens +| cache_read +| cache_creation;
+            return .{
+                .prompt_tokens = prompt,
+                .completion_tokens = output_tokens,
+                .prompt_cache_hit_tokens = cache_read,
+                .prompt_cache_miss_tokens = input_tokens +| cache_creation,
+                .total_tokens = prompt +| output_tokens,
+            };
+        }
+        const reported_total = jsonU64Value(usage_value.object.get("total_tokens"));
         return .{
             .prompt_tokens = input_tokens,
             .completion_tokens = output_tokens,
             .prompt_cache_hit_tokens = cached_tokens,
             .prompt_cache_miss_tokens = if (input_tokens > cached_tokens) input_tokens - cached_tokens else 0,
-            .total_tokens = jsonU64Value(usage_value.object.get("total_tokens")),
+            .total_tokens = if (reported_total > 0) reported_total else input_tokens +| output_tokens,
         };
     }
     return .{
@@ -2636,4 +2651,33 @@ test "automatic gateway reasoning leaves the provider defaults untouched" {
         defer parsed.deinit();
         for ([_][]const u8{ "thinking", "reasoning", "reasoning_effort" }) |key| try std.testing.expect(parsed.value.object.get(key) == null);
     }
+}
+
+test "parseApiUsage totals Anthropic usage and counts its cache fields" {
+    const allocator = std.testing.allocator;
+    var plain = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"usage":{"input_tokens":120,"output_tokens":30}}
+    , .{});
+    defer plain.deinit();
+    const plain_usage = parseApiUsage(plain.value).?;
+    try std.testing.expectEqual(@as(u64, 150), plain_usage.total_tokens);
+
+    var cached = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"usage":{"input_tokens":20,"output_tokens":30,"cache_read_input_tokens":900,"cache_creation_input_tokens":80}}
+    , .{});
+    defer cached.deinit();
+    const cached_usage = parseApiUsage(cached.value).?;
+    try std.testing.expectEqual(@as(u64, 1000), cached_usage.prompt_tokens);
+    try std.testing.expectEqual(@as(u64, 900), cached_usage.prompt_cache_hit_tokens);
+    try std.testing.expectEqual(@as(u64, 100), cached_usage.prompt_cache_miss_tokens);
+    try std.testing.expectEqual(@as(u64, 1030), cached_usage.total_tokens);
+
+    // A Responses-style payload that reports its own total is left alone.
+    var responses = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"usage":{"input_tokens":50,"output_tokens":10,"total_tokens":75,"input_tokens_details":{"cached_tokens":40}}}
+    , .{});
+    defer responses.deinit();
+    const responses_usage = parseApiUsage(responses.value).?;
+    try std.testing.expectEqual(@as(u64, 75), responses_usage.total_tokens);
+    try std.testing.expectEqual(@as(u64, 40), responses_usage.prompt_cache_hit_tokens);
 }

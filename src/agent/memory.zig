@@ -638,7 +638,19 @@ pub fn isValidMemoryName(name: []const u8) bool {
         const ok = std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == '.';
         if (!ok) return false;
     }
+    // `<name>.md` must not be the index file: rewriteIndex overwrites
+    // MEMORY.md and the loader skips it, so such a memory reported "Saved"
+    // and was gone. Case-insensitive because Windows and macOS file systems are.
+    if (std.ascii.eqlIgnoreCase(name, "MEMORY")) return false;
     return true;
+}
+
+test "isValidMemoryName rejects the index file name in any case" {
+    try std.testing.expect(!isValidMemoryName("MEMORY"));
+    try std.testing.expect(!isValidMemoryName("memory"));
+    try std.testing.expect(!isValidMemoryName("Memory"));
+    try std.testing.expect(isValidMemoryName("memory-notes"));
+    try std.testing.expect(isValidMemoryName("build-setup"));
 }
 
 fn invalidNameMessage(allocator: std.mem.Allocator, name: []const u8) ![]u8 {

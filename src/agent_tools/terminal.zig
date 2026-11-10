@@ -337,8 +337,9 @@ pub fn resolveSurfaceId(snapshot_value: ToolSnapshot, surface_id: []const u8, wr
     return findSurface(snapshot_value, surface_id);
 }
 
-/// Error result for an unmatched surface_id that lists the open surfaces, so the
-/// model can retry in one step instead of calling terminal_list.
+/// Error result for an unmatched surface_id. It points the model at
+/// terminal_list rather than listing surfaces itself, so terminals owned by
+/// other Agents are not disclosed here.
 pub fn allocNoSurfaceError(allocator: std.mem.Allocator, snapshot_value: ToolSnapshot, surface_id: []const u8) ![]u8 {
     _ = snapshot_value;
     return std.fmt.allocPrint(
