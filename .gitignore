@@ -1,6 +1,6 @@
 # Zig build artifacts
 zig-out/
-zig-out-no-webview/
+zig-out-opengl/
 zig-cache/
 .zig-cache/
 .zig-global-cache/

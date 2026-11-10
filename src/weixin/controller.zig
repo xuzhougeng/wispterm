@@ -417,17 +417,36 @@ pub const Controller = struct {
 /// Pure (no allocation/IO) so it is unit-tested directly.
 fn buildNotifyText(title: []const u8, body: []const u8, out: []u8) []const u8 {
     var n: usize = 0;
-    const tcopy = title[0..@min(title.len, out.len)];
+    const tcopy = title[0..utf8ClipLen(title, out.len)];
     @memcpy(out[0..tcopy.len], tcopy);
     n = tcopy.len;
     if (body.len != 0 and n < out.len) {
         out[n] = '\n';
         n += 1;
-        const bcopy = body[0..@min(body.len, out.len - n)];
+        const bcopy = body[0..utf8ClipLen(body, out.len - n)];
         @memcpy(out[n..][0..bcopy.len], bcopy);
         n += bcopy.len;
     }
     return out[0..n];
+}
+
+/// Longest prefix of `s` within `max` bytes that does not end inside a UTF-8
+/// sequence. A raw byte cut split CJK text and put invalid UTF-8 in the JSON.
+fn utf8ClipLen(s: []const u8, max: usize) usize {
+    if (s.len <= max) return s.len;
+    var end = max;
+    while (end > 0 and (s[end] & 0xC0) == 0x80) end -= 1;
+    return end;
+}
+
+test "buildNotifyText never cuts a UTF-8 character" {
+    var out: [8]u8 = undefined;
+    // 3-byte characters: only two fit in 8 bytes, the third is dropped whole.
+    const title_only = buildNotifyText("\u{4f60}\u{597d}\u{5417}", "", &out);
+    try std.testing.expectEqualStrings("\u{4f60}\u{597d}", title_only);
+    const with_body = buildNotifyText("ab", "\u{4f60}\u{597d}", &out);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(with_body));
+    try std.testing.expectEqualStrings("ab\n\u{4f60}", with_body);
 }
 
 /// A self-contained, owned copy of everything one push needs, so the send can

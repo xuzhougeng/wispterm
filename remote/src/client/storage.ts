@@ -2,7 +2,6 @@ import { normalizeMobileVisualZoom } from "./mobile_visual_zoom";
 import type { DesktopPanelMode, MobileVisualZoom, ThemeMode } from "./types";
 
 const SESSION_KEY_STORAGE_KEY = "wispterm.remote.sessionKey";
-const KBD_VISIBLE_STORAGE_KEY = "wispterm.remote.kbdVisible";
 const THEME_STORAGE_KEY = "wispterm.remote.theme";
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "wispterm.remote.sidebarCollapsed";
 const DESKTOP_PANEL_MODE_STORAGE_KEY = "wispterm.remote.desktopPanelMode";
@@ -39,25 +38,6 @@ export function clearSessionKey(): void {
 export function maskSessionKey(sessionKey: string): string {
   if (!sessionKey) return "";
   return `${sessionKey.slice(0, 4)}****`;
-}
-
-export function readSavedKbdVisible(): boolean | null {
-  try {
-    const raw = localStorage.getItem(KBD_VISIBLE_STORAGE_KEY);
-    if (raw === "1") return true;
-    if (raw === "0") return false;
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-export function saveKbdVisible(visible: boolean): void {
-  try {
-    localStorage.setItem(KBD_VISIBLE_STORAGE_KEY, visible ? "1" : "0");
-  } catch {
-    // Storage may be unavailable in restricted browser contexts.
-  }
 }
 
 export function readSavedSidebarCollapsed(): boolean | null {

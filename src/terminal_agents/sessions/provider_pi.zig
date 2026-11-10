@@ -140,7 +140,14 @@ pub fn parseTranscript(
                         try appendOwned(allocator, &messages, role, .normal, text, timestamp_ms);
                     }
                 } else if (std.mem.eql(u8, part_type, "toolCall")) {
-                    const name = if (p.get("toolCall")) |call| objectString(call.object, "name") else null;
+                    // pi-mono writes the tool name on the part itself; an older
+                    // nested `toolCall` object is still accepted. Check the tag
+                    // before reading `.object`: a string/null there was illegal
+                    // union access, not the fail-soft skip this reader promises.
+                    const name = objectString(p, "name") orelse nested: {
+                        const call = p.get("toolCall") orelse break :nested null;
+                        break :nested if (call == .object) objectString(call.object, "name") else null;
+                    };
                     const label = name orelse "tool call";
                     try appendOwned(allocator, &messages, .assistant, .tool_call, label, timestamp_ms);
                 }

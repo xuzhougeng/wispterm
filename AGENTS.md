@@ -45,15 +45,15 @@ Structural debt is frozen mechanically by source-scanning ratchet tests (the sam
 | Guard | Freezes | Today's ceiling | Escape hatch |
 |---|---|---|---|
 | `file_size_guard` | lines in any `src/**/*.zig` | < **10,000** (also `zig build check-sizes`) | split by responsibility; never raise the limit |
-| `global_state_guard` | top-level `g_*` / `threadlocal` in the watched integration/session files | AppWindow **66**, input **48**, overlays **30**, assistant/conversation/session **15** | put new state in a state struct (`appwindow/state.zig`, …) |
+| `global_state_guard` | top-level `g_*` / `threadlocal` in the watched integration/session files | AppWindow **66**, input **39**, overlays **22**, assistant/conversation/session **13** | put new state in a state struct (`appwindow/state.zig`, …) |
 | `import_hub_guard` | `pub const X = @import(...)` re-exports in `AppWindow.zig` | **16** | import the real module directly, not via `AppWindow.X` |
-| `side_effect_guard` | direct `g_force_rebuild` / `g_cells_valid` writes in the watched integration/session files | AppWindow **26**, input **23**, overlays **0**, assistant/conversation/session **0** | return a `UiEffect`, land it through `AppWindow.applyUiEffect` |
+| `side_effect_guard` | direct `g_force_rebuild` / `g_cells_valid` writes in the watched integration/session files | AppWindow **24**, input **22**, overlays **0**, assistant/conversation/session **0** | return a `UiEffect`, land it through `AppWindow.applyUiEffect` |
 | `objc_autorelease_guard` | exported `.m` bridge functions that send Objective-C messages outside `@autoreleasepool` (macOS has no outer pool: no `NSApplicationMain`) | **0** (allowlist: one deliberate test probe) | wrap the Objective-C part in `@autoreleasepool { }` |
 | `tab_state_init_guard` | `create(TabState)` sites initialized field by field (`allocator.create` returns undefined memory and piecewise init skips declaration defaults) | **0** | initialize with one struct literal: `t.* = .{ ... }` |
 
 The 10,000-line guard is a **runaway tripwire, not a health metric**: `check-sizes` prevents uncontrolled growth, it does not certify architectural health. A file under it can still be tangled; treat any file over **5,000 lines** as a signal to review responsibility, dependency direction, state ownership, and test boundaries. The boundary ratchets — not the line count — are the primary enforcement mechanism.
 
-A fifth guard — a **layered-dependency** check (e.g. `renderer/overlays/*` must not import `AppWindow.zig`; `input/*` must not import a concrete renderer) — is the documented next step; it needs per-edge allowlists and lands once the boundaries it asserts have converged. The layer model and the full remediation roadmap (state structs first, then import-hub, then per-domain file splits) live in [docs/decoupling-guide.md](docs/decoupling-guide.md).
+A **layered-dependency** guard (`layered_dependency_guard`) already freezes one edge: `termio/**` must not import `renderer/**`. Extending it to more edges (e.g. `renderer/overlays/*` must not import `AppWindow.zig`; `input/*` must not import a concrete renderer) is the documented next step; each needs a per-edge allowlist and lands once the boundary it asserts has converged. The layer model and the full remediation roadmap (state structs first, then import-hub, then per-domain file splits) live in [docs/decoupling-guide.md](docs/decoupling-guide.md).
 
 ## Hard Rules
 
@@ -117,7 +117,7 @@ src/                         # Desktop terminal application
 ├── Surface.zig              # Per-terminal surface state and PTY integration
 ├── input.zig                # Keyboard/mouse shortcuts and command dispatch
 ├── config.zig               # Config loading (file + CLI), theme resolution, key=value parser
-├── config_watcher.zig       # Hot-reload via ReadDirectoryChangesW
+├── config_watcher.zig       # Config hot-reload (platform watchers live in src/platform/)
 ├── pty.zig                  # App-facing PTY API (re-exports src/platform/pty.zig)
 ├── remote_client.zig        # Outbound WispTerm Remote relay client
 ├── file_explorer.zig        # Local/SSH file explorer state and operations
@@ -162,6 +162,21 @@ src/                         # Desktop terminal application
 │                            #   + global-state / import-hub / side-effect freezes
 ├── ssh/                     # SSH/SCP descriptors, profile store, prompts, tunnels,
 │                            #   OpenSSH config import, and transfer helpers
+├── tmux/                    # tmux control-mode session, layout and pane IO
+├── chatops/                 # Shared chat-bridge router/control for WeChat and Feishu
+├── weixin/                  # WeChat (iLink) bot bridge: poller, client, QR login
+├── feishu/                  # Feishu/Lark bot bridge: long connection, REST, cards
+├── ctl/                     # Agent-control socket server and protocol (wisptermctl)
+├── sync/                    # Encrypted sync engine and transports (folder, WebDAV)
+├── credential/              # Password Store: vault, page state, redaction
+├── memory_center/           # Memory Center page state
+├── memory_digest/           # Scheduled digest of agent sessions into memory
+├── conversation_center/     # Conversation Center session state
+├── file_explorer/           # File explorer action types (state lives in file_explorer.zig)
+├── benchmark/               # Benchmark harness behind wispterm-bench
+├── themes/                  # Embedded Ghostty-compatible theme files
+├── ui/                      # Small shared UI metrics/helpers
+├── core/                    # Shared geometry types for layers below the renderer
 └── termio/                  # PTY read/write threads and terminal IO mailbox
 
 remote/                      # WispTerm-specific web remote console and relay
@@ -191,7 +206,7 @@ packaging/windows/           # Windows installer and packaging scripts
 assets/                      # Application icon and source art
 shaders/                     # GLSL shader files
 tools/                       # Terminal helper scripts such as imgcat/pdfcat
-plugins/                     # Installed plugin root; future skills/MCP assets live here
+plugins/                     # Bundled skills (plugins/skills); future MCP assets live here
 pkg/                         # Vendored build dependencies (freetype, zlib, libpng, opengl, etc.)
 vendor/                      # Vendored source code
 ```
@@ -211,9 +226,9 @@ Key mapping of WispTerm files to Ghostty counterparts:
 | `src/pty.zig` | [`src/os/ConPty.zig`](https://github.com/ghostty-org/ghostty/blob/main/src/os/ConPty.zig) | Windows ConPTY, Ghostty also has this for Windows |
 | `src/themes.zig` | [`src/config/theme.zig`](https://github.com/ghostty-org/ghostty/blob/main/src/config/theme.zig) | Same theme file format, same built-in theme collection |
 | `src/font/sprite/` | [`src/font/sprite/`](https://github.com/ghostty-org/ghostty/tree/main/src/font/sprite) | Box drawing, braille — follows Ghostty's sprite approach |
-| `src/font/embedded.zig` | Ghostty's embedded Cozette font | Same fallback font |
-| `src/main.zig` (rendering) | [`src/renderer/OpenGL.zig`](https://github.com/ghostty-org/ghostty/blob/main/src/renderer/OpenGL.zig) | OpenGL rendering, cell grid, shaders |
-| `src/main.zig` (input) | [`src/apprt/glfw.zig`](https://github.com/ghostty-org/ghostty/blob/main/src/apprt/glfw.zig) | GLFW key/mouse handling |
+| `src/font/embedded.zig` | Ghostty's embedded JetBrains Mono | Same fallback font |
+| `src/renderer/` (`Renderer.zig`, `cell_renderer.zig`, `gpu/{d3d11,metal,opengl}`) | [`src/renderer/`](https://github.com/ghostty-org/ghostty/tree/main/src/renderer) (`generic.zig`, `OpenGL.zig`, `Metal.zig`) | Cell grid, shaders, per-backend GPU code (D3D11 is WispTerm's own) |
+| `src/input.zig`, `src/apprt/{win32,sdl}.zig` | [`src/apprt/`](https://github.com/ghostty-org/ghostty/tree/main/src/apprt), [`src/input/`](https://github.com/ghostty-org/ghostty/tree/main/src/input) | Host key/mouse events and key encoding |
 | `src/platform/font_discovery_windows.zig` | [`src/font/discovery.zig`](https://github.com/ghostty-org/ghostty/blob/main/src/font/discovery.zig) | Font discovery (WispTerm uses DirectWrite directly on Windows) |
 
 When adding features:
@@ -230,8 +245,12 @@ Config lives at `%APPDATA%\wispterm\config`, is loaded defaults → config file 
 
 Defined in `build.zig.zon`:
 - **ghostty** — libghostty-vt (VT parser + terminal state) from a pinned Ghostty main-branch snapshot. Prefer pinning an exact commit tarball and matching hash over `main.tar.gz`, so builds are reproducible.
-- **glfw** — Window management and input
-- **z2d** — 2D graphics library
-- **freetype** / **zlib** / **libpng** / **opengl** — vendored in `pkg/`
+- **z2d** — 2D graphics library (sprite font drawing)
+- **libxev** — event loop used by the terminal IO threads
+- **freetype** / **harfbuzz** / **fontconfig** / **zlib** / **libpng** — vendored build glue in `pkg/` (zlib and libpng are consumed through freetype)
+- **sdl** — SDL3, the window/input host for the experimental Linux build (`pkg/sdl`)
+- **apple-sdk** — locates the native Apple SDK for macOS builds (`pkg/apple-sdk`)
+
+OpenGL is loaded through the vendored glad loader in `vendor/glad`, not a Zig package. There is no GLFW dependency: the hosts are Win32 (`src/apprt/win32.zig`), AppKit (`src/platform/window_macos_bridge.m`) and SDL3 (`src/apprt/sdl.zig`).
 
 When updating Ghostty, expect API drift. The current main-branch API returns `void` from terminal operations such as `Terminal.vt`, `Stream.nextSlice`, and `Terminal.scrollViewport`; do not add `try` or `catch {}` around those calls unless the dependency version actually returns an error union.

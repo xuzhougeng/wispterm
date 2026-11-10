@@ -162,14 +162,37 @@ fn appendPowerShellProjectNotFound(out: []u8, pos: *usize, project_dir: []const 
     try appendByte(out, pos, '\'');
 }
 
+/// Body of a PowerShell single-quoted string. PowerShell treats the typographic
+/// quotes U+2018..U+201B exactly like `'`, so each must be doubled too: a path
+/// such as `C:\Users\Bob’s app` otherwise ended the literal early.
 fn appendPowerShellSingleQuoteBody(out: []u8, pos: *usize, value: []const u8) ResumeError!void {
-    for (value) |ch| {
+    var i: usize = 0;
+    while (i < value.len) {
+        const ch = value[i];
         if (ch == '\'') {
             try append(out, pos, "''");
+            i += 1;
+        } else if (isPowerShellSmartQuote(value[i..])) {
+            try append(out, pos, value[i .. i + 3]);
+            try append(out, pos, value[i .. i + 3]);
+            i += 3;
         } else {
             try appendByte(out, pos, ch);
+            i += 1;
         }
     }
+}
+
+/// U+2018..U+201B are E2 80 98..9B in UTF-8.
+fn isPowerShellSmartQuote(bytes: []const u8) bool {
+    return bytes.len >= 3 and bytes[0] == 0xE2 and bytes[1] == 0x80 and bytes[2] >= 0x98 and bytes[2] <= 0x9B;
+}
+
+test "PowerShell quoting doubles typographic single quotes" {
+    var buf: [64]u8 = undefined;
+    var pos: usize = 0;
+    try appendPowerShellSingleQuoteBody(&buf, &pos, "Bob\u{2019}s 'app'");
+    try std.testing.expectEqualStrings("Bob\u{2019}\u{2019}s ''app''", buf[0..pos]);
 }
 
 fn shellSingleQuoteLen(value: []const u8) ResumeError!usize {

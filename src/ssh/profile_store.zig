@@ -229,7 +229,9 @@ pub fn listProfileNames(content: []const u8, names: [][LIST_NAME_MAX]u8, lens: [
 }
 
 fn isSshTokenSafe(value: []const u8) bool {
-    if (value.len == 0) return false;
+    // A leading '-' would be parsed by ssh/scp as an option, not a user/host
+    // (profiles can also arrive from sync, not only from the form).
+    if (value.len == 0 or value[0] == '-') return false;
     for (value) |ch| {
         if (std.ascii.isAlphanumeric(ch)) continue;
         switch (ch) {

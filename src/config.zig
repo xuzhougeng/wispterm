@@ -949,13 +949,14 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
             log.warn("invalid window-height: {s}", .{value});
             return;
         };
-        self.@"window-height" = @max(4, v);
+        // 0 = auto (documented); only an explicit size is clamped to the minimum.
+        self.@"window-height" = if (v == 0) 0 else @max(4, v);
     } else if (std.mem.eql(u8, key, "window-width")) {
         const v = std.fmt.parseInt(u16, value, 10) catch {
             log.warn("invalid window-width: {s}", .{value});
             return;
         };
-        self.@"window-width" = @max(10, v);
+        self.@"window-width" = if (v == 0) 0 else @max(10, v);
     } else if (std.mem.eql(u8, key, "scrollback-limit")) {
         self.@"scrollback-limit" = std.fmt.parseInt(u32, value, 10) catch {
             log.warn("invalid scrollback-limit: {s}", .{value});
@@ -1498,9 +1499,21 @@ fn applyEnv(self: *Config, allocator: std.mem.Allocator, value: []const u8) void
     self.env.put(allocator, owned_key, owned_val) catch {};
 }
 
+/// How deep `config-file` includes may nest. A file that includes itself (or
+/// two files that include each other) otherwise recursed until the stack
+/// overflowed, at startup and again on every hot reload.
+const max_config_include_depth: u8 = 8;
+threadlocal var config_include_depth: u8 = 0;
+
 /// Handle the `config-file` directive: load an additional config file.
 fn loadConfigFileDirective(self: *Config, allocator: std.mem.Allocator, raw_path: []const u8, base_dir: []const u8) void {
     if (raw_path.len == 0) return;
+    if (config_include_depth >= max_config_include_depth) {
+        log.warn("config-file nested more than {d} levels deep (include cycle?): {s}", .{ max_config_include_depth, raw_path });
+        return;
+    }
+    config_include_depth += 1;
+    defer config_include_depth -= 1;
 
     // Optional prefix: `?` means ignore if missing
     const optional = raw_path[0] == '?';
@@ -1706,7 +1719,7 @@ pub fn writeHelp(writer: anytype) !void {
         \\Options:
         \\  --config <path>              Use this file as the main config
         \\  --config-path <path>         Alias for --config
-        \\  --font-family <name>         Font family (default: embedded fallback)
+        \\  --font-family <name>         Font family (default: JetBrains Mono)
         \\  -f <name>                    Alias for --font-family
         \\  --font-family-cjk <name>     Preferred font for Chinese/Japanese/Korean glyphs
         \\  --font-family-fallback <csv> Comma-separated fallback family priority list
@@ -1758,7 +1771,7 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --agent-control-enabled <bool> Enable the local wisptermctl terminal control API (loopback)
         \\  --agent-control-port <n>     Fixed loopback port for the control API (0 = auto)
         \\  --agent-screen-detection <bool> Detect terminal agent state from the screen when no hook is installed (default: true)
-        \\  --quake-mode <bool>          Enable Quake-style drop-down mode (default: true)
+        \\  --quake-mode <bool>          Enable Quake-style drop-down mode (default: false)
         \\
         \\Color Options (override theme):
         \\  --background <color>         Background color (#RRGGBB or RRGGBB)
@@ -1937,7 +1950,9 @@ pub fn setConfigValueInContent(allocator: std.mem.Allocator, content: []const u8
                 replaced = true;
             }
             // Drop later duplicate active lines for the same key.
-        } else if (line.len > 0) {
+        } else if (line.len > 0 or lines.peek() != null) {
+            // Blank lines are kept (they separate the template's sections);
+            // only the empty piece after the file's final newline is skipped.
             try out.appendSlice(allocator, line);
             try out.append(allocator, '\n');
         }
@@ -1970,7 +1985,7 @@ pub fn stripConfigKeys(allocator: std.mem.Allocator, content: []const u8, keys: 
                 break;
             }
         }
-        if (!should_remove and line.len > 0) {
+        if (!should_remove and (line.len > 0 or lines.peek() != null)) {
             try out.appendSlice(allocator, line);
             try out.append(allocator, '\n');
         }
@@ -2368,6 +2383,47 @@ test "config: working-directory defaults unset and parses paths" {
 
     cfg.applyKeyValue(allocator, "working-directory", "", ".");
     try std.testing.expect(cfg.@"working-directory" == null);
+}
+
+test "config: a config-file that includes itself stops instead of recursing forever" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "loop.conf", .data = "window-width = 90\nconfig-file = loop.conf\n" });
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &dir_buf);
+
+    var cfg: Config = .{};
+    defer cfg.deinit(allocator);
+    cfg.parseContent(allocator, "config-file = loop.conf\n", dir_path);
+
+    try std.testing.expectEqual(@as(u16, 90), cfg.@"window-width");
+    try std.testing.expectEqual(@as(u8, 0), config_include_depth);
+}
+
+test "config: window size 0 stays auto" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+    defer cfg.deinit(allocator);
+    cfg.parseContent(allocator, "window-height = 0\nwindow-width = 0\n", ".");
+    try std.testing.expectEqual(@as(u16, 0), cfg.@"window-height");
+    try std.testing.expectEqual(@as(u16, 0), cfg.@"window-width");
+    cfg.parseContent(allocator, "window-height = 2\nwindow-width = 3\n", ".");
+    try std.testing.expectEqual(@as(u16, 4), cfg.@"window-height");
+    try std.testing.expectEqual(@as(u16, 10), cfg.@"window-width");
+}
+
+test "config: rewriting a key keeps blank lines between sections" {
+    const allocator = std.testing.allocator;
+    const content = "# Fonts\nfont-size = 12\n\n# Window\nwindow-width = 100\n";
+
+    const set = try setConfigValueInContent(allocator, content, "font-size", "14");
+    defer allocator.free(set);
+    try std.testing.expectEqualStrings("# Fonts\nfont-size = 14\n\n# Window\nwindow-width = 100\n", set);
+
+    const stripped = try stripConfigKeys(allocator, content, &.{"window-width"});
+    defer allocator.free(stripped);
+    try std.testing.expectEqualStrings("# Fonts\nfont-size = 12\n\n# Window\n", stripped);
 }
 
 test "config: env follows ghostty repeatable map semantics" {

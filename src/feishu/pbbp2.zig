@@ -74,6 +74,9 @@ fn readVarint(buf: []const u8, i: *usize) !u64 {
         i.* += 1;
         result |= @as(u64, b & 0x7f) << shift;
         if (b & 0x80 == 0) break;
+        // A varint is at most 10 bytes. An 11th continuation byte would
+        // overflow the u6 shift: reject the frame instead of panicking.
+        if (shift >= 63) return error.Truncated;
         shift += 7;
     }
     return result;
@@ -81,10 +84,21 @@ fn readVarint(buf: []const u8, i: *usize) !u64 {
 
 fn readLenDelim(buf: []const u8, i: *usize) ![]const u8 {
     const len = try readVarint(buf, i);
-    if (i.* + len > buf.len) return error.Truncated;
-    const out = buf[i.* .. i.* + len];
-    i.* += len;
+    // Compare against the remaining bytes; `i.* + len` can overflow usize.
+    if (len > buf.len - i.*) return error.Truncated;
+    const n: usize = @intCast(len);
+    const out = buf[i.* .. i.* + n];
+    i.* += n;
     return out;
+}
+
+test "pbbp2 rejects an over-long varint and an over-long length prefix" {
+    var i: usize = 0;
+    try std.testing.expectError(error.Truncated, readVarint(&([_]u8{0xff} ** 11 ++ [_]u8{0x01}), &i));
+    i = 0;
+    // Length prefix 0xffffffffffffffff (10-byte varint) with no payload.
+    const huge = [_]u8{0xff} ** 9 ++ [_]u8{0x01};
+    try std.testing.expectError(error.Truncated, readLenDelim(&huge, &i));
 }
 
 fn skipField(buf: []const u8, i: *usize, wire: u3) !void {

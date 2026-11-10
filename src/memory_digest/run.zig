@@ -263,7 +263,9 @@ fn collectAllSources(
     inline for (.{ .{ "claude", "claude_projects_dir" }, .{ "codex", "codex_sessions_dir" }, .{ "kimi", "kimi_sessions_dir" }, .{ "grok", "grok_sessions_dir" }, .{ "wispterm", "wispterm_sessions_dir" } }) |pair| {
         if (!opts.local_enabled or !@field(opts.providers, pair[0])) @field(roots, pair[1]) = null;
     }
-    const local = try collector.collectLocal(gpa, roots, cur, min_mtime_ns);
+    var local = try collector.collectLocal(gpa, roots, cur, min_mtime_ns);
+    // Owns its own arena; the caller only takes it over on success.
+    errdefer local.deinit();
     try out.appendSlice(arena, local.sessions);
     try sources.append(arena, .{
         .source_id = "local",

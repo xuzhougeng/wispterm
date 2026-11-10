@@ -28,7 +28,7 @@ import { isMobileRemoteShell, shouldUseCanvasPan, shouldUseViewportFit } from ".
 import { mobileVisualZoomPercent, scaleVisualCanvasSize } from "./mobile_visual_zoom";
 import { setNativeTerminalInputBlocked, shouldBlockNativeTerminalInput } from "./terminal_input_guard";
 import { cursorMoveSequence, emptyState, validPositiveInteger } from "./utils";
-import { activeSurfaceIdForInput, currentTab, resetSurfaceViews, state } from "./state";
+import { currentTab, resetSurfaceViews, state } from "./state";
 import { getTerminalPalette, subscribeToTheme } from "./theme";
 import { REMOTE_TERMINAL_SCROLLBACK } from "./terminal_options";
 import {
@@ -263,6 +263,9 @@ export function reconcileSurfaceViews(): void {
       view.disposeMiddleClickGesture?.();
       view.disposeCanvasPan?.();
       view.term.dispose();
+      // Detach the panel too: left on the stage it stayed clickable and a
+      // click re-created a terminal for the dead surface id.
+      view.panel.remove();
       state.surfaceViews.delete(surfaceId);
     }
   }
@@ -275,6 +278,7 @@ export function disposeSurfaceViews(): void {
     view.disposeMiddleClickGesture?.();
     view.disposeCanvasPan?.();
     view.term.dispose();
+    view.panel.remove();
   }
   resetSurfaceViews();
 }
@@ -290,11 +294,6 @@ export function writeLegacyOutput(data: string): void {
   const view = ensureSurfaceView(surfaceId);
   view.hasLiveOutput = true;
   writeSurfaceText(view, data);
-}
-
-export function focusActiveSurface(): void {
-  const id = activeSurfaceIdForInput();
-  if (id) focusSurfaceView(id);
 }
 
 export function refitAllSurfaces(): void {

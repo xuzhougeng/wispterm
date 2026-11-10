@@ -93,14 +93,14 @@ open zig-out/bin/WispTerm.app                  # 启动构建好的应用
 
 ## 使用
 
-在 Windows 上运行 `wispterm.exe`；在 macOS 上运行 `WispTerm.app/Contents/MacOS/wispterm`
+在 Windows 上运行 `wispterm.exe`；在 macOS 上运行 `WispTerm.app/Contents/MacOS/WispTerm`
 （或直接启动 `WispTerm.app` —— 传入 CLI 参数需要使用二进制路径）。
 
 ```bash
 wispterm [options]
 
 选项：
-  --font, -f <name>            设置字体（默认：内嵌回退字体）
+  --font, -f <name>            设置字体（默认：JetBrains Mono）
   --font-style <style>         字体字重（默认：regular）
                                 可选：thin, extra-light, light, regular,
                                       medium, semi-bold, bold, extra-bold, black
@@ -113,7 +113,7 @@ wispterm [options]
   --background-image-mode <m>  fill | fit | center | tile（默认：fill）
   --window-height <rows>       初始窗口高度（单位：行；默认：0=自动，最小：4）
   --window-width <cols>        初始窗口宽度（单位：列；默认：0=自动，最小：10）
-  --quake-mode <bool>          启用 Quake 风格下拉模式（默认：true）
+  --quake-mode <bool>          启用 Quake 风格下拉模式（默认：false）
   --keybind <binding>          配置快捷键，例如 global:ctrl+backquote=toggle_quake
   --config <path>              使用此文件作为主配置
   --config-path <path>         --config 的别名

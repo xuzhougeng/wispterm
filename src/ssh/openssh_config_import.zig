@@ -76,6 +76,15 @@ pub fn parseCandidates(config: []const u8, out: []Candidate) []Candidate {
             while (aliases.next()) |alias| pending.addAlias(alias);
             continue;
         }
+        if (std.ascii.eqlIgnoreCase(key_value.key, "Match")) {
+            // A Match block ends the current Host block. Its settings are
+            // conditional and are not imported, so they must not be
+            // attributed to the Host that precedes it.
+            if (have_block) flushPending(&pending, out, &count);
+            pending = .{};
+            have_block = false;
+            continue;
+        }
         if (!have_block) continue;
 
         if (std.ascii.eqlIgnoreCase(key_value.key, "HostName") and !pending.has_host) {
@@ -195,6 +204,28 @@ fn copyExact(buf: []u8, value: []const u8) ?usize {
     if (value.len > buf.len) return null;
     @memcpy(buf[0..value.len], value);
     return value.len;
+}
+
+test "openssh config import: a Match block does not leak into the previous Host" {
+    const config =
+        \\Host a
+        \\  HostName a.example.com
+        \\  User alice
+        \\Match host b
+        \\  User root
+        \\  Port 2200
+        \\Host c
+        \\  User carol
+        \\
+    ;
+    var out: [8]Candidate = undefined;
+    const rows = parseCandidates(config, &out);
+    try std.testing.expectEqual(@as(usize, 2), rows.len);
+    try std.testing.expectEqualStrings("a", rows[0].name());
+    try std.testing.expectEqualStrings("alice", rows[0].user());
+    try std.testing.expect(!std.mem.eql(u8, rows[0].port(), "2200"));
+    try std.testing.expectEqualStrings("c", rows[1].name());
+    try std.testing.expectEqualStrings("carol", rows[1].user());
 }
 
 test "openssh config import: parses a basic host block" {

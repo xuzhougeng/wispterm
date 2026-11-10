@@ -32,7 +32,7 @@ Intel) and move it to `/Applications`.
 - Launch **`WispTerm.app`** normally, **or**
 - Run the binary directly to pass CLI flags:
   ```bash
-  WispTerm.app/Contents/MacOS/wispterm --version
+  WispTerm.app/Contents/MacOS/WispTerm --version
   ```
 
 > Passing command-line options requires the binary path — double-clicking the

@@ -343,10 +343,15 @@ fn createStateForWindow(hwnd: HWND, width: i32, height: i32) InitError!State {
         &feature_level,
         &context,
     ) < 0 or device == null or context == null) return error.DeviceCreateFailed;
-    errdefer {
+    // Released here only until `next` takes ownership below. After that,
+    // `next.deinit()` releases them; leaving this armed released both twice
+    // when a later step failed (for example a missing d3dcompiler_47.dll),
+    // turning a recoverable InitError into a crash.
+    var device_owned_by_state = false;
+    errdefer if (!device_owned_by_state) {
         core.comRelease(context.?);
         core.comRelease(device.?);
-    }
+    };
 
     const swapchain_result = try createSwapchain(device.?, hwnd, width, height);
 
@@ -363,6 +368,7 @@ fn createStateForWindow(hwnd: HWND, width: i32, height: i32) InitError!State {
         .width = width,
         .height = height,
     };
+    device_owned_by_state = true;
     errdefer next.deinit();
 
     next.present1_swapchain = core.comQueryInterface(next.swapchain, &core.IID_IDXGISwapChain1);

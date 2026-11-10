@@ -8,7 +8,7 @@ rendered into stable replayable snapshots.
 ## Run
 
 ```powershell
-zig build test
+zig build test-full
 ```
 
 The Zig test `skill_registry eval: fixture skills load expected snapshots`

@@ -30,7 +30,7 @@ WispTerm 就会用它作为配置，整套设置可随 U 盘或共享目录携�
 - 正常双击启动 **`WispTerm.app`**，**或**
 - 直接运行二进制以传入 CLI 参数：
   ```bash
-  WispTerm.app/Contents/MacOS/wispterm --version
+  WispTerm.app/Contents/MacOS/WispTerm --version
   ```
 
 > 传入命令行选项必须用二进制路径 —— 双击 `.app` 无法附带参数。
