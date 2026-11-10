@@ -36,11 +36,19 @@ pub const State = struct {
         return self.name_buf[0..self.name_len];
     }
 
+    /// Appends whole UTF-8 sequences only. A codepoint that would cross
+    /// NAME_MAX is dropped instead of cut in half: an orphaned lead byte
+    /// renders as garbage and is not a valid file name.
     pub fn append(self: *State, bytes: []const u8) void {
-        for (bytes) |b| {
-            if (self.name_len >= NAME_MAX) return; // truncate, no overflow
-            self.name_buf[self.name_len] = b;
-            self.name_len += 1;
+        var i: usize = 0;
+        while (i < bytes.len) {
+            const seq_len = std.unicode.utf8ByteSequenceLength(bytes[i]) catch 1;
+            const end = @min(i + seq_len, bytes.len);
+            const n = end - i;
+            if (self.name_len + n > NAME_MAX) return; // truncate, no overflow
+            @memcpy(self.name_buf[self.name_len..][0..n], bytes[i..end]);
+            self.name_len += n;
+            i = end;
         }
     }
 
@@ -103,4 +111,14 @@ test "State: focus navigation clamps within rows" {
     try std.testing.expectEqual(ROW_SAVE, s.focus);
     s.focusNextRow();
     try std.testing.expectEqual(ROW_SAVE, s.focus);
+}
+
+test "State: append never splits a multi-byte codepoint at NAME_MAX" {
+    var s = State{};
+    s.append("x" ** (NAME_MAX - 2));
+    s.append("\u{4f60}"); // 3 bytes, only 2 left: dropped whole
+    try std.testing.expectEqual(NAME_MAX - 2, s.name().len);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(s.name()));
+    s.append("ab");
+    try std.testing.expectEqual(NAME_MAX, s.name().len);
 }

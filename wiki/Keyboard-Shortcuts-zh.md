@@ -39,9 +39,10 @@ keybind = global:ctrl+backquote=toggle_quake
 | `Ctrl+Shift+-` | `split_down` | 向下分屏当前面板 |
 | `Ctrl+Shift+B` | `toggle_sidebar` | 切换侧边栏 |
 | `Ctrl+Shift+A` | `toggle_ai_copilot` | 在终端上切换 Copilot 侧栏 |
+| `Ctrl+Shift+R` | `copilot_conversation_picker` | 选择一个已保存的 Copilot 对话并在侧栏中重新打开 |
 | `Ctrl+Shift+Alt+E` | `toggle_file_explorer` | 切换文件浏览器 |
 | `Ctrl+Shift+W` | `close_panel_or_tab` | 关闭当前面板/标签 |
-| `Alt+Enter` | `toggle_maximize` | 最大化/还原当前面板 |
+| `Alt+Enter` | `toggle_maximize` | 最大化/还原窗口 |
 | `Ctrl++`（不按 Shift） | `font_size_increase` | 增大字号 |
 | `Ctrl+-` | `font_size_decrease` | 减小字号 |
 | `Ctrl+Shift+C` | `copy` | 复制选区 |
@@ -54,7 +55,7 @@ keybind = global:ctrl+backquote=toggle_quake
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | `next_tab` / `previous_tab` | 切换标签 |
 | `Alt+1` … `Alt+9` | `switch_tab_1` … `switch_tab_9` | 跳到第 N 个标签 |
 | `Ctrl+1` … `Ctrl+9` | `focus_panel_1` … `focus_panel_9` | 聚焦第 N 个分屏面板 |
-| `Ctrl+,` | `open_config` | 在编辑器中打开配置文件 |
+| `Ctrl+,` | `open_settings` | 打开可视化设置页 |
 
 ## 鼠标与手势
 
@@ -75,11 +76,12 @@ keybind = global:ctrl+backquote=toggle_quake
 
 `toggle_quake`、`toggle_command_palette`、`new_window`、`new_session`、
 `split_right`、`split_down`、`toggle_file_explorer`、`toggle_sidebar`、`toggle_ai_copilot`、
+`copilot_conversation_picker`、`send_to_copilot`、
 `close_panel_or_tab`、`toggle_maximize`、`font_size_increase`、
 `font_size_decrease`、`copy`、`paste`、`paste_image`、`focus_left`、
 `focus_right`、`focus_up`、`focus_down`、`focus_previous`、`focus_next`、
 `equalize_splits`、`transpose_split`、`next_tab`、`previous_tab`、`switch_tab_1` … `switch_tab_9`、
-`focus_panel_1` … `focus_panel_9`、`open_config`。
+`focus_panel_1` … `focus_panel_9`、`open_settings`、`open_config`。
 
 ## 重映射示例
 

@@ -202,6 +202,7 @@ sessions hide the readout.
 | Split downward | **Ctrl+Shift+-** | **Cmd+Shift+-** |
 | Toggle File Explorer (the right dock's Files tab; the left panel with `file-explorer-position = left`) | **Ctrl+Shift+Alt+E** | **Cmd+Shift+Opt+E** |
 | Toggle Copilot (the right dock's Copilot tab, current tab) | **Ctrl+Shift+A** | **Cmd+Shift+A** |
+| Pick a saved Copilot conversation to reopen in the sidebar | **Ctrl+Shift+R** | **Cmd+Shift+R** |
 | Preview files (Ctrl/Cmd-click in terminal, or double-click in File Explorer) | Ctrl-click | Cmd-click |
 | Previous / next image/PDF in gallery (preview focused) | Left / Right | Left / Right |
 | Previous / next PDF page (PDF preview focused) | PageUp / PageDown | PageUp / PageDown |

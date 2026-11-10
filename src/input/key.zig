@@ -41,14 +41,6 @@ pub const KeyEvent = struct {
     ctrl: bool = false,
     shift: bool = false,
     alt: bool = false,
-
-    pub fn matches(self: KeyEvent, key: Key) bool {
-        return self.key == key;
-    }
-
-    pub fn ctrlOnly(self: KeyEvent, key: Key) bool {
-        return self.key == key and self.ctrl and !self.shift and !self.alt;
-    }
 };
 
 test "input key event exposes platform-neutral modifiers and named keys" {
@@ -58,7 +50,4 @@ test "input key event exposes platform-neutral modifiers and named keys" {
     try std.testing.expect(ev.ctrl);
     try std.testing.expect(!ev.shift);
     try std.testing.expect(!ev.alt);
-    try std.testing.expect(ev.matches(.arrow_left));
-    try std.testing.expect(ev.ctrlOnly(.arrow_left));
-    try std.testing.expect(!ev.ctrlOnly(.arrow_right));
 }
