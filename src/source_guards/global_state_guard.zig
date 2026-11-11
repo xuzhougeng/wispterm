@@ -27,11 +27,12 @@ const monoliths = [_]Frozen{
     // `/btw` adoption passes grouped input, conversation, and overlay state;
     // input.zig then folded its AI chat text-selection drag into one struct,
     // and moved the Copilot resize flags into `right_dock.Interaction`;
-    // overlays.zig folded the subagent profile name buffer/len pair into one struct.
+    // overlays.zig folded the subagent profile name buffer/len pair into one struct;
+    // session.zig folded its six tool-snapshot threadlocals into `ToolSnapshotState`.
     .{ .name = "AppWindow.zig", .source = @embedFile("../AppWindow.zig"), .ceiling = 66 },
     .{ .name = "input.zig", .source = @embedFile("../input.zig"), .ceiling = 39 },
     .{ .name = "renderer/overlays.zig", .source = @embedFile("../renderer/overlays.zig"), .ceiling = 22 },
-    .{ .name = "assistant/conversation/session.zig", .source = @embedFile("../assistant/conversation/session.zig"), .ceiling = 13 },
+    .{ .name = "assistant/conversation/session.zig", .source = @embedFile("../assistant/conversation/session.zig"), .ceiling = 8 },
 };
 
 fn globalCount(source: []const u8) usize {

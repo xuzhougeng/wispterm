@@ -29,6 +29,9 @@ comptime {
         _ = @import("assistant/conversation/session_effort.zig");
         _ = @import("assistant/conversation/session_question_select.zig");
         _ = @import("assistant/conversation/session_question_answer.zig");
+        _ = @import("assistant/conversation/session_results.zig");
+        _ = @import("assistant/conversation/session_export.zig");
+        _ = @import("assistant/conversation/session_composer.zig");
         _ = @import("assistant/conversation/request.zig");
         _ = @import("assistant/conversation/model_switch.zig");
         _ = @import("agent_tools/mod.zig");

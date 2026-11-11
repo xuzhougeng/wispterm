@@ -4,6 +4,7 @@
 //! state helpers; references are pointer-based so the cycle is legal in Zig.
 const std = @import("std");
 const ai_chat = @import("session.zig");
+const session_results = @import("session_results.zig");
 const Session = ai_chat.Session;
 const ChatRequest = ai_chat.ChatRequest;
 const ai_chat_protocol = @import("protocol.zig");
@@ -58,35 +59,35 @@ pub fn requestThreadMain(request: *ChatRequest) void {
 
     if (request.agent_enabled) {
         const result = runAgentRequest(request) catch |err| blk: {
-            if (ai_chat.requestCancelled(request)) {
-                ai_chat.finishStoppedRequest(request.session);
+            if (session_results.requestCancelled(request)) {
+                session_results.finishStoppedRequest(request.session);
                 return;
             }
             const text = std.fmt.allocPrint(allocator, "Agent request failed: {}", .{err}) catch return;
             break :blk ApiResult{ .content = text };
         };
         defer result.deinit(allocator);
-        if (ai_chat.requestCancelled(request)) {
-            ai_chat.finishStoppedRequest(request.session);
+        if (session_results.requestCancelled(request)) {
+            session_results.finishStoppedRequest(request.session);
             return;
         }
-        ai_chat.appendAssistantResult(request.session, result, request.started_ms);
+        session_results.appendAssistantResult(request.session, result, request.started_ms);
         ai_chat.maybeAutoTitle(request.session);
         return;
     }
 
     if (request.stream) {
         runChatRequestStreaming(request) catch |err| {
-            if (ai_chat.requestCancelled(request)) {
-                ai_chat.finishStoppedRequest(request.session);
+            if (session_results.requestCancelled(request)) {
+                session_results.finishStoppedRequest(request.session);
                 return;
             }
             const text = std.fmt.allocPrint(allocator, "AI stream failed: {}", .{err}) catch return;
             defer allocator.free(text);
-            ai_chat.appendAssistantResult(request.session, .{ .content = text }, request.started_ms);
+            session_results.appendAssistantResult(request.session, .{ .content = text }, request.started_ms);
         };
-        if (ai_chat.requestCancelled(request)) {
-            ai_chat.finishStoppedRequest(request.session);
+        if (session_results.requestCancelled(request)) {
+            session_results.finishStoppedRequest(request.session);
             return;
         }
         ai_chat.maybeAutoTitle(request.session);
@@ -94,8 +95,8 @@ pub fn requestThreadMain(request: *ChatRequest) void {
     }
 
     const result = runChatRequest(request) catch |err| blk: {
-        if (ai_chat.requestCancelled(request)) {
-            ai_chat.finishStoppedRequest(request.session);
+        if (session_results.requestCancelled(request)) {
+            session_results.finishStoppedRequest(request.session);
             return;
         }
         const text = std.fmt.allocPrint(allocator, "AI request failed: {}", .{err}) catch return;
@@ -103,11 +104,11 @@ pub fn requestThreadMain(request: *ChatRequest) void {
     };
     defer result.deinit(allocator);
 
-    if (ai_chat.requestCancelled(request)) {
-        ai_chat.finishStoppedRequest(request.session);
+    if (session_results.requestCancelled(request)) {
+        session_results.finishStoppedRequest(request.session);
         return;
     }
-    ai_chat.appendAssistantResult(request.session, result, request.started_ms);
+    session_results.appendAssistantResult(request.session, result, request.started_ms);
     ai_chat.maybeAutoTitle(request.session);
 }
 
@@ -173,25 +174,25 @@ pub fn distillThreadMain(request: *ChatRequest) void {
     defer request.deinit();
 
     const result = runChatRequestForMessages(request, request.messages, false) catch |err| {
-        if (ai_chat.requestCancelled(request)) {
-            ai_chat.finishStoppedRequest(request.session);
+        if (session_results.requestCancelled(request)) {
+            session_results.finishStoppedRequest(request.session);
             return;
         }
-        ai_chat.failDistillRequest(request.session, err);
+        session_results.failDistillRequest(request.session, err);
         return;
     };
     defer result.deinit(allocator);
 
-    if (ai_chat.requestCancelled(request)) {
-        ai_chat.finishStoppedRequest(request.session);
+    if (session_results.requestCancelled(request)) {
+        session_results.finishStoppedRequest(request.session);
         return;
     }
 
     var candidate = ai_skill_distill.parseCandidateJson(allocator, result.content, "") catch |err| {
-        ai_chat.failDistillRequest(request.session, err);
+        session_results.failDistillRequest(request.session, err);
         return;
     };
-    ai_chat.applyDistillCandidate(request.session, &candidate);
+    session_results.applyDistillCandidate(request.session, &candidate);
 }
 
 /// Background worker for one `$websearch` command. Owns `req`; frees it on exit.
@@ -204,7 +205,7 @@ pub fn webSearchThreadMain(req: *ai_chat.WebSearchRequest) void {
     if (session.closing.load(.acquire)) return;
 
     const key = (web_search.jinaApiKeyAlloc(allocator) catch null) orelse {
-        ai_chat.appendWebSearchResult(session, web_search.errorText(error.MissingApiKey));
+        session_results.appendWebSearchResult(session, web_search.errorText(error.MissingApiKey));
         return;
     };
     defer allocator.free(key);
@@ -220,21 +221,21 @@ pub fn webSearchThreadMain(req: *ai_chat.WebSearchRequest) void {
         .proxy = route.explicit,
     }) catch |err| {
         const text = web_search.formatErrorText(allocator, err) catch {
-            ai_chat.appendWebSearchResult(session, web_search.errorText(err));
+            session_results.appendWebSearchResult(session, web_search.errorText(err));
             return;
         };
         defer allocator.free(text);
-        ai_chat.appendWebSearchResult(session, text);
+        session_results.appendWebSearchResult(session, text);
         return;
     };
     defer results.deinit();
 
     const text = web_search.formatForUser(allocator, req.query, results.items) catch {
-        ai_chat.appendWebSearchResult(session, "Out of memory formatting results.");
+        session_results.appendWebSearchResult(session, "Out of memory formatting results.");
         return;
     };
     defer allocator.free(text);
-    ai_chat.appendWebSearchResult(session, text);
+    session_results.appendWebSearchResult(session, text);
 }
 
 /// Background worker for one `$webread` command. Owns `req`; frees it on exit.
@@ -256,21 +257,21 @@ pub fn webReadThreadMain(req: *ai_chat.WebReadRequest) void {
     const cache_dir: ?[]const u8 = if (req.working_dir.len > 0) req.working_dir else null;
     var result = web_read.executeRead(allocator, req.target, .{ .api_key = key, .cache_dir = cache_dir, .proxy = route.explicit }) catch |err| {
         const text = web_read.formatErrorText(allocator, err) catch {
-            ai_chat.appendWebSearchResult(session, web_read.errorText(err));
+            session_results.appendWebSearchResult(session, web_read.errorText(err));
             return;
         };
         defer allocator.free(text);
-        ai_chat.appendWebSearchResult(session, text);
+        session_results.appendWebSearchResult(session, text);
         return;
     };
     defer result.deinit();
 
     const text = web_read.formatForUser(allocator, req.target, &result) catch {
-        ai_chat.appendWebSearchResult(session, "Out of memory formatting content.");
+        session_results.appendWebSearchResult(session, "Out of memory formatting content.");
         return;
     };
     defer allocator.free(text);
-    ai_chat.appendWebSearchResult(session, text);
+    session_results.appendWebSearchResult(session, text);
 }
 
 /// Background worker for one `$pubmed` command. Owns `req`; frees it on exit.
@@ -287,21 +288,21 @@ pub fn pubMedThreadMain(req: *ai_chat.WebPubMedRequest) void {
 
     var results = pubmed.executeSearch(allocator, req.query, .{ .max_results = 10, .proxy = route.explicit }) catch |err| {
         const text = pubmed.formatErrorText(allocator, err) catch {
-            ai_chat.appendWebSearchResult(session, pubmed.errorText(err));
+            session_results.appendWebSearchResult(session, pubmed.errorText(err));
             return;
         };
         defer allocator.free(text);
-        ai_chat.appendWebSearchResult(session, text);
+        session_results.appendWebSearchResult(session, text);
         return;
     };
     defer results.deinit();
 
     const text = pubmed.formatForUser(allocator, req.query, results.items) catch {
-        ai_chat.appendWebSearchResult(session, "Out of memory formatting PubMed results.");
+        session_results.appendWebSearchResult(session, "Out of memory formatting PubMed results.");
         return;
     };
     defer allocator.free(text);
-    ai_chat.appendWebSearchResult(session, text);
+    session_results.appendWebSearchResult(session, text);
 }
 
 // ---------------------------------------------------------------------------
@@ -327,9 +328,9 @@ fn runAgentRequest(request: *ChatRequest) !ApiResult {
     var has_usage = false;
     var user_wait_ms: i64 = 0;
     while (true) {
-        if (ai_chat.requestCancelled(request)) return error.Canceled;
+        if (session_results.requestCancelled(request)) return error.Canceled;
         const result = try runChatRequestForMessages(request, transcript.items, true);
-        if (ai_chat.requestCancelled(request)) {
+        if (session_results.requestCancelled(request)) {
             result.deinit(request.allocator);
             return error.Canceled;
         }
@@ -347,7 +348,7 @@ fn runAgentRequest(request: *ChatRequest) !ApiResult {
         errdefer result.deinit(request.allocator);
 
         if (result.content.len > 0) {
-            ai_chat.appendProgressMessage(request.session, result.content) catch {};
+            session_results.appendProgressMessage(request.session, result.content) catch {};
         }
 
         var assistant_msg = try assistantToolCallMessage(request.allocator, result.content, result.reasoning, result.tool_calls.?);
@@ -358,7 +359,7 @@ fn runAgentRequest(request: *ChatRequest) !ApiResult {
 
         var mcp_specs_dirty = false;
         for (result.tool_calls.?) |call| {
-            if (ai_chat.requestCancelled(request)) return error.Canceled;
+            if (session_results.requestCancelled(request)) return error.Canceled;
             const progress = try request.session.secret_filter.redactOwned(
                 request.allocator,
                 try std.fmt.allocPrint(request.allocator, "running {s} {s}", .{ call.name, call.arguments }),
@@ -368,15 +369,15 @@ fn runAgentRequest(request: *ChatRequest) !ApiResult {
             // raw call to one row, and keep the time the card waits for the
             // user out of the turn's duration and token rate.
             const asks_user = std.mem.eql(u8, call.name, question_answer.TOOL_NAME);
-            ai_chat.appendProgressMessageCollapsed(request.session, progress, asks_user) catch {};
+            session_results.appendProgressMessageCollapsed(request.session, progress, asks_user) catch {};
 
             const tool_started_ms = std.time.milliTimestamp();
             const tool_result = try executeToolCall(request, call);
             defer request.allocator.free(tool_result);
             if (asks_user) user_wait_ms += @max(@as(i64, 0), std.time.milliTimestamp() - tool_started_ms);
-            if (ai_chat.requestCancelled(request)) return error.Canceled;
+            if (session_results.requestCancelled(request)) return error.Canceled;
             if (std.mem.eql(u8, call.name, "skill_info")) {
-                ai_chat.appendReplayableToolMessage(request.session, call.id, call.name, tool_result) catch {};
+                session_results.appendReplayableToolMessage(request.session, call.id, call.name, tool_result) catch {};
             }
             if (std.mem.eql(u8, call.name, "mcp_activate")) mcp_specs_dirty = true;
 
@@ -455,10 +456,10 @@ pub fn runSubagentTaskWithModel(request: *ChatRequest, task: []const u8, model: 
     var has_sub_usage = false;
     var rounds: usize = 0;
     while (true) {
-        if (ai_chat.requestCancelled(request)) return error.Canceled;
+        if (session_results.requestCancelled(request)) return error.Canceled;
         const result = try model.call(model.ctx, &sub_request, transcript.items);
         rounds += 1;
-        if (ai_chat.requestCancelled(request)) {
+        if (session_results.requestCancelled(request)) {
             result.deinit(allocator);
             return error.Canceled;
         }
@@ -476,7 +477,7 @@ pub fn runSubagentTaskWithModel(request: *ChatRequest, task: []const u8, model: 
             const done = std.fmt.allocPrint(allocator, "subagent: done ({d} rounds, {d} tokens)", .{ rounds, sub_usage.total_tokens }) catch null;
             if (done) |text| {
                 defer allocator.free(text);
-                ai_chat.appendProgressMessage(request.session, text) catch {};
+                session_results.appendProgressMessage(request.session, text) catch {};
             }
             return tool_output.truncateOwned(allocator, ai_chat.currentAgentSettings(), result.content);
         }
@@ -489,10 +490,10 @@ pub fn runSubagentTaskWithModel(request: *ChatRequest, task: []const u8, model: 
         assistant_msg_owned = false;
 
         for (result.tool_calls.?) |tool_call| {
-            if (ai_chat.requestCancelled(request)) return error.Canceled;
+            if (session_results.requestCancelled(request)) return error.Canceled;
             const progress = try std.fmt.allocPrint(allocator, "subagent: running {s}", .{tool_call.name});
             defer allocator.free(progress);
-            ai_chat.appendProgressMessage(request.session, progress) catch {};
+            session_results.appendProgressMessage(request.session, progress) catch {};
 
             // Allow-list first: a nested `subagent` (or any exec/write tool)
             // never reaches the dispatcher.
@@ -501,7 +502,7 @@ pub fn runSubagentTaskWithModel(request: *ChatRequest, task: []const u8, model: 
             else
                 try executeToolCall(request, tool_call);
             defer allocator.free(tool_result);
-            if (ai_chat.requestCancelled(request)) return error.Canceled;
+            if (session_results.requestCancelled(request)) return error.Canceled;
 
             var tool_msg = try requestMessageWithClonedFields(allocator, .tool, tool_result, null, tool_call.id, null, null);
             var tool_msg_owned = true;
@@ -694,7 +695,7 @@ fn postViaProxy(
 }
 
 fn runChatRequestForMessages(request: *const ChatRequest, messages: []const RequestMessage, include_tools: bool) !ApiResult {
-    if (ai_chat.requestCancelled(request)) return error.Canceled;
+    if (session_results.requestCancelled(request)) return error.Canceled;
     const allocator = request.allocator;
     var prepared = prepareCall(request) catch |err| return authFailureResult(allocator, err);
     defer prepared.deinit(allocator);
@@ -709,7 +710,7 @@ fn runChatRequestForMessages(request: *const ChatRequest, messages: []const Requ
     if (route.enabled) {
         const response = postViaProxy(allocator, endpoint, body, &prepared, route.explicit) catch |err| return networkFailureResult(allocator, endpoint, err);
         defer allocator.free(response.body);
-        if (ai_chat.requestCancelled(request)) return error.Canceled;
+        if (session_results.requestCancelled(request)) return error.Canceled;
         if (response.status != 200) {
             const trimmed = std.mem.trim(u8, response.body, " \t\r\n");
             if (trimmed.len > 0) return ApiResult{ .content = try allocator.dupe(u8, trimmed), .api_error = true };
@@ -742,7 +743,7 @@ fn runChatRequestForMessages(request: *const ChatRequest, messages: []const Requ
         .extra_headers = prepared.extra[0..prepared.extra_len],
         .response_writer = &resp_buf.writer,
     }) catch |err| return networkFailureResult(allocator, endpoint, err);
-    if (ai_chat.requestCancelled(request)) return error.Canceled;
+    if (session_results.requestCancelled(request)) return error.Canceled;
 
     var resp_list = resp_buf.toArrayList();
     defer resp_list.deinit(allocator);
@@ -760,11 +761,11 @@ fn runChatRequestForMessages(request: *const ChatRequest, messages: []const Requ
 }
 
 fn runChatRequestStreaming(request: *const ChatRequest) !void {
-    if (ai_chat.requestCancelled(request)) return error.Canceled;
+    if (session_results.requestCancelled(request)) return error.Canceled;
     const allocator = request.allocator;
     var prepared = prepareCall(request) catch |err| {
         const text = oauth_client.failureText(err);
-        ai_chat.failAssistantStream(request.session, null, text);
+        session_results.failAssistantStream(request.session, null, text);
         return;
     };
     defer prepared.deinit(allocator);
@@ -782,28 +783,28 @@ fn runChatRequestStreaming(request: *const ChatRequest) !void {
             return;
         };
         defer allocator.free(response.body);
-        if (ai_chat.requestCancelled(request)) return error.Canceled;
+        if (session_results.requestCancelled(request)) return error.Canceled;
         if (response.status != 200) {
             const trimmed = std.mem.trim(u8, response.body, " \t\r\n");
             if (trimmed.len > 0) {
-                ai_chat.failAssistantStream(request.session, null, trimmed);
+                session_results.failAssistantStream(request.session, null, trimmed);
             } else {
                 const msg = try std.fmt.allocPrint(allocator, "HTTP {d}", .{response.status});
                 defer allocator.free(msg);
-                ai_chat.failAssistantStream(request.session, null, msg);
+                session_results.failAssistantStream(request.session, null, msg);
             }
             return;
         }
-        const message_idx = try ai_chat.beginAssistantStream(request.session);
+        const message_idx = try session_results.beginAssistantStream(request.session);
         var usage: ?ApiUsage = null;
         var first_token_ms: i64 = 0;
         var lines = std.mem.splitScalar(u8, response.body, '\n');
         while (lines.next()) |line_raw| {
-            if (ai_chat.requestCancelled(request)) return error.Canceled;
+            if (session_results.requestCancelled(request)) return error.Canceled;
             const line = std.mem.trimRight(u8, line_raw, "\r");
-            if (try ai_chat.applyApiStreamLineToSession(allocator, request.session, message_idx, line, &usage, &first_token_ms)) break;
+            if (try session_results.applyApiStreamLineToSession(allocator, request.session, message_idx, line, &usage, &first_token_ms)) break;
         }
-        ai_chat.finishAssistantStream(request.session, message_idx, request.started_ms, first_token_ms, usage);
+        session_results.finishAssistantStream(request.session, message_idx, request.started_ms, first_token_ms, usage);
         return;
     }
 
@@ -838,7 +839,7 @@ fn runChatRequestStreaming(request: *const ChatRequest) !void {
         try failStreamNetworkRequest(request, endpoint, "receive response", err);
         return;
     };
-    if (ai_chat.requestCancelled(request)) return error.Canceled;
+    if (session_results.requestCancelled(request)) return error.Canceled;
     var transfer_buffer: [16 * 1024]u8 = undefined;
     const reader = response.reader(&transfer_buffer);
 
@@ -850,32 +851,32 @@ fn runChatRequestStreaming(request: *const ChatRequest) !void {
         defer err_list.deinit(allocator);
         const trimmed = std.mem.trim(u8, err_list.items, " \t\r\n");
         if (trimmed.len > 0) {
-            ai_chat.failAssistantStream(request.session, null, trimmed);
+            session_results.failAssistantStream(request.session, null, trimmed);
         } else {
             const msg = try std.fmt.allocPrint(allocator, "HTTP {d}", .{@intFromEnum(response.head.status)});
             defer allocator.free(msg);
-            ai_chat.failAssistantStream(request.session, null, msg);
+            session_results.failAssistantStream(request.session, null, msg);
         }
         return;
     }
 
-    const message_idx = try ai_chat.beginAssistantStream(request.session);
+    const message_idx = try session_results.beginAssistantStream(request.session);
     var usage: ?ApiUsage = null;
     var first_token_ms: i64 = 0;
     while (true) {
-        if (ai_chat.requestCancelled(request)) return error.Canceled;
+        if (session_results.requestCancelled(request)) return error.Canceled;
         const line = reader.takeDelimiter('\n') catch |err| {
-            if (ai_chat.requestCancelled(request)) return error.Canceled;
+            if (session_results.requestCancelled(request)) return error.Canceled;
             const msg = std.fmt.allocPrint(allocator, "Stream read failed: {}", .{err}) catch return err;
             defer allocator.free(msg);
-            ai_chat.failAssistantStream(request.session, message_idx, msg);
+            session_results.failAssistantStream(request.session, message_idx, msg);
             return;
         } orelse break;
 
-        if (ai_chat.requestCancelled(request)) return error.Canceled;
-        if (try ai_chat.applyApiStreamLineToSession(allocator, request.session, message_idx, line, &usage, &first_token_ms)) break;
+        if (session_results.requestCancelled(request)) return error.Canceled;
+        if (try session_results.applyApiStreamLineToSession(allocator, request.session, message_idx, line, &usage, &first_token_ms)) break;
     }
-    ai_chat.finishAssistantStream(request.session, message_idx, request.started_ms, first_token_ms, usage);
+    session_results.finishAssistantStream(request.session, message_idx, request.started_ms, first_token_ms, usage);
 }
 
 fn networkFailureResult(allocator: std.mem.Allocator, endpoint: []const u8, err: anyerror) !ApiResult {
@@ -896,7 +897,7 @@ fn failStreamNetworkRequest(request: *const ChatRequest, endpoint: []const u8, s
         .{ stage, @errorName(err), endpoint },
     );
     defer request.allocator.free(msg);
-    ai_chat.failAssistantStream(request.session, null, msg);
+    session_results.failAssistantStream(request.session, null, msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -1032,7 +1033,7 @@ fn toolApprove(ctx: *anyopaque, tool: []const u8, command: []const u8, reason: [
 
 fn toolCancelled(ctx: *anyopaque) bool {
     const session: *Session = @ptrCast(@alignCast(ctx));
-    return ai_chat.sessionCancelled(session);
+    return session_results.sessionCancelled(session);
 }
 
 fn toolNote(ctx: *anyopaque, text: []const u8) void {
@@ -1046,7 +1047,7 @@ fn toolProgress(ctx: *anyopaque, text: []const u8) void {
     const session: *Session = @ptrCast(@alignCast(ctx));
     const masked = session.secret_filter.redactAlloc(session.allocator, text) catch return;
     defer session.allocator.free(masked);
-    ai_chat.appendProgressMessage(session, masked) catch {};
+    session_results.appendProgressMessage(session, masked) catch {};
 }
 
 fn toolAsk(ctx: *anyopaque, question: []const u8, options: []const ai_chat_types.QuestionOption) ai_chat_types.AskResult {

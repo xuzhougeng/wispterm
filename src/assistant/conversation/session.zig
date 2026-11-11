@@ -28,7 +28,6 @@ const ai_chat_types = @import("types.zig");
 const agent_terminal = @import("../../agent_tools/terminal.zig");
 const ai_agent_access = @import("../../agent/access.zig");
 const platform_dirs = @import("../../platform/dirs.zig");
-const ai_chat_markdown = @import("markdown.zig");
 const assistant_presentation = @import("presentation.zig");
 const chatops_reply = @import("../../chatops/reply.zig");
 const ai_loop_store = @import("../loop/store.zig");
@@ -39,6 +38,9 @@ const session_identity = @import("identity.zig");
 const prompt_queue = @import("prompt_queue.zig");
 const session_queue = @import("session_queue.zig");
 const session_effort = @import("session_effort.zig");
+const session_results = @import("session_results.zig");
+const session_composer = @import("session_composer.zig");
+const session_export = @import("session_export.zig");
 pub const EffortLevels = @import("effort_levels.zig").EffortLevels;
 const table_hscroll = @import("table_hscroll.zig");
 const question_hscroll = @import("question_hscroll.zig");
@@ -91,7 +93,6 @@ pub fn parseVisionEnabled(value: []const u8) bool {
         std.mem.eql(u8, value, "enabled");
 }
 
-const REMOTE_SNAPSHOT_MAX_BYTES: usize = 24 * 1024;
 const INPUT_PROMPT_MAX_BYTES: usize = 64 * 1024;
 const SYSTEM_PROMPT_MAX_BYTES: usize = 16 * 1024;
 const BTW_PROMPT_MAX_BYTES: usize = 8 * 1024;
@@ -418,7 +419,7 @@ pub const HistoryChangeEvent = struct {
     }
 };
 
-const PendingHistoryChange = struct {
+pub const PendingHistoryChange = struct {
     hook: HistoryChangeHook,
     event: HistoryChangeEvent,
 };
@@ -488,12 +489,18 @@ const UiTriggers = struct {
     ui_wake: ?*const fn () void = null,
 };
 var g_ui_triggers: UiTriggers = .{};
-threadlocal var g_dynamic_tool_specs: []ai_chat_protocol.DynamicToolSpec = &.{};
-threadlocal var g_dynamic_tool_specs_owned: bool = false;
-threadlocal var g_dynamic_binary_tools: []ai_chat_types.DynamicBinaryTool = &.{};
-threadlocal var g_dynamic_binary_tools_owned: bool = false;
-threadlocal var g_first_party_disabled_tools: []const []const u8 = &.{};
-threadlocal var g_first_party_disabled_tools_owned: bool = false;
+/// Per-thread snapshot of the tool catalog a new request copies from. Each
+/// slice is paired with an `_owned` flag: tests install borrowed slices, the
+/// reload functions install owned ones and free the previous owned value.
+const ToolSnapshotState = struct {
+    specs: []ai_chat_protocol.DynamicToolSpec = &.{},
+    specs_owned: bool = false,
+    binary_tools: []ai_chat_types.DynamicBinaryTool = &.{},
+    binary_tools_owned: bool = false,
+    disabled_first_party: []const []const u8 = &.{},
+    disabled_first_party_owned: bool = false,
+};
+threadlocal var g_tool_snapshots: ToolSnapshotState = .{};
 
 /// Resolved credentials for the `ai-subagent-profile` config key. Owned
 /// strings; freed by ChatRequest.deinit.
@@ -588,13 +595,13 @@ pub fn setUiWakeTrigger(cb: ?*const fn () void) void {
 threadlocal var g_tool_host: ?ToolHost = null;
 
 pub fn setDynamicToolSpecsForTest(specs: []ai_chat_protocol.DynamicToolSpec) void {
-    g_dynamic_tool_specs = specs;
-    g_dynamic_tool_specs_owned = false;
+    g_tool_snapshots.specs = specs;
+    g_tool_snapshots.specs_owned = false;
 }
 
 pub fn setDynamicBinaryToolsForTest(tools: []ai_chat_types.DynamicBinaryTool) void {
-    g_dynamic_binary_tools = tools;
-    g_dynamic_binary_tools_owned = false;
+    g_tool_snapshots.binary_tools = tools;
+    g_tool_snapshots.binary_tools_owned = false;
 }
 
 fn freeOwnedStringList(allocator: std.mem.Allocator, list: []const []const u8) void {
@@ -778,24 +785,24 @@ fn cloneMcpTools(allocator: std.mem.Allocator, tools: []const ai_chat_types.McpT
 }
 
 fn freeDynamicToolSpecs(allocator: std.mem.Allocator) void {
-    if (!g_dynamic_tool_specs_owned) return;
-    freeDynamicToolSpecsSlice(allocator, g_dynamic_tool_specs);
-    g_dynamic_tool_specs = &.{};
-    g_dynamic_tool_specs_owned = false;
+    if (!g_tool_snapshots.specs_owned) return;
+    freeDynamicToolSpecsSlice(allocator, g_tool_snapshots.specs);
+    g_tool_snapshots.specs = &.{};
+    g_tool_snapshots.specs_owned = false;
 }
 
 fn freeDynamicBinaryTools(allocator: std.mem.Allocator) void {
-    if (!g_dynamic_binary_tools_owned) return;
-    freeOwnedDynamicBinaryTools(allocator, g_dynamic_binary_tools);
-    g_dynamic_binary_tools = &.{};
-    g_dynamic_binary_tools_owned = false;
+    if (!g_tool_snapshots.binary_tools_owned) return;
+    freeOwnedDynamicBinaryTools(allocator, g_tool_snapshots.binary_tools);
+    g_tool_snapshots.binary_tools = &.{};
+    g_tool_snapshots.binary_tools_owned = false;
 }
 
 fn freeFirstPartyDisabledTools(allocator: std.mem.Allocator) void {
-    if (!g_first_party_disabled_tools_owned) return;
-    freeOwnedStringList(allocator, g_first_party_disabled_tools);
-    g_first_party_disabled_tools = &.{};
-    g_first_party_disabled_tools_owned = false;
+    if (!g_tool_snapshots.disabled_first_party_owned) return;
+    freeOwnedStringList(allocator, g_tool_snapshots.disabled_first_party);
+    g_tool_snapshots.disabled_first_party = &.{};
+    g_tool_snapshots.disabled_first_party_owned = false;
 }
 
 const DynamicToolSnapshots = struct {
@@ -820,16 +827,16 @@ pub fn reloadDynamicToolSpecs(allocator: std.mem.Allocator) void {
     freeDynamicToolSpecs(allocator);
     freeDynamicBinaryTools(allocator);
     const snapshots = loadDynamicToolSnapshots(allocator) catch {
-        g_dynamic_tool_specs = &.{};
-        g_dynamic_tool_specs_owned = false;
-        g_dynamic_binary_tools = &.{};
-        g_dynamic_binary_tools_owned = false;
+        g_tool_snapshots.specs = &.{};
+        g_tool_snapshots.specs_owned = false;
+        g_tool_snapshots.binary_tools = &.{};
+        g_tool_snapshots.binary_tools_owned = false;
         return;
     };
-    g_dynamic_tool_specs = snapshots.specs;
-    g_dynamic_tool_specs_owned = g_dynamic_tool_specs.len != 0;
-    g_dynamic_binary_tools = snapshots.runtime;
-    g_dynamic_binary_tools_owned = g_dynamic_binary_tools.len != 0;
+    g_tool_snapshots.specs = snapshots.specs;
+    g_tool_snapshots.specs_owned = g_tool_snapshots.specs.len != 0;
+    g_tool_snapshots.binary_tools = snapshots.runtime;
+    g_tool_snapshots.binary_tools_owned = g_tool_snapshots.binary_tools.len != 0;
 }
 
 /// Re-read <configDir>/mcp.json, run discovery, and refresh the advertised +
@@ -846,8 +853,8 @@ pub fn deinitMcpTools(allocator: std.mem.Allocator) void {
 pub fn reloadFirstPartyToolState(allocator: std.mem.Allocator) void {
     var disabled = first_party_tools.loadDisabledTools(allocator) catch return;
     freeFirstPartyDisabledTools(allocator);
-    g_first_party_disabled_tools = disabled.names;
-    g_first_party_disabled_tools_owned = g_first_party_disabled_tools.len != 0;
+    g_tool_snapshots.disabled_first_party = disabled.names;
+    g_tool_snapshots.disabled_first_party_owned = g_tool_snapshots.disabled_first_party.len != 0;
     disabled.names = &.{};
 }
 
@@ -944,10 +951,10 @@ pub fn currentAgentSettings() AgentSettings {
     var s = g_agent_settings;
     s.access_rules = g_access_rules;
     if (default_working_directory.len > 0) s.working_dir = default_working_directory.buf[0..default_working_directory.len];
-    s.dynamic_tools = g_dynamic_tool_specs;
-    s.dynamic_binary_tools = g_dynamic_binary_tools;
+    s.dynamic_tools = g_tool_snapshots.specs;
+    s.dynamic_binary_tools = g_tool_snapshots.binary_tools;
     s.mcp_tools = mcp_registry.cachedTools();
-    s.disabled_first_party_tools = g_first_party_disabled_tools;
+    s.disabled_first_party_tools = g_tool_snapshots.disabled_first_party;
     return s;
 }
 
@@ -968,7 +975,6 @@ fn currentToolHost() ?ToolHost {
 const SlashCommand = ai_chat_composer.SlashCommand;
 const SkillInvocation = ai_chat_composer.SkillInvocation;
 const ComposerSuggestionPrefix = ai_chat_composer.ComposerSuggestionPrefix;
-const ComposerCompletionTrigger = ai_chat_composer.ComposerCompletionTrigger;
 pub const ComposerSuggestionKind = ai_chat_composer.ComposerSuggestionKind;
 pub const ComposerSuggestion = ai_chat_composer.ComposerSuggestion;
 pub const SlashCommandSuggestion = ai_chat_composer.SlashCommandSuggestion;
@@ -976,7 +982,6 @@ const parseSlashCommand = ai_chat_composer.parseSlashCommand;
 const exactBuiltinCommand = ai_chat_composer.exactBuiltinCommand;
 const composerSuggestionPrefix = ai_chat_composer.composerSuggestionPrefix;
 const slashCommandSuggestionPrefix = ai_chat_composer.slashCommandSuggestionPrefix;
-const suggestionReplacementText = ai_chat_composer.suggestionReplacementText;
 const parseSkillInvocation = ai_chat_composer.parseSkillInvocation;
 const slash_command_entries = ai_chat_composer.slash_command_entries;
 pub const slashCommandSuggestionCountForInput = ai_chat_composer.slashCommandSuggestionCountForInput;
@@ -1645,7 +1650,7 @@ pub const Session = struct {
         return self.composer.cursor;
     }
 
-    fn customCommandSuggestions(self: *Session) []const SlashCommandSuggestion {
+    pub fn customCommandSuggestions(self: *Session) []const SlashCommandSuggestion {
         return self.custom_command_suggestions;
     }
 
@@ -1695,7 +1700,7 @@ pub const Session = struct {
         self.replaceSkillSuggestionsLocked(suggestions);
     }
 
-    fn ensureSkillSuggestionsForInputLocked(self: *Session) void {
+    pub fn ensureSkillSuggestionsForInputLocked(self: *Session) void {
         const prefix = composerSuggestionPrefix(self.input(), self.composer.cursor) orelse return;
         if (prefix.kind != .skill or self.skill_suggestions_loaded) return;
 
@@ -1918,11 +1923,11 @@ pub const Session = struct {
         return false;
     }
 
-    pub fn allocMarkdownExport(self: *Session, allocator: std.mem.Allocator, mode: MarkdownExportMode) ![]u8 {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        return self.allocMarkdownExportLocked(allocator, mode);
-    }
+    pub const allocClipboardText = session_export.allocClipboardText;
+    pub const allocRemoteSnapshot = session_export.allocRemoteSnapshot;
+    pub const allocMessageClipboardText = session_export.allocMessageClipboardText;
+    pub const allocMessageSpanText = session_export.allocMessageSpanText;
+    pub const allocMarkdownExport = session_export.allocMarkdownExport;
 
     pub fn handleChar(self: *Session, codepoint: u21) void {
         // rewind 选择器的 `f` = 分叉到选中 user 消息之前。普通可打印字符只以
@@ -2326,155 +2331,6 @@ pub const Session = struct {
         return true;
     }
 
-    pub fn allocClipboardText(self: *Session, allocator: std.mem.Allocator) ![]u8 {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        if (self.input_select_all and self.composer.len > 0) {
-            return allocator.dupe(u8, self.input());
-        }
-        if (try session_question_select.allocTextLocked(self, allocator)) |selected| return selected;
-        if (self.allocTranscriptSelectionTextLocked(allocator)) |selected| {
-            return selected;
-        } else |err| switch (err) {
-            error.NoSelection => {},
-            else => return err,
-        }
-        if (self.messages.items.len > 0) {
-            return self.allocTranscriptClipboardTextLocked(allocator);
-        }
-        if (self.composer.len > 0) {
-            return allocator.dupe(u8, self.input());
-        }
-        return allocator.dupe(u8, "");
-    }
-
-    pub fn allocRemoteSnapshot(self: *Session, allocator: std.mem.Allocator) ![]u8 {
-        // Capture any pending approval under approval_mutex BEFORE taking
-        // self.mutex (sequential locks, never nested — no reverse ordering
-        // exists, so this cannot deadlock). A resolution racing the gap between
-        // the two locks costs at most one extra Approval snapshot, which the
-        // remote consumer's once-per-episode announcer already de-dupes.
-        var cap_tool_buf: [64]u8 = undefined;
-        var cap_cmd_buf: [1024]u8 = undefined;
-        var cap_tool: []const u8 = "";
-        var cap_command: []const u8 = "";
-        {
-            self.approval_mutex.lock();
-            defer self.approval_mutex.unlock();
-            if (self.approval_pending and !self.approval_resolved) {
-                const tl = self.approval_tool_len;
-                @memcpy(cap_tool_buf[0..tl], self.approval_tool_buf[0..tl]);
-                cap_tool = cap_tool_buf[0..tl];
-                const cl = self.approval_command_len;
-                @memcpy(cap_cmd_buf[0..cl], self.approval_command_buf[0..cl]);
-                cap_command = cap_cmd_buf[0..cl];
-            }
-        }
-
-        // Capture any pending ask_user question the same way as the approval
-        // above: under its own mutex, into an owned formatted blob, BEFORE taking
-        // self.mutex. Numbered options are language-neutral; the WeChat layer adds
-        // the Chinese wrapper when it pushes.
-        var question_section: ?[]u8 = null;
-        defer if (question_section) |qs| allocator.free(qs);
-        {
-            self.question_mutex.lock();
-            defer self.question_mutex.unlock();
-            if (self.question_pending and !self.question_resolved) {
-                var qbuf: std.ArrayListUnmanaged(u8) = .empty;
-                errdefer qbuf.deinit(allocator);
-                try qbuf.appendSlice(allocator, self.question_text);
-                for (self.question_options, 0..) |opt, i| {
-                    try qbuf.writer(allocator).print("\n{d}. {s}", .{ i + 1, opt.label });
-                    if (opt.description.len != 0) {
-                        try qbuf.appendSlice(allocator, " — ");
-                        try qbuf.appendSlice(allocator, opt.description);
-                    }
-                }
-                question_section = try qbuf.toOwnedSlice(allocator);
-            }
-        }
-
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        var out: std.ArrayListUnmanaged(u8) = .empty;
-        errdefer out.deinit(allocator);
-
-        try appendLimitedSection(allocator, &out, "Model", self.model(), REMOTE_SNAPSHOT_MAX_BYTES);
-        try appendLimitedSection(allocator, &out, "Status", self.status(), REMOTE_SNAPSHOT_MAX_BYTES);
-
-        if (cap_tool.len != 0) {
-            var approval_text: std.ArrayListUnmanaged(u8) = .empty;
-            defer approval_text.deinit(allocator);
-            try approval_text.appendSlice(allocator, cap_tool);
-            if (cap_command.len != 0) {
-                try approval_text.append(allocator, '\n');
-                try approval_text.appendSlice(allocator, cap_command);
-            }
-            try appendLimitedSection(allocator, &out, "Approval", approval_text.items, REMOTE_SNAPSHOT_MAX_BYTES);
-        }
-
-        if (question_section) |qs| {
-            try appendLimitedSection(allocator, &out, "Question", qs, REMOTE_SNAPSHOT_MAX_BYTES);
-        }
-
-        var sections: std.ArrayListUnmanaged(RemoteSnapshotSection) = .empty;
-        defer sections.deinit(allocator);
-        var tool_summaries: std.ArrayListUnmanaged([]u8) = .empty;
-        defer {
-            for (tool_summaries.items) |summary| allocator.free(summary);
-            tool_summaries.deinit(allocator);
-        }
-        for (self.messages.items) |msg| {
-            if (msg.role == .tool) {
-                const summary = try allocRemoteToolSummary(allocator, msg);
-                var summary_owned = true;
-                errdefer if (summary_owned) allocator.free(summary);
-                try sections.append(allocator, .{ .label = msg.role.label(), .text = summary, .priority = true });
-                try tool_summaries.append(allocator, summary);
-                summary_owned = false;
-            } else {
-                try sections.append(allocator, .{ .label = msg.role.label(), .text = msg.content, .priority = true });
-            }
-            // Reasoning and the usage footer are auxiliary: useful for the web
-            // mirror, but the remote reply detector only needs the message bodies.
-            // Mark them low-priority so a huge reasoning block can never evict the
-            // latest assistant answer from the byte budget (issue #118).
-            if (msg.reasoning) |reasoning| {
-                if (reasoning.len > 0) try sections.append(allocator, .{ .label = "Reasoning", .text = reasoning, .priority = false });
-            }
-            if (msg.usage_footer) |footer| {
-                if (footer.len > 0) try sections.append(allocator, .{ .label = "Usage", .text = footer, .priority = false });
-            }
-        }
-        try appendRecentLimitedSections(allocator, &out, sections.items, REMOTE_SNAPSHOT_MAX_BYTES);
-        if (out.items.len == 0) try out.appendSlice(allocator, "No messages yet.");
-        return out.toOwnedSlice(allocator);
-    }
-
-    pub fn allocMessageClipboardText(self: *Session, allocator: std.mem.Allocator, message_index: usize) ![]u8 {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        if (message_index >= self.messages.items.len) return allocator.dupe(u8, "");
-        return allocator.dupe(u8, self.messages.items[message_index].content);
-    }
-
-    /// Copy a byte sub-range of a message's raw content — a single code block or
-    /// table the renderer located for its per-block copy button. Bounds are
-    /// clamped so a range stale from a streaming edit can never read OOB.
-    pub fn allocMessageSpanText(self: *Session, allocator: std.mem.Allocator, message_index: usize, start: usize, end: usize) ![]u8 {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        if (message_index >= self.messages.items.len) return allocator.dupe(u8, "");
-        const content = self.messages.items[message_index].content;
-        const s = @min(start, content.len);
-        const e = @min(end, content.len);
-        if (e <= s) return allocator.dupe(u8, "");
-        return allocator.dupe(u8, content[s..e]);
-    }
-
     /// Toggle the collapsed state of the activity group containing
     /// `message_index`. The state lives on the run's first message; membership
     /// is derived per frame, so appended messages join the group automatically.
@@ -2792,7 +2648,7 @@ pub const Session = struct {
         self.appendLocalToolMessageLocked(text) catch {};
     }
 
-    fn clearDistillCandidateLocked(self: *Session) void {
+    pub fn clearDistillCandidateLocked(self: *Session) void {
         if (self.distill_candidate) |*candidate| candidate.deinit(self.allocator);
         self.distill_candidate = null;
     }
@@ -3835,322 +3691,30 @@ pub const Session = struct {
         self.scrollbar_show_time = std.time.milliTimestamp();
     }
 
-    pub fn inputScrollRow(self: *Session) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        return self.input_scroll_row;
-    }
-
-    pub fn scrollInputRows(self: *Session, delta_rows: i32, max_cols_raw: usize, visible_rows_raw: usize) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        const before = self.input_scroll_row;
-        const max_row = self.maxInputScrollRowLocked(max_cols_raw, visible_rows_raw);
-        var next = @min(self.input_scroll_row, max_row);
-        if (delta_rows < 0) {
-            const amount: usize = @intCast(-delta_rows);
-            next -|= amount;
-        } else if (delta_rows > 0) {
-            const amount: usize = @intCast(delta_rows);
-            next = @min(max_row, next +| amount);
-        }
-        self.input_scroll_row = next;
-        if (before != next) self.input_scroll_follow_cursor = false;
-        return before != next;
-    }
-
-    pub fn setInputScrollRow(self: *Session, row: usize, max_cols_raw: usize, visible_rows_raw: usize) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        const before = self.input_scroll_row;
-        const max_row = self.maxInputScrollRowLocked(max_cols_raw, visible_rows_raw);
-        self.input_scroll_row = @min(row, max_row);
-        if (max_row > 0) self.input_scroll_follow_cursor = false;
-        return before != self.input_scroll_row;
-    }
-
-    fn backspaceInput(self: *Session) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.clearComposerHistoryNavigationLocked();
-        if (self.input_select_all) {
-            self.composer.clear();
-            self.input_scroll_row = 0;
-            self.input_scroll_follow_cursor = true;
-            self.suggestion_selected = 0;
-            self.clearSelectionLocked();
-            return;
-        }
-        self.transcript_select_all = false;
-        self.transcript_selection = null;
-        const old_len = self.composer.len;
-        const old_cursor = self.composer.cursor;
-        self.composer.backspace();
-        if (self.composer.len == old_len and self.composer.cursor == old_cursor) return;
-        self.input_scroll_follow_cursor = true;
-    }
-
-    fn deleteInput(self: *Session) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.clearComposerHistoryNavigationLocked();
-        if (self.input_select_all) {
-            self.composer.clear();
-            self.input_scroll_row = 0;
-            self.input_scroll_follow_cursor = true;
-            self.suggestion_selected = 0;
-            self.clearSelectionLocked();
-            return;
-        }
-        self.transcript_select_all = false;
-        self.transcript_selection = null;
-        const old_len = self.composer.len;
-        const old_cursor = self.composer.cursor;
-        self.composer.deleteForward();
-        if (self.composer.len == old_len and self.composer.cursor == old_cursor) return;
-        self.input_scroll_follow_cursor = true;
-    }
-
-    fn moveInputCursorLeft(self: *Session) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.clearSelectionLocked();
-        self.composer.moveLeft();
-        self.input_scroll_follow_cursor = true;
-        self.suggestion_selected = 0;
-    }
-
-    fn moveInputCursorRight(self: *Session) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.clearSelectionLocked();
-        self.composer.moveRight();
-        self.input_scroll_follow_cursor = true;
-        self.suggestion_selected = 0;
-    }
-
-    fn moveInputCursorHome(self: *Session) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.clearSelectionLocked();
-        self.composer.cursor = 0;
-        self.input_scroll_follow_cursor = true;
-        self.suggestion_selected = 0;
-    }
-
-    fn moveInputCursorEnd(self: *Session) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.clearSelectionLocked();
-        self.composer.cursor = self.composer.len;
-        self.input_scroll_follow_cursor = true;
-        self.suggestion_selected = 0;
-    }
-
-    /// Place the caret at `offset` (clamped to a UTF-8 boundary), e.g. from a
-    /// mouse click in the composer.
-    pub fn setInputCursor(self: *Session, offset: usize) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.clearSelectionLocked();
-        self.composer.cursor = offset;
-        self.clampInputCursorLocked();
-        self.input_scroll_follow_cursor = true;
-        self.suggestion_selected = 0;
-    }
-
-    fn moveInputCursorVertical(self: *Session, max_cols_raw: usize, delta: i32) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.clearSelectionLocked();
-        self.clampInputCursorLocked();
-
-        const text = self.input();
-        const max_cols = @max(@as(usize, 1), max_cols_raw);
-        const current = visualCursorPosition(text, self.composer.cursor, max_cols);
-        if (delta < 0 and current.row == 0) return;
-        const target_row = if (delta < 0) current.row - 1 else current.row + 1;
-        self.composer.cursor = byteOffsetForVisualPosition(text, target_row, current.col, max_cols) orelse return;
-        self.input_scroll_follow_cursor = true;
-        self.suggestion_selected = 0;
-    }
-
-    fn navigateComposerHistory(self: *Session, max_cols_raw: usize, delta: i32) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        const prompt_count = self.composerHistoryPromptCountLocked();
-        if (prompt_count == 0 or delta == 0) return false;
-        self.clampInputCursorLocked();
-
-        const max_cols = @max(@as(usize, 1), max_cols_raw);
-        const text = self.input();
-        const current = visualCursorPosition(text, self.composer.cursor, max_cols);
-        const rows = inputWrappedLineCount(text, max_cols);
-
-        if (delta < 0) {
-            if (current.row != 0) return false;
-            if (!self.composer_history_active) {
-                self.saveComposerHistoryDraftLocked();
-                self.composer_history_active = true;
-                self.composer_history_selected = prompt_count - 1;
-            } else if (self.composer_history_selected > 0) {
-                self.composer_history_selected -= 1;
-            }
-            return self.restoreComposerHistoryPromptLocked(self.composer_history_selected);
-        }
-
-        if (current.row + 1 < rows or !self.composer_history_active) return false;
-        if (self.composer_history_selected + 1 < prompt_count) {
-            self.composer_history_selected += 1;
-            return self.restoreComposerHistoryPromptLocked(self.composer_history_selected);
-        }
-
-        self.restoreComposerHistoryDraftLocked();
-        self.clearComposerHistoryNavigationLocked();
-        return true;
-    }
-
-    fn moveComposerSuggestionSelection(self: *Session, delta: i32) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.ensureSkillSuggestionsForInputLocked();
-
-        const count = composerSuggestionCountForInput(self.input(), self.composer.cursor, self.skill_suggestions, self.customCommandSuggestions());
-        if (count == 0) return false;
-        const current = @min(self.suggestion_selected, count - 1);
-        self.suggestion_selected = if (delta < 0)
-            if (current == 0) count - 1 else current - 1
-        else if (delta > 0)
-            (current + 1) % count
-        else
-            current;
-        self.clearSelectionLocked();
-        return true;
-    }
-
-    fn completeComposerSuggestion(self: *Session, trigger: ComposerCompletionTrigger) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.ensureSkillSuggestionsForInputLocked();
-
-        const prefix = composerSuggestionPrefix(self.input(), self.composer.cursor) orelse return false;
-        const count = composerSuggestionCountForInput(self.input(), self.composer.cursor, self.skill_suggestions, self.customCommandSuggestions());
-        if (count == 0) return false;
-        const selected = @min(self.suggestion_selected, count - 1);
-        const suggestion = composerSuggestionAtForInput(self.input(), self.composer.cursor, self.skill_suggestions, self.customCommandSuggestions(), selected) orelse return false;
-        if (trigger == .enter and suggestion.kind == .slash_command and std.mem.eql(u8, prefix.prefix, suggestion.text)) {
-            return false;
-        }
-
-        var replacement_buf: [256]u8 = undefined;
-        const replacement = suggestionReplacementText(&replacement_buf, suggestion, self.input()[prefix.token_end..]) orelse return false;
-        self.clearComposerHistoryNavigationLocked();
-        if (!self.composer.replacePrefix(prefix.token_end, replacement)) return false;
-        self.input_scroll_follow_cursor = true;
-        self.suggestion_selected = 0;
-        self.clearSelectionLocked();
-        return true;
-    }
-
-    fn insertInputBytesLocked(self: *Session, text: []const u8) void {
-        const old_len = self.composer.len;
-        const old_cursor = self.composer.cursor;
-        self.composer.insertText(text);
-        if (self.composer.len == old_len and self.composer.cursor == old_cursor) return;
-        self.input_scroll_follow_cursor = true;
-        self.suggestion_selected = 0;
-    }
-
-    fn clampInputCursorLocked(self: *Session) void {
-        self.composer.clampCursor();
-    }
-
-    fn maxInputScrollRowLocked(self: *Session, max_cols_raw: usize, visible_rows_raw: usize) usize {
-        const rows = inputWrappedLineCount(self.input(), max_cols_raw);
-        const visible_rows = @max(@as(usize, 1), visible_rows_raw);
-        return if (rows > visible_rows) rows - visible_rows else 0;
-    }
+    pub const inputScrollRow = session_composer.inputScrollRow;
+    pub const scrollInputRows = session_composer.scrollInputRows;
+    pub const setInputScrollRow = session_composer.setInputScrollRow;
+    pub const setInputCursor = session_composer.setInputCursor;
+    pub const clearSubmittedInputLocked = session_composer.clearSubmittedInputLocked;
+    pub const setInputTextLocked = session_composer.setInputTextLocked;
+    const backspaceInput = session_composer.backspaceInput;
+    const deleteInput = session_composer.deleteInput;
+    const moveInputCursorLeft = session_composer.moveInputCursorLeft;
+    const moveInputCursorRight = session_composer.moveInputCursorRight;
+    const moveInputCursorHome = session_composer.moveInputCursorHome;
+    const moveInputCursorEnd = session_composer.moveInputCursorEnd;
+    const moveInputCursorVertical = session_composer.moveInputCursorVertical;
+    const navigateComposerHistory = session_composer.navigateComposerHistory;
+    const moveComposerSuggestionSelection = session_composer.moveComposerSuggestionSelection;
+    const completeComposerSuggestion = session_composer.completeComposerSuggestion;
+    const insertInputBytesLocked = session_composer.insertInputBytesLocked;
+    const clearComposerHistoryNavigationLocked = session_composer.clearComposerHistoryNavigationLocked;
 
     pub fn clearSelectionLocked(self: *Session) void {
         self.input_select_all = false;
         self.transcript_select_all = false;
         self.transcript_selection = null;
         self.question_select.clear();
-    }
-
-    pub fn clearSubmittedInputLocked(self: *Session) void {
-        self.clearComposerHistoryNavigationLocked();
-        self.composer.clear();
-        self.input_scroll_row = 0;
-        self.input_scroll_follow_cursor = true;
-        self.suggestion_selected = 0;
-        self.clearSelectionLocked();
-    }
-
-    /// 用 text 覆盖输入框内容，光标置于末尾。纯缓冲区操作、无 IO。
-    pub fn setInputTextLocked(self: *Session, text: []const u8) void {
-        self.clearComposerHistoryNavigationLocked();
-        self.replaceInputTextLocked(text);
-    }
-
-    fn replaceInputTextLocked(self: *Session, text: []const u8) void {
-        self.composer.replaceText(text);
-        self.input_scroll_row = 0;
-        self.input_scroll_follow_cursor = true;
-        self.suggestion_selected = 0;
-        self.clearSelectionLocked();
-    }
-
-    fn clearComposerHistoryNavigationLocked(self: *Session) void {
-        self.composer_history_active = false;
-        self.composer_history_selected = 0;
-        self.composer_history_draft_len = 0;
-        self.composer_history_draft_cursor = 0;
-    }
-
-    fn saveComposerHistoryDraftLocked(self: *Session) void {
-        const len = @min(self.composer.len, self.composer_history_draft_buf.len);
-        if (len > 0) @memcpy(self.composer_history_draft_buf[0..len], self.composer.buf[0..len]);
-        self.composer_history_draft_len = len;
-        self.composer_history_draft_cursor = @min(self.composer.cursor, len);
-    }
-
-    fn restoreComposerHistoryDraftLocked(self: *Session) void {
-        const draft = self.composer_history_draft_buf[0..self.composer_history_draft_len];
-        const cursor = self.composer_history_draft_cursor;
-        self.replaceInputTextLocked(draft);
-        self.composer.cursor = @min(cursor, self.composer.len);
-        self.composer.clampCursor();
-        self.input_scroll_follow_cursor = true;
-    }
-
-    fn composerHistoryPromptCountLocked(self: *Session) usize {
-        var n: usize = 0;
-        for (self.messages.items) |msg| {
-            if (msg.role == .user) n += 1;
-        }
-        return n;
-    }
-
-    fn composerHistoryPromptMessageIndexLocked(self: *Session, n: usize) usize {
-        var seen: usize = 0;
-        for (self.messages.items, 0..) |msg, i| {
-            if (msg.role == .user) {
-                if (seen == n) return i;
-                seen += 1;
-            }
-        }
-        return self.messages.items.len;
-    }
-
-    fn restoreComposerHistoryPromptLocked(self: *Session, selected: usize) bool {
-        const idx = self.composerHistoryPromptMessageIndexLocked(selected);
-        if (idx >= self.messages.items.len) return false;
-        self.replaceInputTextLocked(self.messages.items[idx].content);
-        return true;
     }
 
     /// 打开回溯选择器：仅在空闲且至少有一个回溯点时；默认选中最近一条。
@@ -4299,7 +3863,7 @@ pub const Session = struct {
         return self.messages.items.len;
     }
 
-    fn collapseAutoExpandedDetailsLocked(self: *Session) void {
+    pub fn collapseAutoExpandedDetailsLocked(self: *Session) void {
         for (self.messages.items) |*msg| {
             if (msg.role == .tool and msg.content_auto_expand) {
                 msg.content_collapsed = true;
@@ -4310,102 +3874,6 @@ pub const Session = struct {
                 msg.reasoning_auto_expand = false;
             }
         }
-    }
-
-    fn allocTranscriptClipboardTextLocked(self: *Session, allocator: std.mem.Allocator) ![]u8 {
-        var out: std.ArrayListUnmanaged(u8) = .empty;
-        errdefer out.deinit(allocator);
-        for (self.messages.items) |msg| {
-            try appendClipboardSection(allocator, &out, msg.role.label(), msg.content);
-            if (msg.reasoning) |reasoning| {
-                if (reasoning.len > 0) try appendClipboardSection(allocator, &out, "Reasoning", reasoning);
-            }
-            if (msg.usage_footer) |footer| {
-                if (footer.len > 0) try appendClipboardSection(allocator, &out, "Usage", footer);
-            }
-        }
-        return out.toOwnedSlice(allocator);
-    }
-
-    fn allocMarkdownExportLocked(self: *Session, allocator: std.mem.Allocator, mode: MarkdownExportMode) ![]u8 {
-        var out: std.ArrayListUnmanaged(u8) = .empty;
-        errdefer out.deinit(allocator);
-
-        try appendMarkdownDocumentHeader(allocator, &out, self.title(), self.model(), self.sessionId(), mode == .full);
-        switch (mode) {
-            .full => try self.appendFullMarkdownExportLocked(allocator, &out),
-            .clean => try self.appendCleanMarkdownExportLocked(allocator, &out),
-        }
-
-        if (out.items.len == 0) try out.appendSlice(allocator, "# WispTerm Copilot\n\nNo messages yet.\n");
-        return out.toOwnedSlice(allocator);
-    }
-
-    fn appendFullMarkdownExportLocked(self: *Session, allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
-        if (self.messages.items.len == 0) {
-            try out.appendSlice(allocator, "No messages yet.\n");
-            return;
-        }
-
-        for (self.messages.items) |msg| {
-            const heading = if (msg.role == .tool and msg.tool_name != null and msg.tool_name.?.len > 0)
-                "Tool"
-            else
-                msg.role.label();
-            try appendMarkdownSection(allocator, out, heading, msg.content);
-
-            if (msg.reasoning) |reasoning| {
-                if (reasoning.len > 0) try appendMarkdownCodeSection(allocator, out, "Thinking", reasoning);
-            }
-            if (msg.usage_footer) |footer| {
-                if (footer.len > 0) try appendMarkdownCodeSection(allocator, out, "Usage", footer);
-            }
-        }
-    }
-
-    fn appendCleanMarkdownExportLocked(self: *Session, allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
-        var user_count: usize = 0;
-        for (self.messages.items) |msg| {
-            if (msg.role == .user and msg.content.len > 0) user_count += 1;
-        }
-
-        try out.appendSlice(allocator, "## User Input\n\n");
-        if (user_count == 0) {
-            try out.appendSlice(allocator, "No user input yet.\n\n");
-        } else {
-            var seen: usize = 0;
-            for (self.messages.items) |msg| {
-                if (msg.role != .user or msg.content.len == 0) continue;
-                if (user_count > 1) {
-                    try out.writer(allocator).print("### {d}\n\n", .{seen + 1});
-                }
-                try appendMarkdownBody(allocator, out, msg.content);
-                seen += 1;
-                try out.appendSlice(allocator, "\n");
-            }
-        }
-
-        try out.appendSlice(allocator, "## Final Result\n\n");
-        if (latestAssistantContent(self.messages.items)) |content| {
-            try appendMarkdownBody(allocator, out, content);
-            try out.append(allocator, '\n');
-        } else {
-            try out.appendSlice(allocator, "No assistant result yet.\n");
-        }
-    }
-
-    fn allocTranscriptSelectionTextLocked(self: *Session, allocator: std.mem.Allocator) (error{NoSelection} || std.mem.Allocator.Error)![]u8 {
-        const selection = self.transcript_selection orelse return error.NoSelection;
-        const range = selection.range() orelse return error.NoSelection;
-        if (selection.message_index >= self.messages.items.len) return error.NoSelection;
-        const msg = self.messages.items[selection.message_index];
-        if (msg.role != .assistant) return error.NoSelection;
-        const display = try markdown_text.allocDisplayText(allocator, msg.content);
-        defer allocator.free(display);
-        const start = clampUtf8Boundary(display, @min(range.start, display.len));
-        const end = clampUtf8Boundary(display, @min(range.end, display.len));
-        if (start >= end) return error.NoSelection;
-        return allocator.dupe(u8, display[start..end]);
     }
 
     /// Convert the session's visible message history into owned RequestMessages.
@@ -4541,7 +4009,7 @@ pub const Session = struct {
         return req;
     }
 
-    fn maybeAppendDistillSuggestionLocked(self: *Session) void {
+    pub fn maybeAppendDistillSuggestionLocked(self: *Session) void {
         // Gated by config `ai-distill-suggest` (off by default): when disabled the
         // Copilot never auto-appends the "distill this into a skill?" prompt.
         if (!currentAgentSettings().distill_suggest_enabled) return;
@@ -4861,7 +4329,7 @@ pub const Session = struct {
         };
     }
 
-    fn captureHistoryChangeLocked(self: *Session) ?PendingHistoryChange {
+    pub fn captureHistoryChangeLocked(self: *Session) ?PendingHistoryChange {
         self.updated_at_ms = std.time.milliTimestamp();
         const hook = self.history_on_change orelse return null;
         const record = self.toHistoryRecordLocked(self.allocator) catch return null;
@@ -4909,7 +4377,7 @@ pub const Session = struct {
         };
     }
 
-    fn notifyHistoryChange(_: *Session, change: ?PendingHistoryChange) void {
+    pub fn notifyHistoryChange(_: *Session, change: ?PendingHistoryChange) void {
         if (change) |pending| pending.hook(pending.event);
     }
 
@@ -4923,7 +4391,7 @@ pub const Session = struct {
         self.session_id_len = text.len;
     }
 
-    fn copySessionId(self: *Session, value: []const u8) void {
+    pub fn copySessionId(self: *Session, value: []const u8) void {
         self.session_id_len = @min(value.len, self.session_id_buf.len);
         @memcpy(self.session_id_buf[0..self.session_id_len], value[0..self.session_id_len]);
     }
@@ -4943,7 +4411,7 @@ pub const Session = struct {
         @memcpy(self.api_key_buf[0..self.api_key_len], value[0..self.api_key_len]);
     }
 
-    fn copyModel(self: *Session, value: []const u8) void {
+    pub fn copyModel(self: *Session, value: []const u8) void {
         self.model_len = @min(value.len, self.model_buf.len);
         @memcpy(self.model_buf[0..self.model_len], value[0..self.model_len]);
     }
@@ -4964,7 +4432,7 @@ pub const Session = struct {
         self.setStatusLocked(value);
     }
 
-    fn setCompletionStatusLocked(self: *Session, timing: turn_stats.Timing, usage: ?ApiUsage) void {
+    pub fn setCompletionStatusLocked(self: *Session, timing: turn_stats.Timing, usage: ?ApiUsage) void {
         var buf: [32]u8 = undefined;
         self.setStatusLocked(turn_stats.formatDoneStatus(&buf, timing, usage != null));
     }
@@ -5017,166 +4485,15 @@ fn composeSystemPromptWithMemory(
     return std.fmt.allocPrint(allocator, "{s}\n\n{s}", .{ base, block });
 }
 
-fn allocUsageFooter(allocator: std.mem.Allocator, timing: turn_stats.Timing, usage: ?ApiUsage) !?[]u8 {
+pub fn allocUsageFooter(allocator: std.mem.Allocator, timing: turn_stats.Timing, usage: ?ApiUsage) !?[]u8 {
     const u = usage orelse return null;
     var buf: [turn_stats.FOOTER_MAX]u8 = undefined;
     return try allocator.dupe(u8, turn_stats.formatFooter(&buf, timing, u));
 }
 
-const VisualCursor = ai_chat_input_text.VisualCursor;
-const clampUtf8Boundary = ai_chat_input_text.clampUtf8Boundary;
-const visualCursorPosition = ai_chat_input_text.visualCursorPosition;
-const visualRowAt = ai_chat_input_text.visualRowAt;
-const byteOffsetForVisualPosition = ai_chat_input_text.byteOffsetForVisualPosition;
 pub const inputWrappedLineCount = ai_chat_input_text.inputWrappedLineCount;
 
-// Markdown export helpers — defined in assistant/conversation/markdown.zig
-// (pure leaf, no Session).
-const appendClipboardSection = ai_chat_markdown.appendClipboardSection;
-const appendMarkdownDocumentHeader = ai_chat_markdown.appendMarkdownDocumentHeader;
-const appendMarkdownSection = ai_chat_markdown.appendMarkdownSection;
-const appendMarkdownCodeSection = ai_chat_markdown.appendMarkdownCodeSection;
-const appendMarkdownBody = ai_chat_markdown.appendMarkdownBody;
-
-fn latestAssistantContent(messages: []const Message) ?[]const u8 {
-    var i = messages.len;
-    while (i > 0) {
-        i -= 1;
-        const msg = messages[i];
-        if (msg.role == .assistant and msg.content.len > 0) return msg.content;
-    }
-    return null;
-}
-
-fn appendLimitedSection(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    label: []const u8,
-    text: []const u8,
-    max_bytes: usize,
-) !void {
-    if (out.items.len >= max_bytes) return;
-    if (out.items.len > 0) try out.appendSlice(allocator, "\r\n\r\n");
-    try out.appendSlice(allocator, label);
-    try out.appendSlice(allocator, ":\r\n");
-    if (out.items.len >= max_bytes) return;
-
-    const remaining = max_bytes - out.items.len;
-    const take = @min(text.len, remaining);
-    try out.appendSlice(allocator, text[0..take]);
-    if (take < text.len and out.items.len + 18 <= max_bytes) {
-        try out.appendSlice(allocator, "\r\n...[truncated]");
-    }
-}
-
-const RemoteSnapshotSection = struct {
-    label: []const u8,
-    text: []const u8,
-    /// High-priority sections (message bodies) are budgeted before low-priority
-    /// auxiliary sections (reasoning, usage), so bulky reasoning can never push
-    /// the latest answer out of the snapshot.
-    priority: bool = true,
-};
-
-/// Appends the most recent sections that fit in `max_bytes`, in two priority
-/// passes. Pass one reserves budget for message bodies newest-first, always
-/// keeping the newest body (truncated if it alone overflows). Pass two fills any
-/// remaining budget with auxiliary sections (reasoning/usage), also newest-first.
-/// Sections are emitted in their original order. This guarantees the latest
-/// assistant answer survives even when an earlier-walked reasoning block is huge.
-fn appendRecentLimitedSections(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    sections: []const RemoteSnapshotSection,
-    max_bytes: usize,
-) !void {
-    if (sections.len == 0 or out.items.len >= max_bytes) return;
-
-    const included = try allocator.alloc(bool, sections.len);
-    defer allocator.free(included);
-    @memset(included, false);
-
-    // Model + Status are always emitted first, so every section here pays the
-    // 4-byte separator; the per-section cost is therefore position-independent.
-    var used = out.items.len;
-
-    // Pass 1: message bodies, newest-first. Always include the newest body so
-    // the reply detector and the user can always see the latest answer; if it
-    // alone overflows, appendLimitedSection truncates it.
-    var newest_body_seen = false;
-    var i = sections.len;
-    while (i > 0) : (i -= 1) {
-        const section = sections[i - 1];
-        if (!section.priority) continue;
-        const cost = remoteSnapshotSectionCost(section.label, section.text);
-        if (!newest_body_seen) {
-            included[i - 1] = true;
-            used = @min(used + cost, max_bytes);
-            newest_body_seen = true;
-        } else if (used + cost <= max_bytes) {
-            included[i - 1] = true;
-            used += cost;
-        }
-    }
-
-    // Pass 2: auxiliary sections (reasoning/usage), newest-first, best effort.
-    i = sections.len;
-    while (i > 0) : (i -= 1) {
-        const section = sections[i - 1];
-        if (section.priority) continue;
-        const cost = remoteSnapshotSectionCost(section.label, section.text);
-        if (used + cost <= max_bytes) {
-            included[i - 1] = true;
-            used += cost;
-        }
-    }
-
-    for (sections, 0..) |section, idx| {
-        if (included[idx]) try appendLimitedSection(allocator, out, section.label, section.text, max_bytes);
-    }
-}
-
-fn remoteSnapshotSectionCost(label: []const u8, text: []const u8) usize {
-    return "\r\n\r\n".len + label.len + ":\r\n".len + text.len;
-}
-
-fn allocRemoteToolSummary(allocator: std.mem.Allocator, msg: Message) ![]u8 {
-    if (msg.tool_name) |name| {
-        if (name.len > 0) {
-            return std.fmt.allocPrint(allocator, "{s} completed. Output omitted in remote chat.", .{name});
-        }
-    }
-
-    const trimmed = std.mem.trim(u8, msg.content, " \t\r\n");
-    if (trimmed.len == 0 or trimmed.len > 160) {
-        return allocator.dupe(u8, "Tool activity. Output omitted in remote chat.");
-    }
-    return allocator.dupe(u8, trimmed);
-}
-
 // requestThreadMain has moved to assistant/conversation/request.zig.
-
-pub fn requestCancelled(request: *const ChatRequest) bool {
-    return request.session.closing.load(.acquire) or request.session.stop_requested.load(.acquire);
-}
-
-pub fn sessionCancelled(session: *Session) bool {
-    return session.closing.load(.acquire) or session.stop_requested.load(.acquire);
-}
-
-pub fn finishStoppedRequest(session: *Session) void {
-    defer session.markUiDirty();
-    if (session.closing.load(.acquire)) return;
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    if (session.closing.load(.acquire)) return;
-    session.request_inflight = false;
-    session.distill_inflight = false;
-    session.request_stopping = false;
-    session.stop_requested.store(false, .release);
-    session.collapseAutoExpandedDetailsLocked();
-    session.setStatusLocked("Stopped");
-}
 
 /// Clean a raw model title response and apply it to the session, but only if the
 /// user has not manually renamed it (a manual rename in the meantime always
@@ -5498,424 +4815,6 @@ pub fn maybeAutoTitle(session: *Session) void {
 // requestMessageWithClonedFields, durableToolAssistantRequestMessage have moved
 // to assistant/conversation/request.zig.
 
-pub fn appendAssistantResult(session: *Session, result: ApiResult, started_ms: i64) void {
-    defer session.markUiDirty();
-    const allocator = session.allocator;
-    if (session.closing.load(.acquire)) return;
-    if (session.stop_requested.load(.acquire)) {
-        finishStoppedRequest(session);
-        return;
-    }
-
-    var history_change: ?PendingHistoryChange = null;
-    session.mutex.lock();
-    defer {
-        session.mutex.unlock();
-        session.notifyHistoryChange(history_change);
-    }
-    if (session.closing.load(.acquire)) return;
-    if (session.stop_requested.load(.acquire)) {
-        session.request_inflight = false;
-        session.request_stopping = false;
-        session.stop_requested.store(false, .release);
-        session.setStatusLocked("Stopped");
-        return;
-    }
-
-    const content = allocator.dupe(u8, result.content) catch {
-        session.request_inflight = false;
-        session.collapseAutoExpandedDetailsLocked();
-        session.setStatusLocked("Out of memory");
-        return;
-    };
-    const timing = turn_stats.Timing{ .started_ms = started_ms, .finished_ms = std.time.milliTimestamp(), .user_wait_ms = result.user_wait_ms };
-    var usage_footer = allocUsageFooter(allocator, timing, result.usage) catch null;
-    var reasoning_copy: ?[]u8 = null;
-    if (result.reasoning) |reasoning| {
-        reasoning_copy = allocator.dupe(u8, reasoning) catch null;
-    }
-    const reasoning_visible = if (reasoning_copy) |r| r.len > 0 else false;
-    session.messages.append(allocator, .{
-        .role = .assistant,
-        .content = content,
-        .reasoning = reasoning_copy,
-        .usage_footer = usage_footer,
-        .reasoning_collapsed = reasoning_visible,
-        .reasoning_auto_expand = false,
-        .ts_ms = std.time.milliTimestamp(),
-    }) catch {
-        allocator.free(content);
-        if (reasoning_copy) |r| allocator.free(r);
-        if (usage_footer) |footer| allocator.free(footer);
-        session.request_inflight = false;
-        session.collapseAutoExpandedDetailsLocked();
-        session.setStatusLocked("Out of memory");
-        return;
-    };
-    usage_footer = null;
-    session.request_inflight = false;
-    session.distill_inflight = false;
-    session.collapseAutoExpandedDetailsLocked();
-    session.scroll_px = 1_000_000;
-    session.setCompletionStatusLocked(timing, result.usage);
-    session.maybeAppendDistillSuggestionLocked();
-    history_change = session.captureHistoryChangeLocked();
-}
-
-/// Append a `$websearch` result (or error text) as a local tool message and
-/// finish the in-flight request. Called from the web-search worker thread with
-/// no lock held. Mirrors the closing-guarded shape of `appendAssistantResult`.
-pub fn appendWebSearchResult(session: *Session, text: []const u8) void {
-    defer session.markUiDirty();
-    if (session.closing.load(.acquire)) return;
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    if (session.closing.load(.acquire)) return;
-    session.appendLocalToolMessageLocked(text) catch {
-        session.request_inflight = false;
-        session.setStatusLocked("Out of memory");
-        return;
-    };
-    session.request_inflight = false;
-    session.setStatusLocked("Ready");
-}
-
-pub fn applyDistillCandidate(session: *Session, candidate: *ai_skill_distill.Candidate) void {
-    defer session.markUiDirty();
-    const allocator = session.allocator;
-    const root = ai_chat_skills.defaultWritableSkillRootPath(allocator) catch |err| {
-        candidate.deinit(allocator);
-        failDistillRequest(session, err);
-        return;
-    };
-    defer allocator.free(root);
-    const save_path = std.fs.path.join(allocator, &.{ root, candidate.name, "SKILL.md" }) catch |err| {
-        candidate.deinit(allocator);
-        failDistillRequest(session, err);
-        return;
-    };
-    defer allocator.free(save_path);
-    const preview = ai_skill_distill.renderPreviewMarkdown(allocator, candidate.*, save_path) catch |err| {
-        candidate.deinit(allocator);
-        failDistillRequest(session, err);
-        return;
-    };
-    defer allocator.free(preview);
-
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    if (session.closing.load(.acquire) or session.stop_requested.load(.acquire)) {
-        candidate.deinit(allocator);
-        session.request_inflight = false;
-        session.request_stopping = false;
-        session.distill_inflight = false;
-        session.stop_requested.store(false, .release);
-        session.setStatusLocked("Stopped");
-        return;
-    }
-
-    session.clearDistillCandidateLocked();
-    session.distill_candidate = candidate.*;
-    candidate.* = undefined;
-    session.distill_suggestion_pending = false;
-    session.request_inflight = false;
-    session.request_stopping = false;
-    session.distill_inflight = false;
-    session.appendLocalToolMessageLocked(preview) catch {
-        session.clearDistillCandidateLocked();
-        session.setStatusLocked("Out of memory");
-        return;
-    };
-    session.setStatusLocked("Distill preview ready");
-}
-
-pub fn failDistillRequest(session: *Session, err: anyerror) void {
-    defer session.markUiDirty();
-    const allocator = session.allocator;
-    const text = std.fmt.allocPrint(allocator, "Could not distill this conversation: {}.", .{err}) catch null;
-    defer if (text) |msg| allocator.free(msg);
-
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    session.request_inflight = false;
-    session.request_stopping = false;
-    session.distill_inflight = false;
-    session.stop_requested.store(false, .release);
-    session.clearDistillCandidateLocked();
-    if (text) |msg| {
-        session.appendLocalToolMessageLocked(msg) catch {
-            session.setStatusLocked("Out of memory");
-            return;
-        };
-    }
-    session.setStatusLocked("Ready");
-}
-
-pub fn appendProgressMessage(session: *Session, text: []const u8) !void {
-    return appendProgressMessageCollapsed(session, text, false);
-}
-
-/// Live progress row; `collapsed` shows only its header row (the ask_user
-/// call, whose question card already shows the arguments).
-pub fn appendProgressMessageCollapsed(session: *Session, text: []const u8, collapsed: bool) !void {
-    defer session.markUiDirty();
-    if (sessionCancelled(session)) return error.Canceled;
-    const allocator = session.allocator;
-    const content = try allocator.dupe(u8, text);
-    errdefer allocator.free(content);
-
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    if (sessionCancelled(session)) return error.Canceled;
-    try session.messages.append(allocator, .{
-        .role = .tool,
-        .content = content,
-        .reasoning = null,
-        .persist_to_history = false,
-        .content_collapsed = collapsed,
-        .content_auto_expand = true,
-        .ts_ms = std.time.milliTimestamp(),
-    });
-    session.scroll_px = 1_000_000;
-    session.setStatusLocked("Running tools...");
-}
-
-pub fn appendReplayableToolMessage(
-    session: *Session,
-    tool_call_id: []const u8,
-    tool_name: []const u8,
-    text: []const u8,
-) !void {
-    defer session.markUiDirty();
-    if (sessionCancelled(session)) return error.Canceled;
-    const allocator = session.allocator;
-    const content = try allocator.dupe(u8, text);
-    var content_owned = true;
-    errdefer if (content_owned) allocator.free(content);
-    const id = try allocator.dupe(u8, tool_call_id);
-    var id_owned = true;
-    errdefer if (id_owned) allocator.free(id);
-    const name = try allocator.dupe(u8, tool_name);
-    var name_owned = true;
-    errdefer if (name_owned) allocator.free(name);
-
-    var msg = Message{
-        .role = .tool,
-        .content = content,
-        .tool_call_id = id,
-        .tool_name = name,
-        .replay_to_model = true,
-        .content_collapsed = true,
-        .content_auto_expand = false,
-        .ts_ms = std.time.milliTimestamp(),
-    };
-    content_owned = false;
-    id_owned = false;
-    name_owned = false;
-    var msg_owned = true;
-    errdefer if (msg_owned) msg.deinit(allocator);
-
-    var history_change: ?PendingHistoryChange = null;
-    session.mutex.lock();
-    defer {
-        session.mutex.unlock();
-        session.notifyHistoryChange(history_change);
-    }
-    if (sessionCancelled(session)) return error.Canceled;
-    try session.messages.append(allocator, msg);
-    msg_owned = false;
-    history_change = session.captureHistoryChangeLocked();
-}
-
-pub fn beginAssistantStream(session: *Session) !usize {
-    defer session.markUiDirty();
-    const allocator = session.allocator;
-    if (sessionCancelled(session)) return error.Canceled;
-
-    var history_change: ?PendingHistoryChange = null;
-    session.mutex.lock();
-    defer {
-        session.mutex.unlock();
-        session.notifyHistoryChange(history_change);
-    }
-    if (sessionCancelled(session)) return error.Canceled;
-
-    const content = try allocator.dupe(u8, "");
-    errdefer allocator.free(content);
-    try session.messages.append(allocator, .{
-        .role = .assistant,
-        .content = content,
-        .reasoning = null,
-        .reasoning_collapsed = false,
-        .reasoning_auto_expand = true,
-        .ts_ms = std.time.milliTimestamp(),
-    });
-    session.scroll_px = 1_000_000;
-    session.setStatusLocked("Streaming...");
-    history_change = session.captureHistoryChangeLocked();
-    return session.messages.items.len - 1;
-}
-
-fn growStreamCapacity(current_capacity: usize, required_capacity: usize) usize {
-    var capacity = if (current_capacity > 0) current_capacity else @as(usize, 64);
-    while (capacity < required_capacity) {
-        if (capacity > std.math.maxInt(usize) / 2) return required_capacity;
-        capacity *= 2;
-    }
-    return capacity;
-}
-
-fn appendOwnedBytes(
-    allocator: std.mem.Allocator,
-    bytes: *[]u8,
-    capacity: *usize,
-    delta: []const u8,
-) !void {
-    if (delta.len == 0) return;
-
-    const old_len = bytes.*.len;
-    const new_len = try std.math.add(usize, old_len, delta.len);
-    const current_capacity = if (capacity.* > 0) capacity.* else old_len;
-    if (new_len > current_capacity) {
-        const new_capacity = growStreamCapacity(current_capacity, new_len);
-        const grown = if (current_capacity == 0)
-            try allocator.alloc(u8, new_capacity)
-        else
-            try allocator.realloc(bytes.*.ptr[0..current_capacity], new_capacity);
-        bytes.* = grown[0..new_len];
-        capacity.* = new_capacity;
-    } else {
-        bytes.* = bytes.*.ptr[0..new_len];
-    }
-    @memcpy(bytes.*[old_len..new_len], delta);
-}
-
-fn appendOptionalOwnedBytes(
-    allocator: std.mem.Allocator,
-    bytes: *?[]u8,
-    capacity: *usize,
-    delta: []const u8,
-) !void {
-    if (bytes.*) |old_bytes| {
-        var updated = old_bytes;
-        try appendOwnedBytes(allocator, &updated, capacity, delta);
-        bytes.* = updated;
-        return;
-    }
-
-    const new_capacity = growStreamCapacity(0, delta.len);
-    const allocated = try allocator.alloc(u8, new_capacity);
-    @memcpy(allocated[0..delta.len], delta);
-    bytes.* = allocated[0..delta.len];
-    capacity.* = new_capacity;
-}
-
-pub fn appendAssistantStreamDelta(session: *Session, message_idx: usize, content_delta: []const u8, reasoning_delta: []const u8) !void {
-    if (content_delta.len == 0 and reasoning_delta.len == 0) return;
-    const allocator = session.allocator;
-    if (sessionCancelled(session)) return;
-
-    var history_change: ?PendingHistoryChange = null;
-    session.mutex.lock();
-    defer {
-        session.mutex.unlock();
-        session.notifyHistoryChange(history_change);
-    }
-    if (sessionCancelled(session)) return;
-    if (message_idx >= session.messages.items.len) return error.StreamMessageMissing;
-
-    var msg = &session.messages.items[message_idx];
-    if (content_delta.len > 0) {
-        try appendOwnedBytes(allocator, &msg.content, &msg.content_capacity, content_delta);
-    }
-    if (reasoning_delta.len > 0) {
-        try appendOptionalOwnedBytes(allocator, &msg.reasoning, &msg.reasoning_capacity, reasoning_delta);
-    }
-    session.scroll_px = 1_000_000;
-    session.setStatusLocked("Streaming...");
-    history_change = session.captureHistoryChangeLocked();
-}
-
-pub fn finishAssistantStream(session: *Session, message_idx: usize, started_ms: i64, first_token_ms: i64, usage: ?ApiUsage) void {
-    defer session.markUiDirty();
-    if (session.closing.load(.acquire)) return;
-    if (session.stop_requested.load(.acquire)) {
-        finishStoppedRequest(session);
-        return;
-    }
-
-    var history_change: ?PendingHistoryChange = null;
-    session.mutex.lock();
-    defer {
-        session.mutex.unlock();
-        session.notifyHistoryChange(history_change);
-    }
-    if (session.closing.load(.acquire)) return;
-    if (session.stop_requested.load(.acquire)) {
-        session.request_inflight = false;
-        session.distill_inflight = false;
-        session.request_stopping = false;
-        session.stop_requested.store(false, .release);
-        session.setStatusLocked("Stopped");
-        return;
-    }
-    const timing = turn_stats.Timing{ .started_ms = started_ms, .finished_ms = std.time.milliTimestamp(), .first_token_ms = first_token_ms };
-    history_change = sealStreamMessageLocked(session, message_idx, timing, usage);
-    session.request_inflight = false;
-    session.distill_inflight = false;
-    session.collapseAutoExpandedDetailsLocked();
-    session.scroll_px = 1_000_000;
-    session.setCompletionStatusLocked(timing, usage);
-    session.maybeAppendDistillSuggestionLocked();
-}
-
-/// Seal a stream bubble's message in place: fill an all-empty message with
-/// "No response", attach the usage footer, and capture the history change.
-/// Message-only — request state and status stay with the caller.
-fn sealStreamMessageLocked(session: *Session, message_idx: usize, timing: turn_stats.Timing, usage: ?ApiUsage) ?PendingHistoryChange {
-    if (message_idx >= session.messages.items.len) return null;
-    const msg = &session.messages.items[message_idx];
-    if (msg.content.len == 0 and msg.reasoning == null) {
-        appendOwnedBytes(session.allocator, &msg.content, &msg.content_capacity, "No response") catch {};
-    }
-    if (allocUsageFooter(session.allocator, timing, usage) catch null) |footer| {
-        if (msg.usage_footer) |old_footer| session.allocator.free(old_footer);
-        msg.usage_footer = footer;
-    }
-    return session.captureHistoryChangeLocked();
-}
-
-/// Cancel-path seal: `finishAssistantStream` deliberately refuses to touch the
-/// message once `stop_requested` is set (it routes to `finishStoppedRequest`),
-/// which left a cancelled turn's half-streamed bubble unsealed. Seals the
-/// message only — pair with `finishStoppedRequest` for the request state.
-pub fn sealCancelledAssistantStream(session: *Session, message_idx: usize, started_ms: i64, usage: ?ApiUsage) void {
-    if (session.closing.load(.acquire)) return;
-    var history_change: ?PendingHistoryChange = null;
-    session.mutex.lock();
-    defer {
-        session.mutex.unlock();
-        session.notifyHistoryChange(history_change);
-    }
-    if (session.closing.load(.acquire)) return;
-    history_change = sealStreamMessageLocked(session, message_idx, .{ .started_ms = started_ms, .finished_ms = std.time.milliTimestamp() }, usage);
-}
-
-pub fn failAssistantStream(session: *Session, message_idx: ?usize, text: []const u8) void {
-    defer session.markUiDirty();
-    if (session.stop_requested.load(.acquire)) {
-        finishStoppedRequest(session);
-        return;
-    }
-    if (message_idx) |idx| {
-        appendAssistantStreamDelta(session, idx, text, "") catch {};
-        finishAssistantStream(session, idx, 0, 0, null);
-        return;
-    }
-
-    appendAssistantResult(session, .{ .content = @constCast(text) }, 0);
-}
-
 // runChatRequest, runChatRequestForMessages, runChatRequestStreaming,
 // buildRequestJson, buildRequestJsonForMessages, and the ToolContext seam
 // adapters (toolApprove, toolCancelled, toolContextFromRequest, executeToolCall)
@@ -5964,99 +4863,6 @@ const parseApiResponse = ai_chat_protocol.parseApiResponse;
 const parseApiErrorResult = ai_chat_protocol.parseApiErrorResult;
 const parseApiUsage = ai_chat_protocol.parseApiUsage;
 const jsonStringValue = ai_chat_protocol.jsonStringValue;
-pub fn applyApiStreamLineToSession(
-    allocator: std.mem.Allocator,
-    session: *Session,
-    message_idx: usize,
-    line_raw: []const u8,
-    usage_out: *?ApiUsage,
-    first_token_ms: *i64,
-) !bool {
-    defer session.markUiDirty();
-    const line = std.mem.trim(u8, line_raw, " \t\r");
-    if (!std.mem.startsWith(u8, line, "data:")) return false;
-
-    const data = std.mem.trim(u8, line["data:".len..], " \t");
-    if (data.len == 0) return false;
-    if (std.mem.eql(u8, data, "[DONE]")) return true;
-
-    var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch return false;
-    defer parsed.deinit();
-
-    const root = parsed.value;
-    if (root != .object) return false;
-    const obj = root.object;
-    if (parseApiUsage(root)) |usage| usage_out.* = usage;
-
-    if (try parseApiErrorResult(allocator, root)) |result| {
-        defer result.deinit(allocator);
-        try appendAssistantStreamDelta(session, message_idx, result.content, "");
-        return true;
-    }
-
-    if (jsonStringValue(obj.get("type"))) |event_type| {
-        if (std.mem.eql(u8, event_type, "response.output_text.delta")) {
-            const content_delta = jsonStringValue(obj.get("delta")) orelse "";
-            try appendAssistantStreamDelta(session, message_idx, content_delta, "");
-            if (content_delta.len > 0 and first_token_ms.* == 0) first_token_ms.* = std.time.milliTimestamp();
-            return false;
-        }
-        if (std.mem.eql(u8, event_type, "response.reasoning_summary_text.delta") or
-            std.mem.eql(u8, event_type, "response.reasoning_text.delta"))
-        {
-            const reasoning_delta = jsonStringValue(obj.get("delta")) orelse "";
-            try appendAssistantStreamDelta(session, message_idx, "", reasoning_delta);
-            if (reasoning_delta.len > 0 and first_token_ms.* == 0) first_token_ms.* = std.time.milliTimestamp();
-            return false;
-        }
-        if (std.mem.eql(u8, event_type, "response.completed")) {
-            if (obj.get("response")) |response_value| {
-                if (parseApiUsage(response_value)) |usage| usage_out.* = usage;
-            }
-            return true;
-        }
-        if (std.mem.eql(u8, event_type, "response.failed")) {
-            if (obj.get("response")) |response_value| {
-                if (try parseApiErrorResult(allocator, response_value)) |result| {
-                    defer result.deinit(allocator);
-                    try appendAssistantStreamDelta(session, message_idx, result.content, "");
-                    return true;
-                }
-            }
-            try appendAssistantStreamDelta(session, message_idx, "API returned an error", "");
-            return true;
-        }
-    }
-
-    // Some providers send `"error": null` on every chunk; only a real value
-    // that parseApiErrorResult could not describe ends the stream here.
-    if (obj.get("error")) |error_value| {
-        if (error_value != .null) {
-            try appendAssistantStreamDelta(session, message_idx, "API returned an error", "");
-            return true;
-        }
-    }
-
-    const choices_value = obj.get("choices") orelse return false;
-    if (choices_value != .array or choices_value.array.items.len == 0) return false;
-    const choice = choices_value.array.items[0];
-    if (choice != .object) return false;
-    const delta_value = choice.object.get("delta") orelse return false;
-    if (delta_value != .object) return false;
-
-    const content_delta = if (delta_value.object.get("content")) |content_value|
-        if (content_value == .string) content_value.string else ""
-    else
-        "";
-    const reasoning_delta = if (delta_value.object.get("reasoning_content")) |reasoning_value|
-        if (reasoning_value == .string) reasoning_value.string else ""
-    else
-        "";
-    try appendAssistantStreamDelta(session, message_idx, content_delta, reasoning_delta);
-    if ((content_delta.len > 0 or reasoning_delta.len > 0) and first_token_ms.* == 0) first_token_ms.* = std.time.milliTimestamp();
-    return false;
-}
-
 const TestHistoryHookCapture = struct {
     event: ?HistoryChangeEvent = null,
     calls: usize = 0,
@@ -6940,7 +5746,7 @@ test "ai_chat: progress tool messages are ui-only history" {
     defer TestHistoryHookState.capture = null;
 
     session.setHistoryChangeHook(testHistoryHookCaptureCallback);
-    try appendProgressMessage(session, "running tool");
+    try session_results.appendProgressMessage(session, "running tool");
 
     try std.testing.expectEqual(@as(usize, 0), capture.calls);
     try std.testing.expect(capture.event == null);
@@ -6977,7 +5783,7 @@ test "ai_chat: replayable skill tool messages emit history snapshots" {
     defer TestHistoryHookState.capture = null;
 
     session.setHistoryChangeHook(testHistoryHookCaptureCallback);
-    try appendReplayableToolMessage(session, "call-1", "skill_info", "# Skill: pdf");
+    try session_results.appendReplayableToolMessage(session, "call-1", "skill_info", "# Skill: pdf");
 
     try std.testing.expectEqual(@as(usize, 1), capture.calls);
     try std.testing.expect(capture.event != null);
@@ -7406,67 +6212,6 @@ test "ai chat completion status stays compact while usage is message footer" {
     try std.testing.expect(std.mem.indexOf(u8, session.status(), "tok") == null);
 }
 
-test "ai chat appends usage footer to completed assistant message" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-
-    appendAssistantResult(&session, .{
-        .content = @constCast("done"),
-        .usage = .{
-            .prompt_tokens = 12,
-            .completion_tokens = 34,
-            .prompt_cache_hit_tokens = 5,
-            .prompt_cache_miss_tokens = 7,
-            .total_tokens = 46,
-        },
-    }, std.time.milliTimestamp() - 2300);
-
-    try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
-    try std.testing.expect(session.messages.items[0].usage_footer != null);
-    const footer = session.messages.items[0].usage_footer.?;
-    try std.testing.expect(std.mem.indexOf(u8, footer, "total 46") != null);
-    try std.testing.expect(std.mem.indexOf(u8, footer, "cache 5/7") != null);
-}
-
-test "ai chat stream records first token timestamp once" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-
-    const message_idx = try beginAssistantStream(&session);
-    var usage: ?ApiUsage = null;
-    var first_token_ms: i64 = 0;
-
-    try std.testing.expect(!try applyApiStreamLineToSession(
-        allocator,
-        &session,
-        message_idx,
-        "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}",
-        &usage,
-        &first_token_ms,
-    ));
-    try std.testing.expect(first_token_ms > 0);
-    const first = first_token_ms;
-
-    try std.testing.expect(!try applyApiStreamLineToSession(
-        allocator,
-        &session,
-        message_idx,
-        "data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}]}",
-        &usage,
-        &first_token_ms,
-    ));
-    try std.testing.expectEqual(first, first_token_ms);
-    try std.testing.expectEqualStrings("hi!", session.messages.items[message_idx].content);
-}
-
 // "ai chat streaming request asks provider to include usage" and
 // "copilot session pre-targets the bound surface in its request" have moved
 // to assistant/conversation/request.zig.
@@ -7686,238 +6431,6 @@ test "ai chat model context is request-only and hidden from visible history" {
     try std.testing.expectEqualStrings("用户通过微信发送了文件：a.pdf", record.messages[0].content);
 }
 
-test "ai chat input cursor supports insertion and deletion in the middle" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    session.appendInputText("hello");
-    try std.testing.expectEqual(@as(usize, 5), session.inputCursor());
-
-    session.handleKey(.{ .key = input_key.Key.arrow_left });
-    session.handleKey(.{ .key = input_key.Key.arrow_left });
-    try std.testing.expectEqual(@as(usize, 3), session.inputCursor());
-
-    session.handleChar('X');
-    try std.testing.expectEqualStrings("helXlo", session.input());
-    try std.testing.expectEqual(@as(usize, 4), session.inputCursor());
-
-    session.handleKey(.{ .key = input_key.Key.backspace });
-    try std.testing.expectEqualStrings("hello", session.input());
-    try std.testing.expectEqual(@as(usize, 3), session.inputCursor());
-
-    session.handleKey(.{ .key = input_key.Key.delete });
-    try std.testing.expectEqualStrings("helo", session.input());
-    try std.testing.expectEqual(@as(usize, 3), session.inputCursor());
-}
-
-test "ai chat input handles platform-neutral key events" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    session.appendInputText("hello");
-
-    session.handleKey(.{ .key = input_key.Key.arrow_left });
-    session.handleKey(.{ .key = input_key.Key.backspace });
-
-    try std.testing.expectEqualStrings("helo", session.input());
-    try std.testing.expectEqual(@as(usize, 3), session.inputCursor());
-}
-
-test "ai chat input accepts prompts longer than the old 8 KiB limit" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-
-    const prompt = try allocator.alloc(u8, 16 * 1024);
-    defer allocator.free(prompt);
-    @memset(prompt, 'a');
-
-    session.appendInputText(prompt);
-
-    try std.testing.expectEqual(prompt.len, session.input().len);
-    try std.testing.expectEqualStrings(prompt, session.input());
-    try std.testing.expectEqual(prompt.len, session.inputCursor());
-}
-
-test "ai chat input cursor moves by utf8 codepoint boundaries" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    session.appendInputText("你a");
-    session.handleKey(.{ .key = input_key.Key.arrow_left });
-    try std.testing.expectEqual(@as(usize, 3), session.inputCursor());
-    session.handleKey(.{ .key = input_key.Key.backspace });
-    try std.testing.expectEqualStrings("a", session.input());
-    try std.testing.expectEqual(@as(usize, 0), session.inputCursor());
-}
-
-test "ai chat input cursor moves vertically across explicit lines" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    session.appendInputText("abc\ndefg\nhi");
-
-    session.handleKey(.{ .key = input_key.Key.home });
-    session.handleKey(.{ .key = input_key.Key.arrow_down });
-    try std.testing.expectEqual(@as(usize, 4), session.inputCursor());
-
-    session.handleKey(.{ .key = input_key.Key.arrow_right });
-    session.handleKey(.{ .key = input_key.Key.arrow_right });
-    try std.testing.expectEqual(@as(usize, 6), session.inputCursor());
-
-    session.handleKey(.{ .key = input_key.Key.arrow_down });
-    try std.testing.expectEqual(@as(usize, 11), session.inputCursor());
-
-    session.handleKey(.{ .key = input_key.Key.arrow_up });
-    try std.testing.expectEqual(@as(usize, 6), session.inputCursor());
-}
-
-test "ai chat input cursor moves vertically across wrapped rows" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    session.appendInputText("abcdefghijkl");
-    session.handleKey(.{ .key = input_key.Key.home });
-    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_down }, 5);
-    try std.testing.expectEqual(@as(usize, 5), session.inputCursor());
-
-    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_right }, 5);
-    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_right }, 5);
-    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_down }, 5);
-    try std.testing.expectEqual(@as(usize, 12), session.inputCursor());
-
-    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_up }, 5);
-    try std.testing.expectEqual(@as(usize, 7), session.inputCursor());
-}
-
-test "ai chat composer history recalls prompts at visual boundaries" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-    try session.messages.append(allocator, .{ .role = .user, .content = try allocator.dupe(u8, "first prompt") });
-    try session.messages.append(allocator, .{ .role = .assistant, .content = try allocator.dupe(u8, "first reply") });
-    try session.messages.append(allocator, .{ .role = .user, .content = try allocator.dupe(u8, "second prompt") });
-
-    session.appendInputText("draft");
-    session.handleKey(.{ .key = input_key.Key.home });
-    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_up }, 80);
-    try std.testing.expectEqualStrings("second prompt", session.input());
-    try std.testing.expectEqual(@as(usize, "second prompt".len), session.inputCursor());
-
-    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_up }, 80);
-    try std.testing.expectEqualStrings("first prompt", session.input());
-    try std.testing.expectEqual(@as(usize, "first prompt".len), session.inputCursor());
-
-    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_down }, 80);
-    try std.testing.expectEqualStrings("second prompt", session.input());
-
-    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_down }, 80);
-    try std.testing.expectEqualStrings("draft", session.input());
-    try std.testing.expectEqual(@as(usize, 0), session.inputCursor());
-}
-
-test "ai chat composer history preserves multiline vertical editing" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-    try session.messages.append(allocator, .{ .role = .user, .content = try allocator.dupe(u8, "previous prompt") });
-
-    session.appendInputText("abc\ndefg\nhi");
-    session.handleKey(.{ .key = input_key.Key.home });
-    session.handleKey(.{ .key = input_key.Key.arrow_down });
-    try std.testing.expectEqual(@as(usize, 4), session.inputCursor());
-
-    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_up }, 80);
-    try std.testing.expectEqualStrings("abc\ndefg\nhi", session.input());
-    try std.testing.expectEqual(@as(usize, 0), session.inputCursor());
-
-    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_up }, 80);
-    try std.testing.expectEqualStrings("previous prompt", session.input());
-}
-
-test "ai chat composer history exits after editing recalled prompt" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-    try session.messages.append(allocator, .{ .role = .user, .content = try allocator.dupe(u8, "old prompt") });
-
-    session.appendInputText("draft");
-    session.handleKey(.{ .key = input_key.Key.home });
-    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_up }, 80);
-    try std.testing.expectEqualStrings("old prompt", session.input());
-
-    session.handleChar('!');
-    try std.testing.expectEqualStrings("old prompt!", session.input());
-
-    session.handleKey(.{ .key = input_key.Key.home });
-    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_down }, 80);
-    try std.testing.expectEqualStrings("old prompt!", session.input());
-}
-
-test "ai chat composer wrapped row count grows with explicit lines and wrapping" {
-    try std.testing.expectEqual(@as(usize, 1), inputWrappedLineCount("", 12));
-    try std.testing.expectEqual(@as(usize, 2), inputWrappedLineCount("hello\nworld", 12));
-    try std.testing.expectEqual(@as(usize, 3), inputWrappedLineCount("abcdefghijkl", 5));
-}
-
-test "ai chat input scroll clamps to wrapped rows" {
-    const allocator = std.testing.allocator;
-    const session = try Session.init(
-        allocator,
-        "Test",
-        DEFAULT_BASE_URL,
-        "key",
-        DEFAULT_MODEL,
-        DEFAULT_SYSTEM_PROMPT,
-        DEFAULT_THINKING,
-        DEFAULT_REASONING_EFFORT,
-        DEFAULT_STREAM,
-        "false",
-    );
-    defer session.deinit();
-
-    session.appendInputText("abcdefghijkl");
-
-    try std.testing.expect(session.scrollInputRows(10, 5, 1));
-    try std.testing.expectEqual(@as(usize, 2), session.inputScrollRow());
-
-    try std.testing.expect(session.scrollInputRows(-1, 5, 1));
-    try std.testing.expectEqual(@as(usize, 1), session.inputScrollRow());
-
-    try std.testing.expect(session.scrollInputRows(10, 5, 3));
-    try std.testing.expectEqual(@as(usize, 0), session.inputScrollRow());
-    try std.testing.expect(!session.scrollInputRows(10, 5, 3));
-}
-
-test "ai chat manual input scroll pauses cursor following until cursor moves" {
-    const allocator = std.testing.allocator;
-    const session = try Session.init(
-        allocator,
-        "Test",
-        DEFAULT_BASE_URL,
-        "key",
-        DEFAULT_MODEL,
-        DEFAULT_SYSTEM_PROMPT,
-        DEFAULT_THINKING,
-        DEFAULT_REASONING_EFFORT,
-        DEFAULT_STREAM,
-        "false",
-    );
-    defer session.deinit();
-
-    session.appendInputText("abcdefghijkl");
-    try std.testing.expect(session.input_scroll_follow_cursor);
-
-    _ = session.scrollInputRows(1, 5, 1);
-    try std.testing.expect(!session.input_scroll_follow_cursor);
-
-    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_right }, 5);
-    try std.testing.expect(session.input_scroll_follow_cursor);
-}
-
 test "applyRemoteInput resolves a pending approval with y/n" {
     const allocator = std.testing.allocator;
     const session = try Session.init(
@@ -7957,461 +6470,6 @@ test "applyRemoteInput resolves a pending approval with y/n" {
     session.approval_mutex.unlock();
     session.applyRemoteInput("Y\r");
     try std.testing.expect(session.approval_resolved and session.approval_allowed);
-}
-
-test "ai chat remote snapshot omits local draft input" {
-    const allocator = std.testing.allocator;
-    const session = try Session.init(
-        allocator,
-        "DeepSeek",
-        DEFAULT_BASE_URL,
-        "key",
-        DEFAULT_MODEL,
-        DEFAULT_SYSTEM_PROMPT,
-        DEFAULT_THINKING,
-        DEFAULT_REASONING_EFFORT,
-        DEFAULT_STREAM,
-        DEFAULT_AGENT,
-    );
-    defer session.deinit();
-
-    session.appendInputText("local draft only");
-    const snapshot = try session.allocRemoteSnapshot(allocator);
-    defer allocator.free(snapshot);
-
-    try std.testing.expect(std.mem.indexOf(u8, snapshot, "local draft only") == null);
-    try std.testing.expect(std.mem.indexOf(u8, snapshot, "Draft") == null);
-}
-
-test "ai chat remote snapshot keeps latest messages after large tool output" {
-    const allocator = std.testing.allocator;
-    const session = try Session.init(
-        allocator,
-        "DeepSeek",
-        DEFAULT_BASE_URL,
-        "key",
-        DEFAULT_MODEL,
-        DEFAULT_SYSTEM_PROMPT,
-        DEFAULT_THINKING,
-        DEFAULT_REASONING_EFFORT,
-        DEFAULT_STREAM,
-        DEFAULT_AGENT,
-    );
-    defer session.deinit();
-
-    const large_tool_output = try allocator.alloc(u8, REMOTE_SNAPSHOT_MAX_BYTES + 1024);
-    @memset(large_tool_output, 'x');
-    try session.messages.append(allocator, .{
-        .role = .user,
-        .content = try allocator.dupe(u8, "latest user message"),
-    });
-    try session.messages.append(allocator, .{
-        .role = .tool,
-        .content = large_tool_output,
-        .tool_name = try allocator.dupe(u8, "terminal_repl_exec"),
-    });
-    try session.messages.append(allocator, .{
-        .role = .assistant,
-        .content = try allocator.dupe(u8, "latest assistant reply"),
-    });
-
-    const snapshot = try session.allocRemoteSnapshot(allocator);
-    defer allocator.free(snapshot);
-
-    try std.testing.expect(std.mem.indexOf(u8, snapshot, "latest user message") != null);
-    try std.testing.expect(std.mem.indexOf(u8, snapshot, "latest assistant reply") != null);
-    try std.testing.expect(std.mem.indexOf(u8, snapshot, "terminal_repl_exec") != null);
-    try std.testing.expect(std.mem.indexOf(u8, snapshot, "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx") == null);
-}
-
-test "ai chat remote snapshot keeps final answer when reasoning is huge (issue 118)" {
-    // A reasoning-heavy turn (e.g. GLM thinking) on a large context once evicted
-    // the final assistant answer from the byte budget, so the weixin reply
-    // detector never saw the answer and never reported the turn done.
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-    session.setStatusLocked("Done in 280.9s");
-
-    const big_reasoning = try allocator.alloc(u8, REMOTE_SNAPSHOT_MAX_BYTES + 4096);
-    @memset(big_reasoning, 'r');
-    try session.messages.append(allocator, .{
-        .role = .user,
-        .content = try allocator.dupe(u8, "explain the captain model"),
-    });
-    try session.messages.append(allocator, .{
-        .role = .assistant,
-        .content = try allocator.dupe(u8, "FINAL_ANSWER_MARKER the captain model is ..."),
-        .reasoning = big_reasoning,
-    });
-
-    const snapshot = try session.allocRemoteSnapshot(allocator);
-    defer allocator.free(snapshot);
-
-    // The answer body survives; the oversized reasoning is dropped, not the answer.
-    try std.testing.expect(std.mem.indexOf(u8, snapshot, "FINAL_ANSWER_MARKER") != null);
-    try std.testing.expect(std.mem.indexOf(u8, snapshot, "Done in 280.9s") != null);
-}
-
-test "ai chat remote snapshot still includes reasoning when it fits" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-
-    try session.messages.append(allocator, .{
-        .role = .user,
-        .content = try allocator.dupe(u8, "status?"),
-    });
-    try session.messages.append(allocator, .{
-        .role = .assistant,
-        .content = try allocator.dupe(u8, "all good"),
-        .reasoning = try allocator.dupe(u8, "checked the state first"),
-    });
-
-    const snapshot = try session.allocRemoteSnapshot(allocator);
-    defer allocator.free(snapshot);
-
-    try std.testing.expect(std.mem.indexOf(u8, snapshot, "all good") != null);
-    try std.testing.expect(std.mem.indexOf(u8, snapshot, "checked the state first") != null);
-}
-
-test "ai chat remote snapshot includes a pending approval section" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-    try session.messages.append(allocator, .{
-        .role = .user,
-        .content = try allocator.dupe(u8, "clean up"),
-    });
-
-    const tool = "terminal_repl_exec";
-    const command = "rm -rf /tmp/x";
-    @memcpy(session.approval_tool_buf[0..tool.len], tool);
-    session.approval_tool_len = tool.len;
-    @memcpy(session.approval_command_buf[0..command.len], command);
-    session.approval_command_len = command.len;
-    session.approval_pending = true;
-    session.approval_resolved = false;
-
-    const with = try session.allocRemoteSnapshot(allocator);
-    defer allocator.free(with);
-    try std.testing.expect(std.mem.indexOf(u8, with, "Approval:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, with, "terminal_repl_exec") != null);
-    try std.testing.expect(std.mem.indexOf(u8, with, "rm -rf /tmp/x") != null);
-
-    // Once resolved, the section disappears.
-    try std.testing.expect(session.resolveApprovalExternal(true));
-    const without = try session.allocRemoteSnapshot(allocator);
-    defer allocator.free(without);
-    try std.testing.expect(std.mem.indexOf(u8, without, "Approval:") == null);
-}
-
-test "ai chat remote snapshot approval section omits the command line when empty" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-
-    const tool = "weather_lookup";
-    @memcpy(session.approval_tool_buf[0..tool.len], tool);
-    session.approval_tool_len = tool.len;
-    session.approval_command_len = 0; // no command argument
-    session.approval_pending = true;
-    session.approval_resolved = false;
-
-    const snapshot = try session.allocRemoteSnapshot(allocator);
-    defer allocator.free(snapshot);
-    // The tool-only approval still emits a section naming the tool, with no
-    // trailing command line (the `\n<command>` branch is skipped).
-    try std.testing.expect(std.mem.indexOf(u8, snapshot, "Approval:\r\nweather_lookup") != null);
-}
-
-test "ai chat remote snapshot emits a Question section with numbered options" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-
-    session.question_text = @constCast("Which database?");
-    var opts = [_]QuestionOption{
-        .{ .label = "Postgres", .description = "prod default" },
-        .{ .label = "SQLite" },
-    };
-    session.question_options = &opts;
-    session.question_pending = true;
-    session.question_resolved = false;
-
-    const with = try session.allocRemoteSnapshot(allocator);
-    defer allocator.free(with);
-    try std.testing.expect(std.mem.indexOf(u8, with, "Question:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, with, "Which database?") != null);
-    try std.testing.expect(std.mem.indexOf(u8, with, "1. Postgres — prod default") != null);
-    try std.testing.expect(std.mem.indexOf(u8, with, "2. SQLite") != null);
-
-    // Once resolved, the section disappears.
-    session.question_pending = false;
-    const without = try session.allocRemoteSnapshot(allocator);
-    defer allocator.free(without);
-    try std.testing.expect(std.mem.indexOf(u8, without, "Question:") == null);
-}
-
-test "ai chat clipboard text exports transcript when input is empty" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-
-    try session.messages.append(allocator, .{
-        .role = .user,
-        .content = try allocator.dupe(u8, "status?"),
-        .reasoning = null,
-    });
-    try session.messages.append(allocator, .{
-        .role = .assistant,
-        .content = try allocator.dupe(u8, "ready"),
-        .reasoning = try allocator.dupe(u8, "checked state"),
-    });
-
-    session.handleKey(.{ .key = input_key.Key.key_a, .ctrl = true });
-    try std.testing.expect(session.transcript_select_all);
-
-    const copied = try session.allocClipboardText(allocator);
-    defer allocator.free(copied);
-    try std.testing.expect(std.mem.indexOf(u8, copied, "You:\r\nstatus?") != null);
-    try std.testing.expect(std.mem.indexOf(u8, copied, "AI:\r\nready") != null);
-    try std.testing.expect(std.mem.indexOf(u8, copied, "Reasoning:\r\nchecked state") != null);
-}
-
-test "ai chat clipboard text prefers selected assistant answer range" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-
-    try session.messages.append(allocator, .{
-        .role = .assistant,
-        .content = try allocator.dupe(u8, "alpha beta gamma"),
-    });
-
-    session.beginTranscriptSelection(0, 6);
-    session.updateTranscriptSelection(0, 10);
-
-    const copied = try session.allocClipboardText(allocator);
-    defer allocator.free(copied);
-    try std.testing.expectEqualStrings("beta", copied);
-
-    session.clearSelection();
-    try std.testing.expect(session.transcript_selection == null);
-}
-
-test "ai chat transcript selection clamps to utf8 boundaries" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-
-    try session.messages.append(allocator, .{
-        .role = .assistant,
-        .content = try allocator.dupe(u8, "你好吗"),
-    });
-
-    session.beginTranscriptSelection(0, 1);
-    session.updateTranscriptSelection(0, 8);
-
-    const copied = try session.allocClipboardText(allocator);
-    defer allocator.free(copied);
-    try std.testing.expectEqualStrings("你好", copied);
-}
-
-test "ai chat transcript selection copies cleaned markdown text" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-
-    try session.messages.append(allocator, .{
-        .role = .assistant,
-        .content = try allocator.dupe(u8, "**生成的完整 `Markdown`**"),
-    });
-
-    // Display text is "生成的完整 Markdown\n"; select the whole visible run.
-    session.beginTranscriptSelection(0, 0);
-    session.updateTranscriptSelection(0, "生成的完整 Markdown".len);
-
-    const copied = try session.allocClipboardText(allocator);
-    defer allocator.free(copied);
-    try std.testing.expectEqualStrings("生成的完整 Markdown", copied);
-}
-
-test "ai chat transcript selection over table is not truncated to raw length" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-
-    try session.messages.append(allocator, .{
-        .role = .assistant,
-        .content = try allocator.dupe(u8, "a|b|c\n-|-|-\nd|e|f"),
-    });
-
-    // Raw content is 17 bytes; the cleaned display text
-    // "a | b | c\nd | e | f\n" is 20 bytes (borderless table: each '|' → " | ").
-    // Selecting the whole thing must not truncate the selection to the raw length.
-    session.beginTranscriptSelection(0, 0);
-    session.updateTranscriptSelection(0, 20);
-
-    const copied = try session.allocClipboardText(allocator);
-    defer allocator.free(copied);
-    try std.testing.expectEqualStrings("a | b | c\nd | e | f\n", copied);
-}
-
-test "ai chat message clipboard exports one bubble" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-
-    try session.messages.append(allocator, .{
-        .role = .user,
-        .content = try allocator.dupe(u8, "first"),
-        .reasoning = null,
-    });
-    try session.messages.append(allocator, .{
-        .role = .assistant,
-        .content = try allocator.dupe(u8, "second"),
-        .reasoning = try allocator.dupe(u8, "not part of the bubble"),
-    });
-
-    const copied = try session.allocMessageClipboardText(allocator, 1);
-    defer allocator.free(copied);
-    try std.testing.expectEqualStrings("second", copied);
-}
-
-test "ai chat Markdown export includes full transcript details" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-    session.copyTitle("Chat Export");
-    session.copyModel("model-x");
-    session.copySessionId("session-export");
-
-    try session.messages.append(allocator, .{
-        .role = .user,
-        .content = try allocator.dupe(u8, "status?"),
-    });
-    try session.messages.append(allocator, .{
-        .role = .assistant,
-        .content = try allocator.dupe(u8, "ready"),
-        .reasoning = try allocator.dupe(u8, "checked state"),
-        .usage_footer = try allocator.dupe(u8, "total 3"),
-    });
-
-    const markdown = try session.allocMarkdownExport(allocator, .full);
-    defer allocator.free(markdown);
-
-    try std.testing.expect(std.mem.indexOf(u8, markdown, "# Chat Export") != null);
-    try std.testing.expect(std.mem.indexOf(u8, markdown, "## You\n\nstatus?") != null);
-    try std.testing.expect(std.mem.indexOf(u8, markdown, "## AI\n\nready") != null);
-    try std.testing.expect(std.mem.indexOf(u8, markdown, "## Thinking") != null);
-    try std.testing.expect(std.mem.indexOf(u8, markdown, "checked state") != null);
-    try std.testing.expect(std.mem.indexOf(u8, markdown, "## Usage") != null);
-}
-
-test "ai chat clean Markdown export keeps user inputs and final answer only" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-    session.copyTitle("Clean Export");
-    session.copyModel("model-hidden");
-    session.copySessionId("session-hidden");
-
-    try session.messages.append(allocator, .{
-        .role = .user,
-        .content = try allocator.dupe(u8, "first prompt"),
-    });
-    try session.messages.append(allocator, .{
-        .role = .assistant,
-        .content = try allocator.dupe(u8, "intermediate answer"),
-        .reasoning = try allocator.dupe(u8, "hidden thinking"),
-    });
-    try session.messages.append(allocator, .{
-        .role = .tool,
-        .content = try allocator.dupe(u8, "tool output"),
-    });
-    try session.messages.append(allocator, .{
-        .role = .user,
-        .content = try allocator.dupe(u8, "second prompt"),
-    });
-    try session.messages.append(allocator, .{
-        .role = .assistant,
-        .content = try allocator.dupe(u8, "final answer"),
-        .usage_footer = try allocator.dupe(u8, "total 9"),
-    });
-
-    const markdown = try session.allocMarkdownExport(allocator, .clean);
-    defer allocator.free(markdown);
-
-    try std.testing.expect(std.mem.indexOf(u8, markdown, "first prompt") != null);
-    try std.testing.expect(std.mem.indexOf(u8, markdown, "second prompt") != null);
-    try std.testing.expect(std.mem.indexOf(u8, markdown, "final answer") != null);
-    try std.testing.expect(std.mem.indexOf(u8, markdown, "intermediate answer") == null);
-    try std.testing.expect(std.mem.indexOf(u8, markdown, "hidden thinking") == null);
-    try std.testing.expect(std.mem.indexOf(u8, markdown, "tool output") == null);
-    try std.testing.expect(std.mem.indexOf(u8, markdown, "total 9") == null);
-    try std.testing.expect(std.mem.indexOf(u8, markdown, "model-hidden") == null);
-    try std.testing.expect(std.mem.indexOf(u8, markdown, "session-hidden") == null);
-}
-
-test "ai chat stop request suppresses late assistant result" {
-    const allocator = std.testing.allocator;
-    var session = Session{ .allocator = allocator };
-    defer {
-        for (session.messages.items) |msg| msg.deinit(allocator);
-        session.messages.deinit(allocator);
-    }
-
-    session.request_inflight = true;
-    session.stopRequest();
-    try std.testing.expect(session.request_stopping);
-    try std.testing.expectEqualStrings("Stopping...", session.status());
-
-    appendAssistantResult(&session, .{ .content = @constCast("late result") }, 0);
-    try std.testing.expect(!session.request_inflight);
-    try std.testing.expect(!session.request_stopping);
-    try std.testing.expect(!session.stop_requested.load(.acquire));
-    try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
-    try std.testing.expectEqualStrings("Stopped", session.status());
 }
 
 test "ai chat escape stops in-flight request" {
@@ -8529,55 +6587,6 @@ test "ai chat distill confirm without candidate is local only" {
     try std.testing.expect(!session.request_inflight);
     try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
     try std.testing.expect(std.mem.containsAtLeast(u8, session.messages.items[0].content, 1, "No distill candidate"));
-}
-
-test "ai chat appends automatic distill suggestion after tool-heavy result" {
-    const a = std.testing.allocator;
-    configureAgent(.{ .distill_suggest_enabled = true });
-    defer configureAgent(.{});
-    var session = Session{ .allocator = a };
-    defer {
-        if (session.distill_candidate) |*candidate| candidate.deinit(a);
-        for (session.messages.items) |msg| msg.deinit(a);
-        session.messages.deinit(a);
-    }
-    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "fix this") });
-    try session.messages.append(a, .{ .role = .tool, .content = try a.dupe(u8, "running exec one"), .persist_to_history = false });
-    try session.messages.append(a, .{ .role = .tool, .content = try a.dupe(u8, "running exec two"), .persist_to_history = false });
-    session.request_inflight = true;
-
-    appendAssistantResult(&session, .{ .content = @constCast("done") }, 0);
-
-    try std.testing.expect(session.distill_suggestion_pending);
-    try std.testing.expectEqual(@as(usize, 5), session.messages.items.len);
-    try std.testing.expectEqual(Role.tool, session.messages.items[4].role);
-    try std.testing.expect(!session.messages.items[4].persist_to_history);
-    try std.testing.expect(std.mem.containsAtLeast(u8, session.messages.items[4].content, 1, "Distill it into a skill"));
-}
-
-test "ai chat skips automatic distill suggestion when disabled" {
-    const a = std.testing.allocator;
-    // Default: ai-distill-suggest is off, so the prompt must not auto-appear
-    // even after a tool-heavy turn that the heuristic would otherwise flag.
-    configureAgent(.{});
-    defer configureAgent(.{});
-    var session = Session{ .allocator = a };
-    defer {
-        if (session.distill_candidate) |*candidate| candidate.deinit(a);
-        for (session.messages.items) |msg| msg.deinit(a);
-        session.messages.deinit(a);
-    }
-    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "fix this") });
-    try session.messages.append(a, .{ .role = .tool, .content = try a.dupe(u8, "running exec one"), .persist_to_history = false });
-    try session.messages.append(a, .{ .role = .tool, .content = try a.dupe(u8, "running exec two"), .persist_to_history = false });
-    session.request_inflight = true;
-
-    appendAssistantResult(&session, .{ .content = @constCast("done") }, 0);
-
-    try std.testing.expect(!session.distill_suggestion_pending);
-    // Only the appended assistant message — no extra distill-suggestion tool row.
-    try std.testing.expectEqual(@as(usize, 4), session.messages.items.len);
-    try std.testing.expectEqual(Role.assistant, session.messages.items[3].role);
 }
 
 test "ai chat escape dismisses pending distill suggestion before rewind" {
@@ -8988,12 +6997,12 @@ test "ai chat agent request json includes stable skill_info tool schema" {
 test "ai chat session request owns dynamic tool specs snapshot" {
     const allocator = std.testing.allocator;
     const saved_settings = currentAgentSettings();
-    const saved_dynamic_specs = g_dynamic_tool_specs;
-    const saved_dynamic_specs_owned = g_dynamic_tool_specs_owned;
+    const saved_dynamic_specs = g_tool_snapshots.specs;
+    const saved_dynamic_specs_owned = g_tool_snapshots.specs_owned;
     defer {
         configureAgent(saved_settings);
-        g_dynamic_tool_specs = saved_dynamic_specs;
-        g_dynamic_tool_specs_owned = saved_dynamic_specs_owned;
+        g_tool_snapshots.specs = saved_dynamic_specs;
+        g_tool_snapshots.specs_owned = saved_dynamic_specs_owned;
     }
 
     const name = try allocator.dupe(u8, "agent_docx_review");
@@ -9058,12 +7067,12 @@ test "buildRequestLocked captures schedule identity for agent tools" {
 test "ai chat session request owns dynamic binary runtime snapshot" {
     const allocator = std.testing.allocator;
     const saved_settings = currentAgentSettings();
-    const saved_dynamic_runtime = g_dynamic_binary_tools;
-    const saved_dynamic_runtime_owned = g_dynamic_binary_tools_owned;
+    const saved_dynamic_runtime = g_tool_snapshots.binary_tools;
+    const saved_dynamic_runtime_owned = g_tool_snapshots.binary_tools_owned;
     defer {
         configureAgent(saved_settings);
-        g_dynamic_binary_tools = saved_dynamic_runtime;
-        g_dynamic_binary_tools_owned = saved_dynamic_runtime_owned;
+        g_tool_snapshots.binary_tools = saved_dynamic_runtime;
+        g_tool_snapshots.binary_tools_owned = saved_dynamic_runtime_owned;
     }
 
     const function_name = try allocator.dupe(u8, "fake_tool");
@@ -9113,19 +7122,19 @@ test "ai chat session request owns dynamic binary runtime snapshot" {
 test "ai chat session request owns disabled first-party tool snapshot" {
     const allocator = std.testing.allocator;
     const saved_settings = currentAgentSettings();
-    const saved_disabled_tools = g_first_party_disabled_tools;
-    const saved_disabled_tools_owned = g_first_party_disabled_tools_owned;
+    const saved_disabled_tools = g_tool_snapshots.disabled_first_party;
+    const saved_disabled_tools_owned = g_tool_snapshots.disabled_first_party_owned;
     defer {
         configureAgent(saved_settings);
-        g_first_party_disabled_tools = saved_disabled_tools;
-        g_first_party_disabled_tools_owned = saved_disabled_tools_owned;
+        g_tool_snapshots.disabled_first_party = saved_disabled_tools;
+        g_tool_snapshots.disabled_first_party_owned = saved_disabled_tools_owned;
     }
 
     const disabled_name = try allocator.dupe(u8, "webread");
     defer allocator.free(disabled_name);
     var disabled = [_][]const u8{disabled_name};
-    g_first_party_disabled_tools = disabled[0..];
-    g_first_party_disabled_tools_owned = false;
+    g_tool_snapshots.disabled_first_party = disabled[0..];
+    g_tool_snapshots.disabled_first_party_owned = false;
     configureAgent(.{ .enabled = true, .permission = .full });
 
     const session = try Session.init(
@@ -9150,8 +7159,8 @@ test "ai chat session request owns disabled first-party tool snapshot" {
     defer mcp_registry.reloadCacheFromServersForTest(allocator, &.{});
 
     @memcpy(disabled_name, "pubmed!");
-    g_first_party_disabled_tools = &.{};
-    g_first_party_disabled_tools_owned = false;
+    g_tool_snapshots.disabled_first_party = &.{};
+    g_tool_snapshots.disabled_first_party_owned = false;
 
     const json = try ai_chat_request.buildRequestJson(allocator, request);
     defer allocator.free(json);
@@ -9743,29 +7752,6 @@ test "failSummaryResult keeps raw history and points to resume" {
     try std.testing.expectEqualStrings("u1", session.messages.items[0].content);
     try std.testing.expectEqualStrings("a1", session.messages.items[1].content);
     try std.testing.expect(std.mem.indexOf(u8, session.status(), "/resume") != null);
-}
-
-test "assistant stream deltas grow with spare capacity" {
-    const allocator = std.testing.allocator;
-    var session = try Session.init(allocator, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
-    defer session.deinit();
-
-    const message_idx = try beginAssistantStream(session);
-    for (0..100) |_| {
-        try appendAssistantStreamDelta(session, message_idx, "x", "");
-    }
-    for (0..20) |_| {
-        try appendAssistantStreamDelta(session, message_idx, "", "r");
-    }
-
-    const msg = session.messages.items[message_idx];
-    try std.testing.expectEqual(@as(usize, 100), msg.content.len);
-    try std.testing.expect(std.mem.allEqual(u8, msg.content, 'x'));
-    try std.testing.expect(msg.content_capacity > msg.content.len);
-    try std.testing.expect(msg.reasoning != null);
-    try std.testing.expectEqual(@as(usize, 20), msg.reasoning.?.len);
-    try std.testing.expect(std.mem.allEqual(u8, msg.reasoning.?, 'r'));
-    try std.testing.expect(msg.reasoning_capacity > msg.reasoning.?.len);
 }
 
 const AskRunner = struct {

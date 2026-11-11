@@ -4,6 +4,7 @@
 //! the 10,000-line backstop.
 const std = @import("std");
 const ai_chat = @import("session.zig");
+const session_results = @import("session_results.zig");
 const question_answer = @import("question_answer.zig");
 const types = @import("types.zig");
 
@@ -23,7 +24,7 @@ pub fn appendSummary(session: *Session, question: []const u8, options: []const t
     defer session.markUiDirty();
     session.mutex.lock();
     defer session.mutex.unlock();
-    if (ai_chat.sessionCancelled(session)) return;
+    if (session_results.sessionCancelled(session)) return;
     session.messages.append(allocator, .{
         .role = .tool,
         .content = content,
@@ -69,7 +70,7 @@ test "agent reply footer and status leave out the answer wait" {
     defer freeMessages(&session, a);
 
     // 40s on the wall clock, 35s of it spent on the question card.
-    ai_chat.appendAssistantResult(&session, .{
+    session_results.appendAssistantResult(&session, .{
         .content = @constCast("done"),
         .usage = .{ .completion_tokens = 10, .total_tokens = 10 },
         .user_wait_ms = 35_000,
