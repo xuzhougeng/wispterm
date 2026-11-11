@@ -556,7 +556,8 @@ test "sync page target switch changes the connection rows; toggles and interval 
 test "sync page passphrase needs a location and a minimum length; forget needs two Enters" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.makeDir("sync");
+    const dir = try tmp.dir.realpathAlloc(std.testing.allocator, "sync");
     defer std.testing.allocator.free(dir);
     var s = testState(dir);
     defer s.close();
