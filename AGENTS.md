@@ -45,7 +45,7 @@ Structural debt is frozen mechanically by source-scanning ratchet tests (the sam
 | Guard | Freezes | Today's ceiling | Escape hatch |
 |---|---|---|---|
 | `file_size_guard` | lines in any `src/**/*.zig` | < **10,000** (also `zig build check-sizes`) | split by responsibility; never raise the limit |
-| `global_state_guard` | top-level `g_*` / `threadlocal` in the watched integration/session files | AppWindow **66**, input **39**, overlays **22**, assistant/conversation/session **13** | put new state in a state struct (`appwindow/state.zig`, …) |
+| `global_state_guard` | top-level `g_*` / `threadlocal` in the watched integration/session files | AppWindow **66**, input **39**, overlays **21**, assistant/conversation/session **8** | put new state in a state struct (`appwindow/state.zig`, …) |
 | `import_hub_guard` | `pub const X = @import(...)` re-exports in `AppWindow.zig` | **16** | import the real module directly, not via `AppWindow.X` |
 | `side_effect_guard` | direct `g_force_rebuild` / `g_cells_valid` writes in the watched integration/session files | AppWindow **24**, input **22**, overlays **0**, assistant/conversation/session **0** | return a `UiEffect`, land it through `AppWindow.applyUiEffect` |
 | `objc_autorelease_guard` | exported `.m` bridge functions that send Objective-C messages outside `@autoreleasepool` (macOS has no outer pool: no `NSApplicationMain`) | **0** (allowlist: one deliberate test probe) | wrap the Objective-C part in `@autoreleasepool { }` |
