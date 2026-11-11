@@ -1,8 +1,8 @@
 //! Pure layout + scroll + hit-test + URL helpers for the "What's New" modal.
-//! No GL, no AppWindow — unit-tested in the fast suite. overlays.zig owns the
-//! threadlocal modal state and the actual drawing; this module owns the math.
+//! No GPU or AppWindow dependencies — unit-tested in the fast suite.
 const std = @import("std");
 const md = @import("../../markdown_text.zig");
+const ui_patterns = @import("../ui_patterns.zig");
 
 pub const Action = enum { none, view_on_github, close };
 
@@ -30,73 +30,118 @@ pub const Layout = struct {
     visible_rows: usize,
 };
 
-pub const MIN_WRAP_COLS: usize = 8;
-pub const MAX_HIGHLIGHTS: usize = 4;
-
-pub const Highlights = struct {
-    items: [MAX_HIGHLIGHTS][]const u8 = .{""} ** MAX_HIGHLIGHTS,
-    len: usize = 0,
-};
-
 pub const ButtonMetrics = struct {
     view_w: f32 = 156,
     close_w: f32 = 72,
 };
 
-/// Display rows a single cleaned line of `display_len` bytes occupies at
-/// `wrap_cols` columns (always at least 1). Byte-length approximation — adequate
-/// for the ASCII-dominant release notes; wide glyphs may wrap a column early.
-pub fn lineRows(display_len: usize, wrap_cols: usize) usize {
-    if (wrap_cols == 0 or display_len == 0) return 1;
-    return (display_len + wrap_cols - 1) / wrap_cols;
-}
+/// Counting and drawing use this same measured, UTF-8-safe word wrapper.
+/// Only a token wider than the viewport is split, always at a codepoint boundary.
+pub const WrappedRows = struct {
+    text: []const u8,
+    width: f32,
+    advance: *const fn (u32) f32,
+    offset: usize = 0,
+    done: bool = false,
 
-/// The slice of `text` shown on wrapped row `row`, matching `lineRows`' byte
-/// arithmetic but with both ends moved back to a UTF-8 sequence start. Raw
-/// `text[row * cols ..][0..cols]` slices cut characters such as "—" or "⌘" in
-/// half, and a row holding half a character draws as '?' throughout.
-pub fn wrapRowSlice(text: []const u8, row: usize, wrap_cols: usize) []const u8 {
-    if (wrap_cols == 0) return if (row == 0) text else "";
-    const start = utf8FloorIndex(text, row *| wrap_cols);
-    const end = utf8FloorIndex(text, (row + 1) *| wrap_cols);
-    return text[start..end];
-}
-
-fn utf8FloorIndex(text: []const u8, index: usize) usize {
-    var i = @min(index, text.len);
-    while (i < text.len and i > 0 and (text[i] & 0xc0) == 0x80) i -= 1;
-    return i;
-}
-
-test "wrapRowSlice never cuts a UTF-8 sequence and covers the whole text" {
-    const text = "ab\u{2014}cd\u{2318}ef"; // a b — c d ⌘ e f (12 bytes)
-    var joined: [32]u8 = undefined;
-    var len: usize = 0;
-    const cols: usize = 3;
-    var row: usize = 0;
-    while (row < lineRows(text.len, cols)) : (row += 1) {
-        const slice = wrapRowSlice(text, row, cols);
-        try std.testing.expect(std.unicode.utf8ValidateSlice(slice));
-        @memcpy(joined[len..][0..slice.len], slice);
-        len += slice.len;
+    pub fn next(self: *WrappedRows) ?[]const u8 {
+        if (self.done) return null;
+        const start = self.offset;
+        var end = start;
+        var last_space: ?usize = null;
+        var used: f32 = 0;
+        while (end < self.text.len) {
+            const len = std.unicode.utf8ByteSequenceLength(self.text[end]) catch 1;
+            const next_end = @min(self.text.len, end + len);
+            const cp = std.unicode.utf8Decode(self.text[end..next_end]) catch 0xfffd;
+            if (cp == ' ' or cp == '\t') last_space = end;
+            const width = self.advance(cp);
+            if (end > start and used + width > self.width) {
+                if (last_space) |space| {
+                    if (space > start) end = space;
+                }
+                break;
+            }
+            used += width;
+            end = next_end;
+        }
+        self.offset = end;
+        while (self.offset < self.text.len and
+            (self.text[self.offset] == ' ' or self.text[self.offset] == '\t')) self.offset += 1;
+        self.done = self.offset == self.text.len;
+        return std.mem.trimRight(u8, self.text[start..end], " \t");
     }
-    try std.testing.expectEqualStrings(text, joined[0..len]);
-    try std.testing.expectEqualStrings("", wrapRowSlice(text, 99, cols));
+};
+
+pub fn wrappedRowCount(text: []const u8, width: f32, advance: *const fn (u32) f32) usize {
+    var rows: WrappedRows = .{ .text = text, .width = width, .advance = advance };
+    var count: usize = 0;
+    while (rows.next() != null) count += 1;
+    return count;
 }
 
-/// Total wrapped display rows for the whole notes blob at `wrap_cols` columns.
-pub fn totalRows(notes: []const u8, wrap_cols: usize) usize {
-    var total: usize = 0;
-    var in_code = false;
-    var it = std.mem.splitScalar(u8, notes, '\n');
-    while (it.next()) |raw| {
-        var buf: [1024]u8 = undefined;
-        const cleaned = md.cleanedLine(&buf, raw, in_code);
-        if (cleaned.style == .fence) in_code = !in_code;
-        total += lineRows(cleaned.text.len, wrap_cols);
+/// Join Markdown soft line breaks before wrapping to the actual viewport.
+/// Offsets survive buffer growth; no fixed summary/line buffer truncates notes.
+pub const Document = struct {
+    pub const Block = struct {
+        start: usize,
+        len: usize,
+        style: md.LineStyle,
+
+        pub fn indented(self: Block) bool {
+            return self.style == .list or self.style == .quote or self.style == .code;
+        }
+    };
+
+    text: std.ArrayList(u8) = .empty,
+    blocks: std.ArrayList(Block) = .empty,
+
+    pub fn init(allocator: std.mem.Allocator, notes: []const u8) !Document {
+        var doc: Document = .{};
+        errdefer doc.deinit(allocator);
+        const scratch = try allocator.alloc(u8, notes.len);
+        defer allocator.free(scratch);
+        var in_code = false;
+        var lines = std.mem.splitScalar(u8, notes, '\n');
+        while (lines.next()) |raw| {
+            const line = md.cleanedLine(scratch, raw, in_code);
+            if (line.style == .fence) in_code = !in_code;
+            const previous = if (doc.blocks.items.len > 0) &doc.blocks.items[doc.blocks.items.len - 1] else null;
+            const join = if (previous) |prev|
+                (line.style == .quote and prev.style == .quote) or
+                    (line.style == .normal and (prev.style == .normal or prev.style == .list))
+            else
+                false;
+            if (join) {
+                try doc.text.append(allocator, ' ');
+                try doc.text.appendSlice(allocator, line.text);
+                previous.?.len = doc.text.items.len - previous.?.start;
+            } else {
+                const start = doc.text.items.len;
+                try doc.text.appendSlice(allocator, line.text);
+                try doc.blocks.append(allocator, .{ .start = start, .len = line.text.len, .style = line.style });
+            }
+        }
+        return doc;
     }
-    return total;
-}
+
+    pub fn deinit(self: *Document, allocator: std.mem.Allocator) void {
+        self.text.deinit(allocator);
+        self.blocks.deinit(allocator);
+    }
+
+    pub fn blockText(self: Document, block: Block) []const u8 {
+        return self.text.items[block.start..][0..block.len];
+    }
+
+    pub fn totalRows(self: Document, width: f32, indented_width: f32, advance: *const fn (u32) f32) usize {
+        var total: usize = 0;
+        for (self.blocks.items) |block| {
+            total += wrappedRowCount(self.blockText(block), if (block.indented()) indented_width else width, advance);
+        }
+        return total;
+    }
+};
 
 /// The embedded release notes may include localized sections after a markdown
 /// divider. The modal shows the first (English) section in-app.
@@ -105,8 +150,8 @@ pub fn englishNotes(notes: []const u8) []const u8 {
     return std.mem.trimRight(u8, notes[0..end], " \t\r\n");
 }
 
-/// Body text for the scrollable area. Drops the release H1 and opening summary
-/// quote because the modal header renders those separately.
+/// All release text, including the full opening summary, belongs in the
+/// scrollable area. Only the H1 is omitted because it is the fixed modal title.
 pub fn bodyNotes(notes: []const u8) []const u8 {
     const english = englishNotes(notes);
     var cursor: usize = 0;
@@ -121,94 +166,7 @@ pub fn bodyNotes(notes: []const u8) []const u8 {
         }
     }
 
-    skipBlankLines(english, &cursor);
-    if (cursor < english.len) {
-        var quote_cursor = cursor;
-        var saw_quote = false;
-        while (quote_cursor < english.len) {
-            const line = md.nextSourceLine(english, quote_cursor);
-            const trimmed = std.mem.trimLeft(u8, line.line, " \t");
-            if (trimmed.len == 0) {
-                quote_cursor = line.next;
-                if (saw_quote) break;
-                continue;
-            }
-            if (!std.mem.startsWith(u8, trimmed, ">")) break;
-            saw_quote = true;
-            quote_cursor = line.next;
-        }
-        if (saw_quote) cursor = quote_cursor;
-    }
-
     return std.mem.trimLeft(u8, english[cursor..], " \t\r\n");
-}
-
-/// Summary text from the opening markdown quote block.
-pub fn summaryText(buf: []u8, notes: []const u8) []const u8 {
-    const english = englishNotes(notes);
-    var cursor: usize = 0;
-    var pos: usize = 0;
-    var saw_quote = false;
-
-    while (cursor < english.len) {
-        const line = md.nextSourceLine(english, cursor);
-        cursor = line.next;
-        const trimmed = std.mem.trimLeft(u8, line.line, " \t");
-        if (trimmed.len == 0) {
-            if (saw_quote) break;
-            continue;
-        }
-        if (!std.mem.startsWith(u8, trimmed, ">")) {
-            if (saw_quote) break;
-            continue;
-        }
-
-        saw_quote = true;
-        var clean_buf: [1024]u8 = undefined;
-        const cleaned = md.cleanInline(&clean_buf, std.mem.trimLeft(u8, trimmed[1..], " \t"));
-        if (cleaned.len == 0) continue;
-        if (pos > 0 and pos < buf.len) {
-            buf[pos] = ' ';
-            pos += 1;
-        }
-        pos = appendSliceBounded(buf, pos, cleaned);
-    }
-
-    return std.mem.trim(u8, buf[0..pos], " \t\r\n");
-}
-
-/// Split a release summary into compact highlight rows.
-pub fn highlightClauses(buf: []u8, summary_raw: []const u8) Highlights {
-    var highlights: Highlights = .{};
-    var pos: usize = 0;
-    var summary = std.mem.trim(u8, summary_raw, " \t\r\n.");
-    if (std.mem.startsWith(u8, summary, "This release ")) {
-        summary = summary["This release ".len..];
-    } else if (std.mem.startsWith(u8, summary, "This version ")) {
-        summary = summary["This version ".len..];
-    }
-
-    var parts = std.mem.splitSequence(u8, summary, ", ");
-    while (parts.next()) |part_raw| {
-        if (highlights.len >= MAX_HIGHLIGHTS) break;
-        var part = std.mem.trim(u8, part_raw, " \t\r\n.");
-        if (std.mem.startsWith(u8, part, "and ")) part = part["and ".len..];
-        if (part.len == 0) continue;
-
-        const start = pos;
-        if (pos >= buf.len) break;
-        if (std.ascii.isLower(part[0])) {
-            buf[pos] = std.ascii.toUpper(part[0]);
-        } else {
-            buf[pos] = part[0];
-        }
-        pos += 1;
-        pos = appendSliceBounded(buf, pos, part[1..]);
-        highlights.items[highlights.len] = std.mem.trim(u8, buf[start..pos], " \t\r\n.");
-        highlights.len += 1;
-    }
-
-    return highlights;
 }
 
 /// Clamp a (possibly negative or overscrolled) line offset into range.
@@ -249,46 +207,48 @@ pub fn computeLayout(window_w: f32, window_h: f32, row_h: f32) Layout {
 /// Centered modal layout with caller-supplied button widths. The renderer uses
 /// measured label widths here so centered text cannot escape the panel.
 pub fn computeLayoutWithButtons(window_w: f32, window_h: f32, row_h: f32, buttons: ButtonMetrics) Layout {
-    return computeLayoutWithHeaderRows(window_w, window_h, row_h, buttons, 1);
-}
-
-/// Variant for release notes whose summary needs more than one display row.
-/// Keeping the full summary in the header avoids treating it as a clipped
-/// decoration; the scrollable body receives only the remaining release notes.
-pub fn computeLayoutWithHeaderRows(window_w: f32, window_h: f32, row_h: f32, buttons: ButtonMetrics, summary_rows: usize) Layout {
-    const panel_w = @round(@min(@max(@as(f32, 320), window_w - 80), @as(f32, 860)));
-    const panel_h = @round(@min(@max(@as(f32, 360), window_h - 80), @as(f32, 620)));
+    // Scale with UI text metrics, then let viewport gutters win over minima.
+    const scale = @max(1.0, row_h / 30.0);
+    const gutter = @min(40.0 * scale, @min(window_w, window_h) * 0.05);
+    const panel_w = ui_patterns.modalWidth(window_w, 320, 860 * scale, 1200 * scale, gutter);
+    const panel_h = @round(@max(1.0, @min(window_h - gutter * 2, 620 * scale)));
     const panel_x = @round((window_w - panel_w) / 2);
     const panel_y = @round((window_h - panel_h) / 2);
-
-    const pad: f32 = 34;
-    const summary_row_count: f32 = @floatFromInt(@max(@as(usize, 1), summary_rows));
-    const header_h = @round(@max(@as(f32, 86), row_h * (summary_row_count + 1) + 34));
-    const footer_h = @round(@max(@as(f32, 58), row_h + 30));
-    const content_top = panel_y + header_h + 18;
+    const pad = @min(34 * scale, panel_w * 0.06);
+    const gap = @min(16 * scale, panel_w * 0.03);
+    const inner_w = @max(0, panel_w - pad * 2);
+    const ok_w = @min(inner_w, @max(72, buttons.close_w));
+    const view_w = @min(inner_w, @max(156, buttons.view_w));
+    const stacked = view_w + ok_w + gap > inner_w;
+    const btn_h = @round(@max(34, row_h + 14));
+    const footer_h = @min(panel_h * 0.5, (if (stacked) btn_h * 2 + gap else btn_h) + 24 * scale);
+    const header_h = @min(panel_h - footer_h, @round(@max(86, row_h * 2 + 34 * scale)));
     const footer_y = panel_y + panel_h - footer_h;
+    const content_top = @min(footer_y, panel_y + header_h + gap);
     const content = Rect{
         .x = panel_x + pad,
         .y = content_top,
-        .w = panel_w - pad * 2,
-        .h = @max(@as(f32, row_h), footer_y - content_top - 18),
+        .w = inner_w - @min(12 * scale, inner_w * 0.05), // scrollbar gutter
+        .h = @max(0, footer_y - content_top - gap),
     };
-
-    const btn_h: f32 = @round(@max(@as(f32, 34), row_h + 14));
-    const ok_w: f32 = @max(@as(f32, 72), buttons.close_w);
-    const view_w: f32 = @max(@as(f32, 156), buttons.view_w);
-    const btn_y = footer_y + @round((footer_h - btn_h) / 2);
-    const close_btn = Rect{ .x = panel_x + panel_w - pad - ok_w, .y = btn_y, .w = ok_w, .h = btn_h };
-    const view_btn = Rect{ .x = panel_x + pad, .y = btn_y, .w = view_w, .h = btn_h };
-    const title_close_size: f32 = @round(@max(@as(f32, 28), row_h + 6));
+    const actual_btn_h = @min(btn_h, @max(0, (footer_h - gap) / (if (stacked) @as(f32, 2) else 1)));
+    const buttons_h = if (stacked) actual_btn_h * 2 + gap else actual_btn_h;
+    const btn_y = footer_y + (footer_h - buttons_h) / 2;
+    const close_btn = Rect{
+        .x = panel_x + panel_w - pad - ok_w,
+        .y = if (stacked) btn_y + actual_btn_h + gap else btn_y,
+        .w = ok_w,
+        .h = actual_btn_h,
+    };
+    const view_btn = Rect{ .x = panel_x + pad, .y = btn_y, .w = view_w, .h = actual_btn_h };
+    const title_close_size = @min(header_h, @round(@max(28, row_h + 6)));
     const title_close_btn = Rect{
-        .x = panel_x + panel_w - pad - title_close_size + 4,
-        .y = panel_y + 18,
+        .x = panel_x + panel_w - pad - title_close_size,
+        .y = panel_y + @min(18 * scale, @max(0, header_h - title_close_size)),
         .w = title_close_size,
         .h = title_close_size,
     };
-
-    const rows: usize = if (row_h > 0) @intFromFloat(@max(@as(f32, 1), content.h / row_h)) else 1;
+    const rows: usize = if (row_h > 0) @intFromFloat(@floor(content.h / row_h)) else 0;
     return .{
         .panel = .{ .x = panel_x, .y = panel_y, .w = panel_w, .h = panel_h },
         .header = .{ .x = panel_x, .y = panel_y, .w = panel_w, .h = header_h },
@@ -307,28 +267,6 @@ fn skipBlankLines(text: []const u8, cursor: *usize) void {
         if (std.mem.trim(u8, line.line, " \t\r\n").len != 0) break;
         cursor.* = line.next;
     }
-}
-
-fn appendSliceBounded(buf: []u8, pos: usize, text: []const u8) usize {
-    if (pos >= buf.len) return pos;
-    const len = @min(text.len, buf.len - pos);
-    @memcpy(buf[pos..][0..len], text[0..len]);
-    return pos + len;
-}
-
-test "lineRows is at least one and wraps by columns" {
-    try std.testing.expectEqual(@as(usize, 1), lineRows(0, 40));
-    try std.testing.expectEqual(@as(usize, 1), lineRows(40, 40));
-    try std.testing.expectEqual(@as(usize, 2), lineRows(41, 40));
-}
-
-test "totalRows counts blank, heading, and wrapped lines" {
-    // No trailing newline: splitScalar would otherwise emit a final empty segment.
-    const notes = "# Title\n\nshort";
-    // "Title" (1) + blank (1) + "short" (1) = 3
-    try std.testing.expectEqual(@as(usize, 3), totalRows(notes, 40));
-    // A line longer than wrap_cols spans multiple rows.
-    try std.testing.expectEqual(@as(usize, 2), totalRows("abcdefghij", 5));
 }
 
 test "clampScroll clamps both ends" {
@@ -383,13 +321,6 @@ test "computeLayout exposes header content footer bands and top close button" {
     ));
 }
 
-test "computeLayoutWithHeaderRows reserves every summary row above content" {
-    const layout = computeLayoutWithHeaderRows(1200, 800, 24, .{}, 4);
-    try std.testing.expect(layout.header.h >= 24 * 5 + 34);
-    try std.testing.expect(layout.content.y >= layout.header.y + layout.header.h + 18);
-    try std.testing.expect(layout.visible_rows >= 1);
-}
-
 test "computeLayout places GitHub action on the left side of the footer" {
     const layout = computeLayout(1200, 800, 20);
     const left_pad = layout.view_btn.x - layout.panel.x;
@@ -411,7 +342,7 @@ test "computeLayoutWithButtons accepts measured wide GitHub label" {
     try std.testing.expect(layout.view_btn.x + layout.view_btn.w < layout.close_btn.x);
 }
 
-test "englishNotes and bodyNotes remove localized trailer and intro chrome" {
+test "bodyNotes preserves the full summary in the scrollable content" {
     const notes =
         \\# WispTerm v1.10.0
         \\
@@ -433,28 +364,97 @@ test "englishNotes and bodyNotes remove localized trailer and intro chrome" {
     try std.testing.expect(std.mem.indexOf(u8, english, "## Added") != null);
 
     const body = bodyNotes(notes);
-    try std.testing.expect(std.mem.startsWith(u8, body, "## Added"));
-    try std.testing.expect(std.mem.indexOf(u8, body, "This release") == null);
+    try std.testing.expect(std.mem.startsWith(u8, body, "> This release"));
+    try std.testing.expect(std.mem.indexOf(u8, body, "## Added") != null);
 }
 
-test "summaryText and highlightClauses produce compact highlights" {
-    const notes =
-        \\# WispTerm v1.10.0
-        \\
-        \\> This release restores true full permission for AI Agent workflows, fixes the
-        \\> Default AI settings row interaction, and adds an in-app What's New panel.
-    ;
-    var summary_buf: [256]u8 = undefined;
-    const summary = summaryText(&summary_buf, notes);
-    try std.testing.expectEqualStrings(
-        "This release restores true full permission for AI Agent workflows, fixes the Default AI settings row interaction, and adds an in-app What's New panel.",
-        summary,
-    );
+fn testAdvance(cp: u32) f32 {
+    return if (cp >= 0x2e80) 2 else 1;
+}
 
-    var highlights_buf: [256]u8 = undefined;
-    const highlights = highlightClauses(&highlights_buf, summary);
-    try std.testing.expectEqual(@as(usize, 3), highlights.len);
-    try std.testing.expectEqualStrings("Restores true full permission for AI Agent workflows", highlights.items[0]);
-    try std.testing.expectEqualStrings("Fixes the Default AI settings row interaction", highlights.items[1]);
-    try std.testing.expectEqualStrings("Adds an in-app What's New panel", highlights.items[2]);
+test "word wrap keeps words together and counts the rows it draws" {
+    var rows: WrappedRows = .{ .text = "Tabs running a terminal agent now show idle", .width = 20, .advance = testAdvance };
+    try std.testing.expectEqualStrings("Tabs running a", rows.next().?);
+    try std.testing.expectEqualStrings("terminal agent now", rows.next().?);
+    try std.testing.expectEqualStrings("show idle", rows.next().?);
+    try std.testing.expect(rows.next() == null);
+    try std.testing.expectEqual(@as(usize, 3), wrappedRowCount(rows.text, 20, testAdvance));
+    try std.testing.expectEqual(@as(usize, 1), wrappedRowCount("", 20, testAdvance));
+}
+
+test "long tokens and wide glyphs wrap without losing UTF-8 characters" {
+    const text = "ab—cd⌘ef中文";
+    for ([_]f32{ 0, 1, 3, 8 }) |width| {
+        var rows: WrappedRows = .{ .text = text, .width = width, .advance = testAdvance };
+        var joined: [64]u8 = undefined;
+        var len: usize = 0;
+        while (rows.next()) |row| {
+            try std.testing.expect(row.len > 0);
+            try std.testing.expect(std.unicode.utf8ValidateSlice(row));
+            @memcpy(joined[len..][0..row.len], row);
+            len += row.len;
+        }
+        try std.testing.expectEqualStrings(text, joined[0..len]);
+    }
+}
+
+test "large fonts and small viewports keep body and buttons in separate bands" {
+    for ([_][2]f32{ .{ 2880, 2076 }, .{ 1200, 800 }, .{ 640, 480 }, .{ 420, 340 }, .{ 320, 240 } }) |size| {
+        for ([_]f32{ 24, 36, 52, 72 }) |row_h| {
+            const layout = computeLayoutWithButtons(size[0], size[1], row_h, .{ .view_w = row_h * 7, .close_w = row_h * 2 });
+            try std.testing.expect(layout.panel.x >= 0 and layout.panel.y >= 0);
+            try std.testing.expect(layout.panel.x + layout.panel.w <= size[0]);
+            try std.testing.expect(layout.panel.y + layout.panel.h <= size[1]);
+            try std.testing.expect(layout.header.y + layout.header.h <= layout.content.y);
+            try std.testing.expect(layout.content.y + layout.content.h <= layout.footer.y);
+            try std.testing.expect(@as(f32, @floatFromInt(layout.visible_rows)) * row_h <= layout.content.h);
+            for ([_]Rect{ layout.view_btn, layout.close_btn }) |button| {
+                try std.testing.expect(button.x >= layout.panel.x);
+                try std.testing.expect(button.x + button.w <= layout.panel.x + layout.panel.w);
+                try std.testing.expect(button.y >= layout.footer.y);
+                try std.testing.expect(button.y + button.h <= layout.panel.y + layout.panel.h + 0.01);
+            }
+            try std.testing.expect(layout.view_btn.x + layout.view_btn.w < layout.close_btn.x or
+                layout.view_btn.y + layout.view_btn.h < layout.close_btn.y);
+        }
+    }
+}
+
+test "long release summary remains complete and scrollable" {
+    const notes = "# WispTerm v1.47.0\n\n> " ++ ("A long release summary with agents and updates. " ** 30) ++ "End of summary.\n\n## Security\nLast body line";
+    const body = bodyNotes(notes);
+    try std.testing.expect(body.len > 1024);
+    try std.testing.expect(std.mem.indexOf(u8, body, "End of summary.") != null);
+    var doc = try Document.init(std.testing.allocator, body);
+    defer doc.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.endsWith(u8, doc.blockText(doc.blocks.items[0]), "End of summary."));
+    const total = doc.totalRows(38, 36, testAdvance);
+    const layout = computeLayout(1200, 800, 52);
+    try std.testing.expect(total > layout.visible_rows);
+    const last_page = clampScroll(std.math.maxInt(i32), total, layout.visible_rows);
+    try std.testing.expectEqual(total, last_page + layout.visible_rows);
+}
+
+test "Markdown soft breaks reflow while headings lists and code stay distinct" {
+    var doc = try Document.init(std.testing.allocator,
+        \\> A release summary
+        \\> continues here.
+        \\
+        \\## Added
+        \\- First item
+        \\  continues here.
+        \\- Second item
+        \\```text
+        \\first code line
+        \\second code line
+        \\```
+    );
+    defer doc.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("A release summary continues here.", doc.blockText(doc.blocks.items[0]));
+    try std.testing.expectEqual(md.LineStyle.blank, doc.blocks.items[1].style);
+    try std.testing.expectEqual(md.LineStyle.heading, doc.blocks.items[2].style);
+    try std.testing.expectEqualStrings("- First item continues here.", doc.blockText(doc.blocks.items[3]));
+    try std.testing.expectEqualStrings("- Second item", doc.blockText(doc.blocks.items[4]));
+    try std.testing.expectEqualStrings("first code line", doc.blockText(doc.blocks.items[6]));
+    try std.testing.expectEqualStrings("second code line", doc.blockText(doc.blocks.items[7]));
 }
