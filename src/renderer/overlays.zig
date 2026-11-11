@@ -247,7 +247,6 @@ const update_prompt_model = @import("overlays/update_prompt_model.zig");
 const UpdatePromptAction = update_prompt_model.UpdatePromptAction;
 const md = @import("../markdown_text.zig");
 const whats_new_model = @import("overlays/whats_new_model.zig");
-threadlocal var g_update_prompt_rect: ?DebugLineRect = null;
 
 pub const CloseConfirmVariant = confirm_modals.CloseConfirmVariant;
 
@@ -9415,15 +9414,7 @@ fn whatsNewButtonMetrics() whats_new_model.ButtonMetrics {
 }
 
 fn whatsNewLayout(window_width: f32, window_height: f32) whats_new_model.Layout {
-    const notes = whatsNewNotes();
-    var summary_buf: [512]u8 = undefined;
-    const summary = whats_new_model.summaryText(&summary_buf, notes);
-    const panel_w = @round(@min(@max(@as(f32, 320), window_width - 80), @as(f32, 860)));
-    const content_w = @max(1.0, panel_w - 68.0);
-    const advance = @max(@as(f32, 1), titlebar.titlebarGlyphAdvance('M'));
-    const summary_cols: usize = @max(whats_new_model.MIN_WRAP_COLS, @as(usize, @intFromFloat(@floor(content_w / advance))));
-    const summary_rows = whats_new_model.lineRows(summary.len, summary_cols);
-    return whats_new_model.computeLayoutWithHeaderRows(window_width, window_height, whatsNewLineHeight(), whatsNewButtonMetrics(), summary_rows);
+    return whats_new_model.computeLayoutWithButtons(window_width, window_height, whatsNewLineHeight(), whatsNewButtonMetrics());
 }
 
 fn topRectY(window_height: f32, rect: whats_new_model.Rect) f32 {
@@ -9432,6 +9423,8 @@ fn topRectY(window_height: f32, rect: whats_new_model.Rect) f32 {
 
 fn drawWhatsNewButton(rect: whats_new_model.Rect, label: []const u8, window_height: f32, border: [3]f32, fill: [3]f32, text: [3]f32, strong: bool) void {
     const y_bu = window_height - rect.y - rect.h;
+    ui_pipeline.beginClip(.{ .x = rect.x - 1, .y = y_bu - 1, .w = rect.w + 2, .h = rect.h + 2 });
+    defer ui_pipeline.endClip();
     renderRoundedQuadAlpha(rect.x - 1, y_bu - 1, rect.w + 2, rect.h + 2, 8, border, 0.64);
     renderRoundedQuadAlpha(rect.x, y_bu, rect.w, rect.h, 7, fill, 0.96);
     const tw = measureTitlebarText(label);
@@ -9457,18 +9450,16 @@ fn renderWhatsNewWrappedLine(
     x: f32,
     color: [3]f32,
     strong: bool,
-    wrap_cols: usize,
+    wrap_width: f32,
     line_h: f32,
     rows_state: *WhatsNewRows,
 ) bool {
-    const rows = whats_new_model.lineRows(text.len, wrap_cols);
-    var r: usize = 0;
-    while (r < rows) : (r += 1) {
+    var rows: whats_new_model.WrappedRows = .{ .text = text, .width = wrap_width, .advance = titlebar.titlebarGlyphAdvance };
+    while (rows.next()) |slice| {
         defer rows_state.row_index += 1;
         if (rows_state.row_index < rows_state.scroll) continue;
         if (rows_state.drawn >= layout.visible_rows) return false;
 
-        const slice = whats_new_model.wrapRowSlice(text, r, wrap_cols);
         const top = layout.content.y + @as(f32, @floatFromInt(rows_state.drawn)) * line_h;
         const row_y = window_height - top - line_h;
         const text_y = rowTextY(row_y, line_h);
@@ -9485,95 +9476,27 @@ fn renderWhatsNewWrappedLine(
     return true;
 }
 
-fn whatsNewBodyRows(notes: []const u8, wrap_cols: usize, indented_wrap_cols: usize) usize {
-    var total: usize = 0;
-    var in_code = false;
-    var it = std.mem.splitScalar(u8, notes, '\n');
-    while (it.next()) |raw| {
-        var cbuf: [1024]u8 = undefined;
-        const cleaned = md.cleanedLine(&cbuf, raw, in_code);
-        if (cleaned.style == .fence) in_code = !in_code;
-        const cols = switch (cleaned.style) {
-            .list, .quote, .code => indented_wrap_cols,
-            else => wrap_cols,
-        };
-        total += whats_new_model.lineRows(cleaned.text.len, cols);
-    }
-    return total;
-}
-
-fn whatsNewHighlightsRows(highlights: whats_new_model.Highlights, wrap_cols: usize) usize {
-    if (highlights.len == 0) return 0;
-    var total: usize = whats_new_model.lineRows("Highlights".len, wrap_cols);
-    var i: usize = 0;
-    while (i < highlights.len) : (i += 1) {
-        total += whats_new_model.lineRows(highlights.items[i].len + 2, wrap_cols);
-    }
-    return total + 1; // spacer after highlights
-}
-
-fn renderWhatsNewHighlights(
-    layout: whats_new_model.Layout,
-    window_height: f32,
-    highlights: whats_new_model.Highlights,
-    wrap_cols: usize,
-    indented_wrap_cols: usize,
-    line_h: f32,
-    rows_state: *WhatsNewRows,
-    heading_color: [3]f32,
-    accent: [3]f32,
-    body: [3]f32,
-) bool {
-    if (highlights.len == 0) return true;
-    if (!renderWhatsNewWrappedLine(layout, window_height, "Highlights", layout.content.x, heading_color, true, wrap_cols, line_h, rows_state)) return false;
-
-    var i: usize = 0;
-    while (i < highlights.len) : (i += 1) {
-        var line_buf: [512]u8 = undefined;
-        const line = std.fmt.bufPrint(&line_buf, "* {s}", .{highlights.items[i]}) catch highlights.items[i];
-        if (!renderWhatsNewWrappedLine(layout, window_height, line, layout.content.x + 16, mixColor(body, accent, 0.08), false, indented_wrap_cols, line_h, rows_state)) return false;
-    }
-    return renderWhatsNewWrappedLine(layout, window_height, "", layout.content.x, body, false, wrap_cols, line_h, rows_state);
-}
-
 fn renderWhatsNewBody(
     layout: whats_new_model.Layout,
     window_height: f32,
-    notes: []const u8,
-    wrap_cols: usize,
-    indented_wrap_cols: usize,
+    doc: whats_new_model.Document,
+    wrap_width: f32,
+    indented_wrap_width: f32,
     line_h: f32,
     rows_state: *WhatsNewRows,
     heading_color: [3]f32,
     body: [3]f32,
     muted: [3]f32,
 ) void {
-    var in_code = false;
-    var it = std.mem.splitScalar(u8, notes, '\n');
-    while (it.next()) |raw| {
-        var cbuf: [1024]u8 = undefined;
-        const cleaned = md.cleanedLine(&cbuf, raw, in_code);
-        if (cleaned.style == .fence) {
-            in_code = !in_code;
-            if (!renderWhatsNewWrappedLine(layout, window_height, "", layout.content.x, muted, false, wrap_cols, line_h, rows_state)) return;
-            continue;
-        }
-
-        const x = switch (cleaned.style) {
-            .list, .quote, .code => layout.content.x + 16,
-            else => layout.content.x,
-        };
-        const color = switch (cleaned.style) {
+    for (doc.blocks.items) |block| {
+        const x = if (block.indented()) layout.content.x + 16 else layout.content.x;
+        const color = switch (block.style) {
             .heading => heading_color,
-            .quote, .code => muted,
+            .code => muted,
             else => body,
         };
-        const strong = cleaned.style == .heading;
-        const line_cols = switch (cleaned.style) {
-            .list, .quote, .code => indented_wrap_cols,
-            else => wrap_cols,
-        };
-        if (!renderWhatsNewWrappedLine(layout, window_height, cleaned.text, x, color, strong, line_cols, line_h, rows_state)) return;
+        const width = if (block.indented()) indented_wrap_width else wrap_width;
+        if (!renderWhatsNewWrappedLine(layout, window_height, doc.blockText(block), x, color, block.style == .heading, width, line_h, rows_state)) return;
     }
 }
 
@@ -9614,64 +9537,58 @@ pub fn renderWhatsNew(window_width: f32, window_height: f32) void {
     ui_pipeline.fillQuadAlpha(layout.footer.x + 1, footer_y, layout.footer.w - 2, layout.footer.h, panel_footer, 0.45);
 
     const notes = whatsNewNotes();
-    var title_buf: [96]u8 = undefined;
-    const title = std.fmt.bufPrint(&title_buf, "WispTerm v{s}", .{whatsNewTrimV(app_metadata.version)}) catch "WispTerm";
-    const title_top = layout.header.y + 20;
-    const header_right = layout.title_close_btn.x - 16;
-    renderTitlebarTextStrongLimited(title, layout.content.x, textYFromTop(window_height, title_top), fg, header_right - layout.content.x);
+    {
+        ui_pipeline.beginClip(.{ .x = layout.header.x, .y = header_y, .w = layout.header.w, .h = layout.header.h });
+        defer ui_pipeline.endClip();
+        var title_buf: [96]u8 = undefined;
+        const title = std.fmt.bufPrint(&title_buf, "WispTerm v{s}", .{whatsNewTrimV(app_metadata.version)}) catch "WispTerm";
+        const title_top = layout.header.y + 20;
+        const header_right = layout.title_close_btn.x - 16;
+        renderTitlebarTextStrongLimited(title, layout.content.x, textYFromTop(window_height, title_top), fg, header_right - layout.content.x);
 
-    const close_y = topRectY(window_height, layout.title_close_btn);
-    titlebar.renderCloseIcon(layout.title_close_btn.x, close_y, layout.title_close_btn.w, layout.title_close_btn.h, muted);
+        const close_y = topRectY(window_height, layout.title_close_btn);
+        titlebar.renderCloseIcon(layout.title_close_btn.x, close_y, layout.title_close_btn.w, layout.title_close_btn.h, muted);
 
-    if (notes.len > 0) {
-        var summary_buf: [512]u8 = undefined;
-        const summary = whats_new_model.summaryText(&summary_buf, notes);
-        if (summary.len > 0) {
-            const subtitle_top = title_top + overlayTextHeight() + 12;
-            const summary_w = header_right - layout.content.x;
-            const summary_adv = @max(@as(f32, 1), titlebar.titlebarGlyphAdvance('M'));
-            const summary_cols: usize = @max(whats_new_model.MIN_WRAP_COLS, @as(usize, @intFromFloat(@floor(summary_w / summary_adv))));
-            const rows = whats_new_model.lineRows(summary.len, summary_cols);
-            var row: usize = 0;
-            while (row < rows) : (row += 1) {
-                renderTitlebarTextLimited(whats_new_model.wrapRowSlice(summary, row, summary_cols), layout.content.x, textYFromTop(window_height, subtitle_top + @as(f32, @floatFromInt(row)) * line_h), body, summary_w);
-            }
+        // Fixed chrome never depends on the amount of release text.
+        const subtitle_top = title_top + overlayTextHeight() + 12;
+        if (subtitle_top + overlayTextHeight() <= layout.header.y + layout.header.h) {
+            renderTitlebarTextLimited("Scroll to read release notes", layout.content.x, textYFromTop(window_height, subtitle_top), muted, layout.content.w);
         }
     }
 
-    if (notes.len == 0) {
-        renderTitlebarText("Release notes unavailable for this version.", layout.content.x, window_height - layout.content.y - line_h, muted);
-    } else {
-        const adv = @max(@as(f32, 1), titlebar.titlebarGlyphAdvance('M'));
-        var wrap_cols: usize = @intFromFloat(layout.content.w / adv);
-        if (wrap_cols < whats_new_model.MIN_WRAP_COLS) wrap_cols = whats_new_model.MIN_WRAP_COLS;
-        var indented_wrap_cols: usize = @intFromFloat(@max(1.0, (layout.content.w - 16.0) / adv));
-        if (indented_wrap_cols < whats_new_model.MIN_WRAP_COLS) indented_wrap_cols = whats_new_model.MIN_WRAP_COLS;
-
-        const body_notes = whats_new_model.bodyNotes(notes);
-        var summary_buf: [512]u8 = undefined;
-        const summary = whats_new_model.summaryText(&summary_buf, notes);
-        var highlights_buf: [512]u8 = undefined;
-        const highlights = whats_new_model.highlightClauses(&highlights_buf, summary);
-
-        const total = whatsNewHighlightsRows(highlights, indented_wrap_cols) + whatsNewBodyRows(body_notes, wrap_cols, indented_wrap_cols);
+    if (layout.visible_rows > 0) {
+        const body_notes = if (notes.len == 0) "Release notes unavailable for this version." else whats_new_model.bodyNotes(notes);
+        const wrap_width = layout.content.w;
+        const indented_wrap_width = @max(1, wrap_width - 16);
+        const allocator = std.heap.page_allocator;
+        var doc = whats_new_model.Document.init(allocator, body_notes) catch return;
+        defer doc.deinit(allocator);
+        const total = doc.totalRows(wrap_width, indented_wrap_width, titlebar.titlebarGlyphAdvance);
         const scroll = whats_new_model.clampScroll(whatsNewState().scroll, total, layout.visible_rows);
         whatsNewState().scroll = @intCast(scroll);
-
-        var rows_state: WhatsNewRows = .{ .scroll = scroll };
-        if (renderWhatsNewHighlights(layout, window_height, highlights, wrap_cols, indented_wrap_cols, line_h, &rows_state, heading, accent, body)) {
-            renderWhatsNewBody(layout, window_height, body_notes, wrap_cols, indented_wrap_cols, line_h, &rows_state, heading, body, muted);
+        {
+            ui_pipeline.beginClip(.{ .x = layout.content.x, .y = topRectY(window_height, layout.content), .w = layout.content.w, .h = layout.content.h });
+            defer ui_pipeline.endClip();
+            var rows_state: WhatsNewRows = .{ .scroll = scroll };
+            renderWhatsNewBody(layout, window_height, doc, wrap_width, indented_wrap_width, line_h, &rows_state, heading, body, muted);
+        }
+        if (total > layout.visible_rows) {
+            const track_h = layout.content.h;
+            const thumb_h = @min(track_h, @max(18, track_h * @as(f32, @floatFromInt(layout.visible_rows)) / @as(f32, @floatFromInt(total))));
+            const thumb_top = layout.content.y + (track_h - thumb_h) * @as(f32, @floatFromInt(scroll)) / @as(f32, @floatFromInt(total - layout.visible_rows));
+            ui_pipeline.fillQuadAlpha(layout.content.x + layout.content.w + 6, window_height - thumb_top - thumb_h, 3, thumb_h, muted, 0.6);
         }
     }
 
     // Footer buttons.
-    drawWhatsNewButton(layout.view_btn, WHATS_NEW_VIEW_LABEL, window_height, quiet_border, mixColor(bg, fg, 0.10), body, false);
+    const view_label = if (measureTitlebarText(WHATS_NEW_VIEW_LABEL) + 24 <= layout.view_btn.w) WHATS_NEW_VIEW_LABEL else "GitHub";
+    drawWhatsNewButton(layout.view_btn, view_label, window_height, quiet_border, mixColor(bg, fg, 0.10), body, false);
     drawWhatsNewButton(layout.close_btn, WHATS_NEW_OK_LABEL, window_height, mixColor(accent, fg, 0.22), mixColor(bg, accent, 0.24), mixColor(fg, accent, 0.16), true);
 }
 
 pub fn renderUpdatePrompt(window_width: f32, window_height: f32) void {
     _ = window_height;
-    g_update_prompt_rect = null;
+    toastState().update.rect = null;
 
     const now = std.time.milliTimestamp();
     const prompt = &toastState().update;
@@ -9695,7 +9612,7 @@ pub fn renderUpdatePrompt(window_width: f32, window_height: f32) void {
     ui_pipeline.fillQuad(bg_x, bg_y, bg_w, line_h, bg_color);
     if (prompt.clickable) {
         ui_pipeline.fillQuad(bg_x, bg_y + line_h - 2, bg_w, 2, .{ 0.86, 0.48, 0.20 });
-        g_update_prompt_rect = .{ .x = bg_x, .y = bg_y, .w = bg_w, .h = line_h };
+        toastState().update.rect = .{ .x = bg_x, .y = bg_y, .w = bg_w, .h = line_h };
     }
 
     renderTitlebarText(text, bg_x + pad_h, bg_y + pad_v, text_color);
@@ -9704,7 +9621,7 @@ pub fn renderUpdatePrompt(window_width: f32, window_height: f32) void {
 pub fn updatePromptHitTest(xpos: f64, ypos: f64, window_height: f32) bool {
     const prompt = &toastState().update;
     if (!prompt.clickable or !prompt.active(std.time.milliTimestamp())) return false;
-    const rect = g_update_prompt_rect orelse return false;
+    const rect = toastState().update.rect orelse return false;
     const x: f32 = @floatCast(xpos);
     const y_from_bottom = window_height - @as(f32, @floatCast(ypos));
     return x >= rect.x and x <= rect.x + rect.w and

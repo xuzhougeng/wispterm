@@ -358,7 +358,7 @@ pub const CleanedLine = struct {
 /// the cleaned bytes; the returned `text` is a slice into `buf`. The renderer's
 /// prepareMarkdownLine duplicates these text branches (it also adds colors and
 /// line heights); both must be updated together when new constructs are added.
-pub fn cleanedLine(buf: *[1024]u8, raw_line: []const u8, in_code: bool) CleanedLine {
+pub fn cleanedLine(buf: []u8, raw_line: []const u8, in_code: bool) CleanedLine {
     const trimmed = std.mem.trimLeft(u8, raw_line, " \t");
     if (isFence(trimmed)) return .{ .style = .fence, .fence_label = fenceLanguage(trimmed) };
     if (in_code) return .{ .style = .code, .text = raw_line };

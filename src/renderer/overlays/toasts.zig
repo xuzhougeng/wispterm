@@ -64,6 +64,8 @@ pub const TransferToast = struct {
 };
 
 pub const UpdatePrompt = struct {
+    // Last painted hit target belongs to the prompt, not the overlay facade.
+    rect: ?struct { x: f32, y: f32, w: f32, h: f32 } = null,
     until_ms: i64 = 0,
     buf: [128]u8 = undefined,
     len: usize = 0,
