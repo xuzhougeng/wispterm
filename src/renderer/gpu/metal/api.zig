@@ -6,9 +6,6 @@
 
 pub const c = @import("c.zig"); // GL-flavored constants/types shim (no @cInclude)
 pub const Context = @import("Context.zig"); // context lifecycle + GL table
-pub const GlTable = @import("GlTable.zig").GlTable; // the table type (for gpu.glTable())
-
-pub const gl_init = @import("gl_init.zig");
 
 pub const Buffer = @import("Buffer.zig");
 pub const Texture = @import("Texture.zig");

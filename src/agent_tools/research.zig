@@ -4,6 +4,11 @@ const web_search = @import("../research/web_search.zig");
 const web_read = @import("../research/web_read.zig");
 const pubmed = @import("../research/pubmed.zig");
 const http_proxy = @import("../platform/http_proxy.zig");
+const types = @import("../assistant/conversation/types.zig");
+const tool_access = @import("access.zig");
+const tool_output = @import("output.zig");
+
+const ToolContext = types.ToolContext;
 
 /// Agent `websearch` tool: full-content Jina search, formatted for the model.
 pub fn webSearch(allocator: std.mem.Allocator, query: []const u8, max_results: ?u32) ![]u8 {
@@ -22,6 +27,30 @@ pub fn webSearch(allocator: std.mem.Allocator, query: []const u8, max_results: ?
     }) catch |err| return web_search.formatErrorText(allocator, err);
     defer results.deinit();
     return web_search.formatForAgent(allocator, query, results.items);
+}
+
+/// Agent `webread` entry point. A URL is fetched as-is. A local file is
+/// different: it is *uploaded* to the reader service to be converted, so it
+/// leaves the machine. That path used to run with no access check in every
+/// permission mode. Now a deny-listed path is refused outright (it is never
+/// uploaded, whatever the mode), and any other local file needs the
+/// operator's approval unless permission is `full`.
+pub fn webReadTool(ctx: *ToolContext, target_in: []const u8) ![]u8 {
+    const target = std.mem.trim(u8, target_in, " \t\r\n");
+    if (!web_read.isHttpUrl(target)) {
+        const resolved = try web_read.resolveFilePath(ctx.allocator, target, ctx.settings.working_dir);
+        defer ctx.allocator.free(resolved);
+        const gate = tool_access.fileGate(ctx, resolved, false);
+        if (gate.blacklisted) {
+            return tool_output.deniedResult(ctx.allocator, resolved, "protected path - webread does not upload it");
+        }
+        if (ctx.settings.permission != .full) {
+            if (!ctx.requestApproval("webread", resolved, "Uploads this local file to the web reader service to convert it")) {
+                return tool_output.deniedResult(ctx.allocator, resolved, "operator rejected uploading the file");
+            }
+        }
+    }
+    return webRead(ctx.allocator, target, ctx.settings.working_dir);
 }
 
 /// Agent `webread` tool: read a URL or local file into markdown for the model.

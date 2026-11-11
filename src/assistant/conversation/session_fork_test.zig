@@ -121,3 +121,61 @@ test "plain f without an open rewind picker still types into the composer" {
     try std.testing.expect(!ForkHook.fired);
     try std.testing.expectEqualStrings("f", session.input());
 }
+
+const agent_history = @import("../../agent/history.zig");
+const api_key_resolver = @import("api_key_resolver.zig");
+
+const KeyResolverFake = struct {
+    fn cb(base_url: []const u8, model: []const u8, out: []u8) ?[]const u8 {
+        if (!std.mem.eql(u8, base_url, "https://api.example.test/v1") or !std.mem.eql(u8, model, "m1")) return null;
+        const key = "key-from-profile";
+        @memcpy(out[0..key.len], key);
+        return out[0..key.len];
+    }
+};
+
+fn keylessRecord(base_url: []const u8) agent_history.SessionRecord {
+    return .{
+        .session_id = "restored-1",
+        .title = "Restored",
+        .base_url = base_url,
+        .api_key = "",
+        .model = "m1",
+        .system_prompt = "system",
+        .thinking_enabled = false,
+        .reasoning_effort = "high",
+        .stream = false,
+        .agent_enabled = false,
+        .created_at = 1,
+        .updated_at = 2,
+        .messages = &.{},
+    };
+}
+
+test "a session restored from history gets its API key from the saved profiles" {
+    const a = std.testing.allocator;
+    api_key_resolver.set(KeyResolverFake.cb);
+    defer api_key_resolver.set(null);
+
+    // History no longer stores the key, so the record arrives without one.
+    const restored = try Session.initFromHistoryRecord(a, keylessRecord("https://api.example.test/v1"));
+    defer restored.deinit();
+    try std.testing.expectEqualStrings("key-from-profile", restored.apiKey());
+
+    // No matching profile: the session comes back without a key rather than failing.
+    const unknown = try Session.initFromHistoryRecord(a, keylessRecord("https://other.example.test"));
+    defer unknown.deinit();
+    try std.testing.expectEqualStrings("", unknown.apiKey());
+}
+
+test "a legacy history record that still carries a key keeps using it" {
+    const a = std.testing.allocator;
+    api_key_resolver.set(KeyResolverFake.cb);
+    defer api_key_resolver.set(null);
+
+    var record = keylessRecord("https://api.example.test/v1");
+    record.api_key = "legacy-key";
+    const restored = try Session.initFromHistoryRecord(a, record);
+    defer restored.deinit();
+    try std.testing.expectEqualStrings("legacy-key", restored.apiKey());
+}

@@ -5,6 +5,7 @@
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const Renderer = @import("Renderer.zig");
+const cell_geometry = @import("cell_geometry.zig");
 const gpu = AppWindow.gpu;
 
 const Pipeline = gpu.Pipeline;
@@ -26,6 +27,32 @@ pub threadlocal var quad: Buffer = .{ .handle = 0, .target = 0 };
 /// animation frames) re-draws without re-uploading.
 pub threadlocal var g_last_uploader: ?*const anyopaque = null;
 pub threadlocal var g_uploaded_generation: u64 = 0;
+
+/// Bytes currently allocated for each instance buffer. They start at
+/// `Renderer.INITIAL_CELLS` and grow in `uploadInstances`.
+threadlocal var bg_capacity: usize = 0;
+threadlocal var fg_capacity: usize = 0;
+threadlocal var color_fg_capacity: usize = 0;
+
+pub const InstanceBuffer = enum { bg, fg, color_fg };
+
+/// Upload one frame's instances, growing the buffer first when the grid no
+/// longer fits. OpenGL's sub-data upload silently does nothing past the
+/// allocated size, so the capacity is tracked here rather than left to each
+/// backend.
+pub fn uploadInstances(which: InstanceBuffer, bytes: []const u8) void {
+    const buffer: Buffer, const capacity: *usize = switch (which) {
+        .bg => .{ bg_instances, &bg_capacity },
+        .fg => .{ fg_instances, &fg_capacity },
+        .color_fg => .{ color_fg_instances, &color_fg_capacity },
+    };
+    const wanted = cell_geometry.grownInstanceCapacity(capacity.*, bytes.len);
+    if (wanted != capacity.*) {
+        buffer.allocate(wanted, .stream);
+        capacity.* = wanted;
+    }
+    buffer.upload(bytes);
+}
 
 /// Build the cell pipelines. Call once after the GL context is current.
 /// On shader link failure a pipeline's `program` is 0 (draws are guarded on
@@ -49,7 +76,8 @@ pub fn init() void {
     // attr 2 (loc=2, count=3): r/g/b from bg_instances (divisor=1)
     // attr 3 (loc=3, count=1): alpha from bg_instances (divisor=1)
     bg_instances = Buffer.initVertex();
-    bg_instances.allocate(@sizeOf(Renderer.CellBg) * Renderer.MAX_CELLS, .stream);
+    bg_capacity = @sizeOf(Renderer.CellBg) * Renderer.INITIAL_CELLS;
+    bg_instances.allocate(bg_capacity, .stream);
     const bg_stride = @sizeOf(Renderer.CellBg);
     const bg_vao = gpu.vertex.buildVertexArray(&.{
         .{
@@ -75,7 +103,8 @@ pub fn init() void {
     // attr 3 (loc=3, count=4): uv_left/top/right/bottom (divisor=1)
     // attr 4 (loc=4, count=3): r/g/b (divisor=1)
     fg_instances = Buffer.initVertex();
-    fg_instances.allocate(@sizeOf(Renderer.CellFg) * Renderer.MAX_CELLS, .stream);
+    fg_capacity = @sizeOf(Renderer.CellFg) * Renderer.INITIAL_CELLS;
+    fg_instances.allocate(fg_capacity, .stream);
     const fg_stride = @sizeOf(Renderer.CellFg);
     const fg_vao = gpu.vertex.buildVertexArray(&.{
         .{
@@ -97,7 +126,8 @@ pub fn init() void {
 
     // --- Color FG VAO (same layout as FG) ---
     color_fg_instances = Buffer.initVertex();
-    color_fg_instances.allocate(@sizeOf(Renderer.CellFg) * Renderer.MAX_CELLS, .stream);
+    color_fg_capacity = @sizeOf(Renderer.CellFg) * Renderer.INITIAL_CELLS;
+    color_fg_instances.allocate(color_fg_capacity, .stream);
     const color_fg_stride = @sizeOf(Renderer.CellFg); // same CellFg layout as fg
     const color_fg_vao = gpu.vertex.buildVertexArray(&.{
         .{

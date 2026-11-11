@@ -190,6 +190,22 @@ test "backgroundFor: selected cell with null selection_foreground falls back to 
 // ============================================================================
 // GPU instance-buffer upload gating
 // ============================================================================
+/// Byte capacity an instance buffer should have to hold `needed` bytes,
+/// given it currently holds `current`. Unchanged when the data fits;
+/// otherwise at least 1.5x the old size so a window being dragged larger
+/// does not reallocate on every frame.
+pub fn grownInstanceCapacity(current: usize, needed: usize) usize {
+    if (needed <= current) return current;
+    return @max(needed, current +| current / 2);
+}
+
+test "grownInstanceCapacity keeps a fitting buffer and grows with headroom" {
+    try std.testing.expectEqual(@as(usize, 1000), grownInstanceCapacity(1000, 400));
+    try std.testing.expectEqual(@as(usize, 1000), grownInstanceCapacity(1000, 1000));
+    try std.testing.expectEqual(@as(usize, 1500), grownInstanceCapacity(1000, 1001));
+    try std.testing.expectEqual(@as(usize, 5000), grownInstanceCapacity(1000, 5000));
+    try std.testing.expectEqual(@as(usize, 64), grownInstanceCapacity(0, 64));
+}
 
 /// Whether drawCells must re-upload its CPU cell buffers to the shared GPU
 /// instance buffers. The buffers are global (one set for all surfaces), so a

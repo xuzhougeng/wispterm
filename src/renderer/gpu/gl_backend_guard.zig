@@ -15,9 +15,9 @@
 //!      rendering layer (D-prep ① neutralized `ui_pipeline`/`cell_pipeline`/
 //!      `cell_renderer`/`post_process`/`Renderer`/`markdown`/`weixin`/`overlays/*`).
 //!
-//! Residue (intentionally NOT locked): `AppWindow.zig` still calls `glTable()`
-//! for the GL-context-creation seam (`Context.init` via `glGetProcAddress`).
-//! Render diagnostics must use backend-neutral `gpu.state` APIs.
+//! `gpu.glTable()` and the per-backend `gl_init` shims no longer exist; the
+//! vocabularies below keep them from coming back. Render diagnostics must use
+//! backend-neutral `gpu.state` APIs.
 
 const std = @import("std");
 
@@ -96,7 +96,6 @@ const src_overlays = @embedFile("../overlays.zig");
 const src_image = @embedFile("../image_renderer.zig");
 const src_background = @embedFile("../background_image.zig");
 const src_post_process = @embedFile("../post_process.zig");
-const src_fbo = @embedFile("../fbo.zig");
 const src_cell_renderer = @embedFile("../cell_renderer.zig");
 const src_cell_pipeline = @embedFile("../cell_pipeline.zig");
 const src_ui_pipeline = @embedFile("../ui_pipeline.zig");
@@ -122,7 +121,6 @@ const glad_free = [_]Entry{
     .{ .name = "renderer/image_renderer.zig", .source = src_image },
     .{ .name = "renderer/background_image.zig", .source = src_background },
     .{ .name = "renderer/post_process.zig", .source = src_post_process },
-    .{ .name = "renderer/fbo.zig", .source = src_fbo },
     .{ .name = "renderer/cell_renderer.zig", .source = src_cell_renderer },
     .{ .name = "renderer/weixin_qr_renderer.zig", .source = src_weixin },
     .{ .name = "renderer/feishu_qr_renderer.zig", .source = src_feishu_qr },
@@ -145,7 +143,6 @@ const raw_gl_free = [_]Entry{
     .{ .name = "renderer/markdown_preview_renderer.zig", .source = src_markdown },
     .{ .name = "renderer/image_renderer.zig", .source = src_image },
     .{ .name = "renderer/background_image.zig", .source = src_background },
-    .{ .name = "renderer/fbo.zig", .source = src_fbo },
     .{ .name = "renderer/weixin_qr_renderer.zig", .source = src_weixin },
     .{ .name = "renderer/feishu_qr_renderer.zig", .source = src_feishu_qr },
     .{ .name = "renderer/overlays.zig", .source = src_overlays },

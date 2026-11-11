@@ -384,16 +384,6 @@ pub fn pointerOverHostTitlebar(window: *const Window) bool {
     return false;
 }
 
-pub fn setTabCloseButtonBounds(window: *Window, tab_index: usize, start_x: i32, end_x: i32) void {
-    window.close_btn_x_start[tab_index] = start_x;
-    window.close_btn_x_end[tab_index] = end_x;
-}
-
-pub fn setNewTabButtonBounds(window: *Window, start_x: i32, end_x: i32) void {
-    window.plus_btn_x_start = start_x;
-    window.plus_btn_x_end = end_x;
-}
-
 pub fn isFocused(window: *const Window) bool {
     return window.focused;
 }
@@ -760,21 +750,6 @@ test "platform window backend exposes backend-neutral pointer and titlebar hit s
     try std.testing.expectEqual(@as(usize, 1), hovered_info.params.len);
     try std.testing.expect(hovered_info.params[0].type.? == *const Window);
     try std.testing.expect(hovered_info.return_type.? == CaptionButton);
-
-    const close_info = @typeInfo(@TypeOf(setTabCloseButtonBounds)).@"fn";
-    try std.testing.expectEqual(@as(usize, 4), close_info.params.len);
-    try std.testing.expect(close_info.params[0].type.? == *Window);
-    try std.testing.expect(close_info.params[1].type.? == usize);
-    try std.testing.expect(close_info.params[2].type.? == i32);
-    try std.testing.expect(close_info.params[3].type.? == i32);
-    try std.testing.expect(close_info.return_type.? == void);
-
-    const plus_info = @typeInfo(@TypeOf(setNewTabButtonBounds)).@"fn";
-    try std.testing.expectEqual(@as(usize, 3), plus_info.params.len);
-    try std.testing.expect(plus_info.params[0].type.? == *Window);
-    try std.testing.expect(plus_info.params[1].type.? == i32);
-    try std.testing.expect(plus_info.params[2].type.? == i32);
-    try std.testing.expect(plus_info.return_type.? == void);
 }
 
 test "platform window backend exposes backend-neutral create options" {

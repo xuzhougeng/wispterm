@@ -123,7 +123,7 @@ pub fn buildMultipartBody(allocator: std.mem.Allocator, filename: []const u8, by
 /// Resolve a relative file `target` against `cache_dir` (the working dir); an absolute
 /// target is returned as-is. Caller frees. Mirrors the file tool path resolution so
 /// `webread` resolves the same way the file-edit tools do.
-fn resolveFilePath(allocator: std.mem.Allocator, target: []const u8, cache_dir: ?[]const u8) ![]u8 {
+pub fn resolveFilePath(allocator: std.mem.Allocator, target: []const u8, cache_dir: ?[]const u8) ![]u8 {
     if (std.fs.path.isAbsolute(target)) return allocator.dupe(u8, target);
     if (cache_dir) |cd| if (cd.len > 0) return std.fs.path.join(allocator, &.{ cd, target });
     return allocator.dupe(u8, target);

@@ -300,7 +300,7 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
         const url = tool_args.string(args.value, "url") orelse return ctx.allocator.dupe(u8, "Missing url");
-        return agent_research.webRead(ctx.allocator, url, ctx.settings.working_dir);
+        return agent_research.webReadTool(ctx, url);
     }
     if (std.mem.eql(u8, call.name, "pubmed")) {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");

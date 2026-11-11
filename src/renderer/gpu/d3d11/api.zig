@@ -3,9 +3,6 @@
 
 pub const c = @import("c.zig");
 pub const Context = @import("Context.zig");
-pub const GlTable = @import("GlTable.zig").GlTable;
-
-pub const gl_init = @import("gl_init.zig");
 
 pub const Buffer = @import("Buffer.zig");
 pub const Texture = @import("Texture.zig");

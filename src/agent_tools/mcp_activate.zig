@@ -3,8 +3,10 @@
 //! calls this before using their tools. If the server has no valid catalog
 //! entry yet, this spawns it once (initialize + tools/list), writes the disk
 //! catalog, and reloads the registry cache — so activation doubles as
-//! first-time discovery. No approval gate: it only launches a server the user
-//! already configured, and the real tool calls keep their own gate.
+//! first-time discovery. No approval gate: it only launches a server that is
+//! already configured — by the user, or by the model through `mcp_config add`,
+//! whose approval card shows the exact command line — and the real tool calls
+//! keep their own gate.
 const std = @import("std");
 const types = @import("../assistant/conversation/types.zig");
 const mcp_registry = @import("../tools/mcp_registry.zig");

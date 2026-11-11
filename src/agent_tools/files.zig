@@ -291,6 +291,31 @@ pub fn copyFile(
     };
     defer ctx.allocator.free(dest_path);
 
+    // Same rules as read_file for the source and write_file for the
+    // destination: a deny-listed local source or a destination outside the
+    // working directory (or on a remote host) needs the operator's approval.
+    // The default staging destination is inside the working directory, so the
+    // usual "pull an artifact, then send it" flow stays unprompted.
+    const source_gate = switch (source_endpoint) {
+        .local => tool_access.fileGate(ctx, source_path, false),
+        .wsl, .ssh => tool_access.remoteFileGate(false),
+        .err => unreachable,
+    };
+    const dest_gate = switch (dest_endpoint) {
+        .local => tool_access.fileGate(ctx, dest_path, true),
+        .wsl, .ssh => tool_access.remoteFileGate(true),
+        .err => unreachable,
+    };
+    const gate = tool_access.mergeGates(source_gate, dest_gate);
+    if (tool_access.approvalRequired(ctx.settings.permission, gate)) {
+        const summary = try std.fmt.allocPrint(ctx.allocator, "{s} -> {s}", .{ source_path, dest_path });
+        defer ctx.allocator.free(summary);
+        const reason = if (gate.blacklisted) "Copies a protected path - confirm to allow" else "Copy file";
+        if (!ctx.requestApproval("copy_file", summary, reason)) {
+            return tool_output.deniedResult(ctx.allocator, summary, "operator rejected file copy");
+        }
+    }
+
     switch (source_endpoint) {
         .ssh => |src_remote| {
             if (dest_endpoint == .ssh) return ctx.allocator.dupe(u8, "copy_file does not support SSH-to-SSH copies yet. Pull to local wispterm-files first, then push to the destination SSH surface.");

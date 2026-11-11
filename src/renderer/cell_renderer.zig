@@ -523,7 +523,7 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
         p.setFloat("windowHeight", window_height);
         p.setProjection();
         p.bindVao();
-        if (need_upload) cell_pipeline.bg_instances.upload(std.mem.sliceAsBytes(rend.bg_cells.items[0..rend.bg_cell_count]));
+        if (need_upload) cell_pipeline.uploadInstances(.bg, std.mem.sliceAsBytes(rend.bg_cells.items[0..rend.bg_cell_count]));
         p.drawArraysInstanced(.triangle_strip, 0, 4, @intCast(rend.bg_cell_count));
         gpu.draw_call_count += 1;
     }
@@ -541,7 +541,7 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
         font.g_atlas_texture.bind(0);
         p.setInt("atlas", 0);
         p.bindVao();
-        if (need_upload) cell_pipeline.fg_instances.upload(std.mem.sliceAsBytes(rend.fg_cells.items[0..rend.fg_cell_count]));
+        if (need_upload) cell_pipeline.uploadInstances(.fg, std.mem.sliceAsBytes(rend.fg_cells.items[0..rend.fg_cell_count]));
         p.drawArraysInstanced(.triangle_strip, 0, 4, @intCast(rend.fg_cell_count));
         gpu.draw_call_count += 1;
     }
@@ -559,7 +559,7 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
         font.g_color_atlas_texture.bind(0);
         p.setInt("atlas", 0);
         p.bindVao();
-        if (need_upload) cell_pipeline.color_fg_instances.upload(std.mem.sliceAsBytes(rend.color_fg_cells.items[0..rend.color_fg_cell_count]));
+        if (need_upload) cell_pipeline.uploadInstances(.color_fg, std.mem.sliceAsBytes(rend.color_fg_cells.items[0..rend.color_fg_cell_count]));
         p.drawArraysInstanced(.triangle_strip, 0, 4, @intCast(rend.color_fg_cell_count));
         gpu.draw_call_count += 1;
         // Restore standard blend for the cursor/titlebar draws that follow.

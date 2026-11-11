@@ -129,32 +129,10 @@ jobs:
             '' \
             '> wisptermctl 是 WispTerm 智能体终端控制 API 的独立命令行客户端。该压缩包内含所有桌面平台的构建,解压后按需选择对应平台的可执行文件即可(详见包内 `README.txt`)。')
 
-          # Whichever platform workflow finishes first creates the release; the
-          # others just upload + append their notes section. Mirror that here:
-          # upload idempotently, append the wisptermctl notes only once.
-          if gh release view "${tag}" --repo "${GH_REPO}" >/dev/null 2>&1; then
-            gh release upload "${tag}" "${asset}" --clobber --repo "${GH_REPO}"
-            body="$(gh release view "${tag}" --repo "${GH_REPO}" --json body --jq '.body')"
-            if ! printf '%s' "${body}" | grep -qF 'wisptermctl (agent terminal control CLI) included in this release:'; then
-              gh release edit "${tag}" --repo "${GH_REPO}" \
-                --notes "$(printf '%s\n\n%s\n' "${body}" "${asset_notes}")"
-            fi
-          else
-            release_notes_path="release-notes/${tag}.md"
-            if [[ -f "${release_notes_path}" ]]; then
-              curated="$(cat "${release_notes_path}")"
-              curated_trimmed="$(printf '%s' "${curated}" | awk 'NF {found=1} found')"
-              if [[ -n "${curated_trimmed}" ]]; then
-                notes="$(printf '%s\n\n%s\n' "${curated}" "${asset_notes}")"
-              else
-                notes="${asset_notes}"
-              fi
-            else
-              notes="${asset_notes}"
-            fi
-            gh release create "${tag}" "${asset}" \
-              --repo "${GH_REPO}" \
-              --verify-tag \
-              --generate-notes \
-              --notes "${notes}"
-          fi
+          # Other platform workflows publish to the same release; the shared
+          # script creates it if needed, uploads, and appends this section.
+          printf '%s\n' "${asset_notes}" > "${RUNNER_TEMP}/asset-notes.md"
+          bash .github/scripts/publish-release.sh "${tag}" \
+            'wisptermctl (agent terminal control CLI) included in this release:' \
+            "${RUNNER_TEMP}/asset-notes.md" \
+            "${asset}"
