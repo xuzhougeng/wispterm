@@ -6,6 +6,7 @@ const file_explorer = @import("../file_explorer.zig");
 const markdown_preview = @import("../preview/markdown.zig");
 const platform_remote_file = @import("../platform/remote_file.zig");
 const platform_local_path = @import("../platform/local_path.zig");
+const platform_dirs = @import("../platform/dirs.zig");
 const scp = @import("../ssh/scp.zig");
 const ui_perf = @import("../ui_perf.zig");
 const preview_path = @import("preview_path.zig");
@@ -331,6 +332,50 @@ test "preview_source: local resolve treats OSC 7 drive paths as absolute" {
     try std.testing.expect(std.mem.indexOf(u8, resolved, "/tmp") == null);
 }
 
+test "preview_source: local home paths ignore cwd, including when cwd is unavailable" {
+    const allocator = std.testing.allocator;
+    const home = try platform_dirs.homeDir(allocator);
+    defer allocator.free(home);
+
+    for ([_][]const u8{ "~", "~/", "~/AppData/Local/Temp/wisp-demo/shots/d7.png" }) |path| {
+        const expected = try std.fs.path.join(allocator, &.{ home, path[@min(2, path.len)..] });
+        defer allocator.free(expected);
+        for ([_]?[]const u8{ null, "unrelated-install-dir" }) |cwd| {
+            const resolved = try resolveLocalPreviewPath(allocator, if (cwd) |c| try allocator.dupe(u8, c) else null, path);
+            defer allocator.free(resolved);
+            try std.testing.expectEqualStrings(expected, resolved);
+        }
+    }
+}
+
+test "preview_source: Windows backslash home paths expand before joining the install directory" {
+    if (@import("builtin").os.tag != .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const home = try platform_dirs.homeDir(allocator);
+    defer allocator.free(home);
+    const expected = try std.fs.path.join(allocator, &.{ home, "AppData\\Local\\Temp\\wisp-demo\\shots\\d7.png" });
+    defer allocator.free(expected);
+
+    const resolved = try resolveLocalPreviewPath(
+        allocator,
+        try allocator.dupe(u8, "C:\\Users\\alice\\AppData\\Local\\Programs\\WispTerm"),
+        "~\\AppData\\Local\\Temp\\wisp-demo\\shots\\d7.png",
+    );
+    defer allocator.free(resolved);
+    try std.testing.expectEqualStrings(expected, resolved);
+}
+
+test "preview_source: tilde inside a filename stays relative to cwd" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ "~other/image.png", "image~.png" }) |path| {
+        const expected = try std.fs.path.join(allocator, &.{ "project", path });
+        defer allocator.free(expected);
+        const resolved = try resolveLocalPreviewPath(allocator, try allocator.dupe(u8, "project"), path);
+        defer allocator.free(resolved);
+        try std.testing.expectEqualStrings(expected, resolved);
+    }
+}
+
 test "preview_source: parseTmuxPaneCwd accepts a single absolute path and rejects everything else" {
     // Happy path: tmux prints the pane's cwd plus a trailing newline. The
     // surrounding whitespace is trimmed and the absolute path is returned.
@@ -458,17 +503,27 @@ test "preview_source: ssh preview sizes the exec cap to limit+1 and applies the 
 }
 
 fn resolveLocalPreviewPath(allocator: std.mem.Allocator, cwd_owned: ?[]u8, path: []const u8) ![]u8 {
+    defer if (cwd_owned) |cwd| allocator.free(cwd);
     var path_buf: [4096]u8 = undefined;
     var cwd_buf: [4096]u8 = undefined;
     const native_path = platform_local_path.forLocalOpen(path, &path_buf) orelse path;
 
+    // Expand the local user's home before considering the terminal cwd. In
+    // particular, PowerShell/agent output commonly abbreviates Windows paths
+    // as ~\AppData\... even when the process cwd is WispTerm's install folder.
+    if (native_path.len > 0 and native_path[0] == '~' and
+        (native_path.len == 1 or platform_local_path.isSeparator(native_path[1])))
+    {
+        const home = try platform_dirs.homeDir(allocator);
+        defer allocator.free(home);
+        return std.fs.path.join(allocator, &.{ home, native_path[@min(2, native_path.len)..] });
+    }
+
     if (platform_local_path.isDriveAbsolute(native_path) or std.fs.path.isAbsolute(native_path)) {
-        if (cwd_owned) |c| allocator.free(c);
         return allocator.dupe(u8, native_path);
     }
 
     const cwd = cwd_owned orelse return allocator.dupe(u8, native_path);
-    defer allocator.free(cwd);
 
     const native_cwd = platform_local_path.forLocalOpen(cwd, &cwd_buf) orelse cwd;
     const joined = try std.fs.path.join(allocator, &.{ native_cwd, native_path });
