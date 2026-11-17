@@ -298,8 +298,7 @@ test "input: focused preview ignores shift-modified navigation keys" {
         tab.g_tabs = previous_tabs;
         tab.g_tab_count = previous_count;
         active_tab_state.g_active_tab = previous_active;
-        AppWindow.g_force_rebuild = previous_force_rebuild;
-        AppWindow.g_cells_valid = previous_cells_valid;
+        restoreInputRepaintForTest(previous_force_rebuild, previous_cells_valid);
     }
 
     resetInputRepaintForTest();
@@ -708,8 +707,7 @@ test "input: skill center tool toggle requests a repaint" {
         tab.g_tabs = previous_tabs;
         tab.g_tab_count = previous_count;
         active_tab_state.g_active_tab = previous_active;
-        AppWindow.g_force_rebuild = previous_force_rebuild;
-        AppWindow.g_cells_valid = previous_cells_valid;
+        restoreInputRepaintForTest(previous_force_rebuild, previous_cells_valid);
         platform_dirs.clearTestConfigDirForCurrentThread();
     }
 
@@ -807,8 +805,7 @@ test "input: skill center first-party tool toggle writes state and requests a re
         tab.g_tabs = previous_tabs;
         tab.g_tab_count = previous_count;
         active_tab_state.g_active_tab = previous_active;
-        AppWindow.g_force_rebuild = previous_force_rebuild;
-        AppWindow.g_cells_valid = previous_cells_valid;
+        restoreInputRepaintForTest(previous_force_rebuild, previous_cells_valid);
         platform_dirs.clearTestConfigDirForCurrentThread();
     }
 
@@ -899,8 +896,7 @@ test "input: skill center tool toggle is blocked while selection overlay is acti
         tab.g_tabs = previous_tabs;
         tab.g_tab_count = previous_count;
         active_tab_state.g_active_tab = previous_active;
-        AppWindow.g_force_rebuild = previous_force_rebuild;
-        AppWindow.g_cells_valid = previous_cells_valid;
+        restoreInputRepaintForTest(previous_force_rebuild, previous_cells_valid);
         platform_dirs.clearTestConfigDirForCurrentThread();
     }
 
@@ -1030,8 +1026,7 @@ test "input: empty skill center library import shortcut opens picker" {
         tab.g_tabs = previous_tabs;
         tab.g_tab_count = previous_count;
         active_tab_state.g_active_tab = previous_active;
-        AppWindow.g_force_rebuild = previous_force_rebuild;
-        AppWindow.g_cells_valid = previous_cells_valid;
+        restoreInputRepaintForTest(previous_force_rebuild, previous_cells_valid);
     }
 
     AppWindow.g_allocator = allocator;
@@ -1083,8 +1078,7 @@ test "input: skill center deploy and import keys ignore selected tool rows" {
         tab.g_tabs = previous_tabs;
         tab.g_tab_count = previous_count;
         active_tab_state.g_active_tab = previous_active;
-        AppWindow.g_force_rebuild = previous_force_rebuild;
-        AppWindow.g_cells_valid = previous_cells_valid;
+        restoreInputRepaintForTest(previous_force_rebuild, previous_cells_valid);
     }
 
     AppWindow.g_allocator = allocator;
@@ -1167,8 +1161,7 @@ test "input: skill center tool import shortcut is a no-op when no file is select
         tab.g_tabs = previous_tabs;
         tab.g_tab_count = previous_count;
         active_tab_state.g_active_tab = previous_active;
-        AppWindow.g_force_rebuild = previous_force_rebuild;
-        AppWindow.g_cells_valid = previous_cells_valid;
+        restoreInputRepaintForTest(previous_force_rebuild, previous_cells_valid);
     }
 
     AppWindow.g_allocator = allocator;
@@ -1219,8 +1212,7 @@ test "input: skill center tool import preview keys import-scroll-cancel while te
         tab.g_tabs = previous_tabs;
         tab.g_tab_count = previous_count;
         active_tab_state.g_active_tab = previous_active;
-        AppWindow.g_force_rebuild = previous_force_rebuild;
-        AppWindow.g_cells_valid = previous_cells_valid;
+        restoreInputRepaintForTest(previous_force_rebuild, previous_cells_valid);
         platform_dirs.clearTestConfigDirForCurrentThread();
     }
 
@@ -1324,8 +1316,7 @@ test "input: skill center deploy and import keys are blocked while picker overla
         tab.g_tabs = previous_tabs;
         tab.g_tab_count = previous_count;
         active_tab_state.g_active_tab = previous_active;
-        AppWindow.g_force_rebuild = previous_force_rebuild;
-        AppWindow.g_cells_valid = previous_cells_valid;
+        restoreInputRepaintForTest(previous_force_rebuild, previous_cells_valid);
     }
 
     AppWindow.g_allocator = allocator;
@@ -1437,8 +1428,7 @@ test "input: skill center main actions are blocked while import list overlay is 
         tab.g_tabs = previous_tabs;
         tab.g_tab_count = previous_count;
         active_tab_state.g_active_tab = previous_active;
-        AppWindow.g_force_rebuild = previous_force_rebuild;
-        AppWindow.g_cells_valid = previous_cells_valid;
+        restoreInputRepaintForTest(previous_force_rebuild, previous_cells_valid);
         platform_dirs.clearTestConfigDirForCurrentThread();
     }
 
@@ -1652,6 +1642,7 @@ test "input: terminal viewport mouse wheel scroll requests a repaint" {
     surface.ref_count = 1;
     surface.scrollbar_opacity = 0;
     surface.scrollbar_show_time = 0;
+    surface.wheel_scroll = .{};
 
     var tab_state = tab.TabState{
         .kind = .terminal,
@@ -1681,6 +1672,15 @@ test "input: terminal viewport mouse wheel scroll requests a repaint" {
 
     handleMouseWheel(.{ .delta = 120, .xpos = 20, .ypos = 40 });
 
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+
+    // A sub-row delta (touchpad / high-resolution wheel) moves nothing yet, so
+    // it requests no frame; the remainder carries and the next one scrolls.
+    resetInputRepaintForTest();
+    handleMouseWheel(.{ .delta = 30, .xpos = 20, .ypos = 40 });
+    try std.testing.expect(!AppWindow.g_force_rebuild);
+    handleMouseWheel(.{ .delta = 30, .xpos = 20, .ypos = 40 });
     try std.testing.expect(AppWindow.g_force_rebuild);
     try std.testing.expect(!AppWindow.g_cells_valid);
 }
@@ -2334,6 +2334,13 @@ fn syncPanelGridFromWindowSize(width: i32, height: i32) void {
 fn resetInputRepaintForTest() void {
     AppWindow.g_force_rebuild = false;
     AppWindow.g_cells_valid = true;
+}
+
+/// Put back the dirty globals a test saved before it ran — the one restore
+/// site, so tests do not each write the globals directly.
+fn restoreInputRepaintForTest(force_rebuild: bool, cells_valid: bool) void {
+    AppWindow.g_force_rebuild = force_rebuild;
+    AppWindow.g_cells_valid = cells_valid;
 }
 
 fn applyInputEffect(effect: ui_effect.UiEffect) void {
@@ -7314,16 +7321,18 @@ fn appendMouseWheelReport(surface: *Surface, ev: platform_input.MouseWheelEvent,
     );
 }
 
-fn appendAlternateScrollKeys(surface: *Surface, ev: platform_input.MouseWheelEvent, out: *[512]u8, len: *usize) bool {
+/// `rows` is the whole-row scroll amount (positive = up), already accumulated
+/// from the wheel deltas — one cursor key per row, as in Ghostty.
+fn appendAlternateScrollKeys(surface: *Surface, rows: isize, out: *[512]u8, len: *usize) bool {
     if (surface.terminal.screens.active_key != .alternate) return false;
     if (surface.terminal.flags.mouse_event != .none) return false;
     if (!surface.terminal.modes.get(.mouse_alternate_scroll)) return false;
 
     const seq = if (surface.terminal.modes.get(.cursor_keys))
-        if (ev.delta > 0) "\x1bOA" else "\x1bOB"
-    else if (ev.delta > 0) "\x1b[A" else "\x1b[B";
+        if (rows > 0) "\x1bOA" else "\x1bOB"
+    else if (rows > 0) "\x1b[A" else "\x1b[B";
 
-    for (0..mouseWheelUnits(ev.delta)) |_| {
+    for (0..@abs(rows)) |_| {
         if (!appendBytes(out, len, seq)) return false;
     }
     return true;
@@ -7687,18 +7696,24 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
     var terminal_input_len: usize = 0;
     var sent_to_terminal = false;
 
+    // Whole rows for this event (3 per detent); the sub-row remainder stays on
+    // the surface for the next event. One wheel report / cursor key / viewport
+    // row per accumulated row — Ghostty's Surface.scrollCallback — instead of
+    // rounding every small touchpad or high-resolution delta up to a report.
+    const rows = surface.wheel_scroll.feed(ev.delta);
+    if (rows == 0) return;
+
     surface.render_state.mutex.lock();
     if (surface.terminal.flags.mouse_event != .none) {
-        for (0..mouseWheelUnits(ev.delta)) |_| {
+        for (0..@abs(rows)) |_| {
             if (!appendMouseWheelReport(surface, ev, &terminal_input_buf, &terminal_input_len)) break;
         }
         sent_to_terminal = terminal_input_len > 0;
-    } else if (appendAlternateScrollKeys(surface, ev, &terminal_input_buf, &terminal_input_len)) {
+    } else if (appendAlternateScrollKeys(surface, rows, &terminal_input_buf, &terminal_input_len)) {
         sent_to_terminal = true;
     } else {
-        // WHEEL_DELTA is 120 per notch. Convert to lines (3 lines per notch, like GLFW).
-        const notches = @as(f64, @floatFromInt(ev.delta)) / 120.0;
-        const delta: isize = @intFromFloat(-notches * 3);
+        // Wheel up (positive rows) moves the viewport towards scrollback.
+        const delta: isize = -rows;
         surface.terminal.scrollViewport(.{ .delta = delta });
         if (mouse_wheel_scroll.repaintFlagsForViewportScroll(delta)) |flags| {
             requestInputDirtyFlags(flags.force_rebuild, flags.cells_valid);
