@@ -55,3 +55,43 @@ test "markOutputDirty: only the first mark since the UI consumed it requests a w
     _ = surface.dirty.swap(false, .acq_rel);
     try std.testing.expect(surface.markOutputDirty());
 }
+
+test "a synchronized frame in one chunk requests a wakeup at its end" {
+    var surface: Surface = undefined;
+    surface.dirty = std.atomic.Value(bool).init(false);
+    surface.agent_screen = .{};
+    surface.sync_output_state = .{};
+
+    // The chunk holds a whole frame (`CSI ? 2026 h` … `CSI ? 2026 l`). Both
+    // mode notifications mark the surface dirty while the chunk is parsed, so
+    // the chunk's own dirty mark is no longer the first one and posts nothing.
+    surface.noteSynchronizedOutputMode(true);
+    surface.noteSynchronizedOutputMode(false);
+    try std.testing.expect(!surface.markOutputDirty());
+
+    // The frame end is what wakes the render loop — exactly once.
+    try std.testing.expect(surface.takeSynchronizedFrameEndedLocked());
+    try std.testing.expect(!surface.takeSynchronizedFrameEndedLocked());
+}
+
+test "a synchronized frame split across chunks requests a wakeup only at its end" {
+    var surface: Surface = undefined;
+    surface.dirty = std.atomic.Value(bool).init(false);
+    surface.agent_screen = .{};
+    surface.sync_output_state = .{};
+
+    // Opening chunk: nothing can be drawn until the frame ends, so no wakeup.
+    surface.noteSynchronizedOutputMode(true);
+    _ = surface.markOutputDirty();
+    try std.testing.expect(!surface.takeSynchronizedFrameEndedLocked());
+
+    // Middle chunk: dirty stays latched (the render loop defers the frame
+    // without consuming it), so it wakes nobody either.
+    try std.testing.expect(!surface.markOutputDirty());
+    try std.testing.expect(!surface.takeSynchronizedFrameEndedLocked());
+
+    // Closing chunk: still deduped by the dirty flag; the frame end must ask.
+    surface.noteSynchronizedOutputMode(false);
+    try std.testing.expect(!surface.markOutputDirty());
+    try std.testing.expect(surface.takeSynchronizedFrameEndedLocked());
+}

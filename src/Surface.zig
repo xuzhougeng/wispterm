@@ -26,6 +26,7 @@ const screen_detect = @import("terminal_agents/screen_detect.zig");
 const session_persist = @import("session_persist.zig");
 const window_backend = @import("platform/window_backend.zig");
 const sync_output = @import("sync_output.zig");
+const mouse_wheel_scroll = @import("input/mouse_wheel_scroll.zig");
 const notification = @import("notification.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const surface_registry = @import("surface_registry.zig");
@@ -320,6 +321,10 @@ dirty: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
 
 /// Deadline state for DEC synchronized output mode (2026).
 sync_output_state: sync_output.State = .{},
+
+/// Sub-row wheel remainder for this surface (Ghostty: `mouse.pending_scroll_y`).
+/// UI thread only.
+wheel_scroll: mouse_wheel_scroll.Accumulator = .{},
 
 /// Set when the PTY process has exited.
 exited: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -1568,10 +1573,19 @@ pub fn noteSynchronizedOutputMode(self: *Surface, enabled: bool) void {
     if (enabled) {
         self.sync_output_state.start(std.time.milliTimestamp());
     } else {
-        self.sync_output_state.stop();
+        self.sync_output_state.end();
         self.surface_renderer.force_rebuild = true;
     }
     self.dirty.store(true, .release);
+}
+
+/// True once after the application ended a synchronized frame. The IO thread
+/// posts a wakeup on it: by then the dirty flag is already set (by the mode
+/// notification above, or latched from a deferred frame), so
+/// `markOutputDirty` alone would not wake the render loop. Caller must hold
+/// render_state.mutex.
+pub fn takeSynchronizedFrameEndedLocked(self: *Surface) bool {
+    return self.sync_output_state.takeFrameEnded();
 }
 
 /// Clear synchronized output after an external terminal state change such as

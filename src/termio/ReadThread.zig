@@ -183,8 +183,14 @@ fn processOutput(surface: *Surface, data: []const u8) void {
     surface.scanForOscTitle(data);
     // One wakeup per UI consume cycle is enough — the render loop drains all
     // pending output on a single frame; per-chunk posts only flood the
-    // platform event queue during output bursts.
-    if (surface.markOutputDirty()) window_backend.postWakeup();
+    // platform event queue during output bursts. The exception is the chunk
+    // that ends a synchronized frame (mode 2026): dirty is already set by
+    // then — by the mode change itself, or latched since the render loop
+    // deferred the frame — so the frame end has to post the wakeup, or the
+    // finished frame waits for the loop's idle timeout.
+    const first_dirty = surface.markOutputDirty();
+    const frame_ended = surface.takeSynchronizedFrameEndedLocked();
+    if (first_dirty or frame_ended) window_backend.postWakeup();
 }
 
 const ExitAfterOutput = struct {
