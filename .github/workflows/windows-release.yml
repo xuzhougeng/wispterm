@@ -142,6 +142,15 @@ jobs:
             throw "Portable plugin skills directory not found: $portablePluginSkills"
           }
 
+          foreach ($conPtyDir in @("zig-out\dist\portable", "zig-out\dist\portable-opengl")) {
+            foreach ($conPtyFile in @("conpty.dll", "OpenConsole.exe")) {
+              $conPtyPath = Join-Path $conPtyDir $conPtyFile
+              if (!(Test-Path $conPtyPath)) {
+                throw "Bundled ConPTY file not found: $conPtyPath"
+              }
+            }
+          }
+
           if (!(Test-Path $portableCompatExe)) {
             throw "Portable compat executable not found: $portableCompatExe"
           }
@@ -350,7 +359,8 @@ jobs:
 
           - Installer: signed per-user setup exe. Installs the default Direct3D 11 build to %LOCALAPPDATA%\Programs\WispTerm with a Start menu shortcut and an optional Explorer context menu; the same files as the portable zip, so in-place updates keep working
           - Portable: default native Direct3D 11 zip archive containing wispterm.exe
-          - Portable compat: native Direct3D 11 zip archive for older Windows 10 machines - bundles WebView2Loader.dll for the embedded browser plus a modern ConPTY (conpty.dll + OpenConsole.exe) so TUI apps like Codex and Claude Code get mouse scrolling and scrollbars
+          - Every package bundles a modern ConPTY (conpty.dll + OpenConsole.exe) so full-screen TUI apps get mouse reporting and wheel scrolling; keep both files next to wispterm.exe
+          - Portable compat: native Direct3D 11 zip archive for older Windows 10 machines - additionally bundles WebView2Loader.dll for the embedded browser
           - Portable OpenGL fallback: compatibility zip archive for systems where the native D3D11 renderer cannot start or render correctly
           - Diagnostic (debug): console build with on-disk logging + crash reports for troubleshooting (ReleaseSafe). See docs/windows-debug-build.md.
 

@@ -567,8 +567,10 @@ OpenSSH error so regressions can be diagnosed without guessing.
 WispTerm supports three portable Windows packages:
 
 - `portable` - default native D3D11 build, run directly without installation
-- `portable-compat` - native D3D11 build for older Windows 10 machines: `WebView2Loader.dll` for the embedded browser plus a bundled modern ConPTY (`conpty.dll` + `OpenConsole.exe`) so TUI apps like Codex get mouse scrolling and scrollbars on old inbox conhosts
+- `portable-compat` - native D3D11 build that additionally bundles `WebView2Loader.dll` for the embedded browser
 - `portable-opengl` - renderer fallback for systems where native D3D11 cannot start or render correctly
+
+Every package bundles a modern ConPTY (`conpty.dll` + `OpenConsole.exe`): the inbox conhost drops TUI mouse-mode requests on old Windows 10 and, on Windows 11, whenever the client has not enabled VT input first (#727).
 
 and, since v1.45.0, a per-user installer built from the `portable` tree:
 
@@ -606,6 +608,8 @@ Key outputs include:
 
 ```text
 zig-out\dist\portable\wispterm.exe
+zig-out\dist\portable\conpty.dll
+zig-out\dist\portable\OpenConsole.exe
 zig-out\dist\portable\version.txt
 zig-out\dist\portable\plugins\...
 zig-out\dist\portable-compat\wispterm.exe
@@ -787,8 +791,7 @@ reveals it in Explorer. Unzip the archive and double-click
 unzip over the existing folder by hand.
 
 Besides the NSIS setup exe described above, WispTerm publishes portable zips. Use the default portable
-zip release asset; the `portable-compat` zip when using the embedded browser panel
-or on older Windows 10 machines (its bundled ConPTY restores TUI mouse support);
+zip release asset; the `portable-compat` zip when using the embedded browser panel;
 or the `portable-opengl` zip when the default native D3D11 renderer shows a
 black window, crash, missing UI, resize failure, RDP issue, or multi-monitor/DPI
 issue. Include diagnostics in the bug report. The bundled

@@ -23,16 +23,20 @@ account is in the Administrators group (UAC split token).
 There is no supported way to promote an existing non-elevated shell to elevated
 without a new process and UAC consent.
 
-## Mouse wheel / scrollbars don't work in Codex or Claude Code (Windows 10)
+## Mouse wheel / scrollbars don't work in full-screen TUI apps (Windows)
 
-Older Windows 10 builds ship an in-box ConPTY console host that does not
-forward modern mouse input, so full-screen TUI apps such as **Codex** and
-**Claude Code** lose wheel scrolling and scrollbar interaction inside the
-terminal.
+The in-box Windows ConPTY console host does not reliably forward mouse input.
+Older Windows 10 builds do not forward it at all, and the Windows 11 in-box
+host passes an app's mouse-reporting requests (`?1000h`, `?1006h`, ...) on to
+the terminal only while that app has VT input enabled. An app that turns mouse
+reporting on first — Pi's fullscreen mode, many Node.js TUIs — never gets mouse
+reports: the wheel arrives as Up/Down arrow keys instead of scrolling, and
+**Codex** or **Claude Code** lose wheel scrolling and scrollbar interaction.
 
-Fix: use the **`wispterm-windows-portable-compat-*.zip`** release package
-(available since v1.19.0). It bundles a modern `conpty.dll` +
-`OpenConsole.exe` next to `wispterm.exe`, and WispTerm prefers that bundled
+Fix: every Windows package after v1.47.0 — the installer and all portable
+zips — bundles a modern `conpty.dll` + `OpenConsole.exe` next to
+`wispterm.exe` (v1.19.0 to v1.47.0 shipped them only in
+**`wispterm-windows-portable-compat-*.zip`**). WispTerm prefers that bundled
 pair automatically whenever both files are present (`windows-conpty = auto`,
 the default). To force the OS in-box ConPTY instead, set
 `windows-conpty = system` — see [[Configuration]].

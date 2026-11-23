@@ -233,21 +233,26 @@ $portableDir = Join-Path $resolvedOutputDir 'portable'
 $portableCompatDir = Join-Path $resolvedOutputDir 'portable-compat'
 $portableOpenGLDir = Join-Path $resolvedOutputDir 'portable-opengl'
 $webView2LoaderPath = $null
-$conPtyPair = $null
+
+# Every package ships the modern ConPTY pair, not just portable-compat: the
+# inbox conhost (Windows 11 included) forwards DECSET mouse modes to the
+# terminal only while the client has ENABLE_VIRTUAL_TERMINAL_INPUT set, so a
+# TUI that writes ?1000h/?1006h before switching its input mode loses mouse
+# reporting and the wheel degrades to alternate-scroll arrow keys (#727).
+$conPtyPair = Get-ConPtyPair -RepoRoot $repoRoot -Version $ConPtyVersion
 
 if (-not $SkipCompatBundle) {
     $webView2LoaderPath = Get-WebView2Loader -RepoRoot $repoRoot -Version $WebView2Version
-    $conPtyPair = Get-ConPtyPair -RepoRoot $repoRoot -Version $ConPtyVersion
 }
 
 Remove-Item -Path $portableDir, $portableCompatDir, $portableOpenGLDir, (Join-Path $resolvedOutputDir 'installer') -Recurse -Force -ErrorAction SilentlyContinue
 
-Copy-PortablePayload -BinaryPath $binaryPath -TargetDir $portableDir -ReleaseVersion $releaseVersion
+Copy-PortablePayload -BinaryPath $binaryPath -TargetDir $portableDir -ReleaseVersion $releaseVersion -ConPtyPair $conPtyPair
 if ($webView2LoaderPath) {
     Copy-PortablePayload -BinaryPath $binaryPath -TargetDir $portableCompatDir -ReleaseVersion $releaseVersion -WebView2LoaderPath $webView2LoaderPath -ConPtyPair $conPtyPair
 }
 if (-not $SkipOpenGLBundle) {
-    Copy-PortablePayload -BinaryPath $openGLBinaryPath -TargetDir $portableOpenGLDir -ReleaseVersion $releaseVersion
+    Copy-PortablePayload -BinaryPath $openGLBinaryPath -TargetDir $portableOpenGLDir -ReleaseVersion $releaseVersion -ConPtyPair $conPtyPair
 }
 
 Write-Host "Portable build: $(Join-Path $portableDir 'wispterm.exe')"

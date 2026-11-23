@@ -3,7 +3,9 @@
 //! placed next to wispterm.exe, falling back to the OS inbox kernel32
 //! implementation. The bundled pair gives old Windows 10 conhosts the
 //! modern ConPTY behaviors (mouse-mode passthrough, alt-screen passthrough)
-//! that crossterm TUIs such as Codex rely on.
+//! that crossterm TUIs such as Codex rely on, and makes DECSET mouse-mode
+//! passthrough unconditional: the Windows 11 inbox conhost forwards
+//! ?1000h/?1006h only while the client has VT input enabled (#727).
 //!
 //! Only `platform/pty_windows.zig` may import this module.
 

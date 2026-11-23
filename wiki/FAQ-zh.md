@@ -19,15 +19,19 @@ Administrators 组（UAC 拆分令牌）。
 
 没有受支持的方法能在不新建进程、不经 UAC 同意的情况下，把已有的非提权 shell 提升为提权。
 
-## Codex / Claude Code 里鼠标滚轮、滚动条失效？（Windows 10）
+## 全屏 TUI 应用里鼠标滚轮、滚动条失效？（Windows）
 
-较老的 Windows 10 自带的 ConPTY 控制台宿主不转发现代鼠标输入，因此 **Codex**、
-**Claude Code** 这类全屏 TUI 应用在终端里会失去滚轮滚动和滚动条交互。
+Windows 自带的 ConPTY 控制台宿主不能可靠地转发鼠标输入。较老的 Windows 10 完全不转发；
+Windows 11 自带的宿主只有在应用已开启 VT 输入时，才会把它的鼠标上报请求（`?1000h`、
+`?1006h` 等）转给终端。先开启鼠标上报的应用（Pi 的全屏模式、许多 Node.js TUI）因此收不到
+鼠标上报：滚轮会变成上/下方向键而不是滚动，**Codex**、**Claude Code** 也会失去滚轮滚动和
+滚动条交互。
 
-解决办法：使用 **`wispterm-windows-portable-compat-*.zip`** 发布包（v1.19.0 起提供）。
-它在 `wispterm.exe` 旁边捆绑了现代版 `conpty.dll` + `OpenConsole.exe`；只要这两个文件
-存在，WispTerm 默认就会优先使用捆绑版（`windows-conpty = auto`，即默认值）。如需强制
-使用系统自带 ConPTY，设置 `windows-conpty = system` —— 见 [[配置|Configuration-zh]]。
+解决办法：v1.47.0 之后的所有 Windows 发布包（安装包和各个便携 zip）都在 `wispterm.exe`
+旁边捆绑了现代版 `conpty.dll` + `OpenConsole.exe`（v1.19.0 到 v1.47.0 仅
+**`wispterm-windows-portable-compat-*.zip`** 提供）；只要这两个文件存在，WispTerm 默认就会
+优先使用捆绑版（`windows-conpty = auto`，即默认值）。如需强制使用系统自带 ConPTY，设置
+`windows-conpty = system` —— 见 [[配置|Configuration-zh]]。
 
 重要：**请把整个 zip 完整解压到一个文件夹，并从该文件夹运行 `wispterm.exe`**，让
 `conpty.dll` 和 `OpenConsole.exe` 始终在 exe 旁边。如果直接在压缩包里双击运行
