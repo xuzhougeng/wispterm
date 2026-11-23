@@ -122,7 +122,7 @@ feishu-app-secret = your-app-secret
 | `copy-on-select`            | `false`    | Copy the terminal selection to the clipboard automatically as soon as you select it.                                                                                                                                    |
 | `ssh-legacy-algorithms`     | `false`    | Append compatibility options (`ssh-rsa`, old Diffie-Hellman KEX, CBC ciphers) for legacy SSH servers and bastions.                                                                                                      |
 | `ssh-advertise-terminal-capabilities` | `false` | Ask OpenSSH to advertise `TERM_PROGRAM=ghostty` and `COLORTERM=truecolor` to the remote SSH session. The server must accept these environment requests. |
-| `windows-conpty`            | `auto`     | Windows console host: `auto` prefers the bundled modern ConPTY when `conpty.dll` + `OpenConsole.exe` sit next to `wispterm.exe` (shipped in the portable-compat package; restores TUI mouse support on old Windows 10); `system` forces the OS in-box ConPTY. |
+| `windows-conpty`            | `auto`     | Windows console host: `auto` prefers the bundled modern ConPTY when `conpty.dll` + `OpenConsole.exe` sit next to `wispterm.exe` (shipped in every Windows package; restores TUI mouse reporting that the in-box ConPTY drops); `system` forces the OS in-box ConPTY. |
 | `wispterm-d3d-present`      | `true`     | Windows: present frames via a DXGI flip-model swapchain. Set `false` to force the classic GDI presenter (useful on weak integrated GPUs; since v1.19.1 affected machines also switch automatically).                    |
 
 ## Clipboard Behavior with tmux

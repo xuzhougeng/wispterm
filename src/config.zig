@@ -396,7 +396,7 @@ theme: ?[]const u8 = null,
 
 /// Which Windows pseudo console host services terminal sessions: `auto`
 /// prefers a bundled modern ConPTY (conpty.dll + OpenConsole.exe next to
-/// wispterm.exe, shipped in the portable-compat package) with fallback to
+/// wispterm.exe, shipped in every Windows package) with fallback to
 /// the OS inbox implementation; `system` always uses the inbox one.
 /// Ignored on non-Windows platforms.
 @"windows-conpty": console_host_policy.Preference = .auto,
