@@ -31,7 +31,7 @@ gets mouse reports: the wheel arrives as Up/Down arrow keys (the
 alternate-scroll fallback) instead of scrolling, and Codex or Claude Code lose
 wheel scrolling and scrollbar interaction.
 
-Every Windows package after v1.47.0 — the installer and all portable zips —
+Every Windows package since v1.47.1 — the installer and all portable zips —
 bundles a modern `conpty.dll` + `OpenConsole.exe` next to `wispterm.exe`
 (v1.19.0 to v1.47.0 shipped them only in
 `wispterm-windows-portable-compat-*.zip`). WispTerm prefers that bundled pair

@@ -27,7 +27,7 @@ Windows 11 自带的宿主只有在应用已开启 VT 输入时，才会把它�
 鼠标上报：滚轮会变成上/下方向键而不是滚动，**Codex**、**Claude Code** 也会失去滚轮滚动和
 滚动条交互。
 
-解决办法：v1.47.0 之后的所有 Windows 发布包（安装包和各个便携 zip）都在 `wispterm.exe`
+解决办法：v1.47.1 起的所有 Windows 发布包（安装包和各个便携 zip）都在 `wispterm.exe`
 旁边捆绑了现代版 `conpty.dll` + `OpenConsole.exe`（v1.19.0 到 v1.47.0 仅
 **`wispterm-windows-portable-compat-*.zip`** 提供）；只要这两个文件存在，WispTerm 默认就会
 优先使用捆绑版（`windows-conpty = auto`，即默认值）。如需强制使用系统自带 ConPTY，设置
