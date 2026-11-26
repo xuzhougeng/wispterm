@@ -9,6 +9,7 @@ const std = @import("std");
 const windows = std.os.windows;
 const core = @import("../../../platform/dxgi_core.zig");
 const fallback_marker = @import("fallback_marker.zig");
+const frame_slot = @import("frame_slot.zig");
 const present_policy = @import("present_policy.zig");
 const render_diagnostics = @import("../../../render_diagnostics.zig");
 const frame_damage = @import("../../frame_damage.zig");
@@ -154,6 +155,7 @@ const State = struct {
     swapchain_flags: u32 = 0,
     buffer_count: u32 = 2,
     frame_latency_waitable: ?windows.HANDLE = null,
+    frame_slot: frame_slot.FrameSlot = .{},
     backbuffer: ?*anyopaque = null,
     rtv: ?*anyopaque = null,
     current_rtv: ?*anyopaque = null,
@@ -707,10 +709,17 @@ pub fn beginFrame() void {
 pub fn waitForFrameSlot() void {
     if (state) |*self| {
         const handle = self.frame_latency_waitable orelse return;
-        windows.WaitForSingleObject(handle, 1000) catch |err| switch (err) {
-            error.WaitTimeOut => {},
-            else => render_diagnostics.log("gpu-backend=d3d11 frame-latency wait failed error={s}", .{@errorName(err)}),
+        // The previous frame waited but never presented, so the waitable is
+        // still unsignaled: waiting again would block for the whole timeout.
+        if (!self.frame_slot.needsWait()) return;
+        windows.WaitForSingleObject(handle, frame_slot.wait_timeout_ms) catch |err| {
+            switch (err) {
+                error.WaitTimeOut => render_diagnostics.log("gpu-backend=d3d11 frame-latency wait timed out after {}ms", .{frame_slot.wait_timeout_ms}),
+                else => render_diagnostics.log("gpu-backend=d3d11 frame-latency wait failed error={s}", .{@errorName(err)}),
+            }
+            return;
         };
+        self.frame_slot.noteAcquired();
     }
 }
 
@@ -796,6 +805,7 @@ fn presentLegacy(self: *State) PresentError!void {
         logDxgiFailure(self, "present", hr, status);
         return presentErrorFromHRESULT(hr);
     }
+    self.frame_slot.notePresented();
 }
 
 pub fn present(damage: ?frame_damage.Rect) PresentError!void {
@@ -828,6 +838,7 @@ pub fn present(damage: ?frame_damage.Rect) PresentError!void {
                 );
                 const hr = present1_fn(swapchain1, present_interval, 0, &params);
                 if (hr >= 0) {
+                    self.frame_slot.notePresented();
                     render_diagnostics.log("gpu-backend=d3d11 present1 dirty-rect=({},{})->({},{})", .{
                         candidate.left,
                         candidate.top,
