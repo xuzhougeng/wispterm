@@ -267,6 +267,10 @@ recovery request in the healthy path. With diagnostics enabled, the log also
 records whether the D3D11 frame-latency waitable object was configured (or why
 the swapchain fell back) and emits one-second `frame-timing` aggregates for
 frame-gate wait, atlas sync, snapshot, rebuild, draw, and Present blocking.
+`avg_gate_us` is time spent blocked on the waitable, not time between frames: a
+window whose `frames * avg_gate_us` is about one second, or a
+`frame-latency wait timed out` line, means a wait ran into its timeout — a frame
+took the frame slot and never presented (`gpu/d3d11/frame_slot.zig`).
 On a native D3D11 swapchain that exposes `IDXGISwapChain1`, terminal-only frames
 with proven dirty-row damage may additionally log `present1-capable=true` and
 `present1 dirty-rect=...`; frames involving cursor/atlas/layout/overlay uncertainty
